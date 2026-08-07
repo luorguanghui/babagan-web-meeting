@@ -46,6 +46,6 @@ export function CreateMeetingPage() {
       {error && <p className="message error" role="alert">{error}</p>}
       <button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Creating…' : 'Create meeting'}</button>
     </form>
-    {created && <section className="created-link" aria-label="Meeting link"><p className="eyebrow">Share this link</p><output>{created.joinUrl}</output><button type="button" className="secondary" onClick={copyLink}>Copy link</button>{copied && <p className="message success" role="status">Link copied.</p>}</section>}
+    {created && <section className="created-link" aria-label="Meeting link"><p className="eyebrow">Share this link</p><output>{created.joinUrl}</output><a className="host-link" href={created.joinUrl}>Enter as host</a><button type="button" className="secondary" onClick={copyLink}>Copy link</button>{copied && <p className="message success" role="status">Link copied.</p>}</section>}
   </section></main>;
 }

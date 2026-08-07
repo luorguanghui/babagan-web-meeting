@@ -13,7 +13,11 @@ function clientNotice(): ClientNotice {
   if (!globalThis.RTCPeerConnection) return { kind: 'block', message: 'WebRTC is unavailable in this browser. Use a current Chrome or Edge browser.' };
   if (/Android|iPhone|iPad|iPod|Mobi/i.test(userAgent)) return { kind: 'notice', message: 'Mobile is available for view and voice only; screen sharing is not supported.' };
   if (/Macintosh|Mac OS X/i.test(userAgent)) return { kind: 'block', message: 'This release is supported on Windows 10 or 11 with Chrome or Edge. Please join from a supported computer.' };
-  if (!/Windows NT 10\.0/i.test(userAgent) || !/(?:Chrome|Edg)\/\d+/i.test(userAgent)) return { kind: 'block', message: 'This release is supported on Windows 10 or 11 with Chrome or Edge. Please join from a supported computer.' };
+  const blockedChromium = /OPR\/|Opera|Brave|Vivaldi|YaBrowser|SamsungBrowser|UCBrowser|DuckDuckGo|Whale/i.test(userAgent)
+    || Boolean((navigator as Navigator & { brave?: unknown }).brave);
+  const isEdge = /Edg\/\d+/i.test(userAgent);
+  const isChrome = /Chrome\/\d+/i.test(userAgent) && !blockedChromium;
+  if (!/Windows NT 10\.0/i.test(userAgent) || blockedChromium || (!isChrome && !isEdge)) return { kind: 'block', message: 'This release is supported on Windows 10 or 11 with Chrome or Edge. Please join from a supported computer.' };
   return undefined;
 }
 

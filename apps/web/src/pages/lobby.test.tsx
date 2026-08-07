@@ -4,6 +4,9 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { CreateMeetingResponseSchema } from '@meeting/contracts';
+
+import { apiRequest } from '../api/client.js';
 import { App } from '../app.js';
 import { installBrowserFakes } from '../test/browser-fakes.js';
 
@@ -12,6 +15,7 @@ const slug = 'meeting-slug-which-is-long-enough';
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
+  delete (window.navigator as Navigator & { brave?: unknown }).brave;
   window.localStorage.clear();
   window.sessionStorage.clear();
 });
@@ -49,6 +53,7 @@ describe('meeting creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create meeting' }));
 
     expect(await screen.findByText(`https://meet.example/m/${slug}`)).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Enter as host' })).toHaveAttribute('href', `https://meet.example/m/${slug}`);
     await userEvent.click(screen.getByRole('button', { name: 'Copy link' }));
     expect(writeText).toHaveBeenCalledWith(`https://meet.example/m/${slug}`);
   });
@@ -67,6 +72,20 @@ describe('meeting creation', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Authentication failed');
     expect(window.localStorage.getItem('adminPassword')).toBeNull();
     expect(window.sessionStorage.getItem('adminPassword')).toBeNull();
+  });
+});
+
+describe('API client', () => {
+  it('keeps JSON content type when a caller passes conflicting headers', async () => {
+    installBrowserFakes();
+    const fetchMock = vi.fn().mockResolvedValue(success({ slug, joinUrl: `https://meet.example/m/${slug}` }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await apiRequest('/meetings', CreateMeetingResponseSchema, { headers: { 'Content-Type': 'text/plain' } });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/meetings', expect.objectContaining({
+      credentials: 'include', headers: { 'Content-Type': 'application/json' }
+    }));
   });
 });
 
@@ -102,6 +121,21 @@ describe('join lobby', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('WebRTC is unavailable');
   });
 
+  it('blocks Chromium derivatives that are not Chrome or Edge', () => {
+    installBrowserFakes({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36 OPR/125.0.0.0' });
+    renderAt(`/m/${slug}`);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Windows 10 or 11 with Chrome or Edge');
+  });
+
+  it('blocks Brave despite its Chrome user agent token', () => {
+    installBrowserFakes();
+    Object.defineProperty(window.navigator, 'brave', { configurable: true, value: {} });
+    renderAt(`/m/${slug}`);
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Windows 10 or 11 with Chrome or Edge');
+  });
+
   it('does not request microphone permission until a person starts the device check', async () => {
     const { getUserMedia, track } = installBrowserFakes();
     const rendered = renderAt(`/m/${slug}`);
@@ -120,6 +154,50 @@ describe('join lobby', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Microphone permission was denied');
+  });
+
+  it('explains when browser policy does not expose microphone access', async () => {
+    installBrowserFakes();
+    Object.defineProperty(window.navigator, 'mediaDevices', { configurable: true, value: undefined });
+    renderAt(`/m/${slug}`);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('does not expose microphone access');
+  });
+
+  it('stops a microphone stream that resolves after the lobby unmounts', async () => {
+    let resolveStream!: (stream: MediaStream) => void;
+    const lateTrack = { stop: vi.fn() };
+    const lateStream = { getTracks: () => [lateTrack] } as unknown as MediaStream;
+    installBrowserFakes({ getUserMedia: () => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }) });
+    const rendered = renderAt(`/m/${slug}`);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+    rendered.unmount();
+    resolveStream(lateStream);
+
+    await waitFor(() => expect(lateTrack.stop).toHaveBeenCalledOnce());
+  });
+
+  it('stops an older microphone request when a newer check wins', async () => {
+    let resolveFirst!: (stream: MediaStream) => void;
+    const firstTrack = { stop: vi.fn() };
+    const secondTrack = { stop: vi.fn() };
+    const firstStream = { getTracks: () => [firstTrack] } as unknown as MediaStream;
+    const secondStream = { getTracks: () => [secondTrack] } as unknown as MediaStream;
+    const getUserMedia = vi.fn()
+      .mockImplementationOnce(() => new Promise<MediaStream>((resolve) => { resolveFirst = resolve; }))
+      .mockResolvedValueOnce(secondStream);
+    installBrowserFakes({ getUserMedia });
+    renderAt(`/m/${slug}`);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+    resolveFirst(firstStream);
+
+    await waitFor(() => expect(firstTrack.stop).toHaveBeenCalledOnce());
+    expect(secondTrack.stop).not.toHaveBeenCalled();
   });
 
   it('requires a nickname and sends a muted join request', async () => {

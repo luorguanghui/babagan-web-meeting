@@ -6,15 +6,23 @@ export function DeviceCheck({ onCleanupReady }: DeviceCheckProps) {
   const streamRef = useRef<MediaStream | undefined>(undefined);
   const contextRef = useRef<AudioContext | undefined>(undefined);
   const frameRef = useRef<number | undefined>(undefined);
+  const generationRef = useRef(0);
+  const mountedRef = useRef(false);
   const [message, setMessage] = useState({ text: 'Microphone is off until you check it.', isError: false });
   const [level, setLevel] = useState(0);
   const stopPreview = useCallback(() => {
+    generationRef.current += 1;
     if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
     frameRef.current = undefined;
     streamRef.current?.getTracks().forEach((track) => track.stop()); streamRef.current = undefined;
-    void contextRef.current?.close(); contextRef.current = undefined; setLevel(0);
+    void contextRef.current?.close(); contextRef.current = undefined;
+    if (mountedRef.current) setLevel(0);
   }, []);
-  useEffect(() => { onCleanupReady(stopPreview); return () => { onCleanupReady(null); stopPreview(); }; }, [onCleanupReady, stopPreview]);
+  useEffect(() => {
+    mountedRef.current = true;
+    onCleanupReady(stopPreview);
+    return () => { mountedRef.current = false; onCleanupReady(null); stopPreview(); };
+  }, [onCleanupReady, stopPreview]);
 
   function startMeter(stream: MediaStream) {
     if (!window.AudioContext) return;
@@ -32,7 +40,21 @@ export function DeviceCheck({ onCleanupReady }: DeviceCheckProps) {
   }
   async function checkMicrophone() {
     stopPreview();
-    try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream; setMessage({ text: 'Microphone preview is ready.', isError: false }); startMeter(stream); }
+    const getUserMedia = navigator.mediaDevices?.getUserMedia;
+    if (!getUserMedia) {
+      setMessage({ text: 'This browser or device policy does not expose microphone access. Use a current Windows Chrome or Edge browser and allow microphone access.', isError: true });
+      return;
+    }
+    const requestGeneration = generationRef.current + 1;
+    generationRef.current = requestGeneration;
+    try {
+      const stream = await getUserMedia.call(navigator.mediaDevices, { audio: true });
+      if (!mountedRef.current || requestGeneration !== generationRef.current) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      streamRef.current = stream; setMessage({ text: 'Microphone preview is ready.', isError: false }); startMeter(stream);
+    }
     catch (reason) { setMessage(reason instanceof DOMException && reason.name === 'NotAllowedError' ? { text: 'Microphone permission was denied. Allow it in your browser settings and try again.', isError: true } : { text: 'Microphone preview could not start. Check your microphone and try again.', isError: true }); }
   }
   async function testSpeaker() {

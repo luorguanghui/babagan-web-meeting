@@ -6,6 +6,9 @@ button { border: 0; border-radius: .55rem; background: #075d72; color: #fff; cur
 button:hover { background: #064c5d; }
 button:focus-visible, input:focus-visible { outline: 3px solid #e9a22b; outline-offset: 2px; }
 button:disabled { cursor: not-allowed; opacity: .52; }
+.host-link { background: #075d72; border-radius: .55rem; color: #fff; font-weight: 700; padding: .78rem 1rem; text-align: center; text-decoration: none; }
+.host-link:hover { background: #064c5d; }
+.host-link:focus-visible { outline: 3px solid #e9a22b; outline-offset: 2px; }
 .shell { align-items: center; display: flex; justify-content: center; min-height: 100vh; padding: 2rem 1rem; }
 .panel { background: #fff; border-top: 6px solid #075d72; box-shadow: 0 1.4rem 4rem rgba(17, 39, 51, .14); max-width: 38rem; padding: clamp(1.5rem, 4vw, 3rem); width: 100%; }
 .eyebrow { color: #075d72; font-size: .76rem; font-weight: 800; letter-spacing: .11em; margin: 0 0 .55rem; text-transform: uppercase; }

@@ -10,15 +10,28 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiRequest<T>(path: string, schema: TSchema, init: RequestInit = {}): Promise<T> {
+  const headers = jsonHeaders(init.headers);
   const response = await fetch(`/api/v1${path}`, {
     ...init,
     credentials: 'include',
-    headers: { 'Content-Type': 'application/json', ...init.headers }
+    headers
   });
   if (!response.ok) throw await parseApiError(response);
   const body: unknown = await response.json();
   if (!Value.Check(schema, body)) throw new ApiRequestError('The server returned an invalid response.', response.status);
   return body as T;
+}
+
+function jsonHeaders(value: HeadersInit | undefined): Record<string, string> {
+  const headers = value instanceof Headers
+    ? Object.fromEntries(value.entries())
+    : Array.isArray(value)
+      ? Object.fromEntries(value)
+      : { ...value };
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === 'content-type') delete headers[key];
+  }
+  return { ...headers, 'Content-Type': 'application/json' };
 }
 
 async function parseApiError(response: Response): Promise<ApiRequestError> {
