@@ -35,5 +35,6 @@ export interface MeetingRepository {
   revokeParticipantSession(identity: string, at: number): void;
   revokeParticipantSessionsForMeeting(meetingId: string, at: number): void;
   trySetShareIdentity(meetingId: string, version: number, identity: string | null): ShareUpdateResult;
+  clearShareIdentityIfMatches(meetingId: string, identity: string): boolean;
   markWebhookProcessed(eventId: string, at: number): boolean;
 }

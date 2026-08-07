@@ -70,6 +70,20 @@ export const JoinMeetingResponseSchema = Type.Object({
 
 export type JoinMeetingResponse = Static<typeof JoinMeetingResponseSchema>;
 
+export const RefreshParticipantTokenResponseSchema = Type.Object({
+  participantIdentity: Type.String({ minLength: 1, maxLength: 256 }),
+  participantName: Type.String({ minLength: 1, maxLength: 40 }),
+  livekitUrl: Type.String({ minLength: 1, pattern: '^wss://' }),
+  token: Type.String({ minLength: 1 }),
+  meetingExpiresAt: Type.Integer({ minimum: 0 }),
+  permissions: Type.Object({
+    canPublishMicrophone: Type.Literal(true),
+    canShareScreen: Type.Boolean()
+  }, { additionalProperties: false })
+}, { additionalProperties: false });
+
+export type RefreshParticipantTokenResponse = Static<typeof RefreshParticipantTokenResponseSchema>;
+
 export const KickParticipantRequestSchema = Type.Object({
   participantIdentity: Type.String({ minLength: 1, maxLength: 256 })
 }, { additionalProperties: false });

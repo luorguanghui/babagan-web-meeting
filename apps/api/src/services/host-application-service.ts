@@ -179,6 +179,6 @@ export class HostApplicationService {
   private clearMatchingShare(slug: string, identity: string): void {
     const current = this.dependencies.repository.findBySlug(slug);
     if (!current || current.shareIdentity !== identity) return;
-    this.dependencies.repository.trySetShareIdentity(current.id, current.version, null);
+    this.dependencies.repository.clearShareIdentityIfMatches(current.id, identity);
   }
 }

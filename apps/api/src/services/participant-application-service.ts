@@ -1,3 +1,5 @@
+import type { RefreshParticipantTokenResponse } from '@meeting/contracts';
+
 import type { AppConfig } from '../config.js';
 import { domainError } from '../domain/errors.js';
 import { SessionAuthenticationError } from '../http/auth.js';
@@ -35,14 +37,10 @@ export class ParticipantApplicationService {
     return session;
   }
 
-  async refreshToken(session: ActiveParticipantSession, slug: string): Promise<{
-    participantIdentity: string;
-    participantName: string;
-    livekitUrl: string;
-    token: string;
-    meetingExpiresAt: number;
-    permissions: { canPublishMicrophone: true; canShareScreen: boolean };
-  }> {
+  async refreshToken(
+    session: ActiveParticipantSession,
+    slug: string
+  ): Promise<RefreshParticipantTokenResponse> {
     const meeting = this.authorize(session, slug);
     const canShareScreen = meeting.shareIdentity === session.identity;
     let token: string;

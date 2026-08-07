@@ -70,7 +70,12 @@ export class LiveKitMediaService implements MediaService {
   }
 
   async removeParticipant(roomName: string, identity: string): Promise<void> {
-    await this.rooms.removeParticipant(roomName, identity);
+    try {
+      await this.rooms.removeParticipant(roomName, identity);
+    } catch (error) {
+      if (isRoomNotFound(error)) return;
+      throw error;
+    }
   }
 
   async deleteRoom(roomName: string): Promise<void> {

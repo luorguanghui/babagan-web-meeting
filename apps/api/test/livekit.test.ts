@@ -123,6 +123,24 @@ describe('LiveKit media adapter', () => {
     await expect(media.deleteRoom('meeting-1')).resolves.toBeUndefined();
     expect(rooms.deleted).toEqual(['meeting-1']);
   });
+
+  it('treats a disconnected or nonexistent participant as successful removal', async () => {
+    const rooms = new FakeRoomService();
+    rooms.removeError = new ServerError('Not Found', 'participant not found', 404, 'not_found');
+    const media = createMedia(rooms);
+
+    await expect(media.removeParticipant('meeting-1', 'gone-participant')).resolves.toBeUndefined();
+    expect(rooms.removed).toEqual([{ roomName: 'meeting-1', identity: 'gone-participant' }]);
+  });
+
+  it('preserves genuine participant-removal failures', async () => {
+    const rooms = new FakeRoomService();
+    rooms.removeError = new Error('LiveKit unavailable');
+    const media = createMedia(rooms);
+
+    await expect(media.removeParticipant('meeting-1', 'participant-1'))
+      .rejects.toThrow('LiveKit unavailable');
+  });
 });
 
 describe('LiveKit webhook handler', () => {
@@ -339,6 +357,7 @@ class FakeRoomService {
   readonly deleted: string[] = [];
   listRoomsCalls = 0;
   deleteError?: Error;
+  removeError?: Error;
 
   async listParticipants(): Promise<Array<{ identity: string }>> {
     return this.participants;
@@ -355,6 +374,7 @@ class FakeRoomService {
 
   async removeParticipant(roomName: string, identity: string): Promise<void> {
     this.removed.push({ roomName, identity });
+    if (this.removeError) throw this.removeError;
   }
 
   async deleteRoom(roomName: string): Promise<void> {

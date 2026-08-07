@@ -266,6 +266,15 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return result.changes === 1 ? { ok: true } : { ok: false, reason: 'VERSION_CONFLICT' };
   }
 
+  clearShareIdentityIfMatches(meetingId: string, identity: string): boolean {
+    const result = this.db.prepare(`
+      UPDATE meetings
+      SET share_identity = NULL, version = version + 1
+      WHERE id = ? AND share_identity = ?
+    `).run(meetingId, identity);
+    return result.changes === 1;
+  }
+
   markWebhookProcessed(eventId: string, at: number): boolean {
     const result = this.db.prepare(`
       INSERT INTO processed_webhooks (event_id, processed_at)

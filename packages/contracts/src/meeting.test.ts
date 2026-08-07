@@ -7,6 +7,7 @@ import {
   CreateMeetingRequestSchema,
   JoinMeetingRequestSchema,
   JoinMeetingResponseSchema,
+  RefreshParticipantTokenResponseSchema,
   KickParticipantRequestSchema,
   MeetingSummarySchema,
   ParticipantSummarySchema,
@@ -87,6 +88,26 @@ describe('meeting HTTP contracts', () => {
       token: 'signed-token',
       meetingExpiresAt: 1_725_000_000_000,
       permissions: { publishSources: ['microphone'] }
+    })).toBe(false);
+  });
+
+  it('accepts only the documented refresh-token response fields', () => {
+    expect(Value.Check(RefreshParticipantTokenResponseSchema, {
+      participantIdentity: 'participant-1',
+      participantName: 'Ada',
+      livekitUrl: 'wss://rtc.example.test',
+      token: 'refreshed-token',
+      meetingExpiresAt: 1_725_000_000_000,
+      permissions: { canPublishMicrophone: true, canShareScreen: false }
+    })).toBe(true);
+    expect(Value.Check(RefreshParticipantTokenResponseSchema, {
+      participantIdentity: 'participant-1',
+      participantName: 'Ada',
+      livekitUrl: 'wss://rtc.example.test',
+      token: 'refreshed-token',
+      meetingExpiresAt: 1_725_000_000_000,
+      permissions: { canPublishMicrophone: true, canShareScreen: false },
+      participantSessionToken: 'must-never-serialize'
     })).toBe(false);
   });
 

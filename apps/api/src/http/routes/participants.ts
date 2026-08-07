@@ -1,7 +1,8 @@
 import {
   JoinMeetingRequestSchema,
   JoinMeetingResponseSchema,
-  ParticipantsResponseSchema
+  ParticipantsResponseSchema,
+  RefreshParticipantTokenResponseSchema
 } from '@meeting/contracts';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
@@ -17,18 +18,6 @@ import { SessionAuthenticationError } from '../auth.js';
 import { generalApiRateLimit, meetingPasswordRateLimit } from '../rate-limit.js';
 
 const SlugParamsSchema = Type.Object({ slug: Type.String({ minLength: 22, maxLength: 256 }) });
-const RefreshResponseSchema = Type.Object({
-  participantIdentity: Type.String(),
-  participantName: Type.String(),
-  livekitUrl: Type.String(),
-  token: Type.String(),
-  meetingExpiresAt: Type.Integer(),
-  permissions: Type.Object({
-    canPublishMicrophone: Type.Literal(true),
-    canShareScreen: Type.Boolean()
-  }, { additionalProperties: false })
-}, { additionalProperties: false });
-
 export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   meetings: MeetingService;
   participants: ParticipantApplicationService;
@@ -52,7 +41,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   });
 
   app.post('/api/v1/meetings/:slug/token', {
-    schema: { params: SlugParamsSchema, response: { 200: RefreshResponseSchema } },
+    schema: { params: SlugParamsSchema, response: { 200: RefreshParticipantTokenResponseSchema } },
     preHandler: app.rateLimit(generalApiRateLimit())
   }, async (request) => {
     const value = slug(request.params);

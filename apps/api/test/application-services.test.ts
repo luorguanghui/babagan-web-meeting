@@ -185,6 +185,19 @@ describe('host and participant application services', () => {
     expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
   });
 
+  it('clears an acquired share lock after grant failure despite an intervening version update', async () => {
+    const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
+    const joined = await meetings.joinMeeting(meeting.slug, { nickname: 'Ada' });
+    media.updateError = new Error('livekit unavailable');
+    const didIncrementVersion = introduceVersionIncrementBeforeShareClear(meeting.id);
+
+    await expect(hosts.grantShare(activeHost(meeting.id), meeting.slug, joined.participantIdentity))
+      .rejects.toMatchObject({ code: 'MEDIA_SERVICE_UNAVAILABLE' });
+
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+    expect(didIncrementVersion()).toBe(true);
+  });
+
   it('keeps the share lock when media downgrade fails during revoke', async () => {
     const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
     const joined = await meetings.joinMeeting(meeting.slug, { nickname: 'Ada' });
@@ -195,6 +208,18 @@ describe('host and participant application services', () => {
       .rejects.toMatchObject({ code: 'MEDIA_SERVICE_UNAVAILABLE' });
 
     expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBe(joined.participantIdentity);
+  });
+
+  it('clears a share lock after successful revoke despite an intervening version update', async () => {
+    const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
+    const joined = await meetings.joinMeeting(meeting.slug, { nickname: 'Ada' });
+    await hosts.grantShare(activeHost(meeting.id), meeting.slug, joined.participantIdentity);
+    const didIncrementVersion = introduceVersionIncrementBeforeShareClear(meeting.id);
+
+    await hosts.revokeShare(activeHost(meeting.id), meeting.slug);
+
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+    expect(didIncrementVersion()).toBe(true);
   });
 
   it('refreshes from participant session identity and lists only active connected sessions', async () => {
@@ -224,6 +249,19 @@ describe('host and participant application services', () => {
     const session = repository.findParticipantSessionByTokenHash(hashSessionToken(rawToken), clock.now());
     if (!session) throw new Error('Expected active participant session');
     return session;
+  }
+
+  function introduceVersionIncrementBeforeShareClear(meetingId: string): () => boolean {
+    const original = repository.clearShareIdentityIfMatches.bind(repository);
+    let incremented = false;
+    repository.clearShareIdentityIfMatches = (id, identity) => {
+      if (id === meetingId && identity === 'participant-1') {
+        repository.updateMeetingLifecycle(id, { status: 'active', emptySince: null, endedAt: null });
+        incremented = true;
+      }
+      return original(id, identity);
+    };
+    return () => incremented;
   }
 });
 
