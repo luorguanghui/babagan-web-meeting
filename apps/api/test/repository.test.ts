@@ -42,6 +42,14 @@ describe('SQLite meeting repository', () => {
       .toThrow(/UNIQUE constraint failed/);
   });
 
+  it('checks persistent database writability without falling back to temp storage', () => {
+    repo.checkReadWrite();
+
+    expect(db.prepare(`
+      SELECT name FROM sqlite_temp_master WHERE type = 'table' AND name = 'readiness_check'
+    `).get()).toBeUndefined();
+  });
+
   it('finds a meeting by slug and finds the non-terminal meeting', () => {
     const meeting = repo.createMeeting(newMeeting());
 

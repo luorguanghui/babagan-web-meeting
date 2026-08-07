@@ -2,6 +2,7 @@ import type Database from 'better-sqlite3';
 
 import type { MeetingRepository } from './meeting-repository.js';
 import type {
+  AuditEvent,
   JoinReservation,
   HostSession,
   MeetingRecord,
@@ -54,6 +55,14 @@ interface ParticipantSessionRow {
 
 export class SqliteMeetingRepository implements MeetingRepository {
   public constructor(private readonly db: Database.Database) {}
+
+  checkReadWrite(): void {
+    this.db.prepare(`
+      UPDATE schema_migrations
+      SET applied_at = applied_at
+      WHERE name = (SELECT name FROM schema_migrations ORDER BY name LIMIT 1)
+    `).run();
+  }
 
   transaction<T>(fn: () => T): T {
     return this.db.transaction(fn)();
@@ -159,6 +168,14 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return row ? toHostSession(row) : null;
   }
 
+  revokeHostSessionsForMeeting(meetingId: string, at: number): void {
+    this.db.prepare(`
+      UPDATE host_sessions
+      SET revoked_at = ?
+      WHERE meeting_id = ? AND revoked_at IS NULL
+    `).run(at, meetingId);
+  }
+
   upsertParticipantSession(value: ParticipantSession): void {
     this.db.prepare(`
       INSERT INTO participant_sessions (
@@ -187,6 +204,40 @@ export class SqliteMeetingRepository implements MeetingRepository {
       WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
     `).get(tokenHash, now) as ParticipantSessionRow | undefined;
     return row ? toParticipantSession(row) : null;
+  }
+
+  findParticipantSessionByIdentity(identity: string, now: number): ParticipantSession | null {
+    const row = this.db.prepare(`
+      SELECT identity, meeting_id, nickname, token_hash, expires_at, revoked_at
+      FROM participant_sessions
+      WHERE identity = ? AND revoked_at IS NULL AND expires_at > ?
+    `).get(identity, now) as ParticipantSessionRow | undefined;
+    return row ? toParticipantSession(row) : null;
+  }
+
+  listActiveParticipantSessions(meetingId: string, now: number): ParticipantSession[] {
+    const rows = this.db.prepare(`
+      SELECT identity, meeting_id, nickname, token_hash, expires_at, revoked_at
+      FROM participant_sessions
+      WHERE meeting_id = ? AND revoked_at IS NULL AND expires_at > ?
+      ORDER BY identity
+    `).all(meetingId, now) as ParticipantSessionRow[];
+    return rows.map(toParticipantSession);
+  }
+
+  insertAuditEvent(value: AuditEvent): void {
+    this.db.prepare(`
+      INSERT INTO audit_events (
+        id, event_type, meeting_id, subject_id, occurred_at, metadata_json
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      value.id,
+      value.eventType,
+      value.meetingId,
+      value.subjectId,
+      value.occurredAt,
+      value.metadataJson
+    );
   }
 
   revokeParticipantSession(identity: string, at: number): void {

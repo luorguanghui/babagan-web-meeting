@@ -74,7 +74,10 @@ export class MeetingService {
     this.mutex = dependencies.mutex ?? new KeyedMutex();
   }
 
-  async createMeeting(input: CreateMeetingInput): Promise<MeetingRecord> {
+  async createMeeting(
+    input: CreateMeetingInput,
+    afterCreate?: (meeting: MeetingRecord) => void
+  ): Promise<MeetingRecord> {
     if (input.meetingPassword === '') throw new Error('Meeting password must not be empty');
     if (this.dependencies.repository.findNonTerminal()) {
       throw domainError('MEETING_ALREADY_ACTIVE');
@@ -86,13 +89,17 @@ export class MeetingService {
       : await this.dependencies.passwords.hash(input.meetingPassword);
 
     try {
-      return this.dependencies.repository.createMeeting({
-        id: this.dependencies.ids.uuid(),
-        slug: this.dependencies.ids.slug(),
-        name: input.name,
-        passwordHash,
-        createdAt: now,
-        expiresAt: now + this.dependencies.config.meetingTtlMs
+      return this.dependencies.repository.transaction(() => {
+        const meeting = this.dependencies.repository.createMeeting({
+          id: this.dependencies.ids.uuid(),
+          slug: this.dependencies.ids.slug(),
+          name: input.name,
+          passwordHash,
+          createdAt: now,
+          expiresAt: now + this.dependencies.config.meetingTtlMs
+        });
+        afterCreate?.(meeting);
+        return meeting;
       });
     } catch (error) {
       if (isNonTerminalConflict(error)) throw domainError('MEETING_ALREADY_ACTIVE');
@@ -266,6 +273,7 @@ export class MeetingService {
     this.dependencies.repository.transaction(() => {
       this.dependencies.repository.updateMeetingLifecycle(meeting.id, { status, emptySince, endedAt: now });
       this.dependencies.repository.revokeParticipantSessionsForMeeting(meeting.id, now);
+      this.dependencies.repository.revokeHostSessionsForMeeting(meeting.id, now);
     });
   }
 
@@ -280,7 +288,12 @@ export class MeetingService {
   }
 
   private async occupiedIdentities(meeting: MeetingRecord): Promise<Set<string>> {
-    const connected = await this.dependencies.media.listParticipantIdentities(meeting.id);
+    let connected: string[];
+    try {
+      connected = await this.dependencies.media.listParticipantIdentities(meeting.id);
+    } catch {
+      throw domainError('MEDIA_SERVICE_UNAVAILABLE');
+    }
     const reserved = this.dependencies.repository.listLiveReservations(meeting.id, this.dependencies.clock.now());
     return new Set([...connected, ...reserved.map((reservation) => reservation.identity)]);
   }

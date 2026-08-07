@@ -15,9 +15,16 @@ export function assertTrustedOrigin(request: FastifyRequest, allowedOrigin: URL)
   if (request.headers.origin !== allowedOrigin.origin) throw new OriginValidationError();
 }
 
-export function registerStrictOriginValidation(app: FastifyInstance, allowedOrigin: URL): void {
+export function registerStrictOriginValidation(
+  app: FastifyInstance,
+  allowedOrigin: URL,
+  exemptPaths: ReadonlySet<string> = new Set()
+): void {
   app.addHook('onRequest', (request, _reply, done) => {
-    if (modifyingMethods.has(request.method)) assertTrustedOrigin(request, allowedOrigin);
+    const path = request.url.split('?', 1)[0];
+    if (modifyingMethods.has(request.method) && !exemptPaths.has(path)) {
+      assertTrustedOrigin(request, allowedOrigin);
+    }
     done();
   });
 }

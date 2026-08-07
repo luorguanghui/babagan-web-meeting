@@ -41,6 +41,9 @@ importers:
       '@fastify/type-provider-typebox':
         specifier: ^5.2.0
         version: 5.2.0(@sinclair/typebox@0.34.52)
+      '@meeting/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
       '@sinclair/typebox':
         specifier: ~0.34.52
         version: 0.34.52
