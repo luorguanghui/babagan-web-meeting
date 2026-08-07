@@ -11,11 +11,13 @@ export interface MeetingRepository {
   createMeeting(input: NewMeetingRecord): MeetingRecord;
   findBySlug(slug: string): MeetingRecord | null;
   findNonTerminal(): MeetingRecord | null;
+  findTerminalMeetingsAwaitingMediaCleanup(): MeetingRecord[];
   updateMeetingLifecycle(meetingId: string, input: {
     status: MeetingRecord['status'];
     emptySince: number | null;
     endedAt: number | null;
   }): MeetingRecord;
+  markMeetingMediaClosed(meetingId: string, at: number): void;
   listLiveReservations(meetingId: string, now: number): JoinReservation[];
   insertReservation(value: JoinReservation): void;
   deleteReservation(identity: string): void;

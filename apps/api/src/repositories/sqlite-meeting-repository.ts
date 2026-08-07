@@ -21,6 +21,7 @@ interface MeetingRow {
   expires_at: number;
   empty_since: number | null;
   ended_at: number | null;
+  media_closed_at: number | null;
   version: number;
 }
 
@@ -70,6 +71,15 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return row ? toMeetingRecord(row) : null;
   }
 
+  findTerminalMeetingsAwaitingMediaCleanup(): MeetingRecord[] {
+    const rows = this.db.prepare(`
+      SELECT * FROM meetings
+      WHERE status IN ('ended', 'expired') AND media_closed_at IS NULL
+      ORDER BY ended_at, id
+    `).all() as MeetingRow[];
+    return rows.map(toMeetingRecord);
+  }
+
   updateMeetingLifecycle(meetingId: string, input: {
     status: MeetingStatus;
     emptySince: number | null;
@@ -82,6 +92,14 @@ export class SqliteMeetingRepository implements MeetingRepository {
     `).run(input.status, input.emptySince, input.endedAt, meetingId);
 
     return this.requireMeetingById(meetingId);
+  }
+
+  markMeetingMediaClosed(meetingId: string, at: number): void {
+    this.db.prepare(`
+      UPDATE meetings
+      SET media_closed_at = ?
+      WHERE id = ? AND media_closed_at IS NULL
+    `).run(at, meetingId);
   }
 
   listLiveReservations(meetingId: string, now: number): JoinReservation[] {
@@ -182,6 +200,7 @@ function toMeetingRecord(row: MeetingRow): MeetingRecord {
     expiresAt: row.expires_at,
     emptySince: row.empty_since,
     endedAt: row.ended_at,
+    mediaClosedAt: row.media_closed_at,
     version: row.version
   };
 }

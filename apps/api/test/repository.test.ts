@@ -115,6 +115,15 @@ describe('SQLite meeting repository', () => {
       ]);
   });
 
+  it('finds terminal meetings awaiting media deletion and records a completed deletion', () => {
+    const meeting = repo.createMeeting(newMeeting());
+    repo.updateMeetingLifecycle(meeting.id, { status: 'ended', emptySince: null, endedAt: 1_500 });
+
+    expect(repo.findTerminalMeetingsAwaitingMediaCleanup()).toMatchObject([{ id: meeting.id }]);
+    repo.markMeetingMediaClosed(meeting.id, 1_600);
+    expect(repo.findTerminalMeetingsAwaitingMediaCleanup()).toEqual([]);
+  });
+
   it('records a webhook event only once', () => {
     expect(repo.markWebhookProcessed('event-1', 1_000)).toBe(true);
     expect(repo.markWebhookProcessed('event-1', 1_001)).toBe(false);

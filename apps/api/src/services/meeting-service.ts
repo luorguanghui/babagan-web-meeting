@@ -123,34 +123,36 @@ export class MeetingService {
       if (isTerminal(synchronized)) throw domainError('MEETING_EXPIRED');
 
       const occupied = await this.occupiedIdentities(synchronized);
+      const finalized = await this.applyLifecycle(synchronized, occupied.size);
+      if (isTerminal(finalized)) throw domainError('MEETING_EXPIRED');
       if (occupied.size >= this.dependencies.config.maxParticipants) throw domainError('MEETING_FULL');
 
       const now = this.dependencies.clock.now();
       const identity = this.dependencies.ids.participantIdentity();
       const token = await this.dependencies.media.issueParticipantToken({
-        meetingId: synchronized.id,
+        meetingId: finalized.id,
         identity,
         nickname: input.nickname,
-        expiresAt: synchronized.expiresAt
+        expiresAt: finalized.expiresAt
       });
 
       this.dependencies.repository.transaction(() => {
         this.dependencies.repository.insertReservation({
           identity,
-          meetingId: synchronized.id,
+          meetingId: finalized.id,
           nickname: input.nickname,
           issuedAt: now,
           expiresAt: now + this.dependencies.config.reservationTtlMs
         });
         this.dependencies.repository.upsertParticipantSession({
           identity,
-          meetingId: synchronized.id,
+          meetingId: finalized.id,
           nickname: input.nickname,
           tokenHash: this.dependencies.ids.token(),
-          expiresAt: synchronized.expiresAt,
+          expiresAt: finalized.expiresAt,
           revokedAt: null
         });
-        this.dependencies.repository.updateMeetingLifecycle(synchronized.id, {
+        this.dependencies.repository.updateMeetingLifecycle(finalized.id, {
           status: 'active', emptySince: null, endedAt: null
         });
       });
@@ -160,7 +162,7 @@ export class MeetingService {
         participantName: input.nickname,
         livekitUrl: this.dependencies.config.livekitUrl.toString(),
         token,
-        meetingExpiresAt: synchronized.expiresAt,
+        meetingExpiresAt: finalized.expiresAt,
         permissions: { publishSources: ['microphone'] }
       };
     });
@@ -186,20 +188,32 @@ export class MeetingService {
       if (isTerminal(current)) return;
 
       this.end(current, 'ended');
-      await this.dependencies.media.closeMeeting(current.id);
+      await this.closeTerminalMedia(this.requireMeeting(slug));
     });
   }
 
   async runCleanup(): Promise<string[]> {
+    const cleaned: string[] = [];
     const meeting = this.dependencies.repository.findNonTerminal();
-    if (!meeting) return [];
+    if (meeting) {
+      await this.mutex.runExclusive(meeting.id, async () => {
+        const current = this.dependencies.repository.findBySlug(meeting.slug);
+        if (!current || isTerminal(current)) return;
+        const synchronized = await this.synchronize(current);
+        if (isTerminal(synchronized)) cleaned.push(synchronized.slug);
+      });
+    }
 
-    return this.mutex.runExclusive(meeting.id, async () => {
-      const current = this.dependencies.repository.findBySlug(meeting.slug);
-      if (!current || isTerminal(current)) return [];
-      const synchronized = await this.synchronize(current);
-      return isTerminal(synchronized) ? [synchronized.slug] : [];
-    });
+    for (const terminal of this.dependencies.repository.findTerminalMeetingsAwaitingMediaCleanup()) {
+      await this.mutex.runExclusive(terminal.id, async () => {
+        const current = this.dependencies.repository.findBySlug(terminal.slug);
+        if (!current || !isTerminal(current) || current.mediaClosedAt !== null) return;
+        await this.closeTerminalMedia(current);
+        cleaned.push(current.slug);
+      });
+    }
+
+    return cleaned;
   }
 
   private requireMeeting(slug: string): MeetingRecord {
@@ -219,10 +233,14 @@ export class MeetingService {
     if (isTerminal(meeting)) return meeting;
 
     const occupied = await this.occupiedIdentities(meeting);
+    return this.applyLifecycle(meeting, occupied.size);
+  }
+
+  private async applyLifecycle(meeting: MeetingRecord, participantCount: number): Promise<MeetingRecord> {
     const now = this.dependencies.clock.now();
     const transition = nextMeetingStatus({
       status: meeting.status,
-      participantCount: occupied.size,
+      participantCount,
       now,
       expiresAt: meeting.expiresAt,
       emptySince: meeting.emptySince
@@ -231,7 +249,7 @@ export class MeetingService {
 
     if (transition.status === 'ended' || transition.status === 'expired') {
       this.end(meeting, transition.status, transition.emptySince);
-      await this.dependencies.media.closeMeeting(meeting.id);
+      await this.closeTerminalMedia(this.requireMeeting(meeting.slug));
       return this.requireMeeting(meeting.slug);
     }
 
@@ -248,6 +266,16 @@ export class MeetingService {
       this.dependencies.repository.updateMeetingLifecycle(meeting.id, { status, emptySince, endedAt: now });
       this.dependencies.repository.revokeParticipantSessionsForMeeting(meeting.id, now);
     });
+  }
+
+  private async closeTerminalMedia(meeting: MeetingRecord): Promise<void> {
+    if (meeting.mediaClosedAt !== null) return;
+    try {
+      await this.dependencies.media.closeMeeting(meeting.id);
+    } catch {
+      throw domainError('MEDIA_SERVICE_UNAVAILABLE');
+    }
+    this.dependencies.repository.markMeetingMediaClosed(meeting.id, this.dependencies.clock.now());
   }
 
   private async occupiedIdentities(meeting: MeetingRecord): Promise<Set<string>> {

@@ -11,6 +11,7 @@ export interface MeetingRecord {
   expiresAt: number;
   emptySince: number | null;
   endedAt: number | null;
+  mediaClosedAt: number | null;
   version: number;
 }
 

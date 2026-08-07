@@ -3,7 +3,8 @@ export type DomainErrorCode =
   | 'MEETING_NOT_FOUND'
   | 'MEETING_EXPIRED'
   | 'MEETING_FULL'
-  | 'INVALID_MEETING_PASSWORD';
+  | 'INVALID_MEETING_PASSWORD'
+  | 'MEDIA_SERVICE_UNAVAILABLE';
 
 export class DomainError extends Error {
   public constructor(public readonly code: DomainErrorCode) {

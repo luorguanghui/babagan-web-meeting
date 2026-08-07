@@ -109,6 +109,21 @@ describe('MeetingService', () => {
       .rejects.toMatchObject({ code: 'MEETING_EXPIRED' });
   });
 
+  it('rejects a join that expires while awaiting final occupancy without issuing side effects', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily' });
+    clock.set(meeting.expiresAt - 1);
+    media.onListParticipants = (call) => {
+      if (call === 2) clock.set(meeting.expiresAt);
+    };
+
+    await expect(service.joinMeeting(meeting.slug, { nickname: 'Ada' }))
+      .rejects.toMatchObject({ code: 'MEETING_EXPIRED' });
+
+    expect(media.issuedTokens).toEqual([]);
+    expect(db.prepare('SELECT identity FROM join_reservations').all()).toEqual([]);
+    expect(db.prepare('SELECT identity FROM participant_sessions').all()).toEqual([]);
+  });
+
   it('serializes six simultaneous joins and reserves only five places', async () => {
     const meeting = await service.createMeeting({ name: 'Daily' });
     const results = await Promise.allSettled(
@@ -160,6 +175,22 @@ describe('MeetingService', () => {
       .rejects.toMatchObject({ code: 'MEETING_EXPIRED' });
     expect([first.participantIdentity, second.participantIdentity]).toHaveLength(2);
   });
+
+  it('retries terminal media cleanup after an end failure and a process restart', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily' });
+    media.closeFailuresRemaining = 1;
+
+    await expect(service.endMeeting(meeting.slug))
+      .rejects.toMatchObject({ code: 'MEDIA_SERVICE_UNAVAILABLE' });
+    await expect(service.joinMeeting(meeting.slug, { nickname: 'Ada' }))
+      .rejects.toMatchObject({ code: 'MEETING_EXPIRED' });
+
+    const restarted = new MeetingService({
+      repository: repo, media, passwords: new FakePasswordHasher(), clock, ids, config
+    });
+    await expect(restarted.runCleanup()).resolves.toContain(meeting.slug);
+    expect(media.closeAttempts).toBe(2);
+  });
 });
 
 const config: AppConfig = {
@@ -181,12 +212,21 @@ class FakePasswordHasher implements PasswordHasher {
 class FakeMediaService implements MediaService {
   readonly identities = new Map<string, string[]>();
   readonly closedMeetings: string[] = [];
+  readonly issuedTokens: string[] = [];
+  closeFailuresRemaining = 0;
+  closeAttempts = 0;
+  onListParticipants?: (call: number) => void;
+  private listCalls = 0;
 
   async listParticipantIdentities(meetingId: string): Promise<string[]> {
+    const call = ++this.listCalls;
+    await Promise.resolve();
+    this.onListParticipants?.(call);
     return this.identities.get(meetingId) ?? [];
   }
 
   async issueParticipantToken(input: { identity: string }): Promise<string> {
+    this.issuedTokens.push(input.identity);
     return `livekit-${input.identity}`;
   }
 
@@ -195,6 +235,11 @@ class FakeMediaService implements MediaService {
   }
 
   async closeMeeting(meetingId: string): Promise<void> {
+    this.closeAttempts++;
+    if (this.closeFailuresRemaining > 0) {
+      this.closeFailuresRemaining--;
+      throw new Error('media unavailable');
+    }
     this.closedMeetings.push(meetingId);
     this.identities.delete(meetingId);
   }

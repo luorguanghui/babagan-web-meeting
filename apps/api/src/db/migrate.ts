@@ -6,6 +6,10 @@ const migrations = [
   {
     name: '001_initial.sql',
     sql: readFileSync(new URL('./migrations/001_initial.sql', import.meta.url), 'utf8')
+  },
+  {
+    name: '002_media_cleanup.sql',
+    sql: readFileSync(new URL('./migrations/002_media_cleanup.sql', import.meta.url), 'utf8')
   }
 ] as const;
 
