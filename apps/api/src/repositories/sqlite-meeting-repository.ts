@@ -70,6 +70,20 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return row ? toMeetingRecord(row) : null;
   }
 
+  updateMeetingLifecycle(meetingId: string, input: {
+    status: MeetingStatus;
+    emptySince: number | null;
+    endedAt: number | null;
+  }): MeetingRecord {
+    this.db.prepare(`
+      UPDATE meetings
+      SET status = ?, empty_since = ?, ended_at = ?, version = version + 1
+      WHERE id = ?
+    `).run(input.status, input.emptySince, input.endedAt, meetingId);
+
+    return this.requireMeetingById(meetingId);
+  }
+
   listLiveReservations(meetingId: string, now: number): JoinReservation[] {
     const rows = this.db.prepare(`
       SELECT identity, meeting_id, nickname, issued_at, expires_at
@@ -119,6 +133,14 @@ export class SqliteMeetingRepository implements MeetingRepository {
       SET revoked_at = ?
       WHERE identity = ?
     `).run(at, identity);
+  }
+
+  revokeParticipantSessionsForMeeting(meetingId: string, at: number): void {
+    this.db.prepare(`
+      UPDATE participant_sessions
+      SET revoked_at = ?
+      WHERE meeting_id = ? AND revoked_at IS NULL
+    `).run(at, meetingId);
   }
 
   trySetShareIdentity(meetingId: string, version: number, identity: string | null): ShareUpdateResult {

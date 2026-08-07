@@ -92,6 +92,29 @@ describe('SQLite meeting repository', () => {
       .get('participant-1')).toEqual({ revoked_at: 1_500 });
   });
 
+  it('persists lifecycle transitions and revokes every meeting participant session', () => {
+    const meeting = repo.createMeeting(newMeeting());
+    repo.upsertParticipantSession({
+      identity: 'participant-1', meetingId: meeting.id, nickname: 'Ada',
+      tokenHash: 'one', expiresAt: 2_000, revokedAt: null
+    });
+    repo.upsertParticipantSession({
+      identity: 'participant-2', meetingId: meeting.id, nickname: 'Lin',
+      tokenHash: 'two', expiresAt: 2_000, revokedAt: null
+    });
+
+    expect(repo.updateMeetingLifecycle(meeting.id, {
+      status: 'grace', emptySince: 1_500, endedAt: null
+    })).toMatchObject({ status: 'grace', emptySince: 1_500, endedAt: null });
+    repo.revokeParticipantSessionsForMeeting(meeting.id, 1_600);
+
+    expect(db.prepare('SELECT identity, revoked_at FROM participant_sessions ORDER BY identity').all())
+      .toEqual([
+        { identity: 'participant-1', revoked_at: 1_600 },
+        { identity: 'participant-2', revoked_at: 1_600 }
+      ]);
+  });
+
   it('records a webhook event only once', () => {
     expect(repo.markWebhookProcessed('event-1', 1_000)).toBe(true);
     expect(repo.markWebhookProcessed('event-1', 1_001)).toBe(false);
