@@ -10,6 +10,13 @@ export const CreateMeetingRequestSchema = Type.Object({
 
 export type CreateMeetingRequest = Static<typeof CreateMeetingRequestSchema>;
 
+export const CreateMeetingResponseSchema = Type.Object({
+  slug: Type.String({ minLength: 22, maxLength: 256 }),
+  joinUrl: Type.String({ minLength: 1, pattern: '^https?://' })
+}, { additionalProperties: false });
+
+export type CreateMeetingResponse = Static<typeof CreateMeetingResponseSchema>;
+
 export const JoinMeetingRequestSchema = Type.Object({
   nickname: Type.String({ minLength: 1, maxLength: 40 }),
   meetingPassword: Type.Optional(Type.String({ maxLength: 128 }))
@@ -39,6 +46,12 @@ export const ParticipantSummarySchema = Type.Object({
 }, { additionalProperties: false });
 
 export type ParticipantSummary = Static<typeof ParticipantSummarySchema>;
+
+export const ParticipantsResponseSchema = Type.Object({
+  participants: Type.Array(ParticipantSummarySchema, { maxItems: 5 })
+}, { additionalProperties: false });
+
+export type ParticipantsResponse = Static<typeof ParticipantsResponseSchema>;
 
 export const JoinMeetingResponseSchema = Type.Object({
   participantIdentity: Type.String({ minLength: 1, maxLength: 256 }),

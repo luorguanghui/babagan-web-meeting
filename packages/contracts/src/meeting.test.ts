@@ -3,12 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ApiErrorResponseSchema,
+  CreateMeetingResponseSchema,
   CreateMeetingRequestSchema,
   JoinMeetingRequestSchema,
   JoinMeetingResponseSchema,
   KickParticipantRequestSchema,
   MeetingSummarySchema,
   ParticipantSummarySchema,
+  ParticipantsResponseSchema,
   ShareGrantRequestSchema
 } from './index.js';
 
@@ -31,6 +33,24 @@ describe('meeting HTTP contracts', () => {
 
   it('rejects nicknames longer than forty characters', () => {
     expect(Value.Check(JoinMeetingRequestSchema, { nickname: 'A'.repeat(41) })).toBe(false);
+  });
+
+  it('accepts a minimal meeting-creation response without passwords', () => {
+    expect(Value.Check(CreateMeetingResponseSchema, {
+      slug: 'WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG',
+      joinUrl: 'https://meet.example.test/m/WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG'
+    })).toBe(true);
+  });
+
+  it('rejects incomplete or password-bearing meeting-creation responses', () => {
+    expect(Value.Check(CreateMeetingResponseSchema, {
+      slug: 'WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG'
+    })).toBe(false);
+    expect(Value.Check(CreateMeetingResponseSchema, {
+      slug: 'WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG',
+      joinUrl: 'https://meet.example.test/m/WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG',
+      meetingPassword: 'not-returned'
+    })).toBe(false);
   });
 
   it('accepts only the documented meeting-summary fields', () => {
@@ -78,6 +98,22 @@ describe('meeting HTTP contracts', () => {
     })).toBe(true);
     expect(Value.Check(KickParticipantRequestSchema, { participantIdentity: '' })).toBe(false);
     expect(Value.Check(ShareGrantRequestSchema, { participantIdentity: '' })).toBe(false);
+  });
+
+  it('accepts a minimal participant-list response with share state', () => {
+    expect(Value.Check(ParticipantsResponseSchema, {
+      participants: [{ identity: 'participant-1', name: 'Ada', isSharing: true }]
+    })).toBe(true);
+  });
+
+  it('rejects incomplete or password-bearing participant-list responses', () => {
+    expect(Value.Check(ParticipantsResponseSchema, {
+      participants: [{ identity: 'participant-1', name: 'Ada' }]
+    })).toBe(false);
+    expect(Value.Check(ParticipantsResponseSchema, {
+      participants: [],
+      meetingPassword: 'not-returned'
+    })).toBe(false);
   });
 
   it('allows only supported public API error codes', () => {
