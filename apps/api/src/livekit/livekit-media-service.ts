@@ -73,7 +73,7 @@ export class LiveKitMediaService implements MediaService {
     try {
       await this.rooms.removeParticipant(roomName, identity);
     } catch (error) {
-      if (isRoomNotFound(error)) return;
+      if (isParticipantNotFound(error)) return;
       throw error;
     }
   }
@@ -109,4 +109,11 @@ function toTrackSource(source: PublishSource): TrackSource {
 
 function isRoomNotFound(error: unknown): boolean {
   return error instanceof ServerError && (error.status === 404 || error.code === 'not_found');
+}
+
+function isParticipantNotFound(error: unknown): boolean {
+  return error instanceof ServerError
+    && error.status === 404
+    && error.code === 'not_found'
+    && /\bparticipant\b.*\bnot found\b/i.test(error.message);
 }

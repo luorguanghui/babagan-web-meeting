@@ -133,6 +133,18 @@ describe('LiveKit media adapter', () => {
     expect(rooms.removed).toEqual([{ roomName: 'meeting-1', identity: 'gone-participant' }]);
   });
 
+  it.each([
+    new ServerError('Not Found', 'room not found', 404, 'not_found'),
+    new ServerError('Unavailable', 'room service unavailable', 503, 'unavailable'),
+    new Error('transport reset')
+  ])('propagates non-participant removal failure: %s', async (error) => {
+    const rooms = new FakeRoomService();
+    rooms.removeError = error;
+    const media = createMedia(rooms);
+
+    await expect(media.removeParticipant('meeting-1', 'participant-1')).rejects.toBe(error);
+  });
+
   it('preserves genuine participant-removal failures', async () => {
     const rooms = new FakeRoomService();
     rooms.removeError = new Error('LiveKit unavailable');
