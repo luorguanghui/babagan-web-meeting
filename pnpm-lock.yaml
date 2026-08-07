@@ -75,6 +75,12 @@ importers:
 
   apps/web:
     dependencies:
+      '@meeting/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      '@sinclair/typebox':
+        specifier: ^0.34.41
+        version: 0.34.52
       livekit-client:
         specifier: ^2.21.0
         version: 2.21.0(@types/dom-mediacapture-record@1.0.22)

@@ -1,0 +1,32 @@
+:root { color: #17212d; background: #edf3f5; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+* { box-sizing: border-box; }
+body { min-width: 320px; margin: 0; }
+button, input { font: inherit; }
+button { border: 0; border-radius: .55rem; background: #075d72; color: #fff; cursor: pointer; font-weight: 700; padding: .78rem 1rem; }
+button:hover { background: #064c5d; }
+button:focus-visible, input:focus-visible { outline: 3px solid #e9a22b; outline-offset: 2px; }
+button:disabled { cursor: not-allowed; opacity: .52; }
+.shell { align-items: center; display: flex; justify-content: center; min-height: 100vh; padding: 2rem 1rem; }
+.panel { background: #fff; border-top: 6px solid #075d72; box-shadow: 0 1.4rem 4rem rgba(17, 39, 51, .14); max-width: 38rem; padding: clamp(1.5rem, 4vw, 3rem); width: 100%; }
+.eyebrow { color: #075d72; font-size: .76rem; font-weight: 800; letter-spacing: .11em; margin: 0 0 .55rem; text-transform: uppercase; }
+h1 { font-family: Georgia, 'Times New Roman', serif; font-size: clamp(2rem, 6vw, 3.4rem); letter-spacing: -.045em; line-height: .98; margin: 0; }
+h2 { font-size: 1.05rem; margin: 0; }
+.lede { color: #536472; line-height: 1.55; margin: 1rem 0 1.75rem; }
+form { display: grid; gap: 1rem; }
+label { display: grid; font-size: .9rem; font-weight: 700; gap: .4rem; }
+input { border: 1px solid #aab9c2; border-radius: .4rem; padding: .72rem; }
+.optional { color: #6d7a84; font-weight: 500; }
+.message { line-height: 1.45; margin: .4rem 0 0; }
+.error { color: #a12525; }
+.notice { background: #e5f1f3; color: #174d5b; padding: .75rem; }
+.success { color: #126b49; }
+.created-link, .device-check { border-top: 1px solid #d8e0e4; display: grid; gap: .75rem; margin-top: 1.75rem; padding-top: 1.5rem; }
+output { background: #f3f7f8; overflow-wrap: anywhere; padding: .75rem; }
+.secondary { background: #dce7ea; color: #173540; }
+.secondary:hover { background: #cbdcdf; }
+.text-button { background: transparent; color: #075d72; justify-self: start; padding-left: 0; }
+.text-button:hover { background: transparent; color: #064c5d; text-decoration: underline; }
+.device-actions { align-items: center; display: flex; flex-wrap: wrap; gap: .9rem; }
+.meter-label { gap: .45rem; }
+meter { height: .9rem; width: 100%; }
+@media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }

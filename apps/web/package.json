@@ -5,10 +5,12 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "test": "vitest run",
+    "test": "vitest run --config ../../vitest.config.ts --project web",
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@meeting/contracts": "workspace:*",
+    "@sinclair/typebox": "^0.34.41",
     "livekit-client": "^2.21.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
