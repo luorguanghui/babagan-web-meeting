@@ -24,6 +24,10 @@ describe('loadConfig', () => {
     expect(() => loadConfig(validEnv({ COOKIE_SECRET: 'short' }))).toThrow(/32/);
   });
 
+  it('counts cookie-secret length in UTF-8 bytes rather than Unicode code points', () => {
+    expect(() => loadConfig(validEnv({ COOKIE_SECRET: '🔐'.repeat(8) }))).not.toThrow();
+  });
+
   it('rejects a non-WSS public LiveKit URL', () => {
     expect(() => loadConfig(validEnv({ LIVEKIT_URL: 'ws://rtc.example.test' }))).toThrow(/wss/i);
   });

@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type { MeetingRepository } from './meeting-repository.js';
 import type {
   JoinReservation,
+  HostSession,
   MeetingRecord,
   MeetingStatus,
   NewMeetingRecord,
@@ -31,6 +32,24 @@ interface ReservationRow {
   nickname: string;
   issued_at: number;
   expires_at: number;
+}
+
+interface HostSessionRow {
+  id: string;
+  meeting_id: string;
+  token_hash: string;
+  created_at: number;
+  expires_at: number;
+  revoked_at: number | null;
+}
+
+interface ParticipantSessionRow {
+  identity: string;
+  meeting_id: string;
+  nickname: string;
+  token_hash: string;
+  expires_at: number;
+  revoked_at: number | null;
 }
 
 export class SqliteMeetingRepository implements MeetingRepository {
@@ -124,6 +143,22 @@ export class SqliteMeetingRepository implements MeetingRepository {
     this.db.prepare('DELETE FROM join_reservations WHERE identity = ?').run(identity);
   }
 
+  createHostSession(value: HostSession): void {
+    this.db.prepare(`
+      INSERT INTO host_sessions (id, meeting_id, token_hash, created_at, expires_at, revoked_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(value.id, value.meetingId, value.tokenHash, value.createdAt, value.expiresAt, value.revokedAt);
+  }
+
+  findHostSessionByTokenHash(tokenHash: string, now: number): HostSession | null {
+    const row = this.db.prepare(`
+      SELECT id, meeting_id, token_hash, created_at, expires_at, revoked_at
+      FROM host_sessions
+      WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+    `).get(tokenHash, now) as HostSessionRow | undefined;
+    return row ? toHostSession(row) : null;
+  }
+
   upsertParticipantSession(value: ParticipantSession): void {
     this.db.prepare(`
       INSERT INTO participant_sessions (
@@ -143,6 +178,15 @@ export class SqliteMeetingRepository implements MeetingRepository {
       value.expiresAt,
       value.revokedAt
     );
+  }
+
+  findParticipantSessionByTokenHash(tokenHash: string, now: number): ParticipantSession | null {
+    const row = this.db.prepare(`
+      SELECT identity, meeting_id, nickname, token_hash, expires_at, revoked_at
+      FROM participant_sessions
+      WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?
+    `).get(tokenHash, now) as ParticipantSessionRow | undefined;
+    return row ? toParticipantSession(row) : null;
   }
 
   revokeParticipantSession(identity: string, at: number): void {
@@ -212,5 +256,27 @@ function toJoinReservation(row: ReservationRow): JoinReservation {
     nickname: row.nickname,
     issuedAt: row.issued_at,
     expiresAt: row.expires_at
+  };
+}
+
+function toHostSession(row: HostSessionRow): HostSession {
+  return {
+    id: row.id,
+    meetingId: row.meeting_id,
+    tokenHash: row.token_hash,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at
+  };
+}
+
+function toParticipantSession(row: ParticipantSessionRow): ParticipantSession {
+  return {
+    identity: row.identity,
+    meetingId: row.meeting_id,
+    nickname: row.nickname,
+    tokenHash: row.token_hash,
+    expiresAt: row.expires_at,
+    revokedAt: row.revoked_at
   };
 }

@@ -92,6 +92,25 @@ describe('SQLite meeting repository', () => {
       .get('participant-1')).toEqual({ revoked_at: 1_500 });
   });
 
+  it('finds only active sessions by their hashed token', () => {
+    const meeting = repo.createMeeting(newMeeting());
+    repo.createHostSession({
+      id: 'host-1', meetingId: meeting.id, tokenHash: 'host-token-hash',
+      createdAt: 1_000, expiresAt: 2_000, revokedAt: null
+    });
+    repo.upsertParticipantSession({
+      identity: 'participant-1', meetingId: meeting.id, nickname: 'Ada',
+      tokenHash: 'participant-token-hash', expiresAt: 2_000, revokedAt: null
+    });
+
+    expect(repo.findHostSessionByTokenHash('host-token-hash', 1_999)).toMatchObject({ id: 'host-1' });
+    expect(repo.findParticipantSessionByTokenHash('participant-token-hash', 1_999))
+      .toMatchObject({ identity: 'participant-1' });
+    expect(repo.findHostSessionByTokenHash('host-token-hash', 2_000)).toBeNull();
+    repo.revokeParticipantSession('participant-1', 1_500);
+    expect(repo.findParticipantSessionByTokenHash('participant-token-hash', 1_501)).toBeNull();
+  });
+
   it('persists lifecycle transitions and revokes every meeting participant session', () => {
     const meeting = repo.createMeeting(newMeeting());
     repo.upsertParticipantSession({

@@ -52,8 +52,8 @@ export function loadConfig(env: Environment): AppConfig {
   }
 
   const cookieSecret = requireValue(env, 'COOKIE_SECRET');
-  if (cookieSecret.length < 32) {
-    throw new Error('COOKIE_SECRET must be at least 32 characters');
+  if (Buffer.byteLength(cookieSecret, 'utf8') < 32) {
+    throw new Error('COOKIE_SECRET must be at least 32 bytes');
   }
 
   return {

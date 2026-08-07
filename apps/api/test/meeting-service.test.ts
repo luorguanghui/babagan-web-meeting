@@ -17,6 +17,7 @@ import { createDatabase } from '../src/db/database.js';
 import { migrate } from '../src/db/migrate.js';
 import type { AppConfig } from '../src/config.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
+import { hashSessionToken } from '../src/security/session-token.js';
 import {
   MeetingService,
   type MediaService,
@@ -143,6 +144,16 @@ describe('MeetingService', () => {
     clock.set(clock.now() + RESERVATION_TTL_MS);
 
     await expect(service.getMeetingSummary(meeting.slug)).resolves.toMatchObject({ isFull: false });
+  });
+
+  it('stores a participant session token only as a SHA-256 hash', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily' });
+    const joined = await service.joinMeeting(meeting.slug, { nickname: 'Ada' });
+    const stored = db.prepare('SELECT token_hash FROM participant_sessions WHERE identity = ?')
+      .get(joined.participantIdentity) as { token_hash: string };
+
+    expect(stored.token_hash).toBe(hashSessionToken(joined.participantSessionToken));
+    expect(stored.token_hash).not.toBe(joined.participantSessionToken);
   });
 
   it('puts a departed final participant into ten-minute grace then ends at the boundary after restart', async () => {

@@ -3,7 +3,11 @@ import { domainError } from '../domain/errors.js';
 import { nextMeetingStatus } from '../domain/time.js';
 import type { MeetingRepository } from '../repositories/meeting-repository.js';
 import type { MeetingRecord } from '../repositories/models.js';
+import { authenticateMeetingPassword, type PasswordHasher } from '../security/password-hasher.js';
+import { hashSessionToken } from '../security/session-token.js';
 import { KeyedMutex } from './keyed-mutex.js';
+
+export type { PasswordHasher } from '../security/password-hasher.js';
 
 export interface Clock {
   now(): number;
@@ -14,11 +18,6 @@ export interface IdGenerator {
   slug(): string;
   token(): string;
   participantIdentity(): string;
-}
-
-export interface PasswordHasher {
-  hash(value: string): Promise<string>;
-  verify(hash: string, value: string): Promise<boolean>;
 }
 
 export interface MediaService {
@@ -57,6 +56,7 @@ export interface JoinMeetingResult {
   token: string;
   meetingExpiresAt: number;
   permissions: { publishSources: ['microphone'] };
+  participantSessionToken: string;
 }
 
 export class MeetingService {
@@ -129,6 +129,7 @@ export class MeetingService {
 
       const now = this.dependencies.clock.now();
       const identity = this.dependencies.ids.participantIdentity();
+      const participantSessionToken = this.dependencies.ids.token();
       const token = await this.dependencies.media.issueParticipantToken({
         meetingId: finalized.id,
         identity,
@@ -148,7 +149,7 @@ export class MeetingService {
           identity,
           meetingId: finalized.id,
           nickname: input.nickname,
-          tokenHash: this.dependencies.ids.token(),
+          tokenHash: hashSessionToken(participantSessionToken),
           expiresAt: finalized.expiresAt,
           revokedAt: null
         });
@@ -163,7 +164,8 @@ export class MeetingService {
         livekitUrl: this.dependencies.config.livekitUrl.toString(),
         token,
         meetingExpiresAt: finalized.expiresAt,
-        permissions: { publishSources: ['microphone'] }
+        permissions: { publishSources: ['microphone'] },
+        participantSessionToken
       };
     });
   }
@@ -224,9 +226,7 @@ export class MeetingService {
 
   private async verifyPassword(meeting: MeetingRecord, password: string | undefined): Promise<void> {
     if (meeting.passwordHash === null) return;
-    if (password === undefined || !await this.dependencies.passwords.verify(meeting.passwordHash, password)) {
-      throw domainError('INVALID_MEETING_PASSWORD');
-    }
+    await authenticateMeetingPassword(this.dependencies.passwords, meeting.passwordHash, password);
   }
 
   private async synchronize(meeting: MeetingRecord): Promise<MeetingRecord> {

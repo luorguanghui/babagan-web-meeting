@@ -1,5 +1,6 @@
 import type {
   JoinReservation,
+  HostSession,
   MeetingRecord,
   NewMeetingRecord,
   ParticipantSession,
@@ -21,7 +22,10 @@ export interface MeetingRepository {
   listLiveReservations(meetingId: string, now: number): JoinReservation[];
   insertReservation(value: JoinReservation): void;
   deleteReservation(identity: string): void;
+  createHostSession(value: HostSession): void;
+  findHostSessionByTokenHash(tokenHash: string, now: number): HostSession | null;
   upsertParticipantSession(value: ParticipantSession): void;
+  findParticipantSessionByTokenHash(tokenHash: string, now: number): ParticipantSession | null;
   revokeParticipantSession(identity: string, at: number): void;
   revokeParticipantSessionsForMeeting(meetingId: string, at: number): void;
   trySetShareIdentity(meetingId: string, version: number, identity: string | null): ShareUpdateResult;
