@@ -1,4 +1,5 @@
 import cookie from '@fastify/cookie';
+import argon2 from 'argon2';
 import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 
@@ -34,11 +35,26 @@ describe('password hashing', () => {
   it('returns one public error for missing and incorrect meeting passwords', async () => {
     const passwords = new Argon2PasswordHasher();
     const hash = await passwords.hash('correct');
+    const emptyPasswordHash = await passwords.hash('');
 
+    await expect(authenticateMeetingPassword(passwords, emptyPasswordHash, undefined))
+      .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
     await expect(authenticateMeetingPassword(passwords, hash, undefined))
       .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
+    await expect(authenticateMeetingPassword(passwords, hash, ''))
+      .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
+    await expect(authenticateMeetingPassword(passwords, hash, 'correct')).resolves.toBeUndefined();
     await expect(authenticateMeetingPassword(passwords, hash, 'wrong'))
       .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
+  });
+
+  it('rejects Argon2i and Argon2d hashes even when their password is correct', async () => {
+    const passwords = new Argon2PasswordHasher();
+    const argon2iHash = await argon2.hash('correct', { type: argon2.argon2i });
+    const argon2dHash = await argon2.hash('correct', { type: argon2.argon2d });
+
+    await expect(passwords.verify(argon2iHash, 'correct')).resolves.toBe(false);
+    await expect(passwords.verify(argon2dHash, 'correct')).resolves.toBe(false);
   });
 
   it('uses 64 MiB per Argon2id verification, or 320 MiB for five concurrent attempts', () => {

@@ -102,6 +102,11 @@ describe('MeetingService', () => {
       .rejects.toMatchObject({ code: 'MEETING_ALREADY_ACTIVE' });
   });
 
+  it('rejects an empty meeting password at creation time', async () => {
+    await expect(service.createMeeting({ name: 'Daily', meetingPassword: '' }))
+      .rejects.toThrow('Meeting password must not be empty');
+  });
+
   it('rejects joining at the exact 24 hour expiry boundary', async () => {
     const meeting = await service.createMeeting({ name: 'Daily' });
     clock.set(meeting.createdAt + MEETING_TTL_MS);

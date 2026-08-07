@@ -75,6 +75,7 @@ export class MeetingService {
   }
 
   async createMeeting(input: CreateMeetingInput): Promise<MeetingRecord> {
+    if (input.meetingPassword === '') throw new Error('Meeting password must not be empty');
     if (this.dependencies.repository.findNonTerminal()) {
       throw domainError('MEETING_ALREADY_ACTIVE');
     }
