@@ -52,7 +52,7 @@ export async function authenticateMeetingPassword(
   // Always perform one Argon2 verification for a protected meeting, even when
   // the password field is absent, to keep the public failure behavior uniform.
   const verified = await passwords.verify(passwordHash, suppliedPassword ?? '');
-  if (suppliedPassword === undefined || !verified) {
+  if (suppliedPassword === undefined || suppliedPassword === '' || !verified) {
     throw domainError('INVALID_MEETING_PASSWORD');
   }
 }

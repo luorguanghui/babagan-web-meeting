@@ -39,6 +39,8 @@ describe('password hashing', () => {
 
     await expect(authenticateMeetingPassword(passwords, emptyPasswordHash, undefined))
       .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
+    await expect(authenticateMeetingPassword(passwords, emptyPasswordHash, ''))
+      .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
     await expect(authenticateMeetingPassword(passwords, hash, undefined))
       .rejects.toMatchObject({ code: 'INVALID_MEETING_PASSWORD' });
     await expect(authenticateMeetingPassword(passwords, hash, ''))
