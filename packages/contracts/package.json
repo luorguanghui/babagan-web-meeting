@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "test": "vitest run --project contracts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
