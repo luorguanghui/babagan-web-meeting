@@ -1,8 +1,10 @@
 import { JoinMeetingResponseSchema, type JoinMeetingRequest, type JoinMeetingResponse } from '@meeting/contracts';
 import { type FormEvent, useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { ApiRequestError, apiRequest } from '../api/client.js';
 import { DeviceCheck } from '../components/device-check.js';
+import { MeetingRoomPage } from './meeting-room-page.js';
 
 interface JoinLobbyPageProps { slug: string; }
 type ClientNotice = { kind: 'block'; message: string } | { kind: 'notice'; message: string } | undefined;
@@ -22,6 +24,7 @@ function clientNotice(): ClientNotice {
 }
 
 export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
+  const navigate = useNavigate();
   const [nickname, setNickname] = useState('');
   const [meetingPassword, setMeetingPassword] = useState('');
   const [error, setError] = useState<string>();
@@ -30,6 +33,16 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const [previewCleanup, setPreviewCleanup] = useState<(() => void) | null>(null);
   const notice = clientNotice();
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
+
+  if (joined) return <MeetingRoomPage
+    slug={slug}
+    join={joined}
+    onLeft={() => setJoined(undefined)}
+    onTerminal={() => {
+      setJoined(undefined);
+      navigate(`/m/${encodeURIComponent(slug)}`, { replace: true });
+    }}
+  />;
 
   async function join(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(undefined);
@@ -54,6 +67,5 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
       <button type="submit" disabled={isJoining || notice?.kind === 'block'}>{isJoining ? 'Joining…' : 'Join muted'}</button>
     </form>
     <DeviceCheck onCleanupReady={registerCleanup} />
-    {joined && <p className="message success" role="status">You will join with your microphone muted.</p>}
   </section></main>;
 }

@@ -37,16 +37,24 @@ class BrowserReconnectController implements ReconnectController {
   private refreshInFlight?: Promise<void>;
   private timer?: unknown;
   private rateLimited = false;
+  private disposed = false;
+  private generation = 0;
 
   constructor(private readonly dependencies: Required<Pick<Dependencies, 'refresh' | 'reconnect'>> & Omit<Dependencies, 'refresh' | 'reconnect'>) {}
 
   reconnect(): Promise<void> {
-    if (this.isFinished()) return Promise.resolve();
+    if (this.disposed || this.isFinished()) return Promise.resolve();
     if (this.refreshInFlight) return this.refreshInFlight;
     const since = this.since ?? this.dependencies.now?.() ?? Date.now();
     this.since = since;
-    this.refreshInFlight = this.attempt(since).finally(() => { this.refreshInFlight = undefined; });
-    return this.refreshInFlight;
+    const generation = this.generation;
+    const inFlight = this.attempt(since, generation);
+    this.refreshInFlight = inFlight;
+    void inFlight.then(
+      () => this.clearInFlight(generation, inFlight),
+      () => this.clearInFlight(generation, inFlight)
+    );
+    return inFlight;
   }
 
   getState(): ReconnectState { return this.state; }
@@ -59,6 +67,8 @@ class BrowserReconnectController implements ReconnectController {
   }
 
   dispose(): void {
+    this.disposed = true;
+    this.generation++;
     if (this.timer) {
       if (this.dependencies.cancel) this.dependencies.cancel(this.timer);
       else clearTimeout(this.timer as ReturnType<typeof setTimeout>);
@@ -67,23 +77,34 @@ class BrowserReconnectController implements ReconnectController {
     this.listeners.clear();
   }
 
-  private async attempt(since: number): Promise<void> {
+  private async attempt(since: number, generation: number): Promise<void> {
+    if (!this.isCurrent(generation)) return;
     this.setState({ kind: 'refreshing-token', since });
     try {
       const join = await this.dependencies.refresh();
+      if (!this.isCurrent(generation)) return;
+      if (this.graceExpired(since)) {
+        this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
+        return;
+      }
       await this.dependencies.reconnect(join);
+      if (!this.isCurrent(generation)) return;
+      if (this.graceExpired(since)) {
+        this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
+        return;
+      }
       this.since = undefined;
       this.retries = 0;
       this.rateLimited = false;
       this.setState({ kind: 'connected' });
     } catch (error) {
+      if (!this.isCurrent(generation)) return;
       const terminal = terminalState(error);
       if (terminal) {
         this.setState(terminal);
         return;
       }
-      const now = this.dependencies.now?.() ?? Date.now();
-      if (now - since >= graceMs) {
+      if (this.graceExpired(since)) {
         this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
         return;
       }
@@ -91,6 +112,7 @@ class BrowserReconnectController implements ReconnectController {
       this.setState({ kind: 'reconnecting', since });
       const delay = Math.min(1_000 * (2 ** this.retries++), 5_000);
       this.timer = (this.dependencies.schedule ?? setTimeout)(() => {
+        if (!this.isCurrent(generation)) return;
         this.timer = undefined;
         void this.reconnect();
       }, delay);
@@ -99,6 +121,12 @@ class BrowserReconnectController implements ReconnectController {
 
   private isFinished(): boolean {
     return this.state.kind === 'terminal' || this.state.kind === 'rejoin-required';
+  }
+
+  private isCurrent(generation: number): boolean { return !this.disposed && generation === this.generation; }
+  private graceExpired(since: number): boolean { return (this.dependencies.now?.() ?? Date.now()) - since >= graceMs; }
+  private clearInFlight(generation: number, inFlight: Promise<void>): void {
+    if (this.isCurrent(generation) && this.refreshInFlight === inFlight) this.refreshInFlight = undefined;
   }
 
   private setState(state: ReconnectState): void {

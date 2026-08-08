@@ -214,7 +214,7 @@ describe('join lobby', () => {
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
 
-    expect(await screen.findByText('You will join with your microphone muted.')).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Ada, you are in' })).toBeVisible();
     expect(fetchMock).toHaveBeenCalledWith(`/api/v1/meetings/${slug}/join`, expect.objectContaining({
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
