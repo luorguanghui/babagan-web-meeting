@@ -41,9 +41,12 @@ bash scripts/deploy.sh --confirm-deploy "$(git rev-parse HEAD)" --target-ip '<or
 ```
 
 The script performs all non-mutating checks first, creates a verified backup,
-then pulls/builds, runs a one-shot migration, starts the recorded images, waits
-at most 180 seconds for health, and runs the HTTPS/WSS smoke test. It does not
-prune any image or backup. First deployment requires a separately approved,
+then writes `var/releases/pending-release.env` before pull/build/migration.
+That mode-600 transaction record binds the candidate SHA, pre-deploy backup,
+and exact predecessor tags plus immutable image IDs. It is promoted only after
+health and HTTPS/WSS smoke pass. If deployment fails after this point, do not
+start another deployment: use the explicit guarded recovery command in the
+rollback record. The script does not prune any image or backup. First deployment requires a separately approved,
 verified baseline database because it must not claim a restorable backup where
 none exists.
 

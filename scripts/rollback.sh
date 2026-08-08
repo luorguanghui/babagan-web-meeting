@@ -3,14 +3,14 @@
 set -Eeuo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 app_dir="$(cd "$script_dir/.." && pwd -P)"
-usage() { echo "Usage: $0 --target-release-sha SHA --confirm-rollback SHA --smoke-token-file FILE [--env-file FILE]" >&2; exit 64; }
+usage() { echo "Usage: $0 --target-release-sha SHA --confirm-rollback SHA --smoke-token-file FILE [--recover-pending-deploy] [--env-file FILE]" >&2; exit 64; }
 fail() { echo "ROLLBACK REFUSED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
 need_file() { [[ -s "$1" ]] || fail "missing non-empty file: $1"; }
-target='' confirm='' token_file='' env_file=''
+target='' confirm='' token_file='' env_file='' recover_pending=0
 while (($#)); do case "$1" in
   --target-release-sha) target="${2:-}"; shift 2 ;; --confirm-rollback) confirm="${2:-}"; shift 2 ;;
-  --smoke-token-file) token_file="${2:-}"; shift 2 ;; --env-file) env_file="${2:-}"; shift 2 ;; *) usage ;; esac; done
+  --smoke-token-file) token_file="${2:-}"; shift 2 ;; --recover-pending-deploy) recover_pending=1; shift ;; --env-file) env_file="${2:-}"; shift 2 ;; *) usage ;; esac; done
 [[ -n "$target" && -n "$confirm" && -n "$token_file" ]] || usage
 [[ "$target" == "$confirm" && "$target" =~ ^[0-9a-f]{40}$ ]] || fail 'confirmation must exactly repeat a full target release SHA'
 env_file="${env_file:-$app_dir/infra/.env.production}"; compose_file="$app_dir/infra/docker-compose.yml"; state_dir="$app_dir/var/releases"; current="$state_dir/current-release.env"
@@ -18,14 +18,26 @@ compose() { docker compose --env-file "$env_file" -f "$compose_file" "$@"; }
 need docker; need sqlite3; need sha256sum; need curl
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
-need_file "$current"; [[ "$(stat -c '%a' "$current")" == 600 ]] || fail 'current release record must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
+source_record="$current"
+if (( recover_pending )); then
+  source_record="$state_dir/pending-release.env"
+  need_file "$source_record"; [[ "$(stat -c '%a' "$source_record")" == 600 ]] || fail 'pending recovery record must have mode 600'
+else
+  need_file "$current"; [[ "$(stat -c '%a' "$current")" == 600 ]] || fail 'current release record must have mode 600'
+fi
 # shellcheck disable=SC1090
-source "$current"
-[[ "${PREVIOUS_RELEASE_SHA:-}" == "$target" ]] || fail 'target is not the recorded predecessor of current release'
-for key in DATABASE_BACKUP PREVIOUS_API_IMAGE_TAG PREVIOUS_WEB_IMAGE_TAG PREVIOUS_CADDY_IMAGE_TAG PREVIOUS_LIVEKIT_IMAGE_TAG; do [[ -n "${!key:-}" ]] || fail "record lacks $key"; done
+source "$source_record"
+if (( recover_pending )); then [[ "${RECORD_STATE:-}" == pending && -n "${CANDIDATE_SHA:-}" ]] || fail 'pending record is not a deployment transaction'; fi
+[[ "${PREVIOUS_RELEASE_SHA:-}" == "$target" ]] || fail 'target is not the recorded predecessor of selected release record'
+for key in DATABASE_BACKUP DATABASE_BACKUP_SHA256 PREVIOUS_API_IMAGE_TAG PREVIOUS_API_IMAGE_ID PREVIOUS_WEB_IMAGE_TAG PREVIOUS_WEB_IMAGE_ID PREVIOUS_CADDY_IMAGE_TAG PREVIOUS_CADDY_IMAGE_ID PREVIOUS_LIVEKIT_IMAGE_TAG PREVIOUS_LIVEKIT_IMAGE_ID; do [[ -n "${!key:-}" ]] || fail "record lacks $key"; done
 need_file "$DATABASE_BACKUP"; need_file "$DATABASE_BACKUP.sha256"
-for image in "$PREVIOUS_API_IMAGE_TAG" "$PREVIOUS_WEB_IMAGE_TAG" "$PREVIOUS_CADDY_IMAGE_TAG" "$PREVIOUS_LIVEKIT_IMAGE_TAG"; do docker image inspect "$image" >/dev/null || fail "recorded image is unavailable: $image"; done
+[[ "$(sha256sum "$DATABASE_BACKUP" | awk '{print $1}')" == "$DATABASE_BACKUP_SHA256" ]] || fail 'database backup checksum does not match the recorded transaction checksum'
+for service in api web caddy livekit; do
+  upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; tag_var="PREVIOUS_${upper}_IMAGE_TAG"; id_var="PREVIOUS_${upper}_IMAGE_ID"
+  actual_id="$(docker image inspect --format '{{.Id}}' "${!tag_var}" 2>/dev/null || true)"
+  [[ -n "$actual_id" && "$actual_id" == "${!id_var}" ]] || fail "recorded image tag does not resolve to its immutable ID: ${!tag_var}"
+done
 volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api-data 2>/dev/null || true)"
 [[ -n "$volume" && -f "$volume/meetings.sqlite" ]] || fail 'live API database is unavailable'
 umask 077; mkdir -p "$state_dir/rollback" "$state_dir/restore"; chmod 700 "$state_dir" "$state_dir/rollback" "$state_dir/restore"
@@ -58,6 +70,10 @@ while ((SECONDS<deadline)); do
 done
 ((healthy)) || { echo 'Health wait failed; recover from the additional backup.' | tee -a "$log" >&2; exit 1; }
 token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'; SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud; unset token
-target_record="$state_dir/releases/$target.env"; need_file "$target_record"; cp "$target_record" "$current"; chmod 600 "$current"
-printf 'RESULT=success\nTARGET_RELEASE_SHA=%s\nRESTORED_BACKUP=%s\nPRE_ROLLBACK_BACKUP=%s\nCOMPLETED_AT_UTC=%s\n' "$target" "$DATABASE_BACKUP" "$current_backup" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log"
+if (( recover_pending )); then
+  mv "$source_record" "$state_dir/rollback/pending-release.recovered-$stamp.env"
+else
+  target_record="$state_dir/releases/$target.env"; need_file "$target_record"; cp "$target_record" "$current"; chmod 600 "$current"
+fi
+printf 'RESULT=success\nTARGET_RELEASE_SHA=%s\nRECOVERY_SOURCE=%s\nRESTORED_BACKUP=%s\nPRE_ROLLBACK_BACKUP=%s\nCOMPLETED_AT_UTC=%s\n' "$target" "$source_record" "$DATABASE_BACKUP" "$current_backup" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$log"
 chmod 600 "$log"; echo "ROLLBACK SUCCEEDED: $target"; echo "Record: $log"

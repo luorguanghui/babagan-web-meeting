@@ -44,12 +44,41 @@ for spec in '80 t' '443 t' '7881 t' '443 u' '50000 u' '60000 u'; do
 done
 volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api-data 2>/dev/null || true)"
 [[ -n "$volume" && -f "$volume/meetings.sqlite" ]] || fail 'a verified baseline API database is required before deployment'
+[[ ! -e "$state_dir/pending-release.env" ]] || fail 'a previous deployment is pending recovery; run guarded rollback or archive its evidence before another deploy'
 # All preflights above are read-only. The first mutation is a checksummed backup.
 umask 077; mkdir -p "$state_dir/releases" "$backup_dir"; chmod 700 "$state_dir" "$state_dir/releases" "$backup_dir"
 backup_output="$("$script_dir/backup.sh" "$volume/meetings.sqlite" "$backup_dir")"; backup="${backup_output#Backup created: }"
 [[ -f "$backup" && -f "$backup.sha256" ]] || fail 'backup did not create database and checksum'
-previous="$state_dir/current-release.env"; previous_sha='' previous_api='' previous_web='' previous_caddy='' previous_livekit=''
-if [[ -f "$previous" ]]; then [[ "$(stat -c '%a' "$previous")" == 600 ]] || fail 'current release record must have mode 600'; source "$previous"; previous_sha="${RELEASE_SHA:-}"; previous_api="${API_IMAGE_TAG:-}"; previous_web="${WEB_IMAGE_TAG:-}"; previous_caddy="${CADDY_IMAGE_TAG:-}"; previous_livekit="${LIVEKIT_IMAGE_TAG:-}"; fi
+previous="$state_dir/current-release.env"; previous_sha='' previous_api='' previous_web='' previous_caddy='' previous_livekit=''; previous_api_id='' previous_web_id='' previous_caddy_id='' previous_livekit_id=''
+if [[ -f "$previous" ]]; then
+  [[ "$(stat -c '%a' "$previous")" == 600 ]] || fail 'current release record must have mode 600'
+  # shellcheck disable=SC1090
+  source "$previous"
+  previous_sha="${RELEASE_SHA:-}"; previous_api="${API_IMAGE_TAG:-}"; previous_web="${WEB_IMAGE_TAG:-}"; previous_caddy="${CADDY_IMAGE_TAG:-}"; previous_livekit="${LIVEKIT_IMAGE_TAG:-}"
+  previous_api_id="${API_IMAGE_ID:-}"; previous_web_id="${WEB_IMAGE_ID:-}"; previous_caddy_id="${CADDY_IMAGE_ID:-}"; previous_livekit_id="${LIVEKIT_IMAGE_ID:-}"
+  for service in api web caddy livekit; do
+    upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; tag_var="previous_${service}"; id_var="previous_${service}_id"
+    [[ -n "$previous_sha" && -n "${!tag_var}" && -n "${!id_var}" ]] || fail "current release record lacks immutable predecessor data for $service"
+    [[ "$(docker image inspect --format '{{.Id}}' "${!tag_var}")" == "${!id_var}" ]] || fail "current release tag no longer resolves to its recorded immutable ID: ${!tag_var}"
+  done
+fi
+# Persist a protected transaction record before pull/build/migration. On any
+# later failure it is the sole guarded recovery source, even though current-release still names the predecessor.
+pending="$state_dir/pending-release.env"
+pending_tmp="$pending.$$.tmp"
+{
+  printf 'RECORD_STATE=%q\n' pending
+  printf 'CANDIDATE_SHA=%q\n' "$sha"
+  printf 'STARTED_AT_UTC=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'DATABASE_BACKUP=%q\n' "$backup"
+  printf 'DATABASE_BACKUP_SHA256=%q\n' "$(awk '{print $1}' "$backup.sha256")"
+  printf 'PREVIOUS_RELEASE_SHA=%q\n' "$previous_sha"
+  printf 'PREVIOUS_API_IMAGE_TAG=%q\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%q\n' "$previous_api_id"
+  printf 'PREVIOUS_WEB_IMAGE_TAG=%q\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%q\n' "$previous_web_id"
+  printf 'PREVIOUS_CADDY_IMAGE_TAG=%q\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%q\n' "$previous_caddy_id"
+  printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%q\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%q\n' "$previous_livekit_id"
+} >"$pending_tmp"
+chmod 600 "$pending_tmp"; mv "$pending_tmp" "$pending"
 compose pull caddy livekit; compose build --pull api web
 # One-shot migration: no listening service is started by this command.
 compose run --rm --no-deps api node --input-type=module -e 'import {createDatabase} from "./dist/db/database.js"; import {migrate} from "./dist/db/migrate.js"; const db=createDatabase(process.env.DATABASE_PATH); try { migrate(db); } finally { db.close(); }'
@@ -76,7 +105,7 @@ record="$state_dir/releases/$sha.env"
 {
  printf 'RELEASE_SHA=%q\n' "$sha"; printf 'DEPLOYED_AT_UTC=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'DATABASE_BACKUP=%q\n' "$backup"; printf 'DATABASE_BACKUP_SHA256=%q\n' "$(awk '{print $1}' "$backup.sha256")"; printf 'OVERRIDE_FILE=%q\n' "$override"
  for service in api web caddy livekit; do upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; printf '%s_IMAGE_TAG=%q\n' "$upper" "babagan-meeting-$service:release-$sha"; printf '%s_IMAGE_ID=%q\n' "$upper" "$(image_id "$service")"; done
- printf 'PREVIOUS_RELEASE_SHA=%q\n' "$previous_sha"; printf 'PREVIOUS_API_IMAGE_TAG=%q\n' "$previous_api"; printf 'PREVIOUS_WEB_IMAGE_TAG=%q\n' "$previous_web"; printf 'PREVIOUS_CADDY_IMAGE_TAG=%q\n' "$previous_caddy"; printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%q\n' "$previous_livekit"
+ printf 'PREVIOUS_RELEASE_SHA=%q\n' "$previous_sha"; printf 'PREVIOUS_API_IMAGE_TAG=%q\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%q\n' "$previous_api_id"; printf 'PREVIOUS_WEB_IMAGE_TAG=%q\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%q\n' "$previous_web_id"; printf 'PREVIOUS_CADDY_IMAGE_TAG=%q\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%q\n' "$previous_caddy_id"; printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%q\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%q\n' "$previous_livekit_id"
 } >"$record"
-chmod 600 "$record"; cp "$record" "$previous"; chmod 600 "$previous"
+chmod 600 "$record"; cp "$record" "$previous"; chmod 600 "$previous"; mv "$pending" "$state_dir/releases/$sha.pending-completed.env"; chmod 600 "$state_dir/releases/$sha.pending-completed.env"
 echo "DEPLOY SUCCEEDED: $sha"; echo "Release record: $record"; echo "Backup: $backup"
