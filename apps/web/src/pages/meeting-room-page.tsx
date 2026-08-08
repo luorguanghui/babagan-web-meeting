@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { apiRequest } from '../api/client.js';
 import { HostMenu } from '../components/host-menu.js';
+import { ConnectionBanner } from '../components/connection-banner.js';
 import { MeetingControls } from '../components/meeting-controls.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
@@ -29,6 +30,7 @@ export interface MeetingRoomPageProps {
   meetingApi?: MeetingRoomApi;
   getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
   onLeft?: () => void;
+  onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
 
 export interface MeetingRoomApi {
@@ -93,12 +95,19 @@ export function MeetingRoomPage({
   listDevices = defaultListDevices,
   meetingApi = defaultMeetingApi,
   getDisplayMedia,
-  onLeft
+  onLeft,
+  onTerminal
 }: MeetingRoomPageProps) {
   const [controller] = useState(() => providedController ?? controllerFactory());
-  const { state, error: connectionError } = useMeetingRoom(join, controller);
+  const refresh = useCallback(() => apiRequest<RefreshParticipantTokenResponse>(
+    `/meetings/${encodeURIComponent(slug)}/token`,
+    RefreshParticipantTokenResponseSchema,
+    { method: 'POST' }
+  ), [slug]);
+  const { state, error: connectionError, reconnectState, reconnectRateLimited } = useMeetingRoom(join, controller, refresh);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [notice, setNotice] = useState<string>();
+  const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
   const [hostAuthorized, setHostAuthorized] = useState(false);
   const hostAuthorizedRef = useRef(false);
@@ -129,6 +138,20 @@ export function MeetingRoomPage({
       void screenShare.stop();
     };
   }, [screenShare]);
+  useEffect(() => {
+    const connected = () => setOnline(true);
+    const disconnected = () => setOnline(false);
+    window.addEventListener('online', connected);
+    window.addEventListener('offline', disconnected);
+    return () => {
+      window.removeEventListener('online', connected);
+      window.removeEventListener('offline', disconnected);
+    };
+  }, []);
+  useEffect(() => {
+    if (reconnectState.kind === 'terminal') onTerminal?.(reconnectState.reason);
+    if (reconnectState.kind === 'rejoin-required') onTerminal?.('rejoin-required');
+  }, [onTerminal, reconnectState]);
 
   async function leave() {
     setLeaving(true);
@@ -170,6 +193,7 @@ export function MeetingRoomPage({
 
   return <main className="meeting-room">
     <header><p className="eyebrow">Meeting room</p><h1>{join.participantName}, you are in</h1></header>
+    <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
     {screenState.audioGuidance && <p role="status">{screenState.audioGuidance}</p>}
     <ScreenStage stream={stageStream} sharerName={sharerName} />

@@ -2,6 +2,7 @@ import { Navigate, Route, Routes, useParams } from 'react-router-dom';
 
 import { CreateMeetingPage } from './pages/create-meeting-page.js';
 import { JoinLobbyPage } from './pages/join-lobby-page.js';
+import { MeetingErrorBoundary } from './components/error-boundary.js';
 
 function MeetingLobbyRoute() {
   const { slug } = useParams();
@@ -9,5 +10,5 @@ function MeetingLobbyRoute() {
 }
 
 export function App() {
-  return <Routes><Route path="/create" element={<CreateMeetingPage />} /><Route path="/m/:slug" element={<MeetingLobbyRoute />} /><Route path="/meetings/:slug" element={<MeetingLobbyRoute />} /><Route path="*" element={<Navigate to="/create" replace />} /></Routes>;
+  return <MeetingErrorBoundary><Routes><Route path="/create" element={<CreateMeetingPage />} /><Route path="/m/:slug" element={<MeetingLobbyRoute />} /><Route path="/meetings/:slug" element={<MeetingLobbyRoute />} /><Route path="*" element={<Navigate to="/create" replace />} /></Routes></MeetingErrorBoundary>;
 }

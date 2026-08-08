@@ -25,6 +25,8 @@ export function MeetingControls(props: MeetingControlsProps) {
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
   return <footer className="meeting-controls" aria-label="Meeting controls">
     <p role="status">Connection: {props.connection}</p>
+    <p className="sr-only" role="status">Microphone is {props.microphoneEnabled ? 'on' : 'muted'}.</p>
+    <p className="sr-only" role="status">Screen sharing is {props.screenShareActive ? 'on' : 'off'}.</p>
     <button type="button" onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
       {props.microphoneEnabled ? 'Mute microphone' : 'Unmute microphone'}
     </button>

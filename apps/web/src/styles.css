@@ -4,7 +4,7 @@ body { min-width: 320px; margin: 0; }
 button, input { font: inherit; }
 button { border: 0; border-radius: .55rem; background: #075d72; color: #fff; cursor: pointer; font-weight: 700; padding: .78rem 1rem; }
 button:hover { background: #064c5d; }
-button:focus-visible, input:focus-visible { outline: 3px solid #e9a22b; outline-offset: 2px; }
+button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid #e9a22b; outline-offset: 2px; }
 button:disabled { cursor: not-allowed; opacity: .52; }
 .host-link { background: #075d72; border-radius: .55rem; color: #fff; font-weight: 700; padding: .78rem 1rem; text-align: center; text-decoration: none; }
 .host-link:hover { background: #064c5d; }
@@ -23,6 +23,7 @@ input { border: 1px solid #aab9c2; border-radius: .4rem; padding: .72rem; }
 .error { color: #a12525; }
 .notice { background: #e5f1f3; color: #174d5b; padding: .75rem; }
 .success { color: #126b49; }
+.sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .created-link, .device-check { border-top: 1px solid #d8e0e4; display: grid; gap: .75rem; margin-top: 1.75rem; padding-top: 1.5rem; }
 output { background: #f3f7f8; overflow-wrap: anywhere; padding: .75rem; }
 .secondary { background: #dce7ea; color: #173540; }
@@ -45,6 +46,9 @@ meter { height: .9rem; width: 100%; }
 .host-menu button { padding: .55rem .75rem; }
 .meeting-controls { align-items: end; background: #dce7ea; bottom: 0; display: flex; flex-wrap: wrap; gap: .7rem; padding: .85rem; position: sticky; }
 .meeting-controls > p { margin: 0 auto 0 0; }
+.connection-banner { background: #e5f1f3; border-left: 4px solid #075d72; margin: 0; padding: .7rem .85rem; }
+.connection-reconnecting, .connection-refreshing-token { border-left-color: #a56800; }
+.connection-rejoin-required, .connection-terminal { border-left-color: #8c2f2f; }
 .meeting-controls label { min-width: 10rem; }
 .meeting-controls select { border: 1px solid #91a6af; border-radius: .4rem; min-height: 2.5rem; padding: .45rem; }
 .danger { background: #8c2f2f; }
