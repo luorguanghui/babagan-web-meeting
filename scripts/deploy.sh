@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 app_dir="$(cd "$script_dir/.." && pwd -P)"
+# shellcheck source=release-provenance.sh
+source "$script_dir/release-provenance.sh"
 usage() { echo "Usage: $0 --confirm-deploy SHA --target-ip IPV4 --smoke-token-file FILE --network-evidence FILE --cloudflare-evidence FILE [--env-file FILE]" >&2; exit 64; }
 fail() { echo "DEPLOY PREFLIGHT FAILED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
@@ -49,19 +51,10 @@ volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api
 umask 077; mkdir -p "$state_dir/releases" "$backup_dir"; chmod 700 "$state_dir" "$state_dir/releases" "$backup_dir"
 backup_output="$("$script_dir/backup.sh" "$volume/meetings.sqlite" "$backup_dir")"; backup="${backup_output#Backup created: }"
 [[ -f "$backup" && -f "$backup.sha256" ]] || fail 'backup did not create database and checksum'
-previous="$state_dir/current-release.env"; previous_sha='' previous_api='' previous_web='' previous_caddy='' previous_livekit=''; previous_api_id='' previous_web_id='' previous_caddy_id='' previous_livekit_id=''
-if [[ -f "$previous" ]]; then
-  [[ "$(stat -c '%a' "$previous")" == 600 ]] || fail 'current release record must have mode 600'
-  # shellcheck disable=SC1090
-  source "$previous"
-  previous_sha="${RELEASE_SHA:-}"; previous_api="${API_IMAGE_TAG:-}"; previous_web="${WEB_IMAGE_TAG:-}"; previous_caddy="${CADDY_IMAGE_TAG:-}"; previous_livekit="${LIVEKIT_IMAGE_TAG:-}"
-  previous_api_id="${API_IMAGE_ID:-}"; previous_web_id="${WEB_IMAGE_ID:-}"; previous_caddy_id="${CADDY_IMAGE_ID:-}"; previous_livekit_id="${LIVEKIT_IMAGE_ID:-}"
-  for service in api web caddy livekit; do
-    upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; tag_var="previous_${service}"; id_var="previous_${service}_id"
-    [[ -n "$previous_sha" && -n "${!tag_var}" && -n "${!id_var}" ]] || fail "current release record lacks immutable predecessor data for $service"
-    [[ "$(docker image inspect --format '{{.Id}}' "${!tag_var}")" == "${!id_var}" ]] || fail "current release tag no longer resolves to its recorded immutable ID: ${!tag_var}"
-  done
-fi
+previous="$state_dir/current-release.env"
+load_verified_baseline_release "$previous" || fail 'deployment requires a protected, verified baseline current-release record before backup'
+previous_sha="$RELEASE_SHA"; previous_api="$API_IMAGE_TAG"; previous_web="$WEB_IMAGE_TAG"; previous_caddy="$CADDY_IMAGE_TAG"; previous_livekit="$LIVEKIT_IMAGE_TAG"
+previous_api_id="$API_IMAGE_ID"; previous_web_id="$WEB_IMAGE_ID"; previous_caddy_id="$CADDY_IMAGE_ID"; previous_livekit_id="$LIVEKIT_IMAGE_ID"
 # Persist a protected transaction record before pull/build/migration. On any
 # later failure it is the sole guarded recovery source, even though current-release still names the predecessor.
 pending="$state_dir/pending-release.env"

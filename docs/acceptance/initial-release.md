@@ -23,6 +23,7 @@ represented as passing production evidence.
 | Placeholder and secret scan | Passed locally with the prescribed `rg` command, 2026-08-08 |
 | Deployment and rollback script syntax | Passed locally: Git Bash `bash -n` for both scripts, 2026-08-08 |
 | Deployment transaction/provenance guards | Passed locally: `bash scripts/deployment-scripts.test.sh`, 2026-08-08 |
+| Recoverable baseline release | Pending target-server baseline record and checksum evidence |
 
 ## Release-blocking target evidence
 

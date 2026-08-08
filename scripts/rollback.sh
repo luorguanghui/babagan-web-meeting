@@ -3,6 +3,8 @@
 set -Eeuo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 app_dir="$(cd "$script_dir/.." && pwd -P)"
+# shellcheck source=release-provenance.sh
+source "$script_dir/release-provenance.sh"
 usage() { echo "Usage: $0 --target-release-sha SHA --confirm-rollback SHA --smoke-token-file FILE [--recover-pending-deploy] [--env-file FILE]" >&2; exit 64; }
 fail() { echo "ROLLBACK REFUSED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
@@ -22,13 +24,12 @@ compose config -q || fail 'invalid Docker Compose configuration'
 source_record="$current"
 if (( recover_pending )); then
   source_record="$state_dir/pending-release.env"
-  need_file "$source_record"; [[ "$(stat -c '%a' "$source_record")" == 600 ]] || fail 'pending recovery record must have mode 600'
+  load_verified_pending_deployment "$source_record" || fail 'pending recovery record is invalid'
 else
   need_file "$current"; [[ "$(stat -c '%a' "$current")" == 600 ]] || fail 'current release record must have mode 600'
+  # shellcheck disable=SC1090
+  source "$current"
 fi
-# shellcheck disable=SC1090
-source "$source_record"
-if (( recover_pending )); then [[ "${RECORD_STATE:-}" == pending && -n "${CANDIDATE_SHA:-}" ]] || fail 'pending record is not a deployment transaction'; fi
 [[ "${PREVIOUS_RELEASE_SHA:-}" == "$target" ]] || fail 'target is not the recorded predecessor of selected release record'
 for key in DATABASE_BACKUP DATABASE_BACKUP_SHA256 PREVIOUS_API_IMAGE_TAG PREVIOUS_API_IMAGE_ID PREVIOUS_WEB_IMAGE_TAG PREVIOUS_WEB_IMAGE_ID PREVIOUS_CADDY_IMAGE_TAG PREVIOUS_CADDY_IMAGE_ID PREVIOUS_LIVEKIT_IMAGE_TAG PREVIOUS_LIVEKIT_IMAGE_ID; do [[ -n "${!key:-}" ]] || fail "record lacks $key"; done
 need_file "$DATABASE_BACKUP"; need_file "$DATABASE_BACKUP.sha256"

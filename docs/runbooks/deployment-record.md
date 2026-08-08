@@ -46,9 +46,12 @@ That mode-600 transaction record binds the candidate SHA, pre-deploy backup,
 and exact predecessor tags plus immutable image IDs. It is promoted only after
 health and HTTPS/WSS smoke pass. If deployment fails after this point, do not
 start another deployment: use the explicit guarded recovery command in the
-rollback record. The script does not prune any image or backup. First deployment requires a separately approved,
-verified baseline database because it must not claim a restorable backup where
-none exists.
+rollback record. The script does not prune any image or backup. It refuses a
+first deployment without a separately approved protected baseline release
+record: that record must name the predecessor Git SHA, all four image tags and
+their immutable IDs, and each tag must still resolve to its recorded ID. This
+also requires a verified baseline database, so no deploy is permitted where a
+recovery target cannot be proven.
 
 Preserve the generated release record, backup/checksum, `docker compose ... ps`
 output, both health endpoint results, and smoke-test output outside Git.
