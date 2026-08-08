@@ -26,9 +26,7 @@ if (( recover_pending )); then
   source_record="$state_dir/pending-release.env"
   load_verified_pending_deployment "$source_record" || fail 'pending recovery record is invalid'
 else
-  need_file "$current"; [[ "$(stat -c '%a' "$current")" == 600 ]] || fail 'current release record must have mode 600'
-  # shellcheck disable=SC1090
-  source "$current"
+  load_verified_baseline_release "$current" || fail 'current release record is invalid'
 fi
 [[ "${PREVIOUS_RELEASE_SHA:-}" == "$target" ]] || fail 'target is not the recorded predecessor of selected release record'
 for key in DATABASE_BACKUP DATABASE_BACKUP_SHA256 PREVIOUS_API_IMAGE_TAG PREVIOUS_API_IMAGE_ID PREVIOUS_WEB_IMAGE_TAG PREVIOUS_WEB_IMAGE_ID PREVIOUS_CADDY_IMAGE_TAG PREVIOUS_CADDY_IMAGE_ID PREVIOUS_LIVEKIT_IMAGE_TAG PREVIOUS_LIVEKIT_IMAGE_ID; do [[ -n "${!key:-}" ]] || fail "record lacks $key"; done

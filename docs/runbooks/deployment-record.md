@@ -51,7 +51,9 @@ first deployment without a separately approved protected baseline release
 record: that record must name the predecessor Git SHA, all four image tags and
 their immutable IDs, and each tag must still resolve to its recorded ID. This
 also requires a verified baseline database, so no deploy is permitted where a
-recovery target cannot be proven.
+recovery target cannot be proven. Release records use a strict allowlisted
+`KEY=VALUE` format; deployment and rollback parse them as data and reject
+unknown, duplicate, malformed, or shell-like values without evaluating them.
 
 Preserve the generated release record, backup/checksum, `docker compose ... ps`
 output, both health endpoint results, and smoke-test output outside Git.

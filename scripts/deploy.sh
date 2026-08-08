@@ -62,16 +62,16 @@ backup_output="$("$script_dir/backup.sh" "$volume/meetings.sqlite" "$backup_dir"
 pending="$state_dir/pending-release.env"
 pending_tmp="$pending.$$.tmp"
 {
-  printf 'RECORD_STATE=%q\n' pending
-  printf 'CANDIDATE_SHA=%q\n' "$sha"
-  printf 'STARTED_AT_UTC=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf 'DATABASE_BACKUP=%q\n' "$backup"
-  printf 'DATABASE_BACKUP_SHA256=%q\n' "$(awk '{print $1}' "$backup.sha256")"
-  printf 'PREVIOUS_RELEASE_SHA=%q\n' "$previous_sha"
-  printf 'PREVIOUS_API_IMAGE_TAG=%q\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%q\n' "$previous_api_id"
-  printf 'PREVIOUS_WEB_IMAGE_TAG=%q\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%q\n' "$previous_web_id"
-  printf 'PREVIOUS_CADDY_IMAGE_TAG=%q\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%q\n' "$previous_caddy_id"
-  printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%q\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%q\n' "$previous_livekit_id"
+  printf 'RECORD_STATE=%s\n' pending
+  printf 'CANDIDATE_SHA=%s\n' "$sha"
+  printf 'STARTED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf 'DATABASE_BACKUP=%s\n' "$backup"
+  printf 'DATABASE_BACKUP_SHA256=%s\n' "$(awk '{print $1}' "$backup.sha256")"
+  printf 'PREVIOUS_RELEASE_SHA=%s\n' "$previous_sha"
+  printf 'PREVIOUS_API_IMAGE_TAG=%s\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%s\n' "$previous_api_id"
+  printf 'PREVIOUS_WEB_IMAGE_TAG=%s\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%s\n' "$previous_web_id"
+  printf 'PREVIOUS_CADDY_IMAGE_TAG=%s\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%s\n' "$previous_caddy_id"
+  printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%s\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%s\n' "$previous_livekit_id"
 } >"$pending_tmp"
 chmod 600 "$pending_tmp"; mv "$pending_tmp" "$pending"
 compose pull caddy livekit; compose build --pull api web
@@ -98,9 +98,9 @@ done
 token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'; SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud; unset token
 record="$state_dir/releases/$sha.env"
 {
- printf 'RELEASE_SHA=%q\n' "$sha"; printf 'DEPLOYED_AT_UTC=%q\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'DATABASE_BACKUP=%q\n' "$backup"; printf 'DATABASE_BACKUP_SHA256=%q\n' "$(awk '{print $1}' "$backup.sha256")"; printf 'OVERRIDE_FILE=%q\n' "$override"
- for service in api web caddy livekit; do upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; printf '%s_IMAGE_TAG=%q\n' "$upper" "babagan-meeting-$service:release-$sha"; printf '%s_IMAGE_ID=%q\n' "$upper" "$(image_id "$service")"; done
- printf 'PREVIOUS_RELEASE_SHA=%q\n' "$previous_sha"; printf 'PREVIOUS_API_IMAGE_TAG=%q\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%q\n' "$previous_api_id"; printf 'PREVIOUS_WEB_IMAGE_TAG=%q\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%q\n' "$previous_web_id"; printf 'PREVIOUS_CADDY_IMAGE_TAG=%q\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%q\n' "$previous_caddy_id"; printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%q\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%q\n' "$previous_livekit_id"
+ printf 'RELEASE_SHA=%s\n' "$sha"; printf 'DEPLOYED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'DATABASE_BACKUP=%s\n' "$backup"; printf 'DATABASE_BACKUP_SHA256=%s\n' "$(awk '{print $1}' "$backup.sha256")"; printf 'OVERRIDE_FILE=%s\n' "$override"
+ for service in api web caddy livekit; do upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; printf '%s_IMAGE_TAG=%s\n' "$upper" "babagan-meeting-$service:release-$sha"; printf '%s_IMAGE_ID=%s\n' "$upper" "$(image_id "$service")"; done
+ printf 'PREVIOUS_RELEASE_SHA=%s\n' "$previous_sha"; printf 'PREVIOUS_API_IMAGE_TAG=%s\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%s\n' "$previous_api_id"; printf 'PREVIOUS_WEB_IMAGE_TAG=%s\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%s\n' "$previous_web_id"; printf 'PREVIOUS_CADDY_IMAGE_TAG=%s\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%s\n' "$previous_caddy_id"; printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%s\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%s\n' "$previous_livekit_id"
 } >"$record"
 chmod 600 "$record"; cp "$record" "$previous"; chmod 600 "$previous"; mv "$pending" "$state_dir/releases/$sha.pending-completed.env"; chmod 600 "$state_dir/releases/$sha.pending-completed.env"
 echo "DEPLOY SUCCEEDED: $sha"; echo "Release record: $record"; echo "Backup: $backup"

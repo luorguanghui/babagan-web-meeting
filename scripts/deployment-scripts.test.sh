@@ -72,6 +72,7 @@ CADDY_IMAGE_ID=sha256:immutable
 LIVEKIT_IMAGE_TAG=meeting-livekit:baseline
 LIVEKIT_IMAGE_ID=sha256:immutable
 EOF
+sed -i 's/\r$//' "$temp_dir/current-release.env"
 chmod 600 "$temp_dir/current-release.env"
 load_verified_baseline_release "$temp_dir/current-release.env"
 cat >"$temp_dir/pending-release.env" <<'EOF'
@@ -89,10 +90,25 @@ PREVIOUS_CADDY_IMAGE_ID=sha256:immutable
 PREVIOUS_LIVEKIT_IMAGE_TAG=meeting-livekit:baseline
 PREVIOUS_LIVEKIT_IMAGE_ID=sha256:immutable
 EOF
+sed -i 's/\r$//' "$temp_dir/pending-release.env"
 chmod 600 "$temp_dir/pending-release.env"
 load_verified_pending_deployment "$temp_dir/pending-release.env"
 sed -i '/PREVIOUS_WEB_IMAGE_ID/d' "$temp_dir/pending-release.env"
 if load_verified_pending_deployment "$temp_dir/pending-release.env"; then
   echo 'incomplete pending recovery record was incorrectly accepted' >&2; exit 1
 fi
+# A tampered baseline must never be sourced. The payload would create this
+# sentinel if record parsing evaluated shell syntax. Run deploy.sh itself and
+# ensure it fails without deployment state or any payload side effect.
+mkdir -p "$temp_dir/tampered/scripts" "$temp_dir/tampered/var/releases"
+cp "$deploy" "$temp_dir/tampered/scripts/deploy.sh"
+cp "$root/scripts/release-provenance.sh" "$temp_dir/tampered/scripts/release-provenance.sh"
+printf 'RELEASE_SHA=$(touch %s)\n' "$temp_dir/tampered-write-sentinel" >"$temp_dir/tampered/var/releases/current-release.env"
+if bash "$temp_dir/tampered/scripts/deploy.sh" \
+  --confirm-deploy aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target-ip 203.0.113.10 \
+  --smoke-token-file /not-read --network-evidence /not-read --cloudflare-evidence /not-read; then
+  echo 'deploy incorrectly accepted a tampered baseline release record' >&2; exit 1
+fi
+[[ ! -e "$temp_dir/tampered-write-sentinel" ]] || { echo 'tampered record payload was executed' >&2; exit 1; }
+[[ ! -e "$temp_dir/tampered/var/backups" && ! -e "$temp_dir/tampered/var/releases/pending-release.env" ]] || { echo 'tampered baseline deploy created deployment state' >&2; exit 1; }
 echo 'deployment transaction/provenance regression checks passed'
