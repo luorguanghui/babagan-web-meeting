@@ -19,6 +19,7 @@ require curl
 require getent
 require grep
 require timeout
+require node
 
 public_host=${public_base#https://}
 public_host=${public_host%%/*}
@@ -31,14 +32,8 @@ curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/healt
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/health/ready" | grep -qx '{"status":"ready"}' || fail 'ready health check failed'
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/" | grep -q 'id="root"' || fail 'SPA did not load'
 
-upgrade_url="https://${rtc_url#wss://}"
-headers=$(mktemp)
-trap 'rm -f "$headers"' EXIT
-curl --silent --show-error --http1.1 --max-time 15 --output /dev/null --dump-header "$headers" \
-  -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
-  -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' \
-  "${upgrade_url}?access_token=${SMOKE_LIVEKIT_TOKEN}" || fail 'WebSocket upgrade request failed'
-grep -Eqi '^HTTP/1\.1 101 ' "$headers" || fail 'RTC endpoint did not upgrade to WebSocket'
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+node "$script_directory/verify-websocket.mjs" "$rtc_url" || fail 'RTC endpoint did not complete a bounded authenticated WebSocket open'
 
 for blocked_port in 3000 7880; do
   if timeout 3 bash -c ">/dev/tcp/$rtc_host/$blocked_port" 2>/dev/null; then
