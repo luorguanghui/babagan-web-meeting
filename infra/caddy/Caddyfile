@@ -1,0 +1,29 @@
+{
+  servers {
+    protocols h1 h2
+  }
+}
+meet.babagan.cloud {
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    X-Content-Type-Options "nosniff"
+    Referrer-Policy "no-referrer"
+    Permissions-Policy "camera=(), microphone=(self), display-capture=(self)"
+  }
+
+  handle /api/* {
+    reverse_proxy api:3000
+  }
+
+  handle /health/* {
+    reverse_proxy api:3000
+  }
+
+  handle {
+    reverse_proxy web:8080
+  }
+}
+
+rtc.babagan.cloud {
+  reverse_proxy livekit:7880
+}
