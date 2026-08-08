@@ -7,7 +7,8 @@ const initialState: MeetingRoomState = {
   connection: 'disconnected',
   participants: [],
   microphoneEnabled: false,
-  audioPlaybackBlocked: false
+  audioPlaybackBlocked: false,
+  screenShareAuthorized: false
 };
 
 export function useMeetingRoom(join: JoinMeetingResponse, controller: MeetingRoomController) {

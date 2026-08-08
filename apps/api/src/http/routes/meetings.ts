@@ -40,6 +40,12 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     preHandler: app.rateLimit(generalApiRateLimit())
   }, async (request) => dependencies.meetings.getMeetingSummary(slug(request.params)));
 
+  app.get('/api/v1/meetings/:slug/host-session', hostOptions(app), async (request, reply) => {
+    const value = slug(request.params);
+    hostSession(request, dependencies.hosts, value);
+    return reply.status(204).send();
+  });
+
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);

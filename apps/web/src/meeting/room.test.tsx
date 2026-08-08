@@ -212,7 +212,8 @@ class FakeMeetingRoomController implements MeetingRoomController {
     connection: 'connected',
     participants,
     microphoneEnabled: false,
-    audioPlaybackBlocked: false
+    audioPlaybackBlocked: false,
+    screenShareAuthorized: false
   };
   readonly microphoneChanges: Array<{ enabled: boolean; deviceId?: string }> = [];
   readonly outputChanges: string[] = [];
@@ -230,6 +231,8 @@ class FakeMeetingRoomController implements MeetingRoomController {
     this.emit();
   }
   async switchAudioOutput(deviceId: string) { this.outputChanges.push(deviceId); return 'changed' as const; }
+  async publishScreenShare() {}
+  async releaseScreenShare() {}
   async disconnect() { this.disconnectCount += 1; }
   async resumeAudioPlayback() { this.state = { ...this.state, audioPlaybackBlocked: false }; this.emit(); }
   subscribe(listener: (state: MeetingRoomState) => void) { this.listeners.add(listener); listener(this.state); return () => this.listeners.delete(listener); }

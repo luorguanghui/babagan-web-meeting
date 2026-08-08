@@ -33,3 +33,26 @@ output { background: #f3f7f8; overflow-wrap: anywhere; padding: .75rem; }
 .meter-label { gap: .45rem; }
 meter { height: .9rem; width: 100%; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
+.meeting-room { display: grid; gap: 1rem; margin: 0 auto; max-width: 86rem; min-height: 100vh; padding: clamp(1rem, 3vw, 2.5rem); }
+.meeting-room > header { align-items: end; display: flex; flex-wrap: wrap; gap: .8rem 1.5rem; justify-content: space-between; }
+.screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; }
+.screen-stage video { background: #08191f; height: 100%; width: 100%; }
+.screen-stage-empty { color: #b9cdd4; }
+.participant-list, .host-menu { background: #fff; border-left: 4px solid #7ba7b2; padding: 1rem; }
+.participant-list ul, .host-menu ul { display: grid; gap: .55rem; list-style: none; margin: .8rem 0 0; padding: 0; }
+.participant-list li, .host-menu li { align-items: center; border-top: 1px solid #d8e0e4; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: space-between; padding-top: .55rem; }
+.host-menu li > span { font-weight: 750; margin-right: auto; }
+.host-menu button { padding: .55rem .75rem; }
+.meeting-controls { align-items: end; background: #dce7ea; bottom: 0; display: flex; flex-wrap: wrap; gap: .7rem; padding: .85rem; position: sticky; }
+.meeting-controls > p { margin: 0 auto 0 0; }
+.meeting-controls label { min-width: 10rem; }
+.meeting-controls select { border: 1px solid #91a6af; border-radius: .4rem; min-height: 2.5rem; padding: .45rem; }
+.danger { background: #8c2f2f; }
+.danger:hover { background: #722626; }
+@media (min-width: 64rem) {
+  .meeting-room { grid-template-columns: minmax(0, 3fr) minmax(17rem, 1fr); }
+  .meeting-room > header, .meeting-room > .screen-stage, .meeting-room > .meeting-controls, .meeting-room > [role='alert'], .meeting-room > [role='status'] { grid-column: 1; }
+  .meeting-room > .participant-list, .meeting-room > .host-menu { grid-column: 2; }
+  .meeting-room > .participant-list { grid-row: 2; }
+  .meeting-room > .host-menu { grid-row: 3; }
+}

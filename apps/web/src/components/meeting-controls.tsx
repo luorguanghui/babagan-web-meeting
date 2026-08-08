@@ -1,4 +1,5 @@
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
+import type { CaptureProfile } from '../meeting/screen-share.js';
 
 interface MeetingControlsProps {
   connection: MeetingConnectionState;
@@ -6,10 +7,16 @@ interface MeetingControlsProps {
   audioPlaybackBlocked: boolean;
   devices: MediaDeviceInfo[];
   leaving: boolean;
+  screenShareAuthorized?: boolean;
+  screenShareActive?: boolean;
+  screenShareBusy?: boolean;
+  screenProfile?: CaptureProfile;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
   onResumeAudio: () => void;
+  onScreenProfileChange?: (profile: CaptureProfile) => void;
+  onScreenShareToggle?: () => void;
   onLeave: () => void;
 }
 
@@ -30,7 +37,22 @@ export function MeetingControls(props: MeetingControlsProps) {
       {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Speaker'}</option>)}
     </select></label>
     {props.audioPlaybackBlocked && <button type="button" onClick={props.onResumeAudio}>点击恢复声音</button>}
-    <button type="button" disabled aria-label="Share screen">Share screen</button>
+    <label>Screen quality<select
+      aria-label="Screen quality"
+      value={props.screenProfile ?? 'standard'}
+      disabled={props.screenShareActive || props.screenShareBusy}
+      onChange={(event) => props.onScreenProfileChange?.(event.target.value as CaptureProfile)}
+    >
+      <option value="standard">Standard (1080p30)</option>
+      <option value="motion">High motion (1080p60)</option>
+    </select></label>
+    <button
+      type="button"
+      aria-label={props.screenShareActive ? 'Stop sharing screen' : 'Share screen'}
+      title={props.screenShareAuthorized ? undefined : 'A host must grant screen sharing before capture can start.'}
+      disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
+      onClick={props.onScreenShareToggle}
+    >{props.screenShareActive ? 'Stop sharing' : 'Share screen'}</button>
     <button type="button" className="danger" onClick={props.onLeave} disabled={props.leaving}>{props.leaving ? 'Leaving…' : 'Leave meeting'}</button>
   </footer>;
 }

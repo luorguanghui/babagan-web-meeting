@@ -6,7 +6,8 @@ import {
   supportsAudioOutputSelection,
   type AudioCaptureOptions,
   type RoomConnectOptions,
-  type RoomOptions
+  type RoomOptions,
+  type TrackPublishOptions
 } from 'livekit-client';
 
 import { AudioPlayback } from './audio-playback.js';
@@ -26,12 +27,15 @@ export interface MeetingRoomState {
   participants: MeetingParticipant[];
   microphoneEnabled: boolean;
   audioPlaybackBlocked: boolean;
+  screenShareAuthorized: boolean;
 }
 
 export interface MeetingRoomController {
   connect(join: JoinMeetingResponse): Promise<void>;
   setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void>;
   switchAudioOutput(deviceId: string): Promise<'changed' | 'unsupported'>;
+  publishScreenShare(stream: MediaStream, options: { maxBitrate: number; frameRate: number }): Promise<void>;
+  releaseScreenShare(stream: MediaStream): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(listener: (state: MeetingRoomState) => void): () => void;
   resumeAudioPlayback(): Promise<void>;
@@ -42,7 +46,10 @@ export interface LiveKitParticipantAdapter {
   name?: string;
   isMicrophoneEnabled: boolean;
   isScreenShareEnabled: boolean;
+  permissions?: { canPublishSources?: number[] };
   setMicrophoneEnabled?(enabled: boolean, options?: AudioCaptureOptions): Promise<unknown>;
+  publishTrack?(track: MediaStreamTrack, options?: TrackPublishOptions): Promise<unknown>;
+  unpublishTrack?(track: MediaStreamTrack, stopOnUnpublish?: boolean): Promise<unknown>;
 }
 
 export interface LiveKitTrackAdapter {
@@ -75,11 +82,13 @@ class RoomController implements MeetingRoomController {
     connection: 'disconnected',
     participants: [],
     microphoneEnabled: false,
-    audioPlaybackBlocked: false
+    audioPlaybackBlocked: false,
+    screenShareAuthorized: false
   };
   private readonly listeners = new Set<(state: MeetingRoomState) => void>();
   private readonly roomListeners = new Map<string, (...args: unknown[]) => void>();
   private selectedMicrophoneId?: string;
+  private publishedScreenTracks: MediaStreamTrack[] = [];
 
   constructor(
     private readonly createRoom: LiveKitRoomFactory,
@@ -130,6 +139,50 @@ class RoomController implements MeetingRoomController {
     return 'changed';
   }
 
+  async publishScreenShare(
+    stream: MediaStream,
+    options: { maxBitrate: number; frameRate: number }
+  ): Promise<void> {
+    const participant = this.room?.localParticipant;
+    if (!participant?.publishTrack || !participant.unpublishTrack) {
+      throw new Error('The meeting room is not connected for screen sharing.');
+    }
+    const [videoTrack] = stream.getVideoTracks();
+    if (!videoTrack) throw new Error('Screen sharing requires a video track.');
+    const tracks: Array<{ track: MediaStreamTrack; options: TrackPublishOptions }> = [{
+      track: videoTrack,
+      options: {
+        source: Track.Source.ScreenShare,
+        stream: 'screen-share',
+        videoEncoding: { maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }
+      }
+    }, ...stream.getAudioTracks().map((track) => ({
+      track,
+      options: { source: Track.Source.ScreenShareAudio, stream: 'screen-share' }
+    }))];
+    const published: MediaStreamTrack[] = [];
+    try {
+      for (const value of tracks) {
+        await participant.publishTrack(value.track, value.options);
+        published.push(value.track);
+      }
+      this.publishedScreenTracks = published;
+    } catch (error) {
+      await Promise.allSettled(published.map((track) => participant.unpublishTrack!(track, false)));
+      throw error;
+    }
+  }
+
+  async releaseScreenShare(stream: MediaStream): Promise<void> {
+    const participant = this.room?.localParticipant;
+    if (!participant?.unpublishTrack) return;
+    const owned = new Set(stream.getTracks());
+    const tracks = this.publishedScreenTracks.filter((track) => owned.has(track));
+    this.publishedScreenTracks = this.publishedScreenTracks.filter((track) => !owned.has(track));
+    await Promise.allSettled(tracks.map((track) => participant.unpublishTrack!(track, true)));
+    this.refreshParticipants();
+  }
+
   async disconnect(): Promise<void> {
     const room = this.room;
     if (!room) return;
@@ -156,6 +209,7 @@ class RoomController implements MeetingRoomController {
     this.listen(room, RoomEvent.TrackUnmuted, refresh);
     this.listen(room, RoomEvent.LocalTrackPublished, refresh);
     this.listen(room, RoomEvent.LocalTrackUnpublished, refresh);
+    this.listen(room, RoomEvent.ParticipantPermissionsChanged, refresh);
     this.listen(room, RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
     this.listen(room, RoomEvent.Reconnected, () => this.update({ connection: 'connected' }));
     this.listen(room, RoomEvent.Disconnected, () => this.releaseRoom(room));
@@ -187,15 +241,25 @@ class RoomController implements MeetingRoomController {
     for (const [event, listener] of this.roomListeners) room.off(event, listener);
     this.roomListeners.clear();
     this.audioPlayback.clear();
+    this.publishedScreenTracks = [];
     this.room = undefined;
-    this.update({ connection: 'disconnected', participants: [], microphoneEnabled: false });
+    this.update({
+      connection: 'disconnected',
+      participants: [],
+      microphoneEnabled: false,
+      screenShareAuthorized: false
+    });
   }
 
   private refreshParticipants(): void {
     if (!this.room) return;
     const local = this.room.localParticipant;
     const participants = [this.toParticipant(local, true), ...[...this.room.remoteParticipants.values()].map((participant) => this.toParticipant(participant, false))];
-    this.update({ participants, microphoneEnabled: local.isMicrophoneEnabled });
+    this.update({
+      participants,
+      microphoneEnabled: local.isMicrophoneEnabled,
+      screenShareAuthorized: local.permissions?.canPublishSources?.includes(3) ?? false
+    });
   }
 
   private toParticipant(participant: LiveKitParticipantAdapter, isLocal: boolean): MeetingParticipant {

@@ -78,7 +78,11 @@ export class HostApplicationService {
   async endMeeting(host: ActiveHostSession, slug: string): Promise<void> {
     const meeting = this.authorize(host, slug);
     await this.dependencies.meetings.endMeeting(slug);
-    this.dependencies.repository.revokeHostSessionsForMeeting(meeting.id, this.dependencies.clock.now());
+    const now = this.dependencies.clock.now();
+    this.dependencies.repository.transaction(() => {
+      this.dependencies.repository.revokeHostSessionsForMeeting(meeting.id, now);
+      this.insertAudit('meeting_ended_by_host', meeting.id, null, '{}', now);
+    });
   }
 
   async kickParticipant(host: ActiveHostSession, slug: string, identity: string): Promise<void> {
@@ -136,9 +140,18 @@ export class HostApplicationService {
           [...SHARE_PUBLISH_SOURCES]
         );
       } catch {
-        this.clearMatchingShare(current.slug, identity);
+        this.dependencies.repository.transaction(() => {
+          this.clearMatchingShare(current.slug, identity);
+          this.insertAudit(
+            'system_error',
+            current.id,
+            identity,
+            '{"operation":"screen_share_grant"}'
+          );
+        });
         throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       }
+      this.insertAudit('screen_share_granted', current.id, identity);
     });
   }
 
@@ -156,7 +169,31 @@ export class HostApplicationService {
       } catch {
         throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       }
-      this.clearMatchingShare(current.slug, current.shareIdentity);
+      this.dependencies.repository.transaction(() => {
+        this.clearMatchingShare(current.slug, current.shareIdentity!);
+        this.insertAudit('screen_share_revoked', current.id, current.shareIdentity);
+      });
+    });
+  }
+
+  async releaseParticipantShare(slug: string, identity: string): Promise<void> {
+    const meeting = this.requireUsableMeeting(slug);
+    await this.mutex.runExclusive(meeting.id, async () => {
+      const current = this.requireUsableMeeting(slug);
+      if (current.shareIdentity !== identity) return;
+      try {
+        await this.dependencies.media.updateParticipantSources(
+          current.id,
+          identity,
+          [...NORMAL_PUBLISH_SOURCES]
+        );
+      } catch {
+        throw domainError('MEDIA_SERVICE_UNAVAILABLE');
+      }
+      this.dependencies.repository.transaction(() => {
+        this.clearMatchingShare(current.slug, identity);
+        this.insertAudit('screen_share_released', current.id, identity);
+      });
     });
   }
 
@@ -180,5 +217,22 @@ export class HostApplicationService {
     const current = this.dependencies.repository.findBySlug(slug);
     if (!current || current.shareIdentity !== identity) return;
     this.dependencies.repository.clearShareIdentityIfMatches(current.id, identity);
+  }
+
+  private insertAudit(
+    eventType: string,
+    meetingId: string,
+    subjectId: string | null,
+    metadataJson = '{}',
+    occurredAt = this.dependencies.clock.now()
+  ): void {
+    this.dependencies.repository.insertAuditEvent({
+      id: this.dependencies.ids.uuid(),
+      eventType,
+      meetingId,
+      subjectId,
+      occurredAt,
+      metadataJson
+    });
   }
 }

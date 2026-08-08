@@ -8,6 +8,7 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import type { MeetingService } from '../../services/meeting-service.js';
+import type { HostApplicationService } from '../../services/host-application-service.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import {
   participantCookie,
@@ -20,6 +21,7 @@ import { generalApiRateLimit, meetingPasswordRateLimit } from '../rate-limit.js'
 const SlugParamsSchema = Type.Object({ slug: Type.String({ minLength: 22, maxLength: 256 }) });
 export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   meetings: MeetingService;
+  hosts: HostApplicationService;
   participants: ParticipantApplicationService;
 }): void {
   app.post('/api/v1/meetings/:slug/join', {
@@ -52,6 +54,13 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     const value = slug(request.params);
     const active = session(request, dependencies.participants, value);
     await dependencies.meetings.leaveMeeting(value, active.identity);
+    return reply.status(204).send();
+  });
+
+  app.delete('/api/v1/meetings/:slug/share', participantOptions(app), async (request, reply) => {
+    const value = slug(request.params);
+    const active = session(request, dependencies.participants, value);
+    await dependencies.hosts.releaseParticipantShare(value, active.identity);
     return reply.status(204).send();
   });
 
