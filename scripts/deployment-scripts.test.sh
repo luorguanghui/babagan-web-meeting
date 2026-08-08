@@ -31,6 +31,18 @@ stop_line="$(grep -nF 'compose stop api' "$rollback" | head -n1 | cut -d: -f1)"
 # complete baseline and a complete pending-recovery record are accepted.
 temp_dir="$(mktemp -d)"; trap 'rm -rf "$temp_dir"' EXIT
 mkdir -p "$temp_dir/bin"
+# Execute deploy.sh itself from an otherwise empty app root. Its baseline gate
+# must stop before Docker/host preflights and before it creates var/, backups,
+# or release state.
+mkdir -p "$temp_dir/no-baseline/scripts"
+cp "$deploy" "$temp_dir/no-baseline/scripts/deploy.sh"
+cp "$root/scripts/release-provenance.sh" "$temp_dir/no-baseline/scripts/release-provenance.sh"
+if bash "$temp_dir/no-baseline/scripts/deploy.sh" \
+  --confirm-deploy aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target-ip 203.0.113.10 \
+  --smoke-token-file /not-read --network-evidence /not-read --cloudflare-evidence /not-read; then
+  echo 'deploy incorrectly accepted a missing baseline release record' >&2; exit 1
+fi
+[[ ! -e "$temp_dir/no-baseline/var" ]] || { echo 'missing-baseline deploy created release or backup state' >&2; exit 1; }
 cat >"$temp_dir/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 [[ "$1" == image && "$2" == inspect ]] || exit 90

@@ -19,6 +19,12 @@ while (($#)); do case "$1" in
 [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'target IP must be IPv4'
 env_file="${env_file:-$app_dir/infra/.env.production}"; compose_file="$app_dir/infra/docker-compose.yml"; state_dir="$app_dir/var/releases"; backup_dir="$app_dir/var/backups"
 compose() { docker compose --env-file "$env_file" -f "$compose_file" "$@"; }
+# This is deliberately before every directory creation, chmod, backup, pull or
+# build. An unknown first deploy must be rejected without changing the host.
+previous="$state_dir/current-release.env"
+load_verified_baseline_release "$previous" || fail 'deployment requires a protected, verified baseline current-release record before any mutation'
+previous_sha="$RELEASE_SHA"; previous_api="$API_IMAGE_TAG"; previous_web="$WEB_IMAGE_TAG"; previous_caddy="$CADDY_IMAGE_TAG"; previous_livekit="$LIVEKIT_IMAGE_TAG"
+previous_api_id="$API_IMAGE_ID"; previous_web_id="$WEB_IMAGE_ID"; previous_caddy_id="$CADDY_IMAGE_ID"; previous_livekit_id="$LIVEKIT_IMAGE_ID"
 need docker; need sqlite3; need sha256sum; need getent; need ss; need git; need curl
 . /etc/os-release; [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12* ]] || fail 'target must run Debian 12'
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
@@ -51,10 +57,6 @@ volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api
 umask 077; mkdir -p "$state_dir/releases" "$backup_dir"; chmod 700 "$state_dir" "$state_dir/releases" "$backup_dir"
 backup_output="$("$script_dir/backup.sh" "$volume/meetings.sqlite" "$backup_dir")"; backup="${backup_output#Backup created: }"
 [[ -f "$backup" && -f "$backup.sha256" ]] || fail 'backup did not create database and checksum'
-previous="$state_dir/current-release.env"
-load_verified_baseline_release "$previous" || fail 'deployment requires a protected, verified baseline current-release record before backup'
-previous_sha="$RELEASE_SHA"; previous_api="$API_IMAGE_TAG"; previous_web="$WEB_IMAGE_TAG"; previous_caddy="$CADDY_IMAGE_TAG"; previous_livekit="$LIVEKIT_IMAGE_TAG"
-previous_api_id="$API_IMAGE_ID"; previous_web_id="$WEB_IMAGE_ID"; previous_caddy_id="$CADDY_IMAGE_ID"; previous_livekit_id="$LIVEKIT_IMAGE_ID"
 # Persist a protected transaction record before pull/build/migration. On any
 # later failure it is the sole guarded recovery source, even though current-release still names the predecessor.
 pending="$state_dir/pending-release.env"
