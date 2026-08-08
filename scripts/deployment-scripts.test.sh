@@ -111,6 +111,9 @@ sed -i 's/\r$//' "$temp_dir/bootstrap-pending.env"
 chmod 600 "$temp_dir/bootstrap-pending.env"
 load_verified_pending_deployment "$temp_dir/bootstrap-pending.env"
 [[ "$IS_BOOTSTRAP_PENDING" == 1 ]] || { echo 'bootstrap pending record was not identified' >&2; exit 1; }
+# Cross-role schemas are mutually exclusive: a pending transaction cannot be
+# accepted as a baseline release, and bootstrap cannot carry predecessor state.
+if load_verified_baseline_release "$temp_dir/bootstrap-pending.env"; then echo 'bootstrap transaction was accepted as baseline' >&2; exit 1; fi
 # A tampered baseline must never be sourced. The payload would create this
 # sentinel if record parsing evaluated shell syntax. Run deploy.sh itself and
 # ensure it fails without deployment state or any payload side effect.

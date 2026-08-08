@@ -32,13 +32,26 @@ else
 fi
 if (( bootstrap_recovery )); then
   [[ "$target" == "$CANDIDATE_SHA" ]] || fail 'bootstrap recovery confirmation must name the failed candidate SHA'
+  verify_bootstrap_candidate_volume() {
+    [[ "$BOOTSTRAP_VOLUME_NAME" == babagan-meeting_api-data && "$BOOTSTRAP_VOLUME_PROJECT" == babagan-meeting ]] || fail 'bootstrap record names an unexpected candidate volume'
+    current_mountpoint="$(docker volume inspect --format '{{ .Mountpoint }}' "$BOOTSTRAP_VOLUME_NAME" 2>/dev/null || true)"
+    current_project="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}' "$BOOTSTRAP_VOLUME_NAME" 2>/dev/null || true)"
+    [[ "$current_mountpoint" == "$BOOTSTRAP_VOLUME_MOUNTPOINT" && "$current_project" == "$BOOTSTRAP_VOLUME_PROJECT" ]] || fail 'bootstrap candidate volume was replaced or is not owned by this Compose project'
+    marker="$current_mountpoint/.babagan-bootstrap-$BOOTSTRAP_VOLUME_MARKER_ID"
+    [[ -f "$marker" ]] || fail 'bootstrap candidate marker is missing; leaving volume intact'
+    grep -Fqx "CANDIDATE_SHA=$CANDIDATE_SHA" "$marker" && grep -Fqx "MARKER_ID=$BOOTSTRAP_VOLUME_MARKER_ID" "$marker" || fail 'bootstrap candidate marker does not match pending transaction'
+  }
+  if [[ -n "${BOOTSTRAP_VOLUME_NAME:-}" ]]; then
+    verify_bootstrap_candidate_volume
+  else
+    [[ -z "$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api-data 2>/dev/null || true)" ]] || fail 'unrecorded bootstrap volume exists; refusing to delete it'
+  fi
   umask 077; mkdir -p "$state_dir/rollback"; chmod 700 "$state_dir" "$state_dir/rollback"
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"; log="$state_dir/rollback/$stamp-bootstrap-$target.log"
   # The bootstrap preflight proved no predecessor DB/stack existed. Explicit
   # recovery removes only the candidate-managed stack and its newly-created DB volume.
   compose down --remove-orphans
-  bootstrap_volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api-data 2>/dev/null || true)"
-  [[ -z "$bootstrap_volume" ]] || docker volume rm babagan-meeting_api-data >/dev/null
+  if [[ -n "${BOOTSTRAP_VOLUME_NAME:-}" ]]; then verify_bootstrap_candidate_volume; docker volume rm "$BOOTSTRAP_VOLUME_NAME" >/dev/null; fi
   mv "$source_record" "$state_dir/rollback/pending-bootstrap.recovered-$stamp.env"
   printf 'RESULT=bootstrap-recovered-no-release\nCANDIDATE_SHA=%s\nCOMPLETED_AT_UTC=%s\n' "$target" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$log"
   chmod 600 "$log"; echo "BOOTSTRAP RECOVERY SUCCEEDED: no release remains"; exit 0

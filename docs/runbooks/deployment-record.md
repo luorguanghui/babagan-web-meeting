@@ -61,9 +61,11 @@ record, managed Compose stack, or API data volume already exists. It writes an
 honest `bootstrap-pending` transaction before candidate pull/build/migration;
 it does not invent a predecessor backup or image. If that candidate fails, run
 the guarded rollback command with `--recover-pending-deploy` and the failed
-candidate SHA twice. Bootstrap recovery stops the managed stack, removes only
-the newly created API data volume, archives the pending record, and leaves no
-release active.
+candidate SHA twice. Bootstrap recovery stops the managed stack and removes
+only the recorded candidate API volume after rechecking its mountpoint, Compose
+ownership label, and transaction marker. A foreign, replaced, unmarked, or
+mismatched volume is refused and left intact. It then archives the pending
+record and leaves no release active.
 
 Preserve the generated release record, backup/checksum, `docker compose ... ps`
 output, both health endpoint results, and smoke-test output outside Git.

@@ -23,7 +23,7 @@ compose() { docker compose --env-file "$env_file" -f "$compose_file" "$@"; }
 previous="$state_dir/current-release.env"
 previous_sha='' previous_api='' previous_web='' previous_caddy='' previous_livekit=''; previous_api_id='' previous_web_id='' previous_caddy_id='' previous_livekit_id=''
 if (( bootstrap_empty )); then
-  [[ ! -e "$previous" ]] || fail '--bootstrap-empty requires no current release record'
+  [[ ! -e "$previous" && ! -L "$previous" ]] || fail '--bootstrap-empty requires no current release record (including dangling symlink)'
 else
   load_verified_baseline_release "$previous" || fail 'deployment requires a protected, verified baseline current-release record before any mutation'
   previous_sha="$RELEASE_SHA"; previous_api="$API_IMAGE_TAG"; previous_web="$WEB_IMAGE_TAG"; previous_caddy="$CADDY_IMAGE_TAG"; previous_livekit="$LIVEKIT_IMAGE_TAG"
@@ -87,6 +87,19 @@ chmod 600 "$pending_tmp"; mv "$pending_tmp" "$pending"
 compose pull caddy livekit; compose build --pull api web
 # One-shot migration: no listening service is started by this command.
 compose run --rm --no-deps api node --input-type=module -e 'import {createDatabase} from "./dist/db/database.js"; import {migrate} from "./dist/db/migrate.js"; const db=createDatabase(process.env.DATABASE_PATH); try { migrate(db); } finally { db.close(); }'
+if (( bootstrap_empty )); then
+  bootstrap_volume_name='babagan-meeting_api-data'
+  bootstrap_mountpoint="$(docker volume inspect --format '{{ .Mountpoint }}' "$bootstrap_volume_name" 2>/dev/null || true)"
+  bootstrap_project="$(docker volume inspect --format '{{ index .Labels "com.docker.compose.project" }}' "$bootstrap_volume_name" 2>/dev/null || true)"
+  [[ -n "$bootstrap_mountpoint" && "$bootstrap_project" == babagan-meeting ]] || fail 'bootstrap candidate volume lacks expected Compose ownership label'
+  bootstrap_marker_id="$(printf '%s' "$sha-$(date -u +%s)-$RANDOM" | sha256sum | awk '{print $1}')"
+  bootstrap_marker="$bootstrap_mountpoint/.babagan-bootstrap-$bootstrap_marker_id"
+  printf 'CANDIDATE_SHA=%s\nMARKER_ID=%s\n' "$sha" "$bootstrap_marker_id" >"$bootstrap_marker"
+  chmod 600 "$bootstrap_marker"
+  pending_resource_tmp="$pending.$$.resource"
+  { cat "$pending"; printf 'BOOTSTRAP_VOLUME_NAME=%s\nBOOTSTRAP_VOLUME_MOUNTPOINT=%s\nBOOTSTRAP_VOLUME_PROJECT=%s\nBOOTSTRAP_VOLUME_MARKER_ID=%s\n' "$bootstrap_volume_name" "$bootstrap_mountpoint" "$bootstrap_project" "$bootstrap_marker_id"; } >"$pending_resource_tmp"
+  chmod 600 "$pending_resource_tmp"; mv "$pending_resource_tmp" "$pending"
+fi
 image_id() { compose images -q "$1" | head -n 1; }
 for service in api web caddy livekit; do id="$(image_id "$service")"; [[ -n "$id" ]] || fail "cannot find image for $service"; docker tag "$id" "babagan-meeting-$service:release-$sha"; done
 override="$state_dir/releases/$sha.compose.override.yml"
