@@ -1,7 +1,7 @@
 export class AudioPlayback {
   private readonly elements = new Set<HTMLMediaElement>();
   private readonly blockedElements = new Set<HTMLMediaElement>();
-  private readonly attempts = new Map<HTMLMediaElement, number>();
+  private readonly attempts = new WeakMap<HTMLMediaElement, number>();
   private readonly listeners = new Set<(blocked: boolean) => void>();
   private blocked = false;
   private generation = 0;
@@ -20,7 +20,6 @@ export class AudioPlayback {
   remove(element: HTMLMediaElement): void {
     this.elements.delete(element);
     this.blockedElements.delete(element);
-    this.attempts.delete(element);
     element.remove();
     this.recomputeBlocked();
   }
@@ -34,7 +33,6 @@ export class AudioPlayback {
     for (const element of this.elements) element.remove();
     this.elements.clear();
     this.blockedElements.clear();
-    this.attempts.clear();
     this.recomputeBlocked();
   }
 

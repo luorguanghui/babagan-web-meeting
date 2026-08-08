@@ -402,4 +402,25 @@ describe('remote audio playback', () => {
 
     expect(statuses.at(-1)).toBe(false);
   });
+
+  it('ignores an old rejection after the same element is removed and re-added', async () => {
+    let rejectFirstPlay!: (reason: unknown) => void;
+    const element = {
+      play: vi.fn()
+        .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirstPlay = reject; }))
+        .mockResolvedValueOnce(undefined),
+      remove: vi.fn()
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+    const statuses: boolean[] = [];
+    playback.subscribe((status) => statuses.push(status));
+    const oldLifetime = playback.add(element);
+
+    playback.remove(element);
+    await playback.add(element);
+    rejectFirstPlay(new DOMException('Old playback blocked', 'NotAllowedError'));
+    await oldLifetime;
+
+    expect(statuses.at(-1)).toBe(false);
+  });
 });
