@@ -169,6 +169,30 @@ describe('room controller', () => {
     await expect(controller.switchAudioOutput('speaker-2')).rejects.toThrow('not connected');
   });
 
+  it('does not restore a connected room after meeting UI unmounts during a pending SDK connect', async () => {
+    let resolveConnect!: () => void;
+    const room = roomAdapter();
+    vi.mocked(room.connect).mockImplementation(() => new Promise<void>((resolve) => { resolveConnect = resolve; }));
+    const controller = createRoomController(() => room);
+    const states: MeetingRoomState[] = [];
+    controller.subscribe((state) => states.push(state));
+    const rendered = render(<MeetingRoomPage
+      slug="meeting-slug" join={join} controller={controller} listDevices={async () => []}
+      meetingApi={{
+        authorizeHost: async () => { throw new Error('not host'); }, verifyParticipantShare: async () => undefined,
+        grantShare: async () => undefined, releaseOwnShare: async () => undefined, revokeShare: async () => undefined,
+        kick: async () => undefined, end: async () => undefined
+      }}
+    />);
+    await waitFor(() => expect(states.at(-1)?.connection).toBe('connecting'));
+    rendered.unmount();
+    resolveConnect();
+    await Promise.resolve();
+
+    expect(states.at(-1)?.connection).toBe('disconnected');
+    expect(room.disconnect).toHaveBeenCalledOnce();
+  });
+
   it('fully releases the SDK room after an unexpected disconnect event', async () => {
     const room = roomAdapter();
     const controller = createRoomController(() => room);

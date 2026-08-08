@@ -99,6 +99,7 @@ class RoomController implements MeetingRoomController {
   };
   private readonly listeners = new Set<(state: MeetingRoomState) => void>();
   private readonly roomListeners = new Map<string, (...args: unknown[]) => void>();
+  private roomGeneration = 0;
   private selectedMicrophoneId?: string;
   private publishedScreenTracks: MediaStreamTrack[] = [];
 
@@ -115,6 +116,7 @@ class RoomController implements MeetingRoomController {
 
   async connect(join: JoinMeetingResponse): Promise<void> {
     if (this.room) await this.disconnect();
+    const generation = ++this.roomGeneration;
     const room = this.createRoom({
       adaptiveStream: true,
       dynacast: true,
@@ -125,9 +127,11 @@ class RoomController implements MeetingRoomController {
     this.update({ connection: 'connecting' });
     try {
       await room.connect(join.livekitUrl, join.token, { autoSubscribe: true });
+      if (!this.ownsRoom(room, generation)) return;
       this.refreshParticipants();
       this.update({ connection: 'connected' });
     } catch (reason) {
+      if (!this.ownsRoom(room, generation)) return;
       this.releaseRoom(room);
       await room.disconnect().catch(() => undefined);
       throw reason;
@@ -273,6 +277,7 @@ class RoomController implements MeetingRoomController {
 
   private releaseRoom(room: LiveKitRoomAdapter): void {
     if (this.room !== room) return;
+    this.roomGeneration++;
     for (const [event, listener] of this.roomListeners) room.off(event, listener);
     this.roomListeners.clear();
     this.audioPlayback.clear();
@@ -285,6 +290,10 @@ class RoomController implements MeetingRoomController {
       screenShareAuthorized: false,
       remoteScreenShare: undefined
     });
+  }
+
+  private ownsRoom(room: LiveKitRoomAdapter, generation: number): boolean {
+    return this.room === room && this.roomGeneration === generation;
   }
 
   private refreshParticipants(): void {

@@ -70,24 +70,60 @@ describe('reconnect controller', () => {
   it('does not reconnect when a slow refresh passes the thirty-second deadline', async () => {
     let now = 0;
     let resolve!: (value: typeof join) => void;
-    const scheduled: Array<() => void> = [];
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
     const reconnect = vi.fn(async () => undefined);
     const refresh = vi.fn()
       .mockRejectedValueOnce(new Error('offline'))
       .mockImplementationOnce(() => new Promise<typeof join>((done) => { resolve = done; }));
     const controller = createReconnectController({
       refresh, reconnect, now: () => now,
-      schedule: (callback) => { scheduled.push(callback); return scheduled.length; }, cancel: vi.fn()
+      schedule: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; }, cancel: vi.fn()
     });
     await controller.reconnect();
     now = 29_000;
-    scheduled.shift()?.();
+    scheduled.find((entry) => entry.delay === 1_000)?.callback();
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
     now = 30_001;
     resolve(join);
     await vi.waitFor(() => expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' }));
 
     expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it.each(['refresh', 'reconnect'] as const)('forces rejoin at the hard deadline while %s never settles', async (pendingStep) => {
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
+    const controller = createReconnectController({
+      refresh: pendingStep === 'refresh'
+        ? () => new Promise<typeof join>(() => undefined)
+        : async () => join,
+      reconnect: pendingStep === 'reconnect'
+        ? () => new Promise<void>(() => undefined)
+        : async () => undefined,
+      schedule: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; },
+      cancel: vi.fn()
+    });
+
+    void controller.reconnect();
+    await vi.waitFor(() => expect(scheduled.some((entry) => entry.delay === 30_000)).toBe(true));
+    scheduled.find((entry) => entry.delay === 30_000)?.callback();
+
+    expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' });
+  });
+
+  it('rejects a retry timer that fires after the hard deadline', async () => {
+    let now = 0;
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
+    const refresh = vi.fn(async () => { throw new Error('offline'); });
+    const controller = createReconnectController({
+      refresh, reconnect: vi.fn(async () => undefined), now: () => now,
+      schedule: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; }, cancel: vi.fn()
+    });
+    await controller.reconnect();
+    now = 30_001;
+    scheduled.find((entry) => entry.delay === 1_000)?.callback();
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' });
   });
 
   it('does not accept a reconnect that completes after the grace deadline', async () => {
@@ -109,18 +145,18 @@ describe('reconnect controller', () => {
 
   it('requires a new join after thirty seconds of failed recovery', async () => {
     let now = 10_000;
-    const scheduled: Array<() => void> = [];
+    const scheduled: Array<{ callback: () => void; delay: number }> = [];
     const controller = createReconnectController({
       refresh: vi.fn(async () => { throw new Error('offline'); }),
       reconnect: vi.fn(async () => undefined),
       now: () => now,
-      schedule: (callback) => { scheduled.push(callback); return scheduled.length; },
+      schedule: (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; },
       cancel: vi.fn()
     });
 
     await controller.reconnect();
     now = 40_001;
-    scheduled.shift()?.();
+    scheduled.find((entry) => entry.delay === 1_000)?.callback();
     await vi.waitFor(() => expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' }));
   });
 
