@@ -151,6 +151,9 @@ if [[ "$1" == volume && "$2" == inspect ]]; then
   if [[ "$MOCK_VOLUME_MODE" == foreign ]]; then
     [[ "$4" == *Labels* ]] && { printf 'foreign-project\n'; exit 0; }; printf '%s\n' /foreign/replaced; exit 0
   fi
+  if [[ "$MOCK_VOLUME_MODE" == replaced-after-down ]] && grep -Eq 'compose .* down' "$MOCK_DOCKER_LOG"; then
+    [[ "$4" == *Labels* ]] && { printf 'foreign-project\n'; exit 0; }; printf '%s\n' /foreign/replaced; exit 0
+  fi
   [[ "$4" == *Labels* ]] && { printf 'babagan-meeting\n'; exit 0; }; printf '%s\n' "$MOCK_CANDIDATE_MOUNT"; exit 0
 fi
 if [[ "$1" == volume && "$2" == rm ]]; then exit 0; fi
@@ -185,4 +188,20 @@ success_log="$recovery_app/success.log"
 PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$success_log" MOCK_VOLUME_MODE=candidate MOCK_CANDIDATE_MOUNT="$candidate_mount" \
   bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"
 grep -Eq 'compose .* down' "$success_log" && grep -Fq 'volume rm babagan-meeting_api-data' "$success_log" || { echo 'recorded bootstrap volume was not cleaned up' >&2; exit 1; }
+# Marker must exist and bind both candidate SHA and marker ID before down.
+rm -f "$candidate_mount/.babagan-bootstrap-$marker_id"; write_bootstrap_pending "$candidate_mount"
+unmarked_log="$recovery_app/unmarked.log"
+if PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$unmarked_log" MOCK_VOLUME_MODE=candidate MOCK_CANDIDATE_MOUNT="$candidate_mount" \
+  bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"; then echo 'unmarked volume was incorrectly recovered' >&2; exit 1; fi
+! grep -Eq 'compose .* down|volume rm' "$unmarked_log" || { echo 'unmarked volume triggered destructive action' >&2; exit 1; }
+printf 'CANDIDATE_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nMARKER_ID=%s\n' "$marker_id" >"$candidate_mount/.babagan-bootstrap-$marker_id"; write_bootstrap_pending "$candidate_mount"
+mismatch_log="$recovery_app/mismatch.log"
+if PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$mismatch_log" MOCK_VOLUME_MODE=candidate MOCK_CANDIDATE_MOUNT="$candidate_mount" \
+  bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"; then echo 'mismatched marker was incorrectly recovered' >&2; exit 1; fi
+! grep -Eq 'compose .* down|volume rm' "$mismatch_log" || { echo 'mismatched marker triggered destructive action' >&2; exit 1; }
+printf 'CANDIDATE_SHA=%s\nMARKER_ID=%s\n' "$candidate_sha" "$marker_id" >"$candidate_mount/.babagan-bootstrap-$marker_id"; write_bootstrap_pending "$candidate_mount"
+replaced_log="$recovery_app/replaced-after-down.log"
+if PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$replaced_log" MOCK_VOLUME_MODE=replaced-after-down MOCK_CANDIDATE_MOUNT="$candidate_mount" \
+  bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"; then echo 'post-down replaced volume was incorrectly recovered' >&2; exit 1; fi
+grep -Eq 'compose .* down' "$replaced_log" && ! grep -Fq 'volume rm babagan-meeting_api-data' "$replaced_log" || { echo 'post-down replacement did not stop before volume removal' >&2; exit 1; }
 echo 'deployment transaction/provenance regression checks passed'
