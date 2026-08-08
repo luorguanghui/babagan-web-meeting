@@ -84,7 +84,7 @@ services:
     image: livekit/livekit-server:v1.9.12@sha256:2c13cbf2edcbf13ea7b20d05c10b394d04d8fb3fe358269cff845a90b4de9576
     user: "10001:10001"
     restart: unless-stopped
-    command: ["--config", "/etc/livekit/livekit.yaml"]
+    command: ["--config", "/etc/livekit/livekit.yaml", "--node-ip", "${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}"]
     environment:
       LIVEKIT_KEYS: "${LIVEKIT_API_KEY:?LIVEKIT_API_KEY is required}: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}"
     ports:
@@ -112,7 +112,6 @@ services:
     build:
       context: ..
       dockerfile: apps/web/Dockerfile
-    user: "1000:1000"
     restart: unless-stopped
     expose:
       - "8080"

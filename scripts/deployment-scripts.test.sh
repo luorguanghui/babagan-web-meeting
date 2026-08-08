@@ -15,6 +15,10 @@ need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
 need "$deploy" '(( mem_kib >= 1153434 ))'
+need "$deploy" 'LIVEKIT_NODE_IP must equal the confirmed target IP'
+need "$deploy" 'SMOKE_NODE_IMAGE="babagan-meeting-api:release-$sha"'
+need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
+need "$deploy" 'compose config | awk -v service="$1"'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before

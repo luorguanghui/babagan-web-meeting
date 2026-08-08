@@ -27,6 +27,9 @@ RUN addgroup -S -g 10001 meeting \
   && chown meeting:meeting /data
 
 COPY --from=build --chown=meeting:meeting /opt/api /app
+# The migration runner loads these SQL files at runtime via import.meta.url.
+# `pnpm deploy` copies JavaScript dependencies but not source SQL assets.
+COPY --from=build --chown=meeting:meeting /workspace/apps/api/src/db/migrations /app/dist/db/migrations
 
 USER 10001:10001
 EXPOSE 3000

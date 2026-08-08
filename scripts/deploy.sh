@@ -33,7 +33,9 @@ need docker; need sqlite3; need sha256sum; need getent; need ss; need git; need 
 . /etc/os-release; [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12* ]] || fail 'target must run Debian 12'
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
 grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" && fail 'production environment contains example values'
-for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
+for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
+configured_node_ip="$(sed -n 's/^LIVEKIT_NODE_IP=//p' "$env_file")"
+[[ "$configured_node_ip" == "$target_ip" ]] || fail 'LIVEKIT_NODE_IP must equal the confirmed target IP'
 [[ "$(git -C "$app_dir" rev-parse HEAD)" == "$sha" ]] || fail 'confirmation SHA does not equal checked-out release'
 mem_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"; disk_kib="$(df -Pk "$app_dir" | awk 'NR==2 {print $4}')"
 (( mem_kib >= 1153434 )) || fail 'requires at least 1.1 GiB available RAM'; (( disk_kib >= 10485760 )) || fail 'requires at least 10 GiB free disk'
@@ -100,7 +102,20 @@ if (( bootstrap_empty )); then
   { cat "$pending"; printf 'BOOTSTRAP_VOLUME_NAME=%s\nBOOTSTRAP_VOLUME_MOUNTPOINT=%s\nBOOTSTRAP_VOLUME_PROJECT=%s\nBOOTSTRAP_VOLUME_MARKER_ID=%s\n' "$bootstrap_volume_name" "$bootstrap_mountpoint" "$bootstrap_project" "$bootstrap_marker_id"; } >"$pending_resource_tmp"
   chmod 600 "$pending_resource_tmp"; mv "$pending_resource_tmp" "$pending"
 fi
-image_id() { compose images -q "$1" | head -n 1; }
+image_id() {
+  # `docker compose images` only lists containers that already exist.  During a
+  # first deployment the one-shot migration container has been removed, so
+  # resolve the configured image reference and inspect Docker's image store
+  # directly instead. This intentionally uses only POSIX host tooling so the
+  # deployment host does not need a separate Node.js installation.
+  image_ref="$(compose config | awk -v service="$1" '
+    $0 ~ "^  " service ":$" { in_service = 1; next }
+    in_service && $0 ~ "^  [A-Za-z0-9_-]+:$" { exit }
+    in_service && $1 == "image:" { print $2; exit }
+  ')"
+  [[ -n "$image_ref" ]] || return 1
+  docker image inspect --format '{{.Id}}' "$image_ref"
+}
 for service in api web caddy livekit; do id="$(image_id "$service")"; [[ -n "$id" ]] || fail "cannot find image for $service"; docker tag "$id" "babagan-meeting-$service:release-$sha"; done
 override="$state_dir/releases/$sha.compose.override.yml"
 cat >"$override" <<EOF
@@ -118,7 +133,7 @@ while ((SECONDS<deadline)); do
   ((healthy)) && break; sleep 3
 done
 ((healthy)) || { compose ps >&2; fail 'health wait exceeded 180 seconds'; }
-token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'; SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud; unset token
+token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'; SMOKE_LIVEKIT_TOKEN="$token" SMOKE_NODE_IMAGE="babagan-meeting-api:release-$sha" "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud; unset token
 record="$state_dir/releases/$sha.env"
 {
  printf 'RELEASE_SHA=%s\n' "$sha"; printf 'DEPLOYED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'OVERRIDE_FILE=%s\n' "$override"

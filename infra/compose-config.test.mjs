@@ -36,8 +36,8 @@ export function assertProductionComposeConfig(config) {
   );
   assert.deepEqual(
     services.livekit.command,
-    ['--config', '/etc/livekit/livekit.yaml'],
-    'LiveKit must explicitly load its mounted production configuration'
+    ['--config', '/etc/livekit/livekit.yaml', '--node-ip', '203.0.113.10'],
+    'LiveKit must explicitly load its mounted configuration and advertise the configured public IP'
   );
   assert.equal(
     services.caddy.user,

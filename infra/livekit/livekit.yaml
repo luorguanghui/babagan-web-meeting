@@ -5,7 +5,9 @@ logging:
   json: true
 
 rtc:
-  use_external_ip: true
+  # The deploy command supplies the known public IPv4 via --node-ip. This
+  # avoids making startup depend on an external STUN resolver.
+  use_external_ip: false
   tcp_port: 7881
   port_range_start: 50000
   port_range_end: 60000

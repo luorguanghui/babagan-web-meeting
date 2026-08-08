@@ -16,8 +16,10 @@ RUN pnpm --filter @meeting/web build
 
 FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 
+# The container listens only on 8080.  Removing Caddy's file capability keeps
+# the no-new-privileges policy compatible with the image entrypoint.
+RUN setcap -r /usr/bin/caddy
+
 COPY infra/web/Caddyfile /etc/caddy/Caddyfile
 COPY --from=build /workspace/apps/web/dist /srv
-
-USER 1000:1000
 EXPOSE 8080
