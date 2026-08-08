@@ -31,6 +31,8 @@ class BrowserScreenShareController implements ScreenShareController {
   private state: ScreenShareState = { status: 'idle', profile: 'standard' };
   private readonly listeners = new Set<(state: ScreenShareState) => void>();
   private endedTrack?: MediaStreamTrack;
+  private activeStream?: MediaStream;
+  private publication?: Promise<void>;
   private stopPromise?: Promise<void>;
 
   constructor(private readonly dependencies: {
@@ -55,12 +57,20 @@ class BrowserScreenShareController implements ScreenShareController {
       });
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-      await this.dependencies.publisher.publish(stream, {
-        maxBitrate: settings.maxBitrate,
-        frameRate: settings.frameRate
-      });
+      this.activeStream = stream;
       this.endedTrack = videoTrack;
       videoTrack.addEventListener('ended', this.handleEnded, { once: true });
+      const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
+        maxBitrate: settings.maxBitrate,
+        frameRate: settings.frameRate
+      }));
+      this.publication = publication;
+      await publication;
+      if (this.publication === publication) this.publication = undefined;
+      if (this.activeStream !== stream) {
+        await this.stopPromise;
+        return;
+      }
       this.update({
         status: 'sharing',
         profile,
@@ -68,6 +78,13 @@ class BrowserScreenShareController implements ScreenShareController {
         audioGuidance: stream.getAudioTracks().length === 0 ? audioGuidance : undefined
       });
     } catch (error) {
+      if (stream && this.activeStream !== stream && this.stopPromise) {
+        await this.stopPromise;
+        return;
+      }
+      this.activeStream = undefined;
+      this.publication = undefined;
+      this.endedTrack?.removeEventListener('ended', this.handleEnded);
       for (const track of stream?.getTracks() ?? []) track.stop();
       await Promise.allSettled([
         ...(stream ? [this.dependencies.publisher.release(stream)] : []),
@@ -81,19 +98,27 @@ class BrowserScreenShareController implements ScreenShareController {
 
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    const stream = this.state.stream;
+    const stream = this.activeStream ?? this.state.stream;
     if (!stream) {
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       return;
     }
     this.endedTrack?.removeEventListener('ended', this.handleEnded);
     this.endedTrack = undefined;
+    this.activeStream = undefined;
     this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
     for (const track of stream.getTracks()) track.stop();
-    this.stopPromise = Promise.allSettled([
-      this.dependencies.publisher.release(stream),
-      this.dependencies.releaseGrant()
-    ]).then(() => undefined).finally(() => { this.stopPromise = undefined; });
+    const publication = this.publication;
+    this.stopPromise = (publication?.catch(() => undefined) ?? Promise.resolve())
+      .then(() => Promise.allSettled([
+        this.dependencies.publisher.release(stream),
+        this.dependencies.releaseGrant()
+      ]))
+      .then(() => undefined)
+      .finally(() => {
+        if (this.publication === publication) this.publication = undefined;
+        this.stopPromise = undefined;
+      });
     return this.stopPromise;
   }
 

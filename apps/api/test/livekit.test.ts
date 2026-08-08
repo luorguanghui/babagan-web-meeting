@@ -285,6 +285,23 @@ describe('LiveKit webhook handler', () => {
     });
   });
 
+  it('releases a granted share when the participant disconnects before publishing a screen track', async () => {
+    repo.updateMeetingLifecycle('meeting-1', { status: 'active', emptySince: null, endedAt: null });
+    const meeting = repo.findBySlug('meeting-one');
+    if (!meeting) throw new Error('meeting fixture missing');
+    repo.trySetShareIdentity(meeting.id, meeting.version, 'participant-1');
+    const delivery = await signedWebhook({
+      id: 'event-share-left-before-publish',
+      event: 'participant_left',
+      room: { name: 'meeting-1', numParticipants: 1 },
+      participant: { identity: 'participant-1' }
+    });
+
+    await handler.handle(delivery.rawBody, delivery.authorization);
+
+    expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
+  });
+
   it('releases the matching share lock when a screen track is unpublished', async () => {
     const meeting = repo.findBySlug('meeting-one');
     if (!meeting) throw new Error('meeting fixture missing');

@@ -177,6 +177,18 @@ describe('MeetingService', () => {
     await expect(restarted.getMeetingSummary(meeting.slug)).resolves.toMatchObject({ status: 'ended' });
   });
 
+  it('clears a departing participant share grant even when no screen track was published', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily' });
+    const joined = await service.joinMeeting(meeting.slug, { nickname: 'Ada' });
+    const current = repo.findBySlug(meeting.slug);
+    if (!current) throw new Error('meeting fixture missing');
+    expect(repo.trySetShareIdentity(current.id, current.version, joined.participantIdentity)).toEqual({ ok: true });
+
+    await service.leaveMeeting(meeting.slug, joined.participantIdentity);
+
+    expect(repo.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+  });
+
   it('revokes every participant session and closes media when ended', async () => {
     const meeting = await service.createMeeting({ name: 'Daily' });
     const first = await service.joinMeeting(meeting.slug, { nickname: 'Ada' });

@@ -185,6 +185,7 @@ export class MeetingService {
       this.dependencies.repository.transaction(() => {
         this.dependencies.repository.deleteReservation(identity);
         this.dependencies.repository.revokeParticipantSession(identity, this.dependencies.clock.now());
+        this.dependencies.repository.clearShareIdentityIfMatches(current.id, identity);
       });
       await this.dependencies.media.removeParticipant(current.id, identity);
       await this.synchronize(current);

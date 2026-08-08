@@ -46,11 +46,10 @@ export function HostMenu({
     return () => { active = false; };
   }, [authorizeHost, onAuthorizationChange]);
 
+  const externalSharingIdentity = participants.find((participant) => participant.isSharing)?.identity;
   useEffect(() => {
-    const external = participants.find((participant) => participant.isSharing)?.identity;
-    setSharingIdentity((current) => external
-      ?? (current && participants.some((participant) => participant.identity === current) ? current : undefined));
-  }, [participants]);
+    setSharingIdentity(externalSharingIdentity);
+  }, [externalSharingIdentity]);
 
   if (!authorized) return null;
 

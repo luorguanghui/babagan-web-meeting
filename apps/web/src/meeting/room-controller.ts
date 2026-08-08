@@ -22,12 +22,19 @@ export interface MeetingParticipant {
   isSharing: boolean;
 }
 
+export interface RemoteScreenShare {
+  stream: MediaStream;
+  sharerIdentity: string;
+  sharerName: string;
+}
+
 export interface MeetingRoomState {
   connection: MeetingConnectionState;
   participants: MeetingParticipant[];
   microphoneEnabled: boolean;
   audioPlaybackBlocked: boolean;
   screenShareAuthorized: boolean;
+  remoteScreenShare?: RemoteScreenShare;
 }
 
 export interface MeetingRoomController {
@@ -54,8 +61,13 @@ export interface LiveKitParticipantAdapter {
 
 export interface LiveKitTrackAdapter {
   kind: string;
+  mediaStreamTrack?: MediaStreamTrack;
   attach(): HTMLMediaElement;
   detach(): HTMLMediaElement | HTMLMediaElement[];
+}
+
+interface LiveKitTrackPublicationAdapter {
+  source?: string;
 }
 
 export interface LiveKitRoomAdapter {
@@ -213,8 +225,22 @@ class RoomController implements MeetingRoomController {
     this.listen(room, RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
     this.listen(room, RoomEvent.Reconnected, () => this.update({ connection: 'connected' }));
     this.listen(room, RoomEvent.Disconnected, () => this.releaseRoom(room));
-    this.listen(room, RoomEvent.TrackSubscribed, (value) => {
+    this.listen(room, RoomEvent.TrackSubscribed, (value, publicationValue, participantValue) => {
       const track = value as LiveKitTrackAdapter;
+      const publication = publicationValue as LiveKitTrackPublicationAdapter;
+      const participant = participantValue as LiveKitParticipantAdapter;
+      if (track.kind === Track.Kind.Video
+        && publication.source === Track.Source.ScreenShare
+        && track.mediaStreamTrack) {
+        this.update({
+          remoteScreenShare: {
+            stream: new MediaStream([track.mediaStreamTrack]),
+            sharerIdentity: participant.identity,
+            sharerName: participant.name?.trim() || participant.identity
+          }
+        });
+        return;
+      }
       if (track.kind !== Track.Kind.Audio) return;
       const element = track.attach();
       element.autoplay = true;
@@ -222,8 +248,17 @@ class RoomController implements MeetingRoomController {
       document.body.append(element);
       void this.audioPlayback.add(element).catch(() => undefined);
     });
-    this.listen(room, RoomEvent.TrackUnsubscribed, (value) => {
-      const detached = (value as LiveKitTrackAdapter).detach();
+    this.listen(room, RoomEvent.TrackUnsubscribed, (value, publicationValue, participantValue) => {
+      const track = value as LiveKitTrackAdapter;
+      const publication = publicationValue as LiveKitTrackPublicationAdapter;
+      const participant = participantValue as LiveKitParticipantAdapter;
+      if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
+        if (this.state.remoteScreenShare?.sharerIdentity === participant.identity) {
+          this.update({ remoteScreenShare: undefined });
+        }
+        return;
+      }
+      const detached = track.detach();
       for (const element of Array.isArray(detached) ? detached : [detached]) this.audioPlayback.remove(element);
     });
   }
@@ -247,7 +282,8 @@ class RoomController implements MeetingRoomController {
       connection: 'disconnected',
       participants: [],
       microphoneEnabled: false,
-      screenShareAuthorized: false
+      screenShareAuthorized: false,
+      remoteScreenShare: undefined
     });
   }
 
@@ -278,7 +314,13 @@ class RoomController implements MeetingRoomController {
   }
 
   private snapshot(): MeetingRoomState {
-    return { ...this.state, participants: this.state.participants.map((participant) => ({ ...participant })) };
+    return {
+      ...this.state,
+      participants: this.state.participants.map((participant) => ({ ...participant })),
+      ...(this.state.remoteScreenShare
+        ? { remoteScreenShare: { ...this.state.remoteScreenShare } }
+        : {})
+    };
   }
 
   private emit(): void {

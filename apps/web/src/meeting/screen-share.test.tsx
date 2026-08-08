@@ -19,9 +19,71 @@ import { captureProfiles, createScreenShareController } from './screen-share.js'
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe('controlled browser screen sharing', () => {
+  it('puts a subscribed remote screen track into room state without changing remote audio handling', async () => {
+    const room = {
+      connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
+      on: vi.fn(), off: vi.fn(), remoteParticipants: new Map(),
+      localParticipant: {
+        identity: 'participant-1', name: 'Ada', isMicrophoneEnabled: false,
+        isScreenShareEnabled: false
+      },
+      switchActiveDevice: vi.fn(async () => true)
+    } as unknown as LiveKitRoomAdapter;
+    const controller = createRoomController(() => room);
+    const states: MeetingRoomState[] = [];
+    controller.subscribe((state) => states.push(state));
+    await controller.connect({
+      participantIdentity: 'participant-1', participantName: 'Ada',
+      livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+      permissions: { publishSources: ['microphone'] }
+    });
+    const { stream, video } = displayStream({ audio: false });
+    vi.stubGlobal('MediaStream', class MediaStream {
+      constructor() { return stream; }
+    });
+    const subscribed = vi.mocked(room.on).mock.calls.find(([event]) => event === 'trackSubscribed')?.[1];
+
+    subscribed?.(
+      { kind: 'video', mediaStreamTrack: video, attach: vi.fn(), detach: vi.fn() },
+      { source: 'screen_share' },
+      { identity: 'participant-2', name: 'Ben' }
+    );
+
+    expect(states.at(-1)).toMatchObject({
+      remoteScreenShare: { stream, sharerIdentity: 'participant-2', sharerName: 'Ben' }
+    });
+    expect(document.querySelectorAll('audio')).toHaveLength(0);
+  });
+
+  it('renders a subscribed remote share in the room stage for a non-sharer', async () => {
+    const { stream } = displayStream({ audio: false });
+    const controller = meetingController({
+      remoteScreenShare: {
+        stream,
+        sharerIdentity: 'participant-2',
+        sharerName: 'Ben'
+      }
+    });
+
+    render(<MeetingRoomPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1', participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone'] }
+      }}
+      controller={controller}
+      meetingApi={unauthorizedMeetingApi()}
+      listDevices={async () => []}
+    />);
+
+    expect(await screen.findByLabelText("Ben's shared screen")).toHaveProperty('srcObject', stream);
+  });
+
   it('reflects server-pushed local publish permission in room authorization state', async () => {
     const room = {
       connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
@@ -242,6 +304,31 @@ describe('controlled browser screen sharing', () => {
     expect(release).toHaveBeenCalledWith(stream);
     expect(controller.getState().stream).toBeUndefined();
   });
+
+  it('handles a video track ending while LiveKit publication is still pending', async () => {
+    const { stream, video } = displayStream({ audio: true });
+    const publication = deferred<void>();
+    const release = vi.fn(async () => undefined);
+    const releaseGrant = vi.fn(async () => undefined);
+    const publish = vi.fn(() => publication.promise);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant,
+      getDisplayMedia: vi.fn(async () => stream),
+      publisher: { publish, release }
+    });
+    const starting = controller.start('motion');
+    await waitFor(() => expect(publish).toHaveBeenCalledOnce());
+
+    video.dispatchEvent(new Event('ended'));
+    expect(controller.getState().status).toBe('idle');
+    publication.resolve();
+    await starting;
+
+    expect(release).toHaveBeenCalledWith(stream);
+    expect(releaseGrant).toHaveBeenCalledOnce();
+    expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
+  });
 });
 
 describe('screen stage', () => {
@@ -257,6 +344,34 @@ describe('screen stage', () => {
 });
 
 describe('host controls', () => {
+  it('clears a stale host-menu grant when the same participant is no longer marked sharing', async () => {
+    const properties = {
+      authorizeHost: vi.fn().mockResolvedValue(undefined),
+      onGrantShare: vi.fn(async () => undefined),
+      onRevokeShare: vi.fn(async () => undefined),
+      onKick: vi.fn(async () => undefined),
+      onEndMeeting: vi.fn(async () => undefined)
+    };
+    const { rerender } = render(<HostMenu
+      {...properties}
+      participants={[
+        { identity: 'participant-1', name: 'Ada', isSharing: true },
+        { identity: 'participant-2', name: 'Lin', isSharing: false }
+      ]}
+    />);
+    expect(await screen.findByRole('button', { name: 'Grant screen sharing to Lin' })).toBeDisabled();
+
+    rerender(<HostMenu
+      {...properties}
+      participants={[
+        { identity: 'participant-1', name: 'Ada', isSharing: false },
+        { identity: 'participant-2', name: 'Lin', isSharing: false }
+      ]}
+    />);
+
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Grant screen sharing to Lin' })).toBeEnabled());
+  });
+
   it('renders no management controls unless a host-authorized API request succeeds', async () => {
     const rejected = vi.fn().mockRejectedValue(new Error('not a host'));
     const { rerender } = render(<HostMenu
@@ -334,7 +449,7 @@ function eventTrack(kind: 'audio' | 'video') {
   return Object.assign(target, { kind, stop: vi.fn() }) as unknown as MediaStreamTrack;
 }
 
-function meetingController(): MeetingRoomController {
+function meetingController(change: Partial<MeetingRoomState> = {}): MeetingRoomController {
   const state: MeetingRoomState = {
     connection: 'connected',
     participants: [{
@@ -343,7 +458,8 @@ function meetingController(): MeetingRoomController {
     }],
     microphoneEnabled: false,
     audioPlaybackBlocked: false,
-    screenShareAuthorized: false
+    screenShareAuthorized: false,
+    ...change
   };
   return {
     connect: vi.fn(async () => undefined),
@@ -355,4 +471,22 @@ function meetingController(): MeetingRoomController {
     subscribe: vi.fn((listener: (value: MeetingRoomState) => void) => { listener(state); return () => undefined; }),
     resumeAudioPlayback: vi.fn(async () => undefined)
   };
+}
+
+function unauthorizedMeetingApi() {
+  return {
+    authorizeHost: vi.fn().mockRejectedValue(new Error('not a host')),
+    verifyParticipantShare: vi.fn().mockRejectedValue(new Error('not authorized')),
+    grantShare: vi.fn().mockRejectedValue(new Error('not a host')),
+    releaseOwnShare: vi.fn(async () => undefined),
+    revokeShare: vi.fn().mockRejectedValue(new Error('not a host')),
+    kick: vi.fn().mockRejectedValue(new Error('not a host')),
+    end: vi.fn().mockRejectedValue(new Error('not a host'))
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolver) => { resolve = resolver; });
+  return { promise, resolve };
 }

@@ -163,14 +163,16 @@ export function MeetingRoomPage({
     name: participant.name,
     isSharing: participant.isSharing
   }));
-  const sharerName = state.participants.find((participant) => participant.isSharing)?.name
-    ?? (screenState.stream ? join.participantName : undefined);
+  const stageStream = screenState.stream ?? state.remoteScreenShare?.stream;
+  const sharerName = screenState.stream
+    ? join.participantName
+    : state.remoteScreenShare?.sharerName;
 
   return <main className="meeting-room">
     <header><p className="eyebrow">Meeting room</p><h1>{join.participantName}, you are in</h1></header>
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
     {screenState.audioGuidance && <p role="status">{screenState.audioGuidance}</p>}
-    <ScreenStage stream={screenState.stream} sharerName={sharerName} />
+    <ScreenStage stream={stageStream} sharerName={sharerName} />
     <ParticipantList participants={state.participants} />
     <HostMenu
       participants={hostParticipants}

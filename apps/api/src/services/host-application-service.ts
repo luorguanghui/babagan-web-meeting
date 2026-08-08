@@ -96,6 +96,7 @@ export class HostApplicationService {
       this.dependencies.repository.transaction(() => {
         if (participant?.meetingId === meeting.id) {
           this.dependencies.repository.revokeParticipantSession(identity, now);
+          this.dependencies.repository.clearShareIdentityIfMatches(meeting.id, identity);
         }
         this.dependencies.repository.insertAuditEvent({
           id: this.dependencies.ids.uuid(),

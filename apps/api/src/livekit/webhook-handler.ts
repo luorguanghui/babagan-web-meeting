@@ -120,7 +120,6 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       DELETE FROM join_reservations
       WHERE meeting_id = ? AND identity = ?
     `).run(roomName, identity);
-
     const authorized = session?.meeting_id === roomName
       && session.revoked_at === null
       && session.expires_at > now;
@@ -142,6 +141,11 @@ export class LiveKitWebhookHandler implements WebhookHandler {
     this.dependencies.database.prepare(`
       DELETE FROM join_reservations
       WHERE meeting_id = ? AND identity = ?
+    `).run(roomName, identity);
+    this.dependencies.database.prepare(`
+      UPDATE meetings
+      SET share_identity = NULL, version = version + 1
+      WHERE id = ? AND share_identity = ?
     `).run(roomName, identity);
 
     if ((event.room?.numParticipants ?? 0) === 0) {

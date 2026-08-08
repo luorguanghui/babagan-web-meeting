@@ -49,3 +49,32 @@ pnpm build      # API and web builds exit 0
 ## Commit
 
 `feat: add controlled screen sharing and host actions` (created after this report was written).
+
+## Review fix round 1
+
+- **RED — remote stage:** Added controller and room-page regressions proving a subscribed remote `screen_share` video enters `MeetingRoomState` and renders for a non-sharer. Both failed because only remote audio subscriptions were represented. The controller now constructs a screen stream from the subscribed video track, records sharer identity/name, clears it on unsubscription/room release, and leaves screen-share audio on the existing autoplay path.
+- **RED — pre-publish departures:** Added leave, kick, and true `participant_left` webhook regressions where a grant exists but no screen track was ever published. All retained `share_identity`. Normal leave and kick now clear only a matching grant while revoking the participant session; the webhook independently clears a matching grant on disconnect.
+- **RED — publication race:** Held LiveKit publication pending, ended the browser video track, then completed publication. The UI stayed in `starting` because the listener was registered after publication. The controller now owns the stream and registers `ended` before scheduling publication; stop waits for the in-flight publish, releases any resulting publication and server grant, and never transitions to `sharing`.
+- **RED — host menu synchronization:** Rerendered the same participant from `isSharing: true` to `false`; the menu preserved stale local ownership and blocked a new grant. It now synchronizes to semantic external sharing identity changes while retaining immediate local feedback after a successful grant.
+
+Focused verification after the fixes:
+
+```text
+pnpm --filter @meeting/web test -- screen-share.test.tsx
+# 1 file, 16 tests passed
+
+pnpm --filter @meeting/api test -- meeting-service.test.ts host-service.test.ts livekit.test.ts
+# 3 files, 44 tests passed
+
+pnpm typecheck
+# all workspaces exit 0
+```
+
+Fresh full verification before the review-fix commit:
+
+```text
+pnpm lint       # exit 0
+pnpm test       # 14 files, 174 tests passed
+pnpm typecheck  # all workspaces exit 0
+pnpm build      # API and web builds exit 0
+```

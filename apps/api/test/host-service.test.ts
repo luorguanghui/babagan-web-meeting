@@ -175,6 +175,16 @@ describe('host screen-share and meeting controls', () => {
     }]);
   });
 
+  it('clears a kicked participant share grant before any screen track is published', async () => {
+    const { meeting } = await createMeetingWithParticipants('Ada');
+    await hosts.grantShare(activeHost(meeting.id), meeting.slug, 'participant-1');
+
+    await hosts.kickParticipant(activeHost(meeting.id), meeting.slug, 'participant-1');
+
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+    expect(media.removed).toEqual(['participant-1']);
+  });
+
   it('ends the meeting, revokes the host, and audits the terminal action', async () => {
     const { meeting } = await createMeetingWithParticipants('Ada');
 
