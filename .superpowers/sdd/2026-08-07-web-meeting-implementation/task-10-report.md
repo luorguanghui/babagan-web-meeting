@@ -78,3 +78,28 @@ pnpm test       # 14 files, 174 tests passed
 pnpm typecheck  # all workspaces exit 0
 pnpm build      # API and web builds exit 0
 ```
+
+## Review fix round 2
+
+- **RED — leave removal failure:** Added a regression that fails the first media removal after the participant session is revoked. The matching share lock now remains held after that failure, and a repeated leave retries removal before clearing the lock.
+- **RED — kick removal failure:** Added a regression that fails the first host kick removal, verifies the session was already revoked while the share lock remains held, then retries the kick. Host removal now recovers the persisted (revoked) participant session, attempts LiveKit removal again, and clears the matching lock only after success.
+- Added an explicit repository lookup for participant sessions including revoked rows. It is used only to preserve the media-cleanup retry path; normal active authorization continues to use the time- and revocation-filtered lookup.
+
+Focused verification after the fixes:
+
+```text
+pnpm --filter @meeting/api test -- meeting-service.test.ts host-service.test.ts
+# 2 files, 26 tests passed
+
+pnpm typecheck
+# all workspaces exit 0
+```
+
+Fresh full verification before the round-2 commit:
+
+```text
+pnpm lint       # exit 0
+pnpm test       # 14 files, 176 tests passed
+pnpm typecheck  # all workspaces exit 0
+pnpm build      # API and web builds exit 0
+```

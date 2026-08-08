@@ -189,6 +189,26 @@ describe('MeetingService', () => {
     expect(repo.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
   });
 
+  it('retains a departing participant share grant until media removal succeeds on retry', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily' });
+    const joined = await service.joinMeeting(meeting.slug, { nickname: 'Ada' });
+    const current = repo.findBySlug(meeting.slug);
+    if (!current) throw new Error('meeting fixture missing');
+    expect(repo.trySetShareIdentity(current.id, current.version, joined.participantIdentity)).toEqual({ ok: true });
+    media.removeFailuresRemaining = 1;
+
+    await expect(service.leaveMeeting(meeting.slug, joined.participantIdentity))
+      .rejects.toThrow('media unavailable');
+
+    expect(repo.findParticipantSessionByIdentity(joined.participantIdentity, clock.now())).toBeNull();
+    expect(repo.findBySlug(meeting.slug)?.shareIdentity).toBe(joined.participantIdentity);
+
+    await service.leaveMeeting(meeting.slug, joined.participantIdentity);
+
+    expect(media.removeAttempts).toBe(2);
+    expect(repo.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+  });
+
   it('revokes every participant session and closes media when ended', async () => {
     const meeting = await service.createMeeting({ name: 'Daily' });
     const first = await service.joinMeeting(meeting.slug, { nickname: 'Ada' });
@@ -243,6 +263,8 @@ class FakeMediaService implements MediaService {
   readonly issuedTokens: string[] = [];
   closeFailuresRemaining = 0;
   closeAttempts = 0;
+  removeFailuresRemaining = 0;
+  removeAttempts = 0;
   onListParticipants?: (call: number) => void;
   private listCalls = 0;
 
@@ -259,6 +281,11 @@ class FakeMediaService implements MediaService {
   }
 
   async removeParticipant(meetingId: string, identity: string): Promise<void> {
+    this.removeAttempts++;
+    if (this.removeFailuresRemaining > 0) {
+      this.removeFailuresRemaining--;
+      throw new Error('media unavailable');
+    }
     this.identities.set(meetingId, (this.identities.get(meetingId) ?? []).filter((value) => value !== identity));
   }
 

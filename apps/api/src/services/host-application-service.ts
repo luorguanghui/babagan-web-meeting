@@ -88,15 +88,16 @@ export class HostApplicationService {
   async kickParticipant(host: ActiveHostSession, slug: string, identity: string): Promise<void> {
     const meeting = this.authorize(host, slug);
     await this.mutex.runExclusive(meeting.id, async () => {
-      const participant = this.dependencies.repository.findParticipantSessionByIdentity(
+      const activeParticipant = this.dependencies.repository.findParticipantSessionByIdentity(
         identity,
         this.dependencies.clock.now()
       );
+      const participant = activeParticipant
+        ?? this.dependencies.repository.findParticipantSessionByIdentityIncludingRevoked(identity);
       const now = this.dependencies.clock.now();
       this.dependencies.repository.transaction(() => {
-        if (participant?.meetingId === meeting.id) {
+        if (activeParticipant?.meetingId === meeting.id) {
           this.dependencies.repository.revokeParticipantSession(identity, now);
-          this.dependencies.repository.clearShareIdentityIfMatches(meeting.id, identity);
         }
         this.dependencies.repository.insertAuditEvent({
           id: this.dependencies.ids.uuid(),
@@ -113,6 +114,7 @@ export class HostApplicationService {
       } catch {
         throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       }
+      this.dependencies.repository.clearShareIdentityIfMatches(meeting.id, identity);
     });
   }
 

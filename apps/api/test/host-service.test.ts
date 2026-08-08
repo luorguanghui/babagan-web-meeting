@@ -185,6 +185,24 @@ describe('host screen-share and meeting controls', () => {
     expect(media.removed).toEqual(['participant-1']);
   });
 
+  it('retains a kicked participant share grant until media removal succeeds on retry', async () => {
+    const { meeting } = await createMeetingWithParticipants('Ada');
+    await hosts.grantShare(activeHost(meeting.id), meeting.slug, 'participant-1');
+    media.removeFailuresRemaining = 1;
+
+    await expect(hosts.kickParticipant(activeHost(meeting.id), meeting.slug, 'participant-1'))
+      .rejects.toMatchObject({ code: 'MEDIA_SERVICE_UNAVAILABLE' });
+
+    expect(repository.findParticipantSessionByIdentity('participant-1', clock.now())).toBeNull();
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBe('participant-1');
+
+    await hosts.kickParticipant(activeHost(meeting.id), meeting.slug, 'participant-1');
+
+    expect(media.removeAttempts).toEqual(['participant-1', 'participant-1']);
+    expect(media.removed).toEqual(['participant-1']);
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
+  });
+
   it('ends the meeting, revokes the host, and audits the terminal action', async () => {
     const { meeting } = await createMeetingWithParticipants('Ada');
 
@@ -248,6 +266,8 @@ class QueueIds implements IdGenerator {
 class HostMediaFake implements MediaService {
   readonly sourceUpdates: Array<{ identity: string; sources: PublishSource[] }> = [];
   readonly removed: string[] = [];
+  readonly removeAttempts: string[] = [];
+  removeFailuresRemaining = 0;
   updateError?: Error;
   onSourceUpdate?: (identity: string, sources: PublishSource[]) => void;
   onRemove?: (identity: string) => void;
@@ -261,6 +281,11 @@ class HostMediaFake implements MediaService {
   }
   async removeParticipant(_roomName: string, identity: string): Promise<void> {
     this.onRemove?.(identity);
+    this.removeAttempts.push(identity);
+    if (this.removeFailuresRemaining > 0) {
+      this.removeFailuresRemaining--;
+      throw new Error('media unavailable');
+    }
     this.removed.push(identity);
   }
   async deleteRoom(): Promise<void> {}
