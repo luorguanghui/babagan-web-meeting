@@ -103,3 +103,25 @@ pnpm test       # 14 files, 176 tests passed
 pnpm typecheck  # all workspaces exit 0
 pnpm build      # API and web builds exit 0
 ```
+
+## Review fix round 3
+
+- **RED - HTTP leave retry:** Added an API-level regression that makes the first participant leave fail during media removal. It verifies the participant session is already revoked and the matching share lock remains held, then repeats the real HTTP request with the original signed participant cookie. Before the fix, that retry returned 401 and never reached media cleanup.
+- Added a leave-only authentication path backed by an expiry-checked participant-token lookup that includes revoked sessions. The token remains signed, unexpired, scoped to its original meeting and limited to idempotent cleanup of its own identity. Refresh, participant listing, and share-release APIs continue to require an active session.
+- The retry now reaches `MeetingService.leaveMeeting`, performs the second media removal, and clears the matching lock only after removal succeeds. Revoke-before-removal ordering and the no-second-sharer invariant remain unchanged.
+
+Focused verification after the fix:
+
+```text
+pnpm --filter @meeting/api test -- api.test.ts meeting-service.test.ts host-service.test.ts
+# 3 files, 48 tests passed
+```
+
+Fresh full verification before the round-3 commit:
+
+```text
+pnpm lint       # exit 0
+pnpm test       # 14 files, 177 tests passed
+pnpm typecheck  # all workspaces exit 0
+pnpm build      # API and web builds exit 0
+```

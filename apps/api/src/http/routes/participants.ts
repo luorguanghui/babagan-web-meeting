@@ -52,8 +52,8 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
 
   app.post('/api/v1/meetings/:slug/leave', participantOptions(app), async (request, reply) => {
     const value = slug(request.params);
-    const active = session(request, dependencies.participants, value);
-    await dependencies.meetings.leaveMeeting(value, active.identity);
+    const participant = leaveSession(request, dependencies.participants, value);
+    await dependencies.meetings.leaveMeeting(value, participant.identity);
     return reply.status(204).send();
   });
 
@@ -81,6 +81,12 @@ function session(request: FastifyRequest, participants: ParticipantApplicationSe
   const raw = readSignedSessionCookie(request, participantCookie);
   if (!raw) throw new SessionAuthenticationError();
   return participants.authenticate(raw, slugValue);
+}
+
+function leaveSession(request: FastifyRequest, participants: ParticipantApplicationService, slugValue: string) {
+  const raw = readSignedSessionCookie(request, participantCookie);
+  if (!raw) throw new SessionAuthenticationError();
+  return participants.authenticateForLeave(raw, slugValue);
 }
 
 function slug(params: unknown): string { return (params as { slug: string }).slug; }

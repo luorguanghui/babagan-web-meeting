@@ -37,6 +37,18 @@ export class ParticipantApplicationService {
     return session;
   }
 
+  authenticateForLeave(rawToken: string, slug: string): ParticipantSession {
+    const session = this.dependencies.repository.findParticipantSessionByTokenHashIncludingRevoked(
+      hashSessionToken(rawToken),
+      this.dependencies.clock.now()
+    );
+    if (!session) throw new SessionAuthenticationError();
+    const meeting = this.dependencies.repository.findBySlug(slug);
+    if (!meeting) throw domainError('MEETING_NOT_FOUND');
+    if (session.meetingId !== meeting.id) throw new SessionAuthenticationError();
+    return session;
+  }
+
   async refreshToken(
     session: ActiveParticipantSession,
     slug: string

@@ -206,6 +206,15 @@ export class SqliteMeetingRepository implements MeetingRepository {
     return row ? toParticipantSession(row) : null;
   }
 
+  findParticipantSessionByTokenHashIncludingRevoked(tokenHash: string, now: number): ParticipantSession | null {
+    const row = this.db.prepare(`
+      SELECT identity, meeting_id, nickname, token_hash, expires_at, revoked_at
+      FROM participant_sessions
+      WHERE token_hash = ? AND expires_at > ?
+    `).get(tokenHash, now) as ParticipantSessionRow | undefined;
+    return row ? toParticipantSession(row) : null;
+  }
+
   findParticipantSessionByIdentity(identity: string, now: number): ParticipantSession | null {
     const row = this.db.prepare(`
       SELECT identity, meeting_id, nickname, token_hash, expires_at, revoked_at

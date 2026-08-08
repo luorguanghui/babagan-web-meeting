@@ -29,6 +29,7 @@ export interface MeetingRepository {
   revokeHostSessionsForMeeting(meetingId: string, at: number): void;
   upsertParticipantSession(value: ParticipantSession): void;
   findParticipantSessionByTokenHash(tokenHash: string, now: number): ParticipantSession | null;
+  findParticipantSessionByTokenHashIncludingRevoked(tokenHash: string, now: number): ParticipantSession | null;
   findParticipantSessionByIdentity(identity: string, now: number): ParticipantSession | null;
   findParticipantSessionByIdentityIncludingRevoked(identity: string): ParticipantSession | null;
   listActiveParticipantSessions(meetingId: string, now: number): ParticipantSession[];

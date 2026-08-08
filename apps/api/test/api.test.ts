@@ -111,6 +111,32 @@ describe('meeting HTTP API', () => {
     expect(left.statusCode).toBe(204);
   });
 
+  it('retries a failed leave over HTTP with the same revoked participant cookie before releasing the share lock', async () => {
+    const created = await fixture.createMeeting();
+    const joined = await fixture.join(created.slug, 'Ada');
+    const participantCookie = cookiePair(joined.headers['set-cookie']);
+    const participantIdentity = joined.json().participantIdentity as string;
+    await fixture.modify('PUT', `${created.slug}/share-grant`, cookiePair(created.setCookie), {
+      participantIdentity
+    });
+    fixture.media.removeFailuresRemaining = 1;
+
+    const failed = await fixture.modify('POST', `${created.slug}/leave`, participantCookie);
+
+    expect(failed.statusCode).toBe(500);
+    expect(fixture.db.prepare('SELECT revoked_at FROM participant_sessions WHERE identity = ?')
+      .get(participantIdentity)).toEqual({ revoked_at: 1_000 });
+    expect(fixture.db.prepare('SELECT share_identity FROM meetings WHERE id = ?')
+      .get('meeting-id')).toEqual({ share_identity: participantIdentity });
+
+    const retried = await fixture.modify('POST', `${created.slug}/leave`, participantCookie);
+
+    expect(retried.statusCode, retried.body).toBe(204);
+    expect(fixture.media.removeAttempts).toEqual([participantIdentity, participantIdentity]);
+    expect(fixture.db.prepare('SELECT share_identity FROM meetings WHERE id = ?')
+      .get('meeting-id')).toEqual({ share_identity: null });
+  });
+
   it('authorizes host kick, share grant/revoke and end through the scoped host cookie', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
@@ -397,13 +423,22 @@ class ApiIds implements IdGenerator {
 class ApiMediaFake implements MediaService {
   readonly identities = new Map<string, Set<string>>();
   readonly sourceUpdates: Array<{ identity: string; sources: PublishSource[] }> = [];
+  readonly removeAttempts: string[] = [];
+  removeFailuresRemaining = 0;
   pingError?: Error;
   async listParticipantIdentities(roomName: string): Promise<Set<string>> { return new Set(this.identities.get(roomName) ?? []); }
   async issueToken(input: { identity: string }): Promise<string> { return `livekit-token:${input.identity}`; }
   async updateParticipantSources(_roomName: string, identity: string, sources: PublishSource[]): Promise<void> {
     this.sourceUpdates.push({ identity, sources: [...sources] });
   }
-  async removeParticipant(roomName: string, identity: string): Promise<void> { this.identities.get(roomName)?.delete(identity); }
+  async removeParticipant(roomName: string, identity: string): Promise<void> {
+    this.removeAttempts.push(identity);
+    if (this.removeFailuresRemaining > 0) {
+      this.removeFailuresRemaining--;
+      throw new Error('media unavailable');
+    }
+    this.identities.get(roomName)?.delete(identity);
+  }
   async deleteRoom(roomName: string): Promise<void> { this.identities.delete(roomName); }
   async ping(): Promise<void> { if (this.pingError) throw this.pingError; }
 }
