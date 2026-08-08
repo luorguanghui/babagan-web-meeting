@@ -22,6 +22,9 @@
 6. [安全与隐私](docs/06-security-and-privacy.md)
 7. [经确认的总体设计](docs/superpowers/specs/2026-08-07-web-meeting-design.md)
 8. [测试驱动实施计划](docs/superpowers/plans/2026-08-07-web-meeting-implementation.md)
+9. [初始发布验收状态](docs/acceptance/initial-release.md)
+10. [部署记录与安全发布步骤](docs/runbooks/deployment-record.md)
+11. [回滚记录与演练步骤](docs/runbooks/rollback-record.md)
 
 ## 核心技术决策
 
@@ -32,6 +35,14 @@
 - LiveKit 内置 TURN/UDP 443，RTC/TCP 7881 作为 UDP 不可用时的回退。
 - Caddy 负责 HTTPS、证书续期和反向代理。
 - Docker Compose 统一部署和管理进程。
+
+## 生产发布
+
+生产发布只允许在目标 Debian 12 主机上执行。`scripts/deploy.sh` 会进行严格预检、
+可恢复的 SQLite 备份、构建、迁移、健康检查和 HTTPS/WSS 冒烟测试；
+`scripts/rollback.sh` 只允许按已记录的前一版本镜像和预发布备份回滚。
+两者均要求受保护的 secrets、显式 SHA 确认以及 Cloudflare/防火墙人工证据，且不删除旧镜像或备份。
+完整步骤与当前未完成的验收项见[部署记录](docs/runbooks/deployment-record.md)。
 
 ## 项目边界
 
