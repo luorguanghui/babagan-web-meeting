@@ -24,6 +24,7 @@ represented as passing production evidence.
 | Deployment and rollback script syntax | Passed locally: Git Bash `bash -n` for both scripts, 2026-08-08 |
 | Deployment transaction/provenance guards | Passed locally: `bash scripts/deployment-scripts.test.sh`, 2026-08-08 |
 | Recoverable baseline release | Pending target-server baseline record and checksum evidence |
+| Empty-server bootstrap alternative | Pending target-server proof that no prior release, managed stack, or API volume existed |
 
 ## Release-blocking target evidence
 

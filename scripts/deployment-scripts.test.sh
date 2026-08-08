@@ -43,6 +43,11 @@ if bash "$temp_dir/no-baseline/scripts/deploy.sh" \
   echo 'deploy incorrectly accepted a missing baseline release record' >&2; exit 1
 fi
 [[ ! -e "$temp_dir/no-baseline/var" ]] || { echo 'missing-baseline deploy created release or backup state' >&2; exit 1; }
+bootstrap_output="$(bash "$temp_dir/no-baseline/scripts/deploy.sh" \
+  --bootstrap-empty --confirm-deploy aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target-ip 203.0.113.10 \
+  --smoke-token-file /not-read --network-evidence /not-read --cloudflare-evidence /not-read 2>&1 || true)"
+[[ "$bootstrap_output" != *'baseline current-release'* ]] || { echo 'explicit bootstrap path did not bypass baseline requirement' >&2; exit 1; }
+[[ ! -e "$temp_dir/no-baseline/var" ]] || { echo 'bootstrap host-preflight failure created release or backup state' >&2; exit 1; }
 cat >"$temp_dir/bin/docker" <<'EOF'
 #!/usr/bin/env bash
 [[ "$1" == image && "$2" == inspect ]] || exit 90
@@ -97,6 +102,15 @@ sed -i '/PREVIOUS_WEB_IMAGE_ID/d' "$temp_dir/pending-release.env"
 if load_verified_pending_deployment "$temp_dir/pending-release.env"; then
   echo 'incomplete pending recovery record was incorrectly accepted' >&2; exit 1
 fi
+cat >"$temp_dir/bootstrap-pending.env" <<'EOF'
+RECORD_STATE=bootstrap-pending
+BOOTSTRAP_EMPTY=1
+CANDIDATE_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+EOF
+sed -i 's/\r$//' "$temp_dir/bootstrap-pending.env"
+chmod 600 "$temp_dir/bootstrap-pending.env"
+load_verified_pending_deployment "$temp_dir/bootstrap-pending.env"
+[[ "$IS_BOOTSTRAP_PENDING" == 1 ]] || { echo 'bootstrap pending record was not identified' >&2; exit 1; }
 # A tampered baseline must never be sourced. The payload would create this
 # sentinel if record parsing evaluated shell syntax. Run deploy.sh itself and
 # ensure it fails without deployment state or any payload side effect.

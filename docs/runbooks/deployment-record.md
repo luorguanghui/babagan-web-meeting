@@ -55,5 +55,15 @@ recovery target cannot be proven. Release records use a strict allowlisted
 `KEY=VALUE` format; deployment and rollback parse them as data and reject
 unknown, duplicate, malformed, or shell-like values without evaluating them.
 
+For a genuinely empty first server only, the operator may add
+`--bootstrap-empty`. This separate opt-in is refused if a current release
+record, managed Compose stack, or API data volume already exists. It writes an
+honest `bootstrap-pending` transaction before candidate pull/build/migration;
+it does not invent a predecessor backup or image. If that candidate fails, run
+the guarded rollback command with `--recover-pending-deploy` and the failed
+candidate SHA twice. Bootstrap recovery stops the managed stack, removes only
+the newly created API data volume, archives the pending record, and leaves no
+release active.
+
 Preserve the generated release record, backup/checksum, `docker compose ... ps`
 output, both health endpoint results, and smoke-test output outside Git.

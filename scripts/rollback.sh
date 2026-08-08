@@ -22,11 +22,26 @@ need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'produ
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
 source_record="$current"
+bootstrap_recovery=0
 if (( recover_pending )); then
   source_record="$state_dir/pending-release.env"
   load_verified_pending_deployment "$source_record" || fail 'pending recovery record is invalid'
+  bootstrap_recovery="$IS_BOOTSTRAP_PENDING"
 else
   load_verified_baseline_release "$current" || fail 'current release record is invalid'
+fi
+if (( bootstrap_recovery )); then
+  [[ "$target" == "$CANDIDATE_SHA" ]] || fail 'bootstrap recovery confirmation must name the failed candidate SHA'
+  umask 077; mkdir -p "$state_dir/rollback"; chmod 700 "$state_dir" "$state_dir/rollback"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"; log="$state_dir/rollback/$stamp-bootstrap-$target.log"
+  # The bootstrap preflight proved no predecessor DB/stack existed. Explicit
+  # recovery removes only the candidate-managed stack and its newly-created DB volume.
+  compose down --remove-orphans
+  bootstrap_volume="$(docker volume inspect --format '{{ .Mountpoint }}' babagan-meeting_api-data 2>/dev/null || true)"
+  [[ -z "$bootstrap_volume" ]] || docker volume rm babagan-meeting_api-data >/dev/null
+  mv "$source_record" "$state_dir/rollback/pending-bootstrap.recovered-$stamp.env"
+  printf 'RESULT=bootstrap-recovered-no-release\nCANDIDATE_SHA=%s\nCOMPLETED_AT_UTC=%s\n' "$target" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$log"
+  chmod 600 "$log"; echo "BOOTSTRAP RECOVERY SUCCEEDED: no release remains"; exit 0
 fi
 [[ "${PREVIOUS_RELEASE_SHA:-}" == "$target" ]] || fail 'target is not the recorded predecessor of selected release record'
 for key in DATABASE_BACKUP DATABASE_BACKUP_SHA256 PREVIOUS_API_IMAGE_TAG PREVIOUS_API_IMAGE_ID PREVIOUS_WEB_IMAGE_TAG PREVIOUS_WEB_IMAGE_ID PREVIOUS_CADDY_IMAGE_TAG PREVIOUS_CADDY_IMAGE_ID PREVIOUS_LIVEKIT_IMAGE_TAG PREVIOUS_LIVEKIT_IMAGE_ID; do [[ -n "${!key:-}" ]] || fail "record lacks $key"; done
