@@ -94,19 +94,21 @@ class RoomController implements MeetingRoomController {
 
   async connect(join: JoinMeetingResponse): Promise<void> {
     if (this.room) await this.disconnect();
-    this.room = this.createRoom({
+    const room = this.createRoom({
       adaptiveStream: true,
       dynacast: true,
       audioCaptureDefaults: voiceConstraints
     });
-    this.bindRoomEvents();
+    this.room = room;
+    this.bindRoomEvents(room);
     this.update({ connection: 'connecting' });
     try {
-      await this.room.connect(join.livekitUrl, join.token, { autoSubscribe: true });
+      await room.connect(join.livekitUrl, join.token, { autoSubscribe: true });
       this.refreshParticipants();
       this.update({ connection: 'connected' });
     } catch (reason) {
-      this.update({ connection: 'disconnected' });
+      this.releaseRoom(room);
+      await room.disconnect().catch(() => undefined);
       throw reason;
     }
   }
@@ -131,12 +133,8 @@ class RoomController implements MeetingRoomController {
   async disconnect(): Promise<void> {
     const room = this.room;
     if (!room) return;
-    for (const [event, listener] of this.roomListeners) room.off(event, listener);
-    this.roomListeners.clear();
-    this.audioPlayback.clear();
-    this.room = undefined;
+    this.releaseRoom(room);
     await room.disconnect();
-    this.update({ connection: 'disconnected', participants: [], microphoneEnabled: false });
   }
 
   subscribe(listener: (state: MeetingRoomState) => void): () => void {
@@ -149,22 +147,19 @@ class RoomController implements MeetingRoomController {
     await this.audioPlayback.resume();
   }
 
-  private bindRoomEvents(): void {
+  private bindRoomEvents(room: LiveKitRoomAdapter): void {
     const refresh = () => this.refreshParticipants();
-    this.listen(RoomEvent.ParticipantConnected, refresh);
-    this.listen(RoomEvent.ParticipantDisconnected, refresh);
-    this.listen(RoomEvent.ParticipantNameChanged, refresh);
-    this.listen(RoomEvent.TrackMuted, refresh);
-    this.listen(RoomEvent.TrackUnmuted, refresh);
-    this.listen(RoomEvent.LocalTrackPublished, refresh);
-    this.listen(RoomEvent.LocalTrackUnpublished, refresh);
-    this.listen(RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
-    this.listen(RoomEvent.Reconnected, () => this.update({ connection: 'connected' }));
-    this.listen(RoomEvent.Disconnected, () => {
-      this.audioPlayback.clear();
-      this.update({ connection: 'disconnected', participants: [], microphoneEnabled: false });
-    });
-    this.listen(RoomEvent.TrackSubscribed, (value) => {
+    this.listen(room, RoomEvent.ParticipantConnected, refresh);
+    this.listen(room, RoomEvent.ParticipantDisconnected, refresh);
+    this.listen(room, RoomEvent.ParticipantNameChanged, refresh);
+    this.listen(room, RoomEvent.TrackMuted, refresh);
+    this.listen(room, RoomEvent.TrackUnmuted, refresh);
+    this.listen(room, RoomEvent.LocalTrackPublished, refresh);
+    this.listen(room, RoomEvent.LocalTrackUnpublished, refresh);
+    this.listen(room, RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
+    this.listen(room, RoomEvent.Reconnected, () => this.update({ connection: 'connected' }));
+    this.listen(room, RoomEvent.Disconnected, () => this.releaseRoom(room));
+    this.listen(room, RoomEvent.TrackSubscribed, (value) => {
       const track = value as LiveKitTrackAdapter;
       if (track.kind !== Track.Kind.Audio) return;
       const element = track.attach();
@@ -173,15 +168,27 @@ class RoomController implements MeetingRoomController {
       document.body.append(element);
       void this.audioPlayback.add(element).catch(() => undefined);
     });
-    this.listen(RoomEvent.TrackUnsubscribed, (value) => {
+    this.listen(room, RoomEvent.TrackUnsubscribed, (value) => {
       const detached = (value as LiveKitTrackAdapter).detach();
       for (const element of Array.isArray(detached) ? detached : [detached]) this.audioPlayback.remove(element);
     });
   }
 
-  private listen(event: string, listener: (...args: unknown[]) => void): void {
-    this.roomListeners.set(event, listener);
-    this.room?.on(event, listener);
+  private listen(room: LiveKitRoomAdapter, event: string, listener: (...args: unknown[]) => void): void {
+    const guardedListener = (...args: unknown[]) => {
+      if (this.room === room) listener(...args);
+    };
+    this.roomListeners.set(event, guardedListener);
+    room.on(event, guardedListener);
+  }
+
+  private releaseRoom(room: LiveKitRoomAdapter): void {
+    if (this.room !== room) return;
+    for (const [event, listener] of this.roomListeners) room.off(event, listener);
+    this.roomListeners.clear();
+    this.audioPlayback.clear();
+    this.room = undefined;
+    this.update({ connection: 'disconnected', participants: [], microphoneEnabled: false });
   }
 
   private refreshParticipants(): void {

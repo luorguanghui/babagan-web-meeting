@@ -156,6 +156,32 @@ describe('room controller', () => {
     expect(states.at(-1)).toMatchObject({ connection: 'disconnected', participants: [], microphoneEnabled: false });
   });
 
+  it('fully releases the SDK room after a failed connection attempt', async () => {
+    const room = roomAdapter();
+    vi.mocked(room.connect).mockRejectedValue(new Error('SFU unavailable'));
+    const controller = createRoomController(() => room);
+
+    await expect(controller.connect(join)).rejects.toThrow('SFU unavailable');
+
+    expect(room.off).toHaveBeenCalled();
+    expect(room.disconnect).toHaveBeenCalledOnce();
+    await expect(controller.setMicrophoneEnabled(true)).rejects.toThrow('not connected');
+    await expect(controller.switchAudioOutput('speaker-2')).rejects.toThrow('not connected');
+  });
+
+  it('fully releases the SDK room after an unexpected disconnect event', async () => {
+    const room = roomAdapter();
+    const controller = createRoomController(() => room);
+    await controller.connect(join);
+    const disconnected = vi.mocked(room.on).mock.calls.find(([event]) => event === 'disconnected')?.[1];
+
+    disconnected?.();
+
+    expect(room.off).toHaveBeenCalled();
+    await expect(controller.setMicrophoneEnabled(true)).rejects.toThrow('not connected');
+    await expect(controller.switchAudioOutput('speaker-2')).rejects.toThrow('not connected');
+  });
+
   it('surfaces an attached remote audio autoplay rejection in room state', async () => {
     const room = roomAdapter();
     const playback = new AudioPlayback();
@@ -336,5 +362,44 @@ describe('remote audio playback', () => {
     await playback.add(element);
 
     expect(statuses.at(-1)).toBe(true);
+  });
+
+  it('stays blocked until every blocked remote element is released or recovers', async () => {
+    const blocked = {
+      play: vi.fn().mockRejectedValue(new DOMException('Blocked', 'NotAllowedError')),
+      remove: vi.fn()
+    } as unknown as HTMLMediaElement;
+    const playing = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn()
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+    const statuses: boolean[] = [];
+    playback.subscribe((status) => statuses.push(status));
+
+    await playback.add(blocked);
+    await playback.add(playing);
+    expect(statuses.at(-1)).toBe(true);
+
+    playback.remove(blocked);
+    expect(statuses.at(-1)).toBe(false);
+  });
+
+  it('ignores a late autoplay rejection after playback ownership is cleared', async () => {
+    let rejectPlay!: (reason: unknown) => void;
+    const element = {
+      play: vi.fn(() => new Promise<void>((_resolve, reject) => { rejectPlay = reject; })),
+      remove: vi.fn()
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+    const statuses: boolean[] = [];
+    playback.subscribe((status) => statuses.push(status));
+    const pendingAdd = playback.add(element);
+
+    playback.clear();
+    rejectPlay(new DOMException('Blocked late', 'NotAllowedError'));
+    await pendingAdd;
+
+    expect(statuses.at(-1)).toBe(false);
   });
 });
