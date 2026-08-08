@@ -430,6 +430,24 @@ describe('host controls', () => {
     expect(confirmEnd).toHaveBeenCalledOnce();
     expect(end).toHaveBeenCalledOnce();
   });
+
+  it('notifies the room after the host successfully ends the meeting', async () => {
+    const ended = vi.fn();
+    render(<HostMenu
+      participants={[]}
+      authorizeHost={vi.fn().mockResolvedValue(undefined)}
+      onGrantShare={vi.fn()}
+      onRevokeShare={vi.fn()}
+      onKick={vi.fn()}
+      onEndMeeting={vi.fn().mockResolvedValue(undefined)}
+      confirmEnd={() => true}
+      onEnded={ended}
+    />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'End meeting' }));
+
+    expect(ended).toHaveBeenCalledOnce();
+  });
 });
 
 function displayStream(options: { audio: boolean }) {

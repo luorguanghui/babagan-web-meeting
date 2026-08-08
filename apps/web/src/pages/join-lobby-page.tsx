@@ -38,9 +38,9 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     slug={slug}
     join={joined}
     onLeft={() => setJoined(undefined)}
-    onTerminal={() => {
+    onTerminal={(reason) => {
       setJoined(undefined);
-      navigate(`/m/${encodeURIComponent(slug)}`, { replace: true });
+      navigate(reason === 'rejoin-required' ? `/m/${encodeURIComponent(slug)}` : '/create', { replace: true });
     }}
   />;
 

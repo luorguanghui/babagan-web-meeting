@@ -8,6 +8,7 @@ interface HostMenuProps {
   onRevokeShare: () => Promise<void>;
   onKick: (identity: string) => Promise<void>;
   onEndMeeting: () => Promise<void>;
+  onEnded?: () => void;
   confirmEnd?: () => boolean;
   onAuthorizationChange?: (authorized: boolean) => void;
 }
@@ -19,6 +20,7 @@ export function HostMenu({
   onRevokeShare,
   onKick,
   onEndMeeting,
+  onEnded,
   confirmEnd = () => window.confirm('End this meeting for everyone?'),
   onAuthorizationChange
 }: HostMenuProps) {
@@ -89,7 +91,9 @@ export function HostMenu({
       </li>)}
     </ul>
     <button type="button" className="danger" onClick={() => {
-      if (confirmEnd()) void act(onEndMeeting);
+      if (confirmEnd()) void act(onEndMeeting).then((ended) => {
+        if (ended) onEnded?.();
+      });
     }}>End meeting</button>
   </section>;
 }

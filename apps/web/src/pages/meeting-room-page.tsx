@@ -206,6 +206,7 @@ export function MeetingRoomPage({
       onRevokeShare={() => meetingApi.revokeShare(slug)}
       onKick={(identity) => meetingApi.kick(slug, identity)}
       onEndMeeting={() => meetingApi.end(slug)}
+      onEnded={() => onTerminal?.('ended')}
     />
     <MeetingControls
       connection={state.connection}
