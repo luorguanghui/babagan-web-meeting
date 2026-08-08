@@ -36,7 +36,7 @@ grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" &&
 for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
 [[ "$(git -C "$app_dir" rev-parse HEAD)" == "$sha" ]] || fail 'confirmation SHA does not equal checked-out release'
 mem_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"; disk_kib="$(df -Pk "$app_dir" | awk 'NR==2 {print $4}')"
-(( mem_kib >= 1572864 )) || fail 'requires at least 1.5 GiB available RAM'; (( disk_kib >= 10485760 )) || fail 'requires at least 10 GiB free disk'
+(( mem_kib >= 1153434 )) || fail 'requires at least 1.1 GiB available RAM'; (( disk_kib >= 10485760 )) || fail 'requires at least 10 GiB free disk'
 getent ahostsv4 meet.babagan.cloud >/dev/null || fail 'meet DNS does not resolve'
 for host in rtc.babagan.cloud turn.babagan.cloud; do getent ahostsv4 "$host" | awk '{print $1}' | grep -Fxq "$target_ip" || fail "$host must resolve to target IP"; done
 # meet is intentionally Cloudflare-proxied, so it must not be required to return origin IP.

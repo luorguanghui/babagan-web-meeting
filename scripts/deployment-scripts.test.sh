@@ -14,6 +14,7 @@ need "$deploy" 'compose run --rm --no-deps api'
 need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
+need "$deploy" '(( mem_kib >= 1153434 ))'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before

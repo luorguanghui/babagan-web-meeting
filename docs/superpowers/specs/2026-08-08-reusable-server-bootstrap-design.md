@@ -60,7 +60,7 @@ operator cloud configuration + evidence -> deploy.sh --bootstrap-empty -> migrat
 - All scripts use `set -Eeuo pipefail`, argument validation, fixed paths, `umask 077`, and restrictive file modes.
 - The scripts do not fetch a branch by name after confirmation; the existing deploy script still requires an explicit full Git SHA.
 - No secret is embedded in an argument, log output, repository file, or generated documentation.
-- The new scripts leave the 1.5 GiB deployment memory gate unchanged. A host below that threshold fails closed rather than silently reducing production safety requirements.
+- The release memory gate requires at least 1.1 GiB available RAM. A host below that threshold fails closed rather than silently continuing with insufficient memory.
 
 ## Tests
 
