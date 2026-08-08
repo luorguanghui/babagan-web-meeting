@@ -128,4 +128,61 @@ if bash "$temp_dir/tampered/scripts/deploy.sh" \
 fi
 [[ ! -e "$temp_dir/tampered-write-sentinel" ]] || { echo 'tampered record payload was executed' >&2; exit 1; }
 [[ ! -e "$temp_dir/tampered/var/backups" && ! -e "$temp_dir/tampered/var/releases/pending-release.env" ]] || { echo 'tampered baseline deploy created deployment state' >&2; exit 1; }
+
+# Invoke rollback.sh's destructive bootstrap branch with a Docker mock. A
+# replaced/foreign volume must stop before compose down or volume rm; the exact
+# recorded marker/label/mountpoint is the only case permitted to remove it.
+recovery_app="$temp_dir/recovery-app"; mkdir -p "$recovery_app/scripts" "$recovery_app/infra" "$recovery_app/var/releases" "$recovery_app/bin"
+cp "$rollback" "$recovery_app/scripts/rollback.sh"; cp "$root/scripts/release-provenance.sh" "$recovery_app/scripts/release-provenance.sh"
+printf 'x\n' >"$recovery_app/infra/docker-compose.yml"; printf 'x\n' >"$recovery_app/infra/.env.production"; printf 'token\n' >"$recovery_app/token"
+cat >"$recovery_app/bin/stat" <<'EOF'
+#!/usr/bin/env bash
+[[ "$1" == -c && "$2" == '%a' ]] && { printf '600\n'; exit 0; }; exec /usr/bin/stat "$@"
+EOF
+cat >"$recovery_app/bin/sqlite3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+cat >"$recovery_app/bin/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
+if [[ "$1" == compose ]]; then exit 0; fi
+if [[ "$1" == volume && "$2" == inspect ]]; then
+  if [[ "$MOCK_VOLUME_MODE" == foreign ]]; then
+    [[ "$4" == *Labels* ]] && { printf 'foreign-project\n'; exit 0; }; printf '%s\n' /foreign/replaced; exit 0
+  fi
+  [[ "$4" == *Labels* ]] && { printf 'babagan-meeting\n'; exit 0; }; printf '%s\n' "$MOCK_CANDIDATE_MOUNT"; exit 0
+fi
+if [[ "$1" == volume && "$2" == rm ]]; then exit 0; fi
+exit 90
+EOF
+chmod 700 "$recovery_app/bin"/*
+candidate_sha=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+write_bootstrap_pending() {
+  cat >"$recovery_app/var/releases/pending-release.env" <<EOF
+RECORD_STATE=bootstrap-pending
+BOOTSTRAP_EMPTY=1
+CANDIDATE_SHA=$candidate_sha
+BOOTSTRAP_VOLUME_NAME=babagan-meeting_api-data
+BOOTSTRAP_VOLUME_MOUNTPOINT=$1
+BOOTSTRAP_VOLUME_PROJECT=babagan-meeting
+BOOTSTRAP_VOLUME_MARKER_ID=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+EOF
+  sed -i 's/\r$//' "$recovery_app/var/releases/pending-release.env"
+}
+write_bootstrap_pending /candidate/recorded
+foreign_log="$recovery_app/foreign.log"
+if PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$foreign_log" MOCK_VOLUME_MODE=foreign MOCK_CANDIDATE_MOUNT=/candidate/recorded \
+  bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"; then
+  echo 'foreign bootstrap volume was incorrectly recovered' >&2; exit 1
+fi
+! grep -Eq 'compose .* down|volume rm' "$foreign_log" || { echo 'foreign bootstrap volume triggered destructive Docker action' >&2; exit 1; }
+candidate_mount="$recovery_app/candidate-volume"; mkdir -p "$candidate_mount"
+marker_id=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+printf 'CANDIDATE_SHA=%s\nMARKER_ID=%s\n' "$candidate_sha" "$marker_id" >"$candidate_mount/.babagan-bootstrap-$marker_id"
+write_bootstrap_pending "$candidate_mount"
+success_log="$recovery_app/success.log"
+PATH="$recovery_app/bin:$PATH" MOCK_DOCKER_LOG="$success_log" MOCK_VOLUME_MODE=candidate MOCK_CANDIDATE_MOUNT="$candidate_mount" \
+  bash "$recovery_app/scripts/rollback.sh" --recover-pending-deploy --target-release-sha "$candidate_sha" --confirm-rollback "$candidate_sha" --smoke-token-file "$recovery_app/token"
+grep -Eq 'compose .* down' "$success_log" && grep -Fq 'volume rm babagan-meeting_api-data' "$success_log" || { echo 'recorded bootstrap volume was not cleaned up' >&2; exit 1; }
 echo 'deployment transaction/provenance regression checks passed'
