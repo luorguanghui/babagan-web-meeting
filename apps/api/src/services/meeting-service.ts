@@ -49,6 +49,11 @@ export interface MeetingSummary {
   isFull: boolean;
 }
 
+export interface CurrentMeetingSummary extends MeetingSummary {
+  slug: string;
+  status: 'created' | 'active' | 'grace';
+}
+
 export interface JoinMeetingResult {
   participantIdentity: string;
   participantName: string;
@@ -120,6 +125,14 @@ export class MeetingService {
         isFull: !isTerminal(synchronized) && occupied.size >= this.dependencies.config.maxParticipants
       };
     });
+  }
+
+  async getCurrentMeetingSummary(): Promise<CurrentMeetingSummary | null> {
+    const meeting = this.dependencies.repository.findNonTerminal();
+    if (!meeting) return null;
+    const summary = await this.getMeetingSummary(meeting.slug);
+    if (summary.status === 'ended' || summary.status === 'expired') return null;
+    return { slug: meeting.slug, ...summary };
   }
 
   async joinMeeting(slug: string, input: JoinMeetingInput): Promise<JoinMeetingResult> {

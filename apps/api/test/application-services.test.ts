@@ -87,6 +87,29 @@ describe('host and participant application services', () => {
     expect(stored.token_hash).not.toBe(created.rawHostToken);
   });
 
+  it('ends and audits a meeting with the administrator password without creating host authority', async () => {
+    const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
+    await meetings.joinMeeting(meeting.slug, { nickname: 'Ada' });
+
+    await hosts.endMeetingWithAdminPassword(meeting.slug, 'admin-secret');
+
+    expect(repository.findBySlug(meeting.slug)?.status).toBe('ended');
+    expect(db.prepare('SELECT event_type, meeting_id FROM audit_events WHERE event_type = ?')
+      .get('meeting_ended_by_admin_password')).toEqual({
+      event_type: 'meeting_ended_by_admin_password', meeting_id: meeting.id
+    });
+    expect(db.prepare('SELECT COUNT(*) AS count FROM host_sessions WHERE revoked_at IS NULL').get())
+      .toEqual({ count: 0 });
+  });
+
+  it('does not end a meeting when the administrator password is wrong', async () => {
+    const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
+
+    await expect(hosts.endMeetingWithAdminPassword(meeting.slug, 'wrong'))
+      .rejects.toMatchObject({ code: 'ADMIN_AUTH_FAILED' });
+    expect(repository.findBySlug(meeting.slug)?.status).toBe('created');
+  });
+
   it('rejects a host session scoped to another meeting', async () => {
     const { meeting } = await hosts.createMeeting({ adminPassword: 'admin-secret', name: 'Daily' });
 

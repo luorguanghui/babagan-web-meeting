@@ -1,6 +1,8 @@
 import {
+  AdminEndMeetingRequestSchema,
   CreateMeetingRequestSchema,
   CreateMeetingResponseSchema,
+  CurrentMeetingResponseSchema,
   KickParticipantRequestSchema,
   MeetingSummarySchema,
   ShareGrantRequestSchema
@@ -35,6 +37,19 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     });
   });
 
+  app.get('/api/v1/meetings/current', {
+    schema: { response: { 200: CurrentMeetingResponseSchema } },
+    preHandler: app.rateLimit(generalApiRateLimit())
+  }, async () => {
+    const meeting = await dependencies.meetings.getCurrentMeetingSummary();
+    return {
+      meeting: meeting === null ? null : {
+        ...meeting,
+        joinUrl: new URL(`/meetings/${meeting.slug}`, dependencies.config.publicBaseUrl).toString()
+      }
+    };
+  });
+
   app.get('/api/v1/meetings/:slug', {
     schema: { params: SlugParamsSchema, response: { 200: MeetingSummarySchema } },
     preHandler: app.rateLimit(generalApiRateLimit())
@@ -49,6 +64,15 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);
+    return reply.status(204).send();
+  });
+
+  app.post('/api/v1/meetings/:slug/admin-end', {
+    schema: { params: SlugParamsSchema, body: AdminEndMeetingRequestSchema },
+    preHandler: app.rateLimit(adminPasswordRateLimit())
+  }, async (request, reply) => {
+    const body = request.body as { adminPassword: string };
+    await dependencies.hosts.endMeetingWithAdminPassword(slug(request.params), body.adminPassword);
     return reply.status(204).send();
   });
 

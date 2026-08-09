@@ -85,6 +85,18 @@ export class HostApplicationService {
     });
   }
 
+  async endMeetingWithAdminPassword(slug: string, adminPassword: string): Promise<void> {
+    const valid = await this.dependencies.passwords.verify(
+      this.dependencies.config.adminPasswordHash,
+      adminPassword
+    );
+    if (!valid) throw domainError('ADMIN_AUTH_FAILED');
+
+    const meeting = this.requireUsableMeeting(slug);
+    await this.dependencies.meetings.endMeeting(slug);
+    this.insertAudit('meeting_ended_by_admin_password', meeting.id, null);
+  }
+
   async kickParticipant(host: ActiveHostSession, slug: string, identity: string): Promise<void> {
     const meeting = this.authorize(host, slug);
     await this.mutex.runExclusive(meeting.id, async () => {

@@ -77,6 +77,26 @@ describe('meeting HTTP API', () => {
     expect(joined.body).not.toContain('join-secret');
   });
 
+  it('publishes only the current meeting join information', async () => {
+    expect((await fixture.app.inject('/api/v1/meetings/current')).json()).toEqual({ meeting: null });
+    const created = await fixture.createMeeting();
+    const response = await fixture.app.inject('/api/v1/meetings/current');
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      meeting: {
+        slug: created.slug,
+        name: 'Daily',
+        status: 'created',
+        joinUrl: `https://meet.example.test/meetings/${created.slug}`,
+        requiresPassword: true,
+        isFull: false
+      }
+    });
+    expect(response.body).not.toContain('join-secret');
+    expect(response.body).not.toContain('meeting-id');
+  });
+
   it('refreshes, lists and leaves only through the scoped participant cookie', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
@@ -152,6 +172,32 @@ describe('meeting HTTP API', () => {
       .toBe(204);
     expect((await fixture.modify('POST', `${created.slug}/end`, hostCookie)).statusCode).toBe(204);
     expect((await fixture.modify('POST', `${created.slug}/end`, undefined)).statusCode).toBe(401);
+  });
+
+  it('ends through the admin password endpoint without setting a host cookie', async () => {
+    const created = await fixture.createMeeting();
+    const response = await fixture.modify('POST', `${created.slug}/admin-end`, undefined, {
+      adminPassword: 'admin-secret'
+    });
+
+    expect(response.statusCode, response.body).toBe(204);
+    expect(response.headers['set-cookie']).toBeUndefined();
+    expect((await fixture.app.inject('/api/v1/meetings/current')).json()).toEqual({ meeting: null });
+  });
+
+  it('shares the five-attempt administrator rate-limit bucket', async () => {
+    const created = await fixture.createMeeting();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const failed = await fixture.modify('POST', `${created.slug}/admin-end`, undefined, {
+        adminPassword: 'wrong'
+      });
+      expect(failed.statusCode).toBe(401);
+    }
+    const limited = await fixture.modify('POST', `${created.slug}/admin-end`, undefined, {
+      adminPassword: 'wrong'
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: { code: 'RATE_LIMITED' } });
   });
 
   it('proves host authority with the scoped host cookie before exposing browser controls', async () => {

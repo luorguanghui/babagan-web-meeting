@@ -306,7 +306,7 @@ it('ends through the admin password endpoint without setting a host cookie', asy
 
 it('shares the five-attempt administrator rate-limit bucket', async () => {
   const created = await fixture.createMeeting();
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     const failed = await fixture.modify('POST', `${created.slug}/admin-end`, undefined, {
       adminPassword: 'wrong'
     });
@@ -320,7 +320,7 @@ it('shares the five-attempt administrator rate-limit bucket', async () => {
 });
 ```
 
-The loop is four because the successful creation consumed the first request in the shared five-request bucket. The next request is the sixth and must return 429.
+The endpoint reuses the existing administrator-password limiter configuration; Fastify maintains route counters independently, so five failed endpoint attempts are allowed and the sixth must return 429.
 
 - [ ] **Step 5: Register the endpoint**
 

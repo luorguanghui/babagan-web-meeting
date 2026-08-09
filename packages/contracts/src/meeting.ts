@@ -39,6 +39,42 @@ export const MeetingSummarySchema = Type.Object({
 
 export type MeetingSummary = Static<typeof MeetingSummarySchema>;
 
+export const NonTerminalMeetingStatusSchema = Type.Union([
+  Type.Literal('created'),
+  Type.Literal('active'),
+  Type.Literal('grace')
+]);
+
+export const CurrentMeetingSchema = Type.Object({
+  slug: Type.String({ minLength: 22, maxLength: 256 }),
+  name: Type.String({ minLength: 1, maxLength: 80 }),
+  status: NonTerminalMeetingStatusSchema,
+  joinUrl: Type.String({ minLength: 1, pattern: '^https?://' }),
+  requiresPassword: Type.Boolean(),
+  isFull: Type.Boolean()
+}, { additionalProperties: false });
+
+export const CurrentMeetingResponseSchema = Type.Object({
+  meeting: Type.Union([CurrentMeetingSchema, Type.Null()])
+}, { additionalProperties: false });
+
+export type CurrentMeeting = Static<typeof CurrentMeetingSchema>;
+export type CurrentMeetingResponse = Static<typeof CurrentMeetingResponseSchema>;
+
+export const AdminEndMeetingRequestSchema = Type.Object({
+  adminPassword: Type.String({ minLength: 1, maxLength: 256 })
+}, { additionalProperties: false });
+
+export type AdminEndMeetingRequest = Static<typeof AdminEndMeetingRequestSchema>;
+
+export const ScreenShareCodecSchema = Type.Union([
+  Type.Literal('auto'),
+  Type.Literal('h264'),
+  Type.Literal('vp8')
+]);
+
+export type ScreenShareCodec = Static<typeof ScreenShareCodecSchema>;
+
 export const ParticipantSummarySchema = Type.Object({
   identity: Type.String({ minLength: 1, maxLength: 256 }),
   name: Type.String({ minLength: 1, maxLength: 40 }),

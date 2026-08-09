@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   ApiErrorResponseSchema,
+  AdminEndMeetingRequestSchema,
   CreateMeetingResponseSchema,
   CreateMeetingRequestSchema,
+  CurrentMeetingResponseSchema,
   JoinMeetingRequestSchema,
   JoinMeetingResponseSchema,
   RefreshParticipantTokenResponseSchema,
@@ -12,6 +14,7 @@ import {
   MeetingSummarySchema,
   ParticipantSummarySchema,
   ParticipantsResponseSchema,
+  ScreenShareCodecSchema,
   ShareGrantRequestSchema
 } from './index.js';
 
@@ -67,6 +70,36 @@ describe('meeting HTTP contracts', () => {
       requiresPassword: true,
       isFull: false
     })).toBe(false);
+  });
+
+  it('accepts only the public current-meeting fields or null', () => {
+    const meeting = {
+      slug: 'WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG',
+      name: '周会',
+      status: 'active',
+      joinUrl: 'https://meet.example.test/meetings/WnJ2wX1m4pL6qR8sT0vY3zA5bC7dE9fG',
+      requiresPassword: true,
+      isFull: false
+    };
+
+    expect(Value.Check(CurrentMeetingResponseSchema, { meeting })).toBe(true);
+    expect(Value.Check(CurrentMeetingResponseSchema, { meeting: null })).toBe(true);
+    expect(Value.Check(CurrentMeetingResponseSchema, {
+      meeting: { ...meeting, passwordHash: 'must-not-leak' }
+    })).toBe(false);
+    expect(Value.Check(CurrentMeetingResponseSchema, {
+      meeting: { ...meeting, status: 'ended' }
+    })).toBe(false);
+  });
+
+  it('accepts bounded admin-end passwords and only supported screen codecs', () => {
+    expect(Value.Check(AdminEndMeetingRequestSchema, { adminPassword: 'secret' })).toBe(true);
+    expect(Value.Check(AdminEndMeetingRequestSchema, { adminPassword: '' })).toBe(false);
+    expect(Value.Check(AdminEndMeetingRequestSchema, {
+      adminPassword: 'secret', unexpected: true
+    })).toBe(false);
+    expect(['auto', 'h264', 'vp8'].every((codec) => Value.Check(ScreenShareCodecSchema, codec))).toBe(true);
+    expect(Value.Check(ScreenShareCodecSchema, 'vp9')).toBe(false);
   });
 
   it('accepts a join response without a meeting password', () => {

@@ -102,6 +102,25 @@ describe('MeetingService', () => {
       .rejects.toMatchObject({ code: 'MEETING_ALREADY_ACTIVE' });
   });
 
+  it('returns only the synchronized current non-terminal meeting', async () => {
+    const meeting = await service.createMeeting({ name: 'Daily', meetingPassword: 'join-secret' });
+
+    await expect(service.getCurrentMeetingSummary()).resolves.toEqual({
+      slug: meeting.slug,
+      name: 'Daily',
+      status: 'created',
+      requiresPassword: true,
+      isFull: false
+    });
+
+    await service.endMeeting(meeting.slug);
+    await expect(service.getCurrentMeetingSummary()).resolves.toBeNull();
+  });
+
+  it('returns null when no non-terminal meeting exists', async () => {
+    await expect(service.getCurrentMeetingSummary()).resolves.toBeNull();
+  });
+
   it('rejects an empty meeting password at creation time', async () => {
     await expect(service.createMeeting({ name: 'Daily', meetingPassword: '' }))
       .rejects.toThrow('Meeting password must not be empty');
