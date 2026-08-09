@@ -218,57 +218,71 @@ export function MeetingRoomPage({
     : state.remoteScreenShare?.sharerName;
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
-    <header><p className="eyebrow">{t('room.eyebrow')}</p><h1>{t('room.heading', { name: join.participantName })}</h1></header>
-    <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
-    {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
-    {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
-    {systemAudioDecision && <section
-      className="system-audio-warning"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="system-audio-warning-title"
-    >
-      <h2 id="system-audio-warning-title">{t('audioWarning.heading')}</h2>
-      <p>{t('audioWarning.description', { surface: systemAudioDecision.displaySurface })}</p>
-      <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>{t('audioWarning.videoOnly')}</button>
-      <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>{t('audioWarning.continue')}</button>
-      <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>{t('audioWarning.cancel')}</button>
-    </section>}
-    <ScreenStage
-      stream={stageStream}
-      track={stageTrack}
-      audioTrack={stageAudioTrack}
-      sharerName={sharerName}
-    />
-    <ParticipantList participants={state.participants} />
-    <HostMenu
-      participants={hostParticipants}
-      authorizeHost={authorizeHost}
-      onAuthorizationChange={authorizationChanged}
-      onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
-      onRevokeShare={() => meetingApi.revokeShare(slug)}
-      onKick={(identity) => meetingApi.kick(slug, identity)}
-      onEndMeeting={() => meetingApi.end(slug)}
-      onEnded={() => onTerminal?.('ended')}
-    />
-    <MeetingControls
-      connection={state.connection}
-      microphoneEnabled={state.microphoneEnabled}
-      audioPlaybackBlocked={state.audioPlaybackBlocked}
-      devices={devices}
-      leaving={leaving}
-      screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
-      screenShareActive={screenState.status === 'sharing'}
-      screenShareBusy={screenState.status === 'starting'}
-      screenProfile={screenProfile}
-      onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
-      onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
-      onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
-      onResumeAudio={() => void controller.resumeAudioPlayback()}
-      onScreenProfileChange={setScreenProfile}
-      onScreenShareToggle={() => void toggleScreenShare()}
-      onLeave={() => void leave()}
-    />
+    <header className="meeting-room-header">
+      <div className="meeting-room-title">
+        <p className="eyebrow">{t('room.eyebrow')}</p>
+        <h1>{t('room.heading', { name: join.participantName })}</h1>
+      </div>
+      <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
+    </header>
+    <section className="meeting-notices" aria-live="polite">
+      {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
+      {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
+      {systemAudioDecision && <section
+        className="system-audio-warning"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="system-audio-warning-title"
+      >
+        <h2 id="system-audio-warning-title">{t('audioWarning.heading')}</h2>
+        <p>{t('audioWarning.description', { surface: systemAudioDecision.displaySurface })}</p>
+        <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>{t('audioWarning.videoOnly')}</button>
+        <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>{t('audioWarning.continue')}</button>
+        <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>{t('audioWarning.cancel')}</button>
+      </section>}
+    </section>
+    <div className="meeting-workspace">
+      <div className="meeting-stage-column">
+        <ScreenStage
+          stream={stageStream}
+          track={stageTrack}
+          audioTrack={stageAudioTrack}
+          sharerName={sharerName}
+        />
+        <MeetingControls
+          className="meeting-control-dock"
+          connection={state.connection}
+          microphoneEnabled={state.microphoneEnabled}
+          audioPlaybackBlocked={state.audioPlaybackBlocked}
+          devices={devices}
+          leaving={leaving}
+          screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
+          screenShareActive={screenState.status === 'sharing'}
+          screenShareBusy={screenState.status === 'starting'}
+          screenProfile={screenProfile}
+          onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
+          onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
+          onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
+          onResumeAudio={() => void controller.resumeAudioPlayback()}
+          onScreenProfileChange={setScreenProfile}
+          onScreenShareToggle={() => void toggleScreenShare()}
+          onLeave={() => void leave()}
+        />
+      </div>
+      <aside className="meeting-side-rail" aria-label={t('room.sidePanel')}>
+        <ParticipantList participants={state.participants} />
+        <HostMenu
+          participants={hostParticipants}
+          authorizeHost={authorizeHost}
+          onAuthorizationChange={authorizationChanged}
+          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
+          onRevokeShare={() => meetingApi.revokeShare(slug)}
+          onKick={(identity) => meetingApi.kick(slug, identity)}
+          onEndMeeting={() => meetingApi.end(slug)}
+          onEnded={() => onTerminal?.('ended')}
+        />
+      </aside>
+    </div>
   </main>;
 }
 

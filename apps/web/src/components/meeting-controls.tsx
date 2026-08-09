@@ -3,6 +3,7 @@ import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { CaptureProfile } from '../meeting/screen-share.js';
 
 interface MeetingControlsProps {
+  className?: string;
   connection: MeetingConnectionState;
   microphoneEnabled: boolean;
   audioPlaybackBlocked: boolean;
@@ -25,7 +26,7 @@ export function MeetingControls(props: MeetingControlsProps) {
   const { t } = useI18n();
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
-  return <footer className="meeting-controls" aria-label={t('controls.label')}>
+  return <footer className={['meeting-controls', props.className].filter(Boolean).join(' ')} aria-label={t('controls.label')}>
     <p role="status">{t('controls.connection', { state: props.connection })}</p>
     <p className="sr-only" role="status">{t('controls.microphoneStatus', { state: props.microphoneEnabled ? t('common.on') : t('common.muted') })}</p>
     <p className="sr-only" role="status">{t('controls.screenStatus', { state: props.screenShareActive ? t('common.on') : t('common.off') })}</p>

@@ -136,6 +136,45 @@ describe('controlled browser screen sharing', () => {
     expect(video).toHaveProperty('srcObject', stream);
   });
 
+  it('groups the presentation workspace, control dock, and side panel around an active share', async () => {
+    const remoteTrack = {
+      kind: 'video',
+      attach: vi.fn((element?: HTMLMediaElement) => element ?? document.createElement('video')),
+      detach: vi.fn((element?: HTMLMediaElement) => element ?? [])
+    };
+    const controller = meetingController({
+      remoteScreenShare: {
+        track: remoteTrack,
+        sharerIdentity: 'participant-2',
+        sharerName: 'Ben'
+      } as unknown as MeetingRoomState['remoteScreenShare']
+    });
+
+    render(<MeetingRoomPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1', participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone'] }
+      }}
+      controller={controller}
+      meetingApi={{ ...unauthorizedMeetingApi(), authorizeHost: vi.fn(async () => undefined) }}
+      listDevices={async () => []}
+    />);
+
+    const main = screen.getByRole('main');
+    const stage = await screen.findByLabelText('Shared screen stage');
+    const sideRail = screen.getByLabelText('Meeting side panel');
+    const controls = screen.getByLabelText('Meeting controls');
+
+    expect(main).toHaveClass('meeting-room-sharing');
+    expect(stage.parentElement).toHaveClass('meeting-stage-column');
+    expect(stage.parentElement?.parentElement).toHaveClass('meeting-workspace');
+    expect(sideRail).toContainElement(screen.getByRole('heading', { name: 'Participants (1)' }));
+    expect(sideRail).toContainElement(await screen.findByRole('heading', { name: 'Host controls' }));
+    expect(controls).toHaveClass('meeting-control-dock');
+  });
+
   it('reflects server-pushed local publish permission in room authorization state', async () => {
     const room = {
       connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
