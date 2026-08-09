@@ -16,7 +16,8 @@ import { createRoomController, type MeetingRoomController } from '../meeting/roo
 import {
   createScreenShareController,
   type CaptureProfile,
-  type ScreenShareState
+  type ScreenShareState,
+  type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 
@@ -29,6 +30,7 @@ export interface MeetingRoomPageProps {
   listDevices?: () => Promise<MediaDeviceInfo[]>;
   meetingApi?: MeetingRoomApi;
   getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
+  supportsOwnAudioRestriction?: () => boolean;
   onLeft?: () => void;
   onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
@@ -95,6 +97,7 @@ export function MeetingRoomPage({
   listDevices = defaultListDevices,
   meetingApi = defaultMeetingApi,
   getDisplayMedia,
+  supportsOwnAudioRestriction,
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
@@ -113,10 +116,22 @@ export function MeetingRoomPage({
   const hostAuthorizedRef = useRef(false);
   const [screenProfile, setScreenProfile] = useState<CaptureProfile>('standard');
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle', profile: 'standard' });
+  const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
+  const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
   const authorizationChanged = useCallback((authorized: boolean) => {
     hostAuthorizedRef.current = authorized;
     setHostAuthorized(authorized);
+  }, []);
+  const chooseUnrestrictedSystemAudio = useCallback((context: { displaySurface: string }) => new Promise<UnrestrictedSystemAudioChoice>((resolve) => {
+    systemAudioDecisionResolver.current = resolve;
+    setSystemAudioDecision(context);
+  }), []);
+  const resolveSystemAudioDecision = useCallback((choice: UnrestrictedSystemAudioChoice) => {
+    const resolve = systemAudioDecisionResolver.current;
+    systemAudioDecisionResolver.current = undefined;
+    setSystemAudioDecision(undefined);
+    resolve?.(choice);
   }, []);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
@@ -124,11 +139,13 @@ export function MeetingRoomPage({
       : meetingApi.verifyParticipantShare(slug),
     releaseGrant: () => meetingApi.releaseOwnShare(slug),
     ...(getDisplayMedia ? { getDisplayMedia } : {}),
+    ...(supportsOwnAudioRestriction ? { supportsOwnAudioRestriction } : {}),
+    chooseUnrestrictedSystemAudio,
     publisher: {
       publish: (stream, options) => controller.publishScreenShare(stream, options),
       release: (stream) => controller.releaseScreenShare(stream)
     }
-  }), [controller, getDisplayMedia, join.participantIdentity, meetingApi, slug]);
+  }), [chooseUnrestrictedSystemAudio, controller, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
 
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice('Audio devices could not be listed.')); }, [listDevices]);
   useEffect(() => {
@@ -138,6 +155,10 @@ export function MeetingRoomPage({
       void screenShare.stop();
     };
   }, [screenShare]);
+  useEffect(() => () => {
+    systemAudioDecisionResolver.current?.('cancel');
+    systemAudioDecisionResolver.current = undefined;
+  }, []);
   useEffect(() => {
     const connected = () => setOnline(true);
     const disconnected = () => setOnline(false);
@@ -198,6 +219,18 @@ export function MeetingRoomPage({
     <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
     {screenState.audioGuidance && <p role="status">{screenState.audioGuidance}</p>}
+    {systemAudioDecision && <section
+      className="system-audio-warning"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="system-audio-warning-title"
+    >
+      <h2 id="system-audio-warning-title">System audio echo protection</h2>
+      <p>This browser could not confirm that meeting voices will be removed from the captured {systemAudioDecision.displaySurface} audio. Choose how to continue.</p>
+      <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>Share without computer audio</button>
+      <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>Continue with system audio</button>
+      <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>Cancel and choose a browser tab</button>
+    </section>}
     <ScreenStage
       stream={stageStream}
       track={stageTrack}

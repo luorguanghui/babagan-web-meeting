@@ -19,6 +19,7 @@ export const captureProfiles = {
 
 export type CaptureProfile = keyof typeof captureProfiles;
 export type ScreenShareStatus = 'idle' | 'starting' | 'sharing';
+export type UnrestrictedSystemAudioChoice = 'share-audio' | 'video-only' | 'cancel';
 
 export interface ScreenShareState {
   status: ScreenShareStatus;
@@ -43,8 +44,10 @@ export interface ScreenShareController {
   subscribe(listener: (state: ScreenShareState) => void): () => void;
 }
 
-const audioGuidance = 'No computer audio was shared. In Chrome or Edge, choose a browser tab and enable “Share tab audio”. Entire screen system audio is excluded to prevent meeting echo.';
-const systemAudioGuidance = 'System audio was disabled for full-screen sharing to prevent meeting echo. Share a browser tab to include its audio.';
+const audioGuidance = 'No computer audio was shared. In Chrome or Edge, choose a browser tab and enable “Share tab audio”, or choose Entire screen and enable system audio in the share picker.';
+const videoOnlyGuidance = 'The screen is being shared without computer audio because the browser could not prevent meeting echo.';
+const unrestrictedAudioGuidance = 'The browser could not isolate meeting playback from system audio. You chose to continue with the echo risk.';
+const tabAudioGuidance = 'Screen sharing was cancelled. Choose a browser tab and enable “Share tab audio” for isolated content audio.';
 
 class BrowserScreenShareController implements ScreenShareController {
   private state: ScreenShareState = { status: 'idle', profile: 'standard' };
@@ -58,6 +61,8 @@ class BrowserScreenShareController implements ScreenShareController {
     requestGrant(): Promise<void>;
     releaseGrant(): Promise<void>;
     getDisplayMedia(constraints: DisplayMediaStreamOptions): Promise<MediaStream>;
+    supportsOwnAudioRestriction(): boolean;
+    chooseUnrestrictedSystemAudio(context: { displaySurface: string }): Promise<UnrestrictedSystemAudioChoice>;
     publisher: ScreenSharePublisher;
   }) {}
 
@@ -66,7 +71,7 @@ class BrowserScreenShareController implements ScreenShareController {
     const settings = captureProfiles[profile];
     let grantAcquired = false;
     let stream: MediaStream | undefined;
-    let removedSystemAudio = false;
+    let shareAudioGuidance: string | undefined;
     this.update({ status: 'starting', profile, stream: undefined, audioGuidance: undefined });
     try {
       await this.dependencies.requestGrant();
@@ -76,19 +81,39 @@ class BrowserScreenShareController implements ScreenShareController {
         audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
           restrictOwnAudio: boolean;
         },
-        systemAudio: 'exclude',
-        windowAudio: 'window'
+        systemAudio: 'include',
+        windowAudio: 'window',
+        selfBrowserSurface: 'exclude'
       } as DisplayMediaStreamOptions & {
-        systemAudio: 'exclude';
+        systemAudio: 'include';
         windowAudio: 'window';
+        selfBrowserSurface: 'exclude';
       });
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
-      if (videoTrack.getSettings?.().displaySurface === 'monitor') {
-        for (const audioTrack of stream.getAudioTracks()) {
-          stream.removeTrack(audioTrack);
-          audioTrack.stop();
-          removedSystemAudio = true;
+      const displaySurface = videoTrack.getSettings?.().displaySurface;
+      const [audioTrack] = stream.getAudioTracks();
+      if (audioTrack) {
+        const ownAudioRestricted = await this.verifyOwnAudioRestriction(audioTrack);
+        if ((displaySurface === 'monitor' || displaySurface === 'window') && !ownAudioRestricted) {
+          const choice = await this.dependencies.chooseUnrestrictedSystemAudio({ displaySurface });
+          if (choice === 'cancel') {
+            for (const track of stream.getTracks()) track.stop();
+            await Promise.allSettled([this.dependencies.releaseGrant()]);
+            grantAcquired = false;
+            stream = undefined;
+            this.update({ status: 'idle', profile, stream: undefined, audioGuidance: tabAudioGuidance });
+            return;
+          }
+          if (choice === 'video-only') {
+            for (const track of stream.getAudioTracks()) {
+              stream.removeTrack(track);
+              track.stop();
+            }
+            shareAudioGuidance = videoOnlyGuidance;
+          } else {
+            shareAudioGuidance = unrestrictedAudioGuidance;
+          }
         }
       }
       videoTrack.contentHint = settings.contentHint;
@@ -111,9 +136,8 @@ class BrowserScreenShareController implements ScreenShareController {
         status: 'sharing',
         profile,
         stream,
-        audioGuidance: removedSystemAudio
-          ? systemAudioGuidance
-          : stream.getAudioTracks().length === 0 ? audioGuidance : undefined
+        audioGuidance: shareAudioGuidance
+          ?? (stream.getAudioTracks().length === 0 ? audioGuidance : undefined)
       });
     } catch (error) {
       if (stream && this.activeStream !== stream && this.stopPromise) {
@@ -170,6 +194,20 @@ class BrowserScreenShareController implements ScreenShareController {
 
   private readonly handleEnded = () => { void this.stop(); };
 
+  private async verifyOwnAudioRestriction(track: MediaStreamTrack): Promise<boolean> {
+    if (!this.dependencies.supportsOwnAudioRestriction()) return false;
+    try {
+      await track.applyConstraints({
+        restrictOwnAudio: { exact: true }
+      } as MediaTrackConstraints & {
+        restrictOwnAudio: { exact: boolean };
+      });
+      return (track.getSettings() as MediaTrackSettings & { restrictOwnAudio?: boolean }).restrictOwnAudio === true;
+    } catch {
+      return false;
+    }
+  }
+
   private update(change: Partial<ScreenShareState>): void {
     this.state = { ...this.state, ...change };
     const snapshot = this.getState();
@@ -181,9 +219,24 @@ export function createScreenShareController(dependencies: {
   requestGrant(): Promise<void>;
   releaseGrant(): Promise<void>;
   getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
+  supportsOwnAudioRestriction?: () => boolean;
+  chooseUnrestrictedSystemAudio?: (
+    context: { displaySurface: string }
+  ) => Promise<UnrestrictedSystemAudioChoice>;
   publisher: ScreenSharePublisher;
 }): ScreenShareController {
   const getDisplayMedia = dependencies.getDisplayMedia
     ?? ((constraints: DisplayMediaStreamOptions) => navigator.mediaDevices.getDisplayMedia(constraints));
-  return new BrowserScreenShareController({ ...dependencies, getDisplayMedia });
+  const supportsOwnAudioRestriction = dependencies.supportsOwnAudioRestriction
+    ?? (() => (navigator.mediaDevices?.getSupportedConstraints?.() as (MediaTrackSupportedConstraints & {
+      restrictOwnAudio?: boolean;
+    }) | undefined)?.restrictOwnAudio === true);
+  const chooseUnrestrictedSystemAudio = dependencies.chooseUnrestrictedSystemAudio
+    ?? (async () => 'share-audio' as const);
+  return new BrowserScreenShareController({
+    ...dependencies,
+    getDisplayMedia,
+    supportsOwnAudioRestriction,
+    chooseUnrestrictedSystemAudio
+  });
 }

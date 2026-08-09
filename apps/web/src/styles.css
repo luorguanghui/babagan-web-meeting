@@ -52,13 +52,16 @@ meter { height: .9rem; width: 100%; }
 .connection-banner { background: #e5f1f3; border-left: 4px solid #075d72; margin: 0; padding: .7rem .85rem; }
 .connection-reconnecting, .connection-refreshing-token { border-left-color: #a56800; }
 .connection-rejoin-required, .connection-terminal { border-left-color: #8c2f2f; }
+.system-audio-warning { background: #fff8e8; border-left: 4px solid #a56800; box-shadow: 0 .8rem 2rem rgba(17, 39, 51, .14); display: flex; flex-wrap: wrap; gap: .75rem; padding: 1rem; }
+.system-audio-warning h2, .system-audio-warning p { flex-basis: 100%; }
+.system-audio-warning p { line-height: 1.45; margin: 0; }
 .meeting-controls label { min-width: 10rem; }
 .meeting-controls select { border: 1px solid #91a6af; border-radius: .4rem; min-height: 2.5rem; padding: .45rem; }
 .danger { background: #8c2f2f; }
 .danger:hover { background: #722626; }
 @media (min-width: 64rem) {
   .meeting-room { grid-template-columns: minmax(0, 3fr) minmax(17rem, 1fr); }
-  .meeting-room > header, .meeting-room > .screen-stage, .meeting-room > .meeting-controls, .meeting-room > [role='alert'], .meeting-room > [role='status'] { grid-column: 1; }
+  .meeting-room > header, .meeting-room > .screen-stage, .meeting-room > .meeting-controls, .meeting-room > [role='alert'], .meeting-room > [role='status'], .meeting-room > [role='dialog'] { grid-column: 1; }
   .meeting-room > .participant-list, .meeting-room > .host-menu { grid-column: 2; }
   .meeting-room > .participant-list { grid-row: 2; }
   .meeting-room > .host-menu { grid-row: 3; }

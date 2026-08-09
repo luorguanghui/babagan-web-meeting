@@ -209,6 +209,52 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled();
   });
 
+  it('asks how to handle monitor audio before publishing when browser isolation is unavailable', async () => {
+    const { stream } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const controller = meetingController({ screenShareAuthorized: true });
+    const publishScreenShare = vi.fn(async () => undefined);
+    controller.publishScreenShare = publishScreenShare;
+    const meetingApi = {
+      authorizeHost: vi.fn(async () => undefined),
+      verifyParticipantShare: vi.fn(async () => undefined),
+      grantShare: vi.fn(async () => undefined),
+      releaseOwnShare: vi.fn(async () => undefined),
+      revokeShare: vi.fn(async () => undefined),
+      kick: vi.fn(async () => undefined),
+      end: vi.fn(async () => undefined)
+    };
+    type AdaptiveScreenPageProps = MeetingRoomPageProps & {
+      supportsOwnAudioRestriction: () => boolean;
+    };
+    const AdaptiveScreenPage = MeetingRoomPage as ComponentType<AdaptiveScreenPageProps>;
+
+    render(<AdaptiveScreenPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1', participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone', 'screen_share', 'screen_share_audio'] }
+      }}
+      controller={controller}
+      meetingApi={meetingApi}
+      getDisplayMedia={async () => stream}
+      supportsOwnAudioRestriction={() => false}
+      listDevices={async () => []}
+    />);
+
+    const share = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(share).toBeEnabled());
+    await userEvent.click(share);
+
+    expect(await screen.findByRole('dialog', { name: 'System audio echo protection' })).toBeVisible();
+    expect(publishScreenShare).not.toHaveBeenCalled();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Share without computer audio' }));
+
+    await waitFor(() => expect(publishScreenShare).toHaveBeenCalledWith(stream, expect.any(Object)));
+    expect(stream.getAudioTracks()).toHaveLength(0);
+  });
+
   it('publishes video and computer audio with the matching LiveKit sources and bitrate', async () => {
     const publishTrack = vi.fn(async () => undefined);
     const unpublishTrack = vi.fn(async () => undefined);
@@ -309,8 +355,9 @@ describe('controlled browser screen sharing', () => {
     expect(getDisplayMedia).toHaveBeenCalledWith({
       video: { width: expected.width, height: expected.height, frameRate: expected.frameRate },
       audio: { restrictOwnAudio: true },
-      systemAudio: 'exclude',
-      windowAudio: 'window'
+      systemAudio: 'include',
+      windowAudio: 'window',
+      selfBrowserSurface: 'exclude'
     });
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate,
@@ -320,22 +367,96 @@ describe('controlled browser screen sharing', () => {
     expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
   });
 
-  it('drops whole-system audio returned for a monitor share before publication', async () => {
+  it('keeps monitor audio when the browser confirms own-audio restriction', async () => {
+    const { stream, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const applyConstraints = vi.fn(async () => undefined);
+    Object.assign(audio!, {
+      applyConstraints,
+      getSettings: () => ({ restrictOwnAudio: true })
+    });
+    const publish = vi.fn(async () => undefined);
+    const chooseUnrestrictedSystemAudio = vi.fn();
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      supportsOwnAudioRestriction: () => true,
+      chooseUnrestrictedSystemAudio,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('motion');
+
+    expect(applyConstraints).toHaveBeenCalledWith({ restrictOwnAudio: { exact: true } });
+    expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
+    expect(stream.getAudioTracks()).toEqual([audio]);
+    expect(audio?.stop).not.toHaveBeenCalled();
+    expect(chooseUnrestrictedSystemAudio).not.toHaveBeenCalled();
+  });
+
+  it('lets the user remove monitor audio when own-audio restriction is unavailable', async () => {
+    const { stream, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const publish = vi.fn(async () => undefined);
+    const chooseUnrestrictedSystemAudio = vi.fn(async () => 'video-only' as const);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      supportsOwnAudioRestriction: () => false,
+      chooseUnrestrictedSystemAudio,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('motion');
+
+    expect(chooseUnrestrictedSystemAudio).toHaveBeenCalledWith({ displaySurface: 'monitor' });
+    expect(stream.getAudioTracks()).toHaveLength(0);
+    expect(audio?.stop).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
+    expect(controller.getState().audioGuidance).toMatch(/without computer audio.*echo/i);
+  });
+
+  it('keeps monitor audio when the user accepts the echo risk', async () => {
     const { stream, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
     const publish = vi.fn(async () => undefined);
     const controller = createScreenShareController({
       requestGrant: vi.fn(async () => undefined),
       releaseGrant: vi.fn(async () => undefined),
       getDisplayMedia: vi.fn(async () => stream),
+      supportsOwnAudioRestriction: () => false,
+      chooseUnrestrictedSystemAudio: vi.fn(async () => 'share-audio' as const),
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
     await controller.start('motion');
 
+    expect(stream.getAudioTracks()).toEqual([audio]);
+    expect(audio?.stop).not.toHaveBeenCalled();
     expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
-    expect(stream.getAudioTracks()).toHaveLength(0);
+    expect(controller.getState().audioGuidance).toMatch(/could not isolate.*echo risk/i);
+  });
+
+  it('cancels monitor sharing and releases the grant when the user chooses a browser tab instead', async () => {
+    const { stream, video, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const publish = vi.fn(async () => undefined);
+    const releaseGrant = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant,
+      getDisplayMedia: vi.fn(async () => stream),
+      supportsOwnAudioRestriction: () => false,
+      chooseUnrestrictedSystemAudio: vi.fn(async () => 'cancel' as const),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('motion');
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(video.stop).toHaveBeenCalledOnce();
     expect(audio?.stop).toHaveBeenCalledOnce();
-    expect(controller.getState().audioGuidance).toMatch(/system audio.*disabled.*echo/i);
+    expect(releaseGrant).toHaveBeenCalledOnce();
+    expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
+    expect(controller.getState().audioGuidance).toMatch(/browser tab.*tab audio/i);
   });
 
   it('does not capture or publish when the server grant is rejected', async () => {
