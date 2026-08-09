@@ -1,4 +1,5 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 
 export function ScreenStage({
@@ -12,8 +13,17 @@ export function ScreenStage({
   audioTrack?: Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
   sharerName?: string;
 }) {
+  const { t } = useI18n();
   const stageRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+
+  useEffect(() => {
+    const update = () => setIsFullscreen(document.fullscreenElement === stageRef.current);
+    document.addEventListener('fullscreenchange', update);
+    update();
+    return () => document.removeEventListener('fullscreenchange', update);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -32,24 +42,26 @@ export function ScreenStage({
     };
   }, [audioTrack, stream, track]);
 
-  if (!stream && !track) return <section className="screen-stage screen-stage-empty" aria-label="Shared screen stage">
-    <p>No screen is being shared.</p>
+  if (!stream && !track) return <section className="screen-stage screen-stage-empty" aria-label={t('screen.stage')}>
+    <p>{t('screen.empty')}</p>
   </section>;
 
-  return <section ref={stageRef} className="screen-stage" aria-label="Shared screen stage">
+  const name = sharerName ?? t('screen.participant');
+  return <section ref={stageRef} className="screen-stage" aria-label={t('screen.stage')}>
     <video
       ref={videoRef}
-      aria-label={`${sharerName ?? 'Participant'}'s shared screen`}
+      aria-label={t('screen.videoLabel', { name })}
       autoPlay
       muted={Boolean(stream) || !audioTrack}
       playsInline
       style={{ objectFit: 'contain' }}
     />
-    <button
+    {!isFullscreen && <button
       type="button"
       className="screen-stage-fullscreen"
-      aria-label="View shared screen fullscreen"
+      aria-label={t('screen.fullscreen')}
+      title={t('screen.fullscreen')}
       onClick={() => { void stageRef.current?.requestFullscreen().catch(() => undefined); }}
-    >Full screen</button>
+    ><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3H3v5h2V5h3V3Zm8 0v2h3v3h2V3h-5ZM5 16H3v5h5v-2H5v-3Zm16 0h-2v3h-3v2h5v-5Z" /></svg></button>}
   </section>;
 }

@@ -12,6 +12,7 @@ import { ConnectionBanner } from '../components/connection-banner.js';
 import { MeetingControls } from '../components/meeting-controls.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
+import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
   createScreenShareController,
@@ -101,6 +102,7 @@ export function MeetingRoomPage({
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
+  const { t } = useI18n();
   const [controller] = useState(() => providedController ?? controllerFactory());
   const refresh = useCallback(() => apiRequest<RefreshParticipantTokenResponse>(
     `/meetings/${encodeURIComponent(slug)}/token`,
@@ -147,7 +149,7 @@ export function MeetingRoomPage({
     }
   }), [chooseUnrestrictedSystemAudio, controller, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
 
-  useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice('Audio devices could not be listed.')); }, [listDevices]);
+  useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
     const unsubscribe = screenShare.subscribe(setScreenState);
     return () => {
@@ -179,7 +181,7 @@ export function MeetingRoomPage({
     try {
       await leaveMeeting(slug);
     } catch {
-      setNotice('The server could not confirm that you left.');
+      setNotice(t('room.leaveUnconfirmed'));
     } finally {
       await controller.disconnect();
       setLeaving(false);
@@ -189,7 +191,7 @@ export function MeetingRoomPage({
 
   async function changeSpeaker(deviceId: string) {
     const result = await controller.switchAudioOutput(deviceId);
-    setNotice(result === 'unsupported' ? 'This browser does not support speaker switching.' : undefined);
+    setNotice(result === 'unsupported' ? t('room.speakerUnsupported') : undefined);
   }
 
   async function toggleScreenShare() {
@@ -198,7 +200,7 @@ export function MeetingRoomPage({
       if (screenState.status === 'sharing') await screenShare.stop();
       else await screenShare.start(screenProfile);
     } catch {
-      setNotice('Screen sharing could not be started. Check that the host grant is still active.');
+      setNotice(t('room.shareFailed'));
     }
   }
 
@@ -215,21 +217,21 @@ export function MeetingRoomPage({
     : state.remoteScreenShare?.sharerName;
 
   return <main className="meeting-room">
-    <header><p className="eyebrow">Meeting room</p><h1>{join.participantName}, you are in</h1></header>
+    <header><p className="eyebrow">{t('room.eyebrow')}</p><h1>{t('room.heading', { name: join.participantName })}</h1></header>
     <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
-    {screenState.audioGuidance && <p role="status">{screenState.audioGuidance}</p>}
+    {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
     {systemAudioDecision && <section
       className="system-audio-warning"
       role="dialog"
       aria-modal="true"
       aria-labelledby="system-audio-warning-title"
     >
-      <h2 id="system-audio-warning-title">System audio echo protection</h2>
-      <p>This browser could not confirm that meeting voices will be removed from the captured {systemAudioDecision.displaySurface} audio. Choose how to continue.</p>
-      <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>Share without computer audio</button>
-      <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>Continue with system audio</button>
-      <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>Cancel and choose a browser tab</button>
+      <h2 id="system-audio-warning-title">{t('audioWarning.heading')}</h2>
+      <p>{t('audioWarning.description', { surface: systemAudioDecision.displaySurface })}</p>
+      <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>{t('audioWarning.videoOnly')}</button>
+      <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>{t('audioWarning.continue')}</button>
+      <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>{t('audioWarning.cancel')}</button>
     </section>}
     <ScreenStage
       stream={stageStream}
@@ -267,4 +269,17 @@ export function MeetingRoomPage({
       onLeave={() => void leave()}
     />
   </main>;
+}
+
+function localizedScreenGuidance(message: string, t: Translate): string {
+  const key: MessageKey = message.startsWith('No computer audio')
+    ? 'screen.noAudio'
+    : message.startsWith('The screen is being shared without')
+      ? 'screen.videoOnly'
+      : message.startsWith('The browser could not isolate')
+        ? 'screen.echoRisk'
+        : message.startsWith('Screen sharing was cancelled')
+          ? 'screen.chooseTab'
+          : 'error.generic';
+  return t(key);
 }

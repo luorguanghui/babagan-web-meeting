@@ -356,9 +356,9 @@ describe('meeting room UI', () => {
     expect(screen.queryByRole('button', { name: '点击恢复声音' })).not.toBeInTheDocument();
 
     controller.blockAudio();
-    await userEvent.click(await screen.findByRole('button', { name: '点击恢复声音' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Click to resume audio' }));
 
-    expect(screen.queryByRole('button', { name: '点击恢复声音' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Click to resume audio' })).not.toBeInTheDocument();
   });
 });
 

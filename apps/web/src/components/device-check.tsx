@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { type MessageKey, useI18n } from '../i18n/i18n.js';
 
 interface DeviceCheckProps { onCleanupReady: (cleanup: (() => void) | null) => void; }
 
 export function DeviceCheck({ onCleanupReady }: DeviceCheckProps) {
+  const { t } = useI18n();
   const streamRef = useRef<MediaStream | undefined>(undefined);
   const contextRef = useRef<AudioContext | undefined>(undefined);
   const frameRef = useRef<number | undefined>(undefined);
   const generationRef = useRef(0);
   const mountedRef = useRef(false);
-  const [message, setMessage] = useState({ text: 'Microphone is off until you check it.', isError: false });
+  const [message, setMessage] = useState<{ key: MessageKey; isError: boolean }>({ key: 'device.off', isError: false });
   const [level, setLevel] = useState(0);
   const stopPreview = useCallback(() => {
     generationRef.current += 1;
@@ -42,7 +44,7 @@ export function DeviceCheck({ onCleanupReady }: DeviceCheckProps) {
     stopPreview();
     const getUserMedia = navigator.mediaDevices?.getUserMedia;
     if (!getUserMedia) {
-      setMessage({ text: 'This browser or device policy does not expose microphone access. Use a current Windows Chrome or Edge browser and allow microphone access.', isError: true });
+      setMessage({ key: 'device.unavailable', isError: true });
       return;
     }
     const requestGeneration = generationRef.current + 1;
@@ -53,16 +55,16 @@ export function DeviceCheck({ onCleanupReady }: DeviceCheckProps) {
         stream.getTracks().forEach((track) => track.stop());
         return;
       }
-      streamRef.current = stream; setMessage({ text: 'Microphone preview is ready.', isError: false }); startMeter(stream);
+      streamRef.current = stream; setMessage({ key: 'device.ready', isError: false }); startMeter(stream);
     }
-    catch (reason) { setMessage(reason instanceof DOMException && reason.name === 'NotAllowedError' ? { text: 'Microphone permission was denied. Allow it in your browser settings and try again.', isError: true } : { text: 'Microphone preview could not start. Check your microphone and try again.', isError: true }); }
+    catch (reason) { setMessage(reason instanceof DOMException && reason.name === 'NotAllowedError' ? { key: 'device.denied', isError: true } : { key: 'device.failed', isError: true }); }
   }
   async function testSpeaker() {
-    if (!window.AudioContext) return setMessage({ text: 'Speaker test is unavailable in this browser.', isError: true });
+    if (!window.AudioContext) return setMessage({ key: 'device.speakerUnavailable', isError: true });
     const context = new AudioContext(); const oscillator = context.createOscillator(); const gain = context.createGain();
     gain.gain.setValueAtTime(0.03, context.currentTime); oscillator.frequency.setValueAtTime(660, context.currentTime);
     oscillator.connect(gain).connect(context.destination); oscillator.start(); oscillator.stop(context.currentTime + 0.18);
-    oscillator.addEventListener('ended', () => void context.close()); setMessage({ text: 'Playing a short speaker test.', isError: false });
+    oscillator.addEventListener('ended', () => void context.close()); setMessage({ key: 'device.playing', isError: false });
   }
-  return <section className="device-check" aria-labelledby="device-heading"><h2 id="device-heading">Device check</h2><p>Checking your microphone is optional. It never starts before you choose it.</p><div className="device-actions"><button type="button" className="secondary" onClick={() => void checkMicrophone()}>Check microphone</button><button type="button" className="text-button" onClick={() => void testSpeaker()}>Test speaker</button></div><label className="meter-label">Microphone level<meter min="0" max="100" value={level}>{level}%</meter></label><p className={`message ${message.isError ? 'error' : ''}`} role={message.isError ? 'alert' : 'status'}>{message.text}</p></section>;
+  return <section className="device-check" aria-labelledby="device-heading"><h2 id="device-heading">{t('device.heading')}</h2><p>{t('device.description')}</p><div className="device-actions"><button type="button" className="secondary" onClick={() => void checkMicrophone()}>{t('device.checkMicrophone')}</button><button type="button" className="text-button" onClick={() => void testSpeaker()}>{t('device.testSpeaker')}</button></div><label className="meter-label">{t('device.level')}<meter min="0" max="100" value={level}>{level}%</meter></label><p className={`message ${message.isError ? 'error' : ''}`} role={message.isError ? 'alert' : 'status'}>{t(message.key)}</p></section>;
 }

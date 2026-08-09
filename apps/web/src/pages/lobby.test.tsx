@@ -18,6 +18,7 @@ afterEach(() => {
   delete (window.navigator as Navigator & { brave?: unknown }).brave;
   window.localStorage.clear();
   window.sessionStorage.clear();
+  Object.defineProperty(window.navigator, 'languages', { configurable: true, value: ['en-US'] });
 });
 
 function renderAt(path: string) {
@@ -29,6 +30,18 @@ function success(body: unknown, status = 200) {
 }
 
 describe('meeting creation', () => {
+  it('follows a Chinese browser language and can switch back to English', async () => {
+    installBrowserFakes();
+    Object.defineProperty(window.navigator, 'languages', { configurable: true, value: ['zh-CN', 'en-US'] });
+    renderAt('/create');
+
+    expect(screen.getByRole('heading', { name: '创建会议' })).toBeVisible();
+    await userEvent.selectOptions(screen.getByLabelText('语言'), 'en');
+
+    expect(screen.getByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+    expect(window.localStorage.getItem('babagan.locale')).toBe('en');
+  });
+
   it('rejects a blank meeting name before sending a request', async () => {
     installBrowserFakes();
     const fetchMock = vi.fn();

@@ -559,6 +559,18 @@ describe('screen stage', () => {
     expect(requestFullscreen).toHaveBeenCalledOnce();
   });
 
+  it('hides the fullscreen control while the shared screen stage is fullscreen', async () => {
+    const { stream } = displayStream({ audio: false });
+    render(<ScreenStage stream={stream} sharerName="Ada" />);
+    const stage = screen.getByLabelText('Shared screen stage');
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: stage });
+
+    document.dispatchEvent(new Event('fullscreenchange'));
+
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'View shared screen fullscreen' })).not.toBeInTheDocument());
+    Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: null });
+  });
+
   it('attaches and detaches remote video through LiveKit so adaptive streaming can request the right layer', () => {
     const { stream } = displayStream({ audio: false });
     const track = {

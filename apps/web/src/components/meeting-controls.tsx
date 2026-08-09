@@ -1,3 +1,4 @@
+import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { CaptureProfile } from '../meeting/screen-share.js';
 
@@ -21,40 +22,41 @@ interface MeetingControlsProps {
 }
 
 export function MeetingControls(props: MeetingControlsProps) {
+  const { t } = useI18n();
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
-  return <footer className="meeting-controls" aria-label="Meeting controls">
-    <p role="status">Connection: {props.connection}</p>
-    <p className="sr-only" role="status">Microphone is {props.microphoneEnabled ? 'on' : 'muted'}.</p>
-    <p className="sr-only" role="status">Screen sharing is {props.screenShareActive ? 'on' : 'off'}.</p>
+  return <footer className="meeting-controls" aria-label={t('controls.label')}>
+    <p role="status">{t('controls.connection', { state: props.connection })}</p>
+    <p className="sr-only" role="status">{t('controls.microphoneStatus', { state: props.microphoneEnabled ? t('common.on') : t('common.muted') })}</p>
+    <p className="sr-only" role="status">{t('controls.screenStatus', { state: props.screenShareActive ? t('common.on') : t('common.off') })}</p>
     <button type="button" onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
-      {props.microphoneEnabled ? 'Mute microphone' : 'Unmute microphone'}
+      {props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}
     </button>
-    <label>Microphone device<select aria-label="Microphone device" defaultValue="" onChange={(event) => props.onMicrophoneDeviceChange(event.target.value)}>
-      <option value="" disabled>Select microphone</option>
-      {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Microphone'}</option>)}
+    <label>{t('controls.microphoneDevice')}<select aria-label={t('controls.microphoneDevice')} defaultValue="" onChange={(event) => props.onMicrophoneDeviceChange(event.target.value)}>
+      <option value="" disabled>{t('controls.selectMicrophone')}</option>
+      {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.microphone')}</option>)}
     </select></label>
-    <label>Speaker device<select aria-label="Speaker device" defaultValue="" onChange={(event) => props.onSpeakerDeviceChange(event.target.value)}>
-      <option value="" disabled>Select speaker</option>
-      {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || 'Speaker'}</option>)}
+    <label>{t('controls.speakerDevice')}<select aria-label={t('controls.speakerDevice')} defaultValue="" onChange={(event) => props.onSpeakerDeviceChange(event.target.value)}>
+      <option value="" disabled>{t('controls.selectSpeaker')}</option>
+      {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
     </select></label>
-    {props.audioPlaybackBlocked && <button type="button" onClick={props.onResumeAudio}>点击恢复声音</button>}
-    <label>Screen quality<select
-      aria-label="Screen quality"
+    {props.audioPlaybackBlocked && <button type="button" onClick={props.onResumeAudio}>{t('controls.resumeAudio')}</button>}
+    <label>{t('controls.screenQuality')}<select
+      aria-label={t('controls.screenQuality')}
       value={props.screenProfile ?? 'standard'}
       disabled={props.screenShareActive || props.screenShareBusy}
       onChange={(event) => props.onScreenProfileChange?.(event.target.value as CaptureProfile)}
     >
-      <option value="standard">Standard (1080p30)</option>
-      <option value="motion">High motion (1080p60)</option>
+      <option value="standard">{t('controls.standard')}</option>
+      <option value="motion">{t('controls.motion')}</option>
     </select></label>
     <button
       type="button"
-      aria-label={props.screenShareActive ? 'Stop sharing screen' : 'Share screen'}
-      title={props.screenShareAuthorized ? undefined : 'A host must grant screen sharing before capture can start.'}
+      aria-label={props.screenShareActive ? t('controls.stopShare') : t('controls.share')}
+      title={props.screenShareAuthorized ? undefined : t('controls.shareGrantRequired')}
       disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
       onClick={props.onScreenShareToggle}
-    >{props.screenShareActive ? 'Stop sharing' : 'Share screen'}</button>
-    <button type="button" className="danger" onClick={props.onLeave} disabled={props.leaving}>{props.leaving ? 'Leaving…' : 'Leave meeting'}</button>
+    >{props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</button>
+    <button type="button" className="danger" onClick={props.onLeave} disabled={props.leaving}>{props.leaving ? t('controls.leaving') : t('controls.leave')}</button>
   </footer>;
 }
