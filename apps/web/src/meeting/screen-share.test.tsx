@@ -555,7 +555,9 @@ describe('screen stage', () => {
     const requestFullscreen = vi.fn(async () => undefined);
     Object.defineProperty(stage, 'requestFullscreen', { configurable: true, value: requestFullscreen });
 
-    await userEvent.click(screen.getByRole('button', { name: 'View shared screen fullscreen' }));
+    const fullscreenButton = screen.getByRole('button', { name: 'View shared screen fullscreen' });
+    expect(fullscreenButton).toHaveTextContent('Full screen');
+    await userEvent.click(fullscreenButton);
 
     expect(requestFullscreen).toHaveBeenCalledOnce();
   });

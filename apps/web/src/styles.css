@@ -43,9 +43,8 @@ meter { height: .9rem; width: 100%; }
 .screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; position: relative; }
 .screen-stage video { background: #08191f; height: 100%; width: 100%; }
 .screen-stage-empty { color: #b9cdd4; }
-.screen-stage-fullscreen { align-items: center; background: rgba(3, 24, 31, .94); border: 1px solid rgba(255, 255, 255, .82); border-radius: .45rem; box-shadow: 0 .3rem 1rem rgba(0, 0, 0, .42); display: flex; height: 2.5rem; justify-content: center; padding: 0; position: absolute; right: .65rem; top: .65rem; width: 2.5rem; z-index: 2; }
+.screen-stage-fullscreen { background: rgba(7, 35, 44, .88); position: absolute; right: .75rem; top: .75rem; z-index: 1; }
 .screen-stage-fullscreen:hover { background: rgba(7, 93, 114, .96); }
-.screen-stage-fullscreen svg { fill: currentColor; height: 1.25rem; width: 1.25rem; }
 .screen-stage:fullscreen .screen-stage-fullscreen { display: none; }
 .screen-stage:fullscreen { aspect-ratio: auto; border: 0; height: 100vh; width: 100vw; }
 .participant-list, .host-menu { background: #fff; border-left: 4px solid #7ba7b2; padding: 1rem; }
@@ -71,8 +70,5 @@ meter { height: .9rem; width: 100%; }
   .meeting-room > .participant-list, .meeting-room > .host-menu { grid-column: 2; }
   .meeting-room > .participant-list { grid-row: 2; }
   .meeting-room > .host-menu { grid-row: 3; }
-  .meeting-room-sharing { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); max-width: 100%; }
-  .meeting-room-sharing > header, .meeting-room-sharing > .screen-stage, .meeting-room-sharing > .meeting-controls, .meeting-room-sharing > [role='alert'], .meeting-room-sharing > [role='status'], .meeting-room-sharing > [role='dialog'] { grid-column: 1 / -1; }
-  .meeting-room-sharing > .participant-list { grid-column: 1; grid-row: auto; }
-  .meeting-room-sharing > .host-menu { grid-column: 2; grid-row: auto; }
+  .meeting-room-sharing { grid-template-columns: minmax(0, 7fr) minmax(15rem, 2fr); max-width: 90rem; }
 }
