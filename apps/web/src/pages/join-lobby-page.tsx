@@ -1,5 +1,11 @@
-import { JoinMeetingResponseSchema, type JoinMeetingRequest, type JoinMeetingResponse } from '@meeting/contracts';
-import { type FormEvent, useCallback, useState } from 'react';
+import {
+  JoinMeetingResponseSchema,
+  MeetingSummarySchema,
+  type JoinMeetingRequest,
+  type JoinMeetingResponse,
+  type MeetingSummary
+} from '@meeting/contracts';
+import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ApiRequestError, apiRequest } from '../api/client.js';
@@ -33,8 +39,22 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const [joined, setJoined] = useState<JoinMeetingResponse>();
   const [isJoining, setIsJoining] = useState(false);
   const [previewCleanup, setPreviewCleanup] = useState<(() => void) | null>(null);
+  const [summary, setSummary] = useState<MeetingSummary>();
   const notice = clientNotice(t);
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
+  const passwordRequired = summary?.requiresPassword === true;
+
+  useEffect(() => {
+    let active = true;
+    void apiRequest<MeetingSummary>(
+      `/meetings/${encodeURIComponent(slug)}`,
+      MeetingSummarySchema
+    ).then(
+      (value) => { if (active) setSummary(value); },
+      () => { if (active) setSummary(undefined); }
+    );
+    return () => { active = false; };
+  }, [slug, t]);
 
   if (joined) return <MeetingRoomPage
     slug={slug}
@@ -49,6 +69,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   async function join(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(undefined);
     if (!nickname.trim()) return setError(t('join.nicknameRequired'));
+    if (passwordRequired && !meetingPassword) return setError(t('join.passwordRequired'));
     if (notice?.kind === 'block') return;
     previewCleanup?.();
     const body: JoinMeetingRequest = { nickname: nickname.trim(), ...(meetingPassword ? { meetingPassword } : {}) };
@@ -64,7 +85,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
     <form onSubmit={join} noValidate>
       <label>{t('join.nickname')}<input aria-label={t('join.nickname')} value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={40} autoComplete="name" /></label>
-      <label>{t('join.password')} <span className="optional">{t('join.ifRequired')}</span><input aria-label={t('join.password')} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="current-password" /></label>
+      <label>{t('join.password')} <span className="optional">{passwordRequired ? t('join.required') : t('common.optional')}</span><input aria-label={t('join.password')} aria-required={passwordRequired} required={passwordRequired} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="current-password" /></label>
       {error && <p className="message error" role="alert">{error}</p>}
       <button type="submit" disabled={isJoining || notice?.kind === 'block'}>{isJoining ? t('join.submitting') : t('join.submit')}</button>
     </form>

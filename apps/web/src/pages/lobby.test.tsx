@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CreateMeetingResponseSchema } from '@meeting/contracts';
 
-import { apiRequest } from '../api/client.js';
+import { apiNoContent, apiRequest } from '../api/client.js';
 import { App } from '../app.js';
 import { installBrowserFakes } from '../test/browser-fakes.js';
 
@@ -51,14 +51,16 @@ describe('meeting creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create meeting' }));
 
     expect(screen.getByText('Meeting name is required.')).toBeVisible();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST')).toBe(false);
   });
 
   it('displays and copies the meeting link after creation', async () => {
     installBrowserFakes();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({ slug, joinUrl: `https://meet.example/m/${slug}` }, 201)));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/current')
+      ? success({ meeting: null })
+      : success({ slug, joinUrl: `https://meet.example/m/${slug}` }, 201)));
     renderAt('/create');
 
     await userEvent.type(screen.getByLabelText('Meeting name'), 'Design review');
@@ -73,9 +75,11 @@ describe('meeting creation', () => {
 
   it('shows the API error without persisting the admin password', async () => {
     installBrowserFakes();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
-      error: { code: 'ADMIN_AUTH_FAILED', message: 'Authentication failed', correlationId: 'corr-123' }
-    }, 401)));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/current')
+      ? success({ meeting: null })
+      : success({
+        error: { code: 'ADMIN_AUTH_FAILED', message: 'Authentication failed', correlationId: 'corr-123' }
+      }, 401)));
     renderAt('/create');
 
     await userEvent.type(screen.getByLabelText('Meeting name'), 'Design review');
@@ -83,6 +87,41 @@ describe('meeting creation', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Create meeting' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Authentication failed');
+    expect(window.localStorage.getItem('adminPassword')).toBeNull();
+    expect(window.sessionStorage.getItem('adminPassword')).toBeNull();
+  });
+
+  it('shows the public current meeting and ends it with an in-memory admin password', async () => {
+    installBrowserFakes();
+    let ended = false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/meetings/current')) return success({
+        meeting: ended ? null : {
+          slug,
+          name: 'Design review',
+          status: 'active',
+          joinUrl: `https://meet.example/meetings/${slug}`,
+          requiresPassword: true,
+          isFull: false
+        }
+      });
+      if (url.endsWith(`/meetings/${slug}/admin-end`) && init?.method === 'POST') {
+        ended = true;
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderAt('/create');
+
+    expect(await screen.findByRole('heading', { name: 'Current meeting' })).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Join current meeting' }))
+      .toHaveAttribute('href', `https://meet.example/meetings/${slug}`);
+    await userEvent.type(screen.getByLabelText('Admin password to end meeting'), 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'End current meeting' }));
+
+    await waitFor(() => expect(screen.queryByRole('heading', { name: 'Current meeting' })).not.toBeInTheDocument());
     expect(window.localStorage.getItem('adminPassword')).toBeNull();
     expect(window.sessionStorage.getItem('adminPassword')).toBeNull();
   });
@@ -100,9 +139,48 @@ describe('API client', () => {
       credentials: 'include', headers: { 'Content-Type': 'application/json' }
     }));
   });
+
+  it('parses the standard API error envelope for no-content actions', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      error: { code: 'ADMIN_AUTH_FAILED', message: 'Authentication failed', correlationId: 'corr-1' }
+    }, 401)));
+
+    await expect(apiNoContent('/meetings/current/admin-end', {
+      method: 'POST', body: JSON.stringify({ adminPassword: 'wrong' })
+    })).rejects.toMatchObject({
+      status: 401,
+      details: { error: { code: 'ADMIN_AUTH_FAILED' } }
+    });
+  });
 });
 
 describe('join lobby', () => {
+  it('marks and validates the password for a protected meeting', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Daily', status: 'created', requiresPassword: true, isFull: false
+    })));
+    renderAt(`/m/${slug}`);
+
+    const password = await screen.findByLabelText('Meeting password');
+    expect(password).toBeRequired();
+    await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
+    await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Meeting password is required.');
+  });
+
+  it('keeps the password optional for an unprotected meeting', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+    })));
+    renderAt(`/m/${slug}`);
+
+    expect(await screen.findByLabelText('Meeting password')).not.toBeRequired();
+    expect(screen.getByText('optional')).toBeVisible();
+  });
+
   it('blocks unsupported desktop browsers with guidance', () => {
     installBrowserFakes({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1 Safari/17.0' });
     renderAt(`/m/${slug}`);
@@ -215,10 +293,12 @@ describe('join lobby', () => {
 
   it('requires a nickname and sends a muted join request', async () => {
     installBrowserFakes();
-    const fetchMock = vi.fn().mockResolvedValue(success({
-      participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
-      meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
-    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/join')
+      ? success({
+        participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
+        meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
+      })
+      : success({ name: 'Daily', status: 'created', requiresPassword: false, isFull: false }));
     vi.stubGlobal('fetch', fetchMock);
     renderAt(`/m/${slug}`);
 

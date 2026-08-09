@@ -22,6 +22,15 @@ export async function apiRequest<T>(path: string, schema: TSchema, init: Request
   return body as T;
 }
 
+export async function apiNoContent(path: string, init: RequestInit = {}): Promise<void> {
+  const response = await fetch(`/api/v1${path}`, {
+    ...init,
+    credentials: 'include',
+    headers: jsonHeaders(init.headers)
+  });
+  if (!response.ok) throw await parseApiError(response);
+}
+
 function jsonHeaders(value: HeadersInit | undefined): Record<string, string> {
   const headers = value instanceof Headers
     ? Object.fromEntries(value.entries())

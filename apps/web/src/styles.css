@@ -29,6 +29,11 @@ input { border: 1px solid #aab9c2; border-radius: .4rem; padding: .72rem; }
 .success { color: #126b49; }
 .sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0, 0, 0, 0); white-space: nowrap; }
 .created-link, .device-check { border-top: 1px solid #d8e0e4; display: grid; gap: .75rem; margin-top: 1.75rem; padding-top: 1.5rem; }
+.current-meeting-card { background: #f3f7f8; border: 1px solid #cad8dd; display: grid; gap: .8rem; margin: 0 0 1.5rem; padding: 1rem; }
+.current-meeting-card h3 { margin: 0; }
+.current-meeting-meta { color: #536472; display: flex; flex-wrap: wrap; gap: .5rem 1rem; }
+.admin-end-form { border-top: 1px solid #d8e0e4; display: grid; gap: .75rem; padding-top: .9rem; }
+.disabled-link { cursor: not-allowed; opacity: .55; }
 output { background: #f3f7f8; overflow-wrap: anywhere; padding: .75rem; }
 .secondary { background: #dce7ea; color: #173540; }
 .secondary:hover { background: #cbdcdf; }
