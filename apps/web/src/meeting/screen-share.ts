@@ -1,3 +1,5 @@
+import type { ScreenShareCodec } from '@meeting/contracts';
+
 export const captureProfiles = {
   standard: {
     width: 1920,
@@ -33,12 +35,13 @@ export interface ScreenSharePublisher {
     maxBitrate: number;
     frameRate: number;
     degradationPreference: RTCDegradationPreference;
+    codec: ScreenShareCodec;
   }): Promise<void>;
   release(stream: MediaStream): Promise<void>;
 }
 
 export interface ScreenShareController {
-  start(profile: CaptureProfile): Promise<void>;
+  start(profile: CaptureProfile, codec?: ScreenShareCodec): Promise<void>;
   stop(): Promise<void>;
   getState(): ScreenShareState;
   subscribe(listener: (state: ScreenShareState) => void): () => void;
@@ -66,7 +69,7 @@ class BrowserScreenShareController implements ScreenShareController {
     publisher: ScreenSharePublisher;
   }) {}
 
-  async start(profile: CaptureProfile): Promise<void> {
+  async start(profile: CaptureProfile, codec: ScreenShareCodec = 'h264'): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const settings = captureProfiles[profile];
     let grantAcquired = false;
@@ -123,7 +126,8 @@ class BrowserScreenShareController implements ScreenShareController {
       const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
         maxBitrate: settings.maxBitrate,
         frameRate: settings.frameRate,
-        degradationPreference: settings.degradationPreference
+        degradationPreference: settings.degradationPreference,
+        codec
       }));
       this.publication = publication;
       await publication;

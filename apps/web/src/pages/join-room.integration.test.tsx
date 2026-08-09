@@ -20,10 +20,17 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe('lobby to room integration', () => {
   it('enters the meeting room after join and routes an ended meeting to the create page', async () => {
     installBrowserFakes();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
-      meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if ((init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify({
+          slug, name: 'Meeting', status: 'active', requiresPassword: false, isFull: false
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
+        meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }));
     render(<MemoryRouter initialEntries={[`/m/${slug}`]}><App /></MemoryRouter>);
 
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');

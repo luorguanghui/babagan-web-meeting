@@ -1,4 +1,4 @@
-import type { JoinMeetingResponse } from '@meeting/contracts';
+import type { JoinMeetingResponse, ScreenShareCodec } from '@meeting/contracts';
 import {
   Room,
   RoomEvent,
@@ -46,8 +46,10 @@ export interface MeetingRoomController {
     maxBitrate: number;
     frameRate: number;
     degradationPreference: RTCDegradationPreference;
+    codec: ScreenShareCodec;
   }): Promise<void>;
   releaseScreenShare(stream: MediaStream): Promise<void>;
+  getScreenShareStatsReports?(): Promise<RTCStatsReport[]>;
   disconnect(): Promise<void>;
   subscribe(listener: (state: MeetingRoomState) => void): () => void;
   resumeAudioPlayback(): Promise<void>;
@@ -70,6 +72,11 @@ export interface LiveKitTrackAdapter {
   attach(element?: HTMLMediaElement): HTMLMediaElement;
   detach(element?: HTMLMediaElement): HTMLMediaElement | HTMLMediaElement[];
   setPlayoutDelay?(delayInSeconds: number): void;
+  getRTCStatsReport?(): Promise<RTCStatsReport | undefined>;
+}
+
+interface LiveKitLocalPublicationAdapter {
+  track?: { getRTCStatsReport?(): Promise<RTCStatsReport | undefined> };
 }
 
 interface LiveKitTrackPublicationAdapter {
@@ -110,6 +117,7 @@ class RoomController implements MeetingRoomController {
   private roomGeneration = 0;
   private selectedMicrophoneId?: string;
   private publishedScreenTracks: MediaStreamTrack[] = [];
+  private localScreenStatsSources: Array<{ getRTCStatsReport?(): Promise<RTCStatsReport | undefined> }> = [];
   private readonly remoteScreenAudioTracks = new Map<string, LiveKitTrackAdapter>();
 
   constructor(
@@ -170,6 +178,7 @@ class RoomController implements MeetingRoomController {
       maxBitrate: number;
       frameRate: number;
       degradationPreference: RTCDegradationPreference;
+      codec: ScreenShareCodec;
     }
   ): Promise<void> {
     const participant = this.room?.localParticipant;
@@ -184,7 +193,8 @@ class RoomController implements MeetingRoomController {
         source: Track.Source.ScreenShare,
         stream: 'screen-share',
         screenShareEncoding: { maxBitrate: options.maxBitrate, maxFramerate: options.frameRate },
-        degradationPreference: options.degradationPreference
+        degradationPreference: options.degradationPreference,
+        ...(options.codec === 'auto' ? {} : { videoCodec: options.codec })
       }
     }, ...stream.getAudioTracks().map((track) => ({
       track,
@@ -193,12 +203,14 @@ class RoomController implements MeetingRoomController {
     const published: MediaStreamTrack[] = [];
     try {
       for (const value of tracks) {
-        await participant.publishTrack(value.track, value.options);
+        const publication = await participant.publishTrack(value.track, value.options) as LiveKitLocalPublicationAdapter | undefined;
         published.push(value.track);
+        if (publication?.track) this.localScreenStatsSources.push(publication.track);
       }
       this.publishedScreenTracks = published;
     } catch (error) {
       await Promise.allSettled(published.map((track) => participant.unpublishTrack!(track, false)));
+      this.localScreenStatsSources = [];
       throw error;
     }
   }
@@ -210,7 +222,19 @@ class RoomController implements MeetingRoomController {
     const tracks = this.publishedScreenTracks.filter((track) => owned.has(track));
     this.publishedScreenTracks = this.publishedScreenTracks.filter((track) => !owned.has(track));
     await Promise.allSettled(tracks.map((track) => participant.unpublishTrack!(track, true)));
+    this.localScreenStatsSources = [];
     this.refreshParticipants();
+  }
+
+  async getScreenShareStatsReports(): Promise<RTCStatsReport[]> {
+    const sources = [
+      ...this.localScreenStatsSources,
+      ...(this.state.remoteScreenShare
+        ? [this.state.remoteScreenShare.track, this.state.remoteScreenShare.audioTrack].filter(Boolean)
+        : [])
+    ];
+    const reports = await Promise.all(sources.map((source) => source?.getRTCStatsReport?.()));
+    return reports.filter((report): report is RTCStatsReport => Boolean(report));
   }
 
   async disconnect(): Promise<void> {
@@ -318,6 +342,7 @@ class RoomController implements MeetingRoomController {
     this.roomListeners.clear();
     this.audioPlayback.clear();
     this.publishedScreenTracks = [];
+    this.localScreenStatsSources = [];
     this.remoteScreenAudioTracks.clear();
     this.room = undefined;
     this.update({

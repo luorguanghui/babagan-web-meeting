@@ -132,7 +132,13 @@ export class MeetingService {
     if (!meeting) return null;
     const summary = await this.getMeetingSummary(meeting.slug);
     if (summary.status === 'ended' || summary.status === 'expired') return null;
-    return { slug: meeting.slug, ...summary };
+    return {
+      slug: meeting.slug,
+      name: summary.name,
+      status: summary.status,
+      requiresPassword: summary.requiresPassword,
+      isFull: summary.isFull
+    };
   }
 
   async joinMeeting(slug: string, input: JoinMeetingInput): Promise<JoinMeetingResult> {

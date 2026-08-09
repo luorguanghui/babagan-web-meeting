@@ -1,3 +1,5 @@
+import type { ScreenShareCodec } from '@meeting/contracts';
+
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { CaptureProfile } from '../meeting/screen-share.js';
@@ -13,11 +15,13 @@ interface MeetingControlsProps {
   screenShareActive?: boolean;
   screenShareBusy?: boolean;
   screenProfile?: CaptureProfile;
+  screenCodec?: ScreenShareCodec;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
   onResumeAudio: () => void;
   onScreenProfileChange?: (profile: CaptureProfile) => void;
+  onScreenCodecChange?: (codec: ScreenShareCodec) => void;
   onScreenShareToggle?: () => void;
   onLeave: () => void;
 }
@@ -50,6 +54,16 @@ export function MeetingControls(props: MeetingControlsProps) {
     >
       <option value="standard">{t('controls.standard')}</option>
       <option value="motion">{t('controls.motion')}</option>
+    </select></label>
+    <label>{t('controls.screenCodec')}<select
+      aria-label={t('controls.screenCodec')}
+      value={props.screenCodec ?? 'h264'}
+      disabled={props.screenShareActive || props.screenShareBusy}
+      onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}
+    >
+      <option value="h264">{t('controls.codecH264')}</option>
+      <option value="auto">{t('controls.codecAuto')}</option>
+      <option value="vp8">{t('controls.codecVp8')}</option>
     </select></label>
     <button
       type="button"

@@ -175,6 +175,43 @@ describe('controlled browser screen sharing', () => {
     expect(controls).toHaveClass('meeting-control-dock');
   });
 
+  it('shows admin-password termination only after host authorization is rejected', async () => {
+    const adminEnd = vi.fn(async () => undefined);
+    render(<MeetingRoomPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1', participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone'] }
+      }}
+      controller={meetingController()}
+      meetingApi={{ ...unauthorizedMeetingApi(), adminEnd }}
+      listDevices={async () => []}
+    />);
+
+    const input = await screen.findByLabelText('Admin password to end meeting');
+    await userEvent.type(input, 'admin-secret');
+    await userEvent.click(screen.getByRole('button', { name: 'End current meeting' }));
+    expect(adminEnd).toHaveBeenCalledWith('meeting-slug', 'admin-secret');
+  });
+
+  it('does not show participant admin termination to an authenticated host', async () => {
+    render(<MeetingRoomPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1', participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone'] }
+      }}
+      controller={meetingController()}
+      meetingApi={{ ...unauthorizedMeetingApi(), authorizeHost: vi.fn(async () => undefined), adminEnd: vi.fn() }}
+      listDevices={async () => []}
+    />);
+
+    expect(await screen.findByRole('heading', { name: 'Host controls' })).toBeVisible();
+    expect(screen.queryByLabelText('Admin password to end meeting')).not.toBeInTheDocument();
+  });
+
   it('reflects server-pushed local publish permission in room authorization state', async () => {
     const room = {
       connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
@@ -320,6 +357,7 @@ describe('controlled browser screen sharing', () => {
         maxBitrate: number;
         frameRate: number;
         degradationPreference: RTCDegradationPreference;
+        codec: 'auto' | 'h264' | 'vp8';
       }): Promise<void>;
       releaseScreenShare(stream: MediaStream): Promise<void>;
     };
@@ -328,14 +366,16 @@ describe('controlled browser screen sharing', () => {
     await publisher.publishScreenShare(stream, {
       maxBitrate: 15_000_000,
       frameRate: 60,
-      degradationPreference: 'maintain-framerate'
+      degradationPreference: 'maintain-framerate',
+      codec: 'h264'
     });
     await publisher.releaseScreenShare(stream);
 
     expect(publishTrack).toHaveBeenNthCalledWith(1, stream.getVideoTracks()[0], expect.objectContaining({
       source: 'screen_share',
       screenShareEncoding: { maxBitrate: 15_000_000, maxFramerate: 60 },
-      degradationPreference: 'maintain-framerate'
+      degradationPreference: 'maintain-framerate',
+      videoCodec: 'h264'
     }));
     expect(publishTrack).toHaveBeenNthCalledWith(2, stream.getAudioTracks()[0], expect.objectContaining({
       source: 'screen_share_audio'
@@ -366,6 +406,47 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('button', { name: 'Share screen' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Share screen' }))
       .toHaveAttribute('title', 'A host must grant screen sharing before capture can start.');
+  });
+
+  it('renders selectable screen codecs and locks the choice while sharing', async () => {
+    const onCodecChange = vi.fn();
+    const rendered = render(<MeetingControls
+      connection="connected"
+      microphoneEnabled={false}
+      audioPlaybackBlocked={false}
+      devices={[]}
+      leaving={false}
+      screenShareAuthorized
+      screenShareActive={false}
+      screenShareBusy={false}
+      screenProfile="standard"
+      screenCodec="h264"
+      onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined}
+      onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined}
+      onScreenProfileChange={() => undefined}
+      onScreenCodecChange={onCodecChange}
+      onScreenShareToggle={() => undefined}
+      onLeave={() => undefined}
+    />);
+
+    const selector = screen.getByLabelText('Screen-share codec');
+    expect(selector).toHaveValue('h264');
+    expect(screen.getByRole('option', { name: 'Auto' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'VP8' })).toBeVisible();
+    await userEvent.selectOptions(selector, 'vp8');
+    expect(onCodecChange).toHaveBeenCalledWith('vp8');
+
+    rendered.rerender(<MeetingControls
+      connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]}
+      leaving={false} screenShareAuthorized screenShareActive screenShareBusy={false}
+      screenProfile="standard" screenCodec="h264" onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined} onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined} onScreenProfileChange={() => undefined}
+      onScreenCodecChange={onCodecChange} onScreenShareToggle={() => undefined} onLeave={() => undefined}
+    />);
+    expect(screen.getByLabelText('Screen-share codec')).toBeDisabled();
   });
 
   it.each([
@@ -402,7 +483,8 @@ describe('controlled browser screen sharing', () => {
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate,
       frameRate: expected.frameRate,
-      degradationPreference
+      degradationPreference,
+      codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
   });

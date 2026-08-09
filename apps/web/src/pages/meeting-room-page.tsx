@@ -2,16 +2,19 @@ import {
   RefreshParticipantTokenResponseSchema,
   type JoinMeetingResponse,
   type ParticipantSummary,
-  type RefreshParticipantTokenResponse
+  type RefreshParticipantTokenResponse,
+  type ScreenShareCodec
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { apiRequest } from '../api/client.js';
+import { apiNoContent, apiRequest } from '../api/client.js';
+import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
 import { MeetingControls } from '../components/meeting-controls.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
+import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
@@ -21,6 +24,7 @@ import {
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
+import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 
 export interface MeetingRoomPageProps {
   slug: string;
@@ -44,7 +48,10 @@ export interface MeetingRoomApi {
   revokeShare(slug: string): Promise<void>;
   kick(slug: string, identity: string): Promise<void>;
   end(slug: string): Promise<void>;
+  adminEnd?(slug: string, adminPassword: string): Promise<void>;
 }
+
+type HostAuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
 
 async function defaultLeaveMeeting(slug: string): Promise<void> {
   const response = await fetch(`/api/v1/meetings/${encodeURIComponent(slug)}/leave`, { method: 'POST', credentials: 'include' });
@@ -77,7 +84,11 @@ const defaultMeetingApi: MeetingRoomApi = {
     'POST',
     { participantIdentity: identity }
   ),
-  end: (slug) => noContent(`/meetings/${encodeURIComponent(slug)}/end`, 'POST')
+  end: (slug) => noContent(`/meetings/${encodeURIComponent(slug)}/end`, 'POST'),
+  adminEnd: (slug, adminPassword) => apiNoContent(
+    `/meetings/${encodeURIComponent(slug)}/admin-end`,
+    { method: 'POST', body: JSON.stringify({ adminPassword }) }
+  )
 };
 
 async function noContent(path: string, method: string, body?: object): Promise<void> {
@@ -115,15 +126,19 @@ export function MeetingRoomPage({
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
   const [hostAuthorized, setHostAuthorized] = useState(false);
+  const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
   const [screenProfile, setScreenProfile] = useState<CaptureProfile>('standard');
+  const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle', profile: 'standard' });
+  const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
   const authorizationChanged = useCallback((authorized: boolean) => {
     hostAuthorizedRef.current = authorized;
     setHostAuthorized(authorized);
+    setHostAuthorization(authorized ? 'authorized' : 'unauthorized');
   }, []);
   const chooseUnrestrictedSystemAudio = useCallback((context: { displaySurface: string }) => new Promise<UnrestrictedSystemAudioChoice>((resolve) => {
     systemAudioDecisionResolver.current = resolve;
@@ -198,7 +213,7 @@ export function MeetingRoomPage({
     setNotice(undefined);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenProfile);
+      else await screenShare.start(screenProfile, screenCodec);
     } catch {
       setNotice(t('room.shareFailed'));
     }
@@ -216,6 +231,31 @@ export function MeetingRoomPage({
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
+
+  useEffect(() => {
+    if (!hasActiveScreenShare || !controller.getScreenShareStatsReports) {
+      setScreenStats(undefined);
+      return;
+    }
+    let cancelled = false;
+    let previous: WebRtcStatsSnapshot | undefined;
+    const sample = async () => {
+      try {
+        const reports = await controller.getScreenShareStatsReports!();
+        if (cancelled) return;
+        previous = summarizeWebRtcStats(reports, previous);
+        setScreenStats(previous);
+      } catch {
+        // Statistics are diagnostic only and must never interrupt the meeting.
+      }
+    };
+    void sample();
+    const timer = window.setInterval(() => void sample(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [controller, hasActiveScreenShare]);
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
     <header className="meeting-room-header">
@@ -249,6 +289,7 @@ export function MeetingRoomPage({
           audioTrack={stageAudioTrack}
           sharerName={sharerName}
         />
+        {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
         <MeetingControls
           className="meeting-control-dock"
           connection={state.connection}
@@ -260,11 +301,13 @@ export function MeetingRoomPage({
           screenShareActive={screenState.status === 'sharing'}
           screenShareBusy={screenState.status === 'starting'}
           screenProfile={screenProfile}
+          screenCodec={screenCodec}
           onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
           onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
           onResumeAudio={() => void controller.resumeAudioPlayback()}
           onScreenProfileChange={setScreenProfile}
+          onScreenCodecChange={setScreenCodec}
           onScreenShareToggle={() => void toggleScreenShare()}
           onLeave={() => void leave()}
         />
@@ -281,6 +324,14 @@ export function MeetingRoomPage({
           onEndMeeting={() => meetingApi.end(slug)}
           onEnded={() => onTerminal?.('ended')}
         />
+        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
+          <h2>{t('adminEnd.heading')}</h2>
+          <AdminEndMeetingForm
+            compact
+            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
+            onEnded={() => onTerminal?.('ended')}
+          />
+        </section>}
       </aside>
     </div>
   </main>;

@@ -54,6 +54,15 @@ meter { height: .9rem; width: 100%; }
 .meeting-notices > p { background: #fff; border-left: 4px solid #075d72; margin: 0; padding: .65rem .8rem; }
 .meeting-workspace { align-items: start; display: grid; gap: 1rem; min-width: 0; }
 .meeting-stage-column { display: grid; gap: .75rem; min-width: 0; }
+.webrtc-stats-panel { background: rgba(255, 255, 255, .88); border: 1px solid rgba(7, 93, 114, .2); border-radius: .7rem; font-size: .82rem; padding: .55rem .75rem; }
+.webrtc-stats-panel summary { color: #075d72; cursor: pointer; font-weight: 700; }
+.webrtc-stats-note { color: #48616b; margin: .6rem 0; }
+.webrtc-stats-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: .65rem; }
+.webrtc-stats-grid h3 { font-size: .9rem; margin: 0 0 .35rem; }
+.webrtc-stats-grid dl, .webrtc-stats-grid dl div { margin: 0; }
+.webrtc-stats-grid dl div { display: flex; gap: .5rem; justify-content: space-between; padding: .18rem 0; }
+.webrtc-stats-grid dt { color: #536b74; }
+.webrtc-stats-grid dd { font-variant-numeric: tabular-nums; font-weight: 650; text-align: right; }
 .screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: 0 1rem 2.75rem rgba(17, 39, 51, .16), inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; position: relative; width: 100%; }
 .screen-stage video { background: #08191f; display: block; height: 100%; width: 100%; }
 .screen-stage-empty { color: #b9cdd4; }
@@ -64,6 +73,8 @@ meter { height: .9rem; width: 100%; }
 .meeting-side-rail { background: #f7fafb; border: 1px solid #cad8dd; box-shadow: 0 .75rem 2rem rgba(17, 39, 51, .08); display: grid; gap: 0; min-width: 0; }
 .participant-list, .host-menu { background: transparent; border: 0; padding: 1rem; }
 .meeting-side-rail .host-menu { border-top: 1px solid #d8e0e4; }
+.participant-admin-end { border-top: 1px solid #d8e0e4; padding: 1rem; }
+.participant-admin-end .admin-end-form { margin-top: .8rem; }
 .participant-list ul, .host-menu ul { display: grid; gap: .55rem; list-style: none; margin: .8rem 0 0; padding: 0; }
 .participant-list li, .host-menu li { align-items: center; border-top: 1px solid #d8e0e4; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: space-between; padding-top: .55rem; }
 .host-menu li > span { font-weight: 750; margin-right: auto; }
