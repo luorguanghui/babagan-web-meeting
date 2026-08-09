@@ -38,37 +38,59 @@ output { background: #f3f7f8; overflow-wrap: anywhere; padding: .75rem; }
 .meter-label { gap: .45rem; }
 meter { height: .9rem; width: 100%; }
 @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; transition: none !important; } }
-.meeting-room { display: grid; gap: 1rem; margin: 0 auto; max-width: 86rem; min-height: 100vh; padding: clamp(1rem, 3vw, 2.5rem); }
-.meeting-room > header { align-items: end; display: flex; flex-wrap: wrap; gap: .8rem 1.5rem; justify-content: space-between; }
-.screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; position: relative; }
-.screen-stage video { background: #08191f; height: 100%; width: 100%; }
+.meeting-room { display: grid; gap: .75rem; margin: 0 auto; max-width: 100rem; min-height: calc(100vh - 3.25rem); padding: clamp(.75rem, 1.5vw, 1.5rem); }
+.meeting-room-header { align-items: center; display: flex; gap: 1rem; justify-content: space-between; min-width: 0; }
+.meeting-room-title { min-width: 0; }
+.meeting-room-title .eyebrow { margin-bottom: .25rem; }
+.meeting-room-header h1 { font-size: clamp(1.45rem, 2.4vw, 2.3rem); line-height: 1.05; overflow-wrap: anywhere; }
+.meeting-room-header .connection-banner { border: 0; border-radius: 999px; flex: 0 0 auto; margin: 0; padding: .45rem .75rem; }
+.meeting-notices { display: grid; gap: .5rem; }
+.meeting-notices:empty { display: none; }
+.meeting-notices > p { background: #fff; border-left: 4px solid #075d72; margin: 0; padding: .65rem .8rem; }
+.meeting-workspace { align-items: start; display: grid; gap: 1rem; min-width: 0; }
+.meeting-stage-column { display: grid; gap: .75rem; min-width: 0; }
+.screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: 0 1rem 2.75rem rgba(17, 39, 51, .16), inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; position: relative; width: 100%; }
+.screen-stage video { background: #08191f; display: block; height: 100%; width: 100%; }
 .screen-stage-empty { color: #b9cdd4; }
 .screen-stage-fullscreen { background: rgba(7, 35, 44, .88); position: absolute; right: .75rem; top: .75rem; z-index: 1; }
 .screen-stage-fullscreen:hover { background: rgba(7, 93, 114, .96); }
 .screen-stage:fullscreen .screen-stage-fullscreen, .screen-stage:-webkit-full-screen .screen-stage-fullscreen { display: none; }
 .screen-stage:fullscreen { aspect-ratio: auto; border: 0; height: 100vh; width: 100vw; }
-.participant-list, .host-menu { background: #fff; border-left: 4px solid #7ba7b2; padding: 1rem; }
+.meeting-side-rail { background: #f7fafb; border: 1px solid #cad8dd; box-shadow: 0 .75rem 2rem rgba(17, 39, 51, .08); display: grid; gap: 0; min-width: 0; }
+.participant-list, .host-menu { background: transparent; border: 0; padding: 1rem; }
+.meeting-side-rail .host-menu { border-top: 1px solid #d8e0e4; }
 .participant-list ul, .host-menu ul { display: grid; gap: .55rem; list-style: none; margin: .8rem 0 0; padding: 0; }
 .participant-list li, .host-menu li { align-items: center; border-top: 1px solid #d8e0e4; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: space-between; padding-top: .55rem; }
 .host-menu li > span { font-weight: 750; margin-right: auto; }
 .host-menu button { padding: .55rem .75rem; }
-.meeting-controls { align-items: end; background: #dce7ea; bottom: 0; display: flex; flex-wrap: wrap; gap: .7rem; padding: .85rem; position: sticky; }
+.meeting-controls { align-items: end; background: #dce7ea; display: flex; flex-wrap: wrap; gap: .65rem; padding: .75rem; }
 .meeting-controls > p { margin: 0 auto 0 0; }
+.meeting-control-dock { background: rgba(220, 231, 234, .97); border: 1px solid #bdcdd2; box-shadow: 0 .75rem 2rem rgba(17, 39, 51, .12); bottom: .5rem; position: sticky; z-index: 3; }
+.meeting-control-dock > p:not(.sr-only) { color: #43606b; flex: 1 1 8rem; font-size: .8rem; }
 .connection-banner { background: #e5f1f3; border-left: 4px solid #075d72; margin: 0; padding: .7rem .85rem; }
 .connection-reconnecting, .connection-refreshing-token { border-left-color: #a56800; }
 .connection-rejoin-required, .connection-terminal { border-left-color: #8c2f2f; }
 .system-audio-warning { background: #fff8e8; border-left: 4px solid #a56800; box-shadow: 0 .8rem 2rem rgba(17, 39, 51, .14); display: flex; flex-wrap: wrap; gap: .75rem; padding: 1rem; }
 .system-audio-warning h2, .system-audio-warning p { flex-basis: 100%; }
 .system-audio-warning p { line-height: 1.45; margin: 0; }
-.meeting-controls label { min-width: 10rem; }
+.meeting-controls label { flex: 1 1 10rem; min-width: 9rem; }
 .meeting-controls select { border: 1px solid #91a6af; border-radius: .4rem; min-height: 2.5rem; padding: .45rem; }
+.meeting-control-dock select { width: 100%; }
 .danger { background: #8c2f2f; }
 .danger:hover { background: #722626; }
 @media (min-width: 64rem) {
-  .meeting-room { grid-template-columns: minmax(0, 3fr) minmax(17rem, 1fr); }
-  .meeting-room > header, .meeting-room > .screen-stage, .meeting-room > .meeting-controls, .meeting-room > [role='alert'], .meeting-room > [role='status'], .meeting-room > [role='dialog'] { grid-column: 1; }
-  .meeting-room > .participant-list, .meeting-room > .host-menu { grid-column: 2; }
-  .meeting-room > .participant-list { grid-row: 2; }
-  .meeting-room > .host-menu { grid-row: 3; }
-  .meeting-room-sharing { grid-template-columns: minmax(0, 7fr) minmax(15rem, 2fr); max-width: 90rem; }
+  .meeting-workspace { grid-template-columns: minmax(0, 1fr) minmax(17.5rem, 17.5rem); }
+  .meeting-side-rail { align-content: start; max-height: calc(100vh - 8rem); overflow: auto; }
+  .meeting-room-sharing .screen-stage { max-height: calc(100vh - 14rem); }
+}
+@media (max-width: 63.999rem) {
+  .meeting-room-header { align-items: flex-start; flex-direction: column; }
+  .meeting-workspace { grid-template-columns: minmax(0, 1fr); }
+  .meeting-stage-column { order: 1; }
+  .meeting-side-rail { order: 2; }
+}
+@media (max-width: 40rem) {
+  .meeting-room { padding-inline: .65rem; }
+  .meeting-controls { align-items: stretch; }
+  .meeting-controls > button, .meeting-controls > label { flex: 1 1 100%; }
 }
