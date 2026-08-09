@@ -24,6 +24,7 @@ export interface MeetingParticipant {
 
 export interface RemoteScreenShare {
   track: LiveKitTrackAdapter;
+  audioTrack?: LiveKitTrackAdapter;
   sharerIdentity: string;
   sharerName: string;
 }
@@ -106,6 +107,7 @@ class RoomController implements MeetingRoomController {
   private roomGeneration = 0;
   private selectedMicrophoneId?: string;
   private publishedScreenTracks: MediaStreamTrack[] = [];
+  private readonly remoteScreenAudioTracks = new Map<string, LiveKitTrackAdapter>();
 
   constructor(
     private readonly createRoom: LiveKitRoomFactory,
@@ -247,6 +249,7 @@ class RoomController implements MeetingRoomController {
         this.update({
           remoteScreenShare: {
             track,
+            audioTrack: this.remoteScreenAudioTracks.get(participant.identity),
             sharerIdentity: participant.identity,
             sharerName: participant.name?.trim() || participant.identity
           }
@@ -254,6 +257,15 @@ class RoomController implements MeetingRoomController {
         return;
       }
       if (track.kind !== Track.Kind.Audio) return;
+      if (publication?.source === Track.Source.ScreenShareAudio) {
+        this.remoteScreenAudioTracks.set(participant.identity, track);
+        if (this.state.remoteScreenShare?.sharerIdentity === participant.identity) {
+          this.update({
+            remoteScreenShare: { ...this.state.remoteScreenShare, audioTrack: track }
+          });
+        }
+        return;
+      }
       const element = track.attach();
       element.autoplay = true;
       element.hidden = true;
@@ -267,6 +279,17 @@ class RoomController implements MeetingRoomController {
       if (track.kind === Track.Kind.Video && publication.source === Track.Source.ScreenShare) {
         if (this.state.remoteScreenShare?.sharerIdentity === participant.identity) {
           this.update({ remoteScreenShare: undefined });
+        }
+        return;
+      }
+      if (track.kind === Track.Kind.Audio && publication?.source === Track.Source.ScreenShareAudio) {
+        this.remoteScreenAudioTracks.delete(participant.identity);
+        if (this.state.remoteScreenShare?.sharerIdentity === participant.identity
+          && this.state.remoteScreenShare.audioTrack === track) {
+          const { track: videoTrack, sharerIdentity, sharerName } = this.state.remoteScreenShare;
+          this.update({
+            remoteScreenShare: { track: videoTrack, sharerIdentity, sharerName }
+          });
         }
         return;
       }
@@ -290,6 +313,7 @@ class RoomController implements MeetingRoomController {
     this.roomListeners.clear();
     this.audioPlayback.clear();
     this.publishedScreenTracks = [];
+    this.remoteScreenAudioTracks.clear();
     this.room = undefined;
     this.update({
       connection: 'disconnected',

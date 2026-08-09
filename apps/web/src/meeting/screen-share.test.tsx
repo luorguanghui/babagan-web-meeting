@@ -57,6 +57,43 @@ describe('controlled browser screen sharing', () => {
     expect(document.querySelectorAll('audio')).toHaveLength(0);
   });
 
+  it('routes screen-share audio into the matching screen stage instead of a separate audio element', async () => {
+    const room = {
+      connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
+      on: vi.fn(), off: vi.fn(), remoteParticipants: new Map(),
+      localParticipant: {
+        identity: 'participant-1', name: 'Ada', isMicrophoneEnabled: false,
+        isScreenShareEnabled: false
+      },
+      switchActiveDevice: vi.fn(async () => true)
+    } as unknown as LiveKitRoomAdapter;
+    const controller = createRoomController(() => room);
+    const states: MeetingRoomState[] = [];
+    controller.subscribe((state) => states.push(state));
+    await controller.connect({
+      participantIdentity: 'participant-1', participantName: 'Ada',
+      livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
+      permissions: { publishSources: ['microphone'] }
+    });
+    const subscribed = vi.mocked(room.on).mock.calls.find(([event]) => event === 'trackSubscribed')?.[1];
+    const videoTrack = { kind: 'video', attach: vi.fn(), detach: vi.fn() };
+    const audioTrack = {
+      kind: 'audio',
+      attach: vi.fn(() => document.createElement('audio')),
+      detach: vi.fn(() => [])
+    };
+
+    subscribed?.(videoTrack, { source: 'screen_share' }, { identity: 'participant-2', name: 'Ben' });
+    subscribed?.(audioTrack, { source: 'screen_share_audio' }, { identity: 'participant-2', name: 'Ben' });
+
+    expect(states.at(-1)?.remoteScreenShare).toMatchObject({
+      track: videoTrack,
+      audioTrack,
+      sharerIdentity: 'participant-2'
+    });
+    expect(document.querySelectorAll('audio')).toHaveLength(0);
+  });
+
   it('renders a subscribed remote share in the room stage for a non-sharer', async () => {
     const { stream } = displayStream({ audio: false });
     const remoteTrack = {
@@ -397,6 +434,54 @@ describe('screen stage', () => {
 
     rendered.unmount();
     expect(track.detach).toHaveBeenCalledWith(video);
+  });
+
+  it('attaches matching screen video and audio to one media element for timestamp-based synchronization', () => {
+    const videoTracks: MediaStreamTrack[] = [];
+    const audioTracks: MediaStreamTrack[] = [];
+    const stream = {
+      getVideoTracks: () => videoTracks,
+      getAudioTracks: () => audioTracks
+    } as unknown as MediaStream;
+    const videoMediaTrack = eventTrack('video');
+    const audioMediaTrack = eventTrack('audio');
+    const videoTrack = {
+      attach: vi.fn((element: HTMLMediaElement) => {
+        videoTracks.push(videoMediaTrack);
+        element.srcObject = stream;
+        return element;
+      }),
+      detach: vi.fn((element: HTMLMediaElement) => element)
+    };
+    const audioTrack = {
+      attach: vi.fn((element: HTMLMediaElement) => {
+        audioTracks.push(audioMediaTrack);
+        element.muted = false;
+        return element;
+      }),
+      detach: vi.fn((element: HTMLMediaElement) => element)
+    };
+    const SynchronizedStage = ScreenStage as ComponentType<{
+      track: typeof videoTrack;
+      audioTrack: typeof audioTrack;
+      sharerName: string;
+    }>;
+
+    const rendered = render(<SynchronizedStage
+      track={videoTrack}
+      audioTrack={audioTrack}
+      sharerName="Ben"
+    />);
+    const video = screen.getByLabelText("Ben's shared screen") as HTMLVideoElement;
+
+    expect(videoTrack.attach).toHaveBeenCalledWith(video);
+    expect(audioTrack.attach).toHaveBeenCalledWith(video);
+    expect(video.srcObject).toBe(stream);
+    expect(video.muted).toBe(false);
+
+    rendered.unmount();
+    expect(audioTrack.detach).toHaveBeenCalledWith(video);
+    expect(videoTrack.detach).toHaveBeenCalledWith(video);
   });
 });
 
