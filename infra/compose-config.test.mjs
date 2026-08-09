@@ -23,22 +23,43 @@ export function assertProductionComposeConfig(config) {
 
   assert.deepEqual(exposedPorts.sort(), [
     '443/tcp',
-    '443/udp',
-    '50000-60000/udp',
-    '7881/tcp',
     '80/tcp'
   ].sort());
   assert.equal((services.api.ports ?? []).length, 0, 'API must remain private');
   assert.equal(
-    (services.livekit.ports ?? []).filter((port) => String(port.target) === '7880').length,
-    0,
-    'LiveKit signal port 7880 must remain private'
+    services.livekit.network_mode,
+    'host',
+    'LiveKit must bypass Docker bridge NAT so ICE and embedded TURN share the host network path'
+  );
+  assert.equal((services.livekit.ports ?? []).length, 0, 'host-networked LiveKit must not publish Docker ports');
+  assert.equal((services.livekit.expose ?? []).length, 0, 'host-networked LiveKit must not declare bridge-only exposed ports');
+  assert.equal(
+    services.livekit.user,
+    undefined,
+    'host-networked LiveKit must use the image default user so TURN can bind UDP 443 under the host low-port policy'
   );
   assert.deepEqual(
     services.livekit.command,
     ['--config', '/etc/livekit/livekit.yaml', '--node-ip', '203.0.113.10'],
     'LiveKit must explicitly load its mounted configuration and advertise the configured public IP'
   );
+  assert.equal(
+    services.api.environment.LIVEKIT_INTERNAL_URL,
+    'ws://host.docker.internal:7880',
+    'API media control must reach host-networked LiveKit through the Docker host gateway'
+  );
+  assert.deepEqual(
+    Object.keys(services.api.networks ?? {}).sort(),
+    ['backend', 'edge'],
+    'API must keep its private application network and gain an egress route to the Docker host gateway'
+  );
+  for (const serviceName of ['api', 'caddy']) {
+    const extraHosts = services[serviceName].extra_hosts ?? {};
+    const hostGateway = Array.isArray(extraHosts)
+      ? extraHosts.some((entry) => /^host\.docker\.internal[:=]host-gateway$/.test(entry))
+      : extraHosts['host.docker.internal'] === 'host-gateway';
+    assert.equal(hostGateway, true, `${serviceName} must resolve the Docker host gateway`);
+  }
   assert.equal(
     services.caddy.user,
     undefined,

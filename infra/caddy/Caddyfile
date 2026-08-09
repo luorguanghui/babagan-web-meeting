@@ -19,11 +19,18 @@ meet.babagan.cloud {
     reverse_proxy api:3000
   }
 
+  # Keep LiveKit signaling on the public meeting origin. This route is
+  # WebSocket-compatible through Cloudflare, while media still uses the
+  # DNS-only LiveKit/TURN endpoints advertised by the server.
+  handle /rtc* {
+    reverse_proxy host.docker.internal:7880
+  }
+
   handle {
     reverse_proxy web:8080
   }
 }
 
 rtc.babagan.cloud {
-  reverse_proxy livekit:7880
+  reverse_proxy host.docker.internal:7880
 }
