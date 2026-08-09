@@ -212,11 +212,12 @@ export function MeetingRoomPage({
   const stageStream = screenState.stream;
   const stageTrack = screenState.stream ? undefined : state.remoteScreenShare?.track;
   const stageAudioTrack = screenState.stream ? undefined : state.remoteScreenShare?.audioTrack;
+  const hasActiveScreenShare = Boolean(stageStream || stageTrack);
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
 
-  return <main className="meeting-room">
+  return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
     <header><p className="eyebrow">{t('room.eyebrow')}</p><h1>{t('room.heading', { name: join.participantName })}</h1></header>
     <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}

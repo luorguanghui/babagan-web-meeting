@@ -131,6 +131,7 @@ describe('controlled browser screen sharing', () => {
     />);
 
     const video = await screen.findByLabelText("Ben's shared screen");
+    expect(screen.getByRole('main')).toHaveClass('meeting-room-sharing');
     expect(remoteTrack.attach).toHaveBeenCalledWith(video);
     expect(video).toHaveProperty('srcObject', stream);
   });

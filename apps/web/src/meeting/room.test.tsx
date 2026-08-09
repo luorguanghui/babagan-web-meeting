@@ -296,6 +296,7 @@ describe('meeting room UI', () => {
   it('shows five participants with independent microphone states', async () => {
     renderRoom();
 
+    expect(screen.getByRole('main')).not.toHaveClass('meeting-room-sharing');
     const roster = await screen.findByRole('list', { name: 'Participants' });
     expect(within(roster).getAllByRole('listitem')).toHaveLength(5);
     expect(within(roster).getByRole('listitem', { name: 'Ada, you, microphone muted' })).toBeVisible();
