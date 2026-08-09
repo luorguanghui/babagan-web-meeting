@@ -69,6 +69,7 @@ export interface LiveKitTrackAdapter {
   mediaStreamTrack?: MediaStreamTrack;
   attach(element?: HTMLMediaElement): HTMLMediaElement;
   detach(element?: HTMLMediaElement): HTMLMediaElement | HTMLMediaElement[];
+  setPlayoutDelay?(delayInSeconds: number): void;
 }
 
 interface LiveKitTrackPublicationAdapter {
@@ -92,6 +93,8 @@ const voiceConstraints: AudioCaptureOptions = {
   noiseSuppression: true,
   autoGainControl: true
 };
+
+const screenSharePlayoutDelaySeconds = 0.5;
 
 class RoomController implements MeetingRoomController {
   private room?: LiveKitRoomAdapter;
@@ -246,6 +249,7 @@ class RoomController implements MeetingRoomController {
       const participant = participantValue as LiveKitParticipantAdapter;
       if (track.kind === Track.Kind.Video
         && publication.source === Track.Source.ScreenShare) {
+        track.setPlayoutDelay?.(screenSharePlayoutDelaySeconds);
         this.update({
           remoteScreenShare: {
             track,
@@ -258,6 +262,7 @@ class RoomController implements MeetingRoomController {
       }
       if (track.kind !== Track.Kind.Audio) return;
       if (publication?.source === Track.Source.ScreenShareAudio) {
+        track.setPlayoutDelay?.(screenSharePlayoutDelaySeconds);
         this.remoteScreenAudioTracks.set(participant.identity, track);
         if (this.state.remoteScreenShare?.sharerIdentity === participant.identity) {
           this.update({

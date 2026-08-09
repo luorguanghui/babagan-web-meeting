@@ -76,11 +76,14 @@ describe('controlled browser screen sharing', () => {
       permissions: { publishSources: ['microphone'] }
     });
     const subscribed = vi.mocked(room.on).mock.calls.find(([event]) => event === 'trackSubscribed')?.[1];
-    const videoTrack = { kind: 'video', attach: vi.fn(), detach: vi.fn() };
+    const videoTrack = {
+      kind: 'video', attach: vi.fn(), detach: vi.fn(), setPlayoutDelay: vi.fn()
+    };
     const audioTrack = {
       kind: 'audio',
       attach: vi.fn(() => document.createElement('audio')),
-      detach: vi.fn(() => [])
+      detach: vi.fn(() => []),
+      setPlayoutDelay: vi.fn()
     };
 
     subscribed?.(videoTrack, { source: 'screen_share' }, { identity: 'participant-2', name: 'Ben' });
@@ -92,6 +95,8 @@ describe('controlled browser screen sharing', () => {
       sharerIdentity: 'participant-2'
     });
     expect(document.querySelectorAll('audio')).toHaveLength(0);
+    expect(videoTrack.setPlayoutDelay).toHaveBeenCalledWith(0.5);
+    expect(audioTrack.setPlayoutDelay).toHaveBeenCalledWith(0.5);
   });
 
   it('renders a subscribed remote share in the room stage for a non-sharer', async () => {
