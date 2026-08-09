@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ComponentType } from 'react';
@@ -562,15 +562,15 @@ describe('screen stage', () => {
     expect(requestFullscreen).toHaveBeenCalledOnce();
   });
 
-  it('hides the fullscreen control while the shared screen stage is fullscreen', async () => {
+  it('keeps the fullscreen control mounted so stale browser events cannot remove it permanently', async () => {
     const { stream } = displayStream({ audio: false });
     render(<ScreenStage stream={stream} sharerName="Ada" />);
     const stage = screen.getByLabelText('Shared screen stage');
     Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: stage });
 
-    document.dispatchEvent(new Event('fullscreenchange'));
+    await act(async () => { document.dispatchEvent(new Event('fullscreenchange')); });
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: 'View shared screen fullscreen' })).not.toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'View shared screen fullscreen' })).toBeInTheDocument();
     Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: null });
   });
 

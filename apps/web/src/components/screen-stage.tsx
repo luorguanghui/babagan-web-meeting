@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 
@@ -16,15 +16,6 @@ export function ScreenStage({
   const { t } = useI18n();
   const stageRef = useRef<HTMLElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isFullscreen, setIsFullscreen] = useState(false);
-
-  useEffect(() => {
-    const update = () => setIsFullscreen(document.fullscreenElement === stageRef.current);
-    document.addEventListener('fullscreenchange', update);
-    update();
-    return () => document.removeEventListener('fullscreenchange', update);
-  }, []);
-
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
@@ -56,12 +47,12 @@ export function ScreenStage({
       playsInline
       style={{ objectFit: 'contain' }}
     />
-    {!isFullscreen && <button
+    <button
       type="button"
       className="screen-stage-fullscreen"
       aria-label={t('screen.fullscreen')}
       title={t('screen.fullscreen')}
       onClick={() => { void stageRef.current?.requestFullscreen().catch(() => undefined); }}
-    >{t('screen.fullscreenAction')}</button>}
+    >{t('screen.fullscreenAction')}</button>
   </section>;
 }
