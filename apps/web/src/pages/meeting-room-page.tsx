@@ -186,7 +186,8 @@ export function MeetingRoomPage({
     name: participant.name,
     isSharing: participant.isSharing
   }));
-  const stageStream = screenState.stream ?? state.remoteScreenShare?.stream;
+  const stageStream = screenState.stream;
+  const stageTrack = screenState.stream ? undefined : state.remoteScreenShare?.track;
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
@@ -196,7 +197,7 @@ export function MeetingRoomPage({
     <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
     {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
     {screenState.audioGuidance && <p role="status">{screenState.audioGuidance}</p>}
-    <ScreenStage stream={stageStream} sharerName={sharerName} />
+    <ScreenStage stream={stageStream} track={stageTrack} sharerName={sharerName} />
     <ParticipantList participants={state.participants} />
     <HostMenu
       participants={hostParticipants}

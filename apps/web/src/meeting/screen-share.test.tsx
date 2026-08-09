@@ -41,32 +41,39 @@ describe('controlled browser screen sharing', () => {
       livekitUrl: 'wss://rtc.example.test', token: 'token', meetingExpiresAt: 10_000,
       permissions: { publishSources: ['microphone'] }
     });
-    const { stream, video } = displayStream({ audio: false });
-    vi.stubGlobal('MediaStream', class MediaStream {
-      constructor() { return stream; }
-    });
+    const { video } = displayStream({ audio: false });
+    const remoteTrack = { kind: 'video', mediaStreamTrack: video, attach: vi.fn(), detach: vi.fn() };
     const subscribed = vi.mocked(room.on).mock.calls.find(([event]) => event === 'trackSubscribed')?.[1];
 
     subscribed?.(
-      { kind: 'video', mediaStreamTrack: video, attach: vi.fn(), detach: vi.fn() },
+      remoteTrack,
       { source: 'screen_share' },
       { identity: 'participant-2', name: 'Ben' }
     );
 
     expect(states.at(-1)).toMatchObject({
-      remoteScreenShare: { stream, sharerIdentity: 'participant-2', sharerName: 'Ben' }
+      remoteScreenShare: { track: remoteTrack, sharerIdentity: 'participant-2', sharerName: 'Ben' }
     });
     expect(document.querySelectorAll('audio')).toHaveLength(0);
   });
 
   it('renders a subscribed remote share in the room stage for a non-sharer', async () => {
     const { stream } = displayStream({ audio: false });
+    const remoteTrack = {
+      kind: 'video',
+      attach: vi.fn((element?: HTMLMediaElement) => {
+        const video = element ?? document.createElement('video');
+        video.srcObject = stream;
+        return video;
+      }),
+      detach: vi.fn((element?: HTMLMediaElement) => element ?? [])
+    };
     const controller = meetingController({
       remoteScreenShare: {
-        stream,
+        track: remoteTrack,
         sharerIdentity: 'participant-2',
         sharerName: 'Ben'
-      }
+      } as unknown as MeetingRoomState['remoteScreenShare']
     });
 
     render(<MeetingRoomPage
@@ -81,7 +88,9 @@ describe('controlled browser screen sharing', () => {
       listDevices={async () => []}
     />);
 
-    expect(await screen.findByLabelText("Ben's shared screen")).toHaveProperty('srcObject', stream);
+    const video = await screen.findByLabelText("Ben's shared screen");
+    expect(remoteTrack.attach).toHaveBeenCalledWith(video);
+    expect(video).toHaveProperty('srcObject', stream);
   });
 
   it('reflects server-pushed local publish permission in room authorization state', async () => {
@@ -179,17 +188,26 @@ describe('controlled browser screen sharing', () => {
     });
     const { stream } = displayStream({ audio: true });
     const publisher = controller as unknown as {
-      publishScreenShare(stream: MediaStream, options: { maxBitrate: number; frameRate: number }): Promise<void>;
+      publishScreenShare(stream: MediaStream, options: {
+        maxBitrate: number;
+        frameRate: number;
+        degradationPreference: RTCDegradationPreference;
+      }): Promise<void>;
       releaseScreenShare(stream: MediaStream): Promise<void>;
     };
     expect(publisher.publishScreenShare).toBeTypeOf('function');
 
-    await publisher.publishScreenShare(stream, { maxBitrate: 15_000_000, frameRate: 60 });
+    await publisher.publishScreenShare(stream, {
+      maxBitrate: 15_000_000,
+      frameRate: 60,
+      degradationPreference: 'maintain-framerate'
+    });
     await publisher.releaseScreenShare(stream);
 
     expect(publishTrack).toHaveBeenNthCalledWith(1, stream.getVideoTracks()[0], expect.objectContaining({
       source: 'screen_share',
-      videoEncoding: { maxBitrate: 15_000_000, maxFramerate: 60 }
+      screenShareEncoding: { maxBitrate: 15_000_000, maxFramerate: 60 },
+      degradationPreference: 'maintain-framerate'
     }));
     expect(publishTrack).toHaveBeenNthCalledWith(2, stream.getAudioTracks()[0], expect.objectContaining({
       source: 'screen_share_audio'
@@ -223,12 +241,14 @@ describe('controlled browser screen sharing', () => {
   });
 
   it.each([
-    ['standard', captureProfiles.standard, 8_000_000],
-    ['motion', captureProfiles.motion, 15_000_000]
+    ['standard', captureProfiles.standard, 8_000_000, 'detail', 'maintain-resolution'],
+    ['motion', captureProfiles.motion, 15_000_000, 'motion', 'maintain-framerate']
   ] as const)('requests the exact %s 1080p capture and publish profile after the grant', async (
     profile,
     expected,
-    maxBitrate
+    maxBitrate,
+    contentHint,
+    degradationPreference
   ) => {
     const order: string[] = [];
     const { stream } = displayStream({ audio: true });
@@ -250,8 +270,10 @@ describe('controlled browser screen sharing', () => {
     });
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate,
-      frameRate: expected.frameRate
+      frameRate: expected.frameRate,
+      degradationPreference
     });
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
   });
 
   it('does not capture or publish when the server grant is rejected', async () => {
@@ -340,6 +362,41 @@ describe('screen stage', () => {
     const video = screen.getByLabelText("Ada's shared screen");
     expect(video).toHaveStyle({ objectFit: 'contain' });
     expect((video as HTMLVideoElement).srcObject).toBe(stream);
+  });
+
+  it('offers a fullscreen control for the active shared screen', async () => {
+    const { stream } = displayStream({ audio: false });
+    render(<ScreenStage stream={stream} sharerName="Ada" />);
+    const stage = screen.getByLabelText('Shared screen stage');
+    const requestFullscreen = vi.fn(async () => undefined);
+    Object.defineProperty(stage, 'requestFullscreen', { configurable: true, value: requestFullscreen });
+
+    await userEvent.click(screen.getByRole('button', { name: 'View shared screen fullscreen' }));
+
+    expect(requestFullscreen).toHaveBeenCalledOnce();
+  });
+
+  it('attaches and detaches remote video through LiveKit so adaptive streaming can request the right layer', () => {
+    const { stream } = displayStream({ audio: false });
+    const track = {
+      attach: vi.fn((element?: HTMLMediaElement) => {
+        const video = element ?? document.createElement('video');
+        video.srcObject = stream;
+        return video;
+      }),
+      detach: vi.fn((element?: HTMLMediaElement) => element ?? [])
+    };
+    const RemoteTrackStage = ScreenStage as ComponentType<{
+      track: typeof track;
+      sharerName: string;
+    }>;
+
+    const rendered = render(<RemoteTrackStage track={track} sharerName="Ben" />);
+    const video = screen.getByLabelText("Ben's shared screen");
+    expect(track.attach).toHaveBeenCalledWith(video);
+
+    rendered.unmount();
+    expect(track.detach).toHaveBeenCalledWith(video);
   });
 });
 

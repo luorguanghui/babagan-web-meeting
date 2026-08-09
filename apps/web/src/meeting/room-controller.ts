@@ -23,7 +23,7 @@ export interface MeetingParticipant {
 }
 
 export interface RemoteScreenShare {
-  stream: MediaStream;
+  track: LiveKitTrackAdapter;
   sharerIdentity: string;
   sharerName: string;
 }
@@ -41,7 +41,11 @@ export interface MeetingRoomController {
   connect(join: JoinMeetingResponse): Promise<void>;
   setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void>;
   switchAudioOutput(deviceId: string): Promise<'changed' | 'unsupported'>;
-  publishScreenShare(stream: MediaStream, options: { maxBitrate: number; frameRate: number }): Promise<void>;
+  publishScreenShare(stream: MediaStream, options: {
+    maxBitrate: number;
+    frameRate: number;
+    degradationPreference: RTCDegradationPreference;
+  }): Promise<void>;
   releaseScreenShare(stream: MediaStream): Promise<void>;
   disconnect(): Promise<void>;
   subscribe(listener: (state: MeetingRoomState) => void): () => void;
@@ -62,8 +66,8 @@ export interface LiveKitParticipantAdapter {
 export interface LiveKitTrackAdapter {
   kind: string;
   mediaStreamTrack?: MediaStreamTrack;
-  attach(): HTMLMediaElement;
-  detach(): HTMLMediaElement | HTMLMediaElement[];
+  attach(element?: HTMLMediaElement): HTMLMediaElement;
+  detach(element?: HTMLMediaElement): HTMLMediaElement | HTMLMediaElement[];
 }
 
 interface LiveKitTrackPublicationAdapter {
@@ -157,7 +161,11 @@ class RoomController implements MeetingRoomController {
 
   async publishScreenShare(
     stream: MediaStream,
-    options: { maxBitrate: number; frameRate: number }
+    options: {
+      maxBitrate: number;
+      frameRate: number;
+      degradationPreference: RTCDegradationPreference;
+    }
   ): Promise<void> {
     const participant = this.room?.localParticipant;
     if (!participant?.publishTrack || !participant.unpublishTrack) {
@@ -170,7 +178,8 @@ class RoomController implements MeetingRoomController {
       options: {
         source: Track.Source.ScreenShare,
         stream: 'screen-share',
-        videoEncoding: { maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }
+        screenShareEncoding: { maxBitrate: options.maxBitrate, maxFramerate: options.frameRate },
+        degradationPreference: options.degradationPreference
       }
     }, ...stream.getAudioTracks().map((track) => ({
       track,
@@ -234,11 +243,10 @@ class RoomController implements MeetingRoomController {
       const publication = publicationValue as LiveKitTrackPublicationAdapter;
       const participant = participantValue as LiveKitParticipantAdapter;
       if (track.kind === Track.Kind.Video
-        && publication.source === Track.Source.ScreenShare
-        && track.mediaStreamTrack) {
+        && publication.source === Track.Source.ScreenShare) {
         this.update({
           remoteScreenShare: {
-            stream: new MediaStream([track.mediaStreamTrack]),
+            track,
             sharerIdentity: participant.identity,
             sharerName: participant.name?.trim() || participant.identity
           }

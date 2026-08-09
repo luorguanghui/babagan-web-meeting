@@ -1,6 +1,20 @@
 export const captureProfiles = {
-  standard: { width: 1920, height: 1080, frameRate: 30, maxBitrate: 8_000_000 },
-  motion: { width: 1920, height: 1080, frameRate: 60, maxBitrate: 15_000_000 }
+  standard: {
+    width: 1920,
+    height: 1080,
+    frameRate: 30,
+    maxBitrate: 8_000_000,
+    contentHint: 'detail',
+    degradationPreference: 'maintain-resolution'
+  },
+  motion: {
+    width: 1920,
+    height: 1080,
+    frameRate: 60,
+    maxBitrate: 15_000_000,
+    contentHint: 'motion',
+    degradationPreference: 'maintain-framerate'
+  }
 } as const;
 
 export type CaptureProfile = keyof typeof captureProfiles;
@@ -14,7 +28,11 @@ export interface ScreenShareState {
 }
 
 export interface ScreenSharePublisher {
-  publish(stream: MediaStream, options: { maxBitrate: number; frameRate: number }): Promise<void>;
+  publish(stream: MediaStream, options: {
+    maxBitrate: number;
+    frameRate: number;
+    degradationPreference: RTCDegradationPreference;
+  }): Promise<void>;
   release(stream: MediaStream): Promise<void>;
 }
 
@@ -57,12 +75,14 @@ class BrowserScreenShareController implements ScreenShareController {
       });
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
+      videoTrack.contentHint = settings.contentHint;
       this.activeStream = stream;
       this.endedTrack = videoTrack;
       videoTrack.addEventListener('ended', this.handleEnded, { once: true });
       const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
         maxBitrate: settings.maxBitrate,
-        frameRate: settings.frameRate
+        frameRate: settings.frameRate,
+        degradationPreference: settings.degradationPreference
       }));
       this.publication = publication;
       await publication;
