@@ -331,7 +331,7 @@ describe('controlled browser screen sharing', () => {
 
   it.each([
     ['standard', captureProfiles.standard, 8_000_000, 'detail', 'maintain-resolution'],
-    ['motion', captureProfiles.motion, 13_000_000, 'motion', 'maintain-framerate']
+    ['motion', captureProfiles.motion, 11_500_000, 'motion', 'maintain-framerate']
   ] as const)('requests the exact %s 1080p capture and publish profile after the grant', async (
     profile,
     expected,

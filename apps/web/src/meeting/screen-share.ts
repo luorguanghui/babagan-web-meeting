@@ -11,7 +11,7 @@ export const captureProfiles = {
     width: 1920,
     height: 1080,
     frameRate: 60,
-    maxBitrate: 13_000_000,
+    maxBitrate: 11_500_000,
     contentHint: 'motion',
     degradationPreference: 'maintain-framerate'
   }
