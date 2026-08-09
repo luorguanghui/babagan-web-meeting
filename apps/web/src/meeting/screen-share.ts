@@ -11,7 +11,7 @@ export const captureProfiles = {
     width: 1920,
     height: 1080,
     frameRate: 60,
-    maxBitrate: 15_000_000,
+    maxBitrate: 10_000_000,
     contentHint: 'motion',
     degradationPreference: 'maintain-framerate'
   }
@@ -71,7 +71,9 @@ class BrowserScreenShareController implements ScreenShareController {
       grantAcquired = true;
       stream = await this.dependencies.getDisplayMedia({
         video: { width: settings.width, height: settings.height, frameRate: settings.frameRate },
-        audio: true
+        audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
+          restrictOwnAudio: boolean;
+        }
       });
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
