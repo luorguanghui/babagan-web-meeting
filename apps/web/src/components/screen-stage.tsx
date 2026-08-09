@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 
@@ -6,12 +6,14 @@ export function ScreenStage({
   stream,
   track,
   audioTrack,
-  sharerName
+  sharerName,
+  children
 }: {
   stream?: MediaStream;
   track?: Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
   audioTrack?: Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
   sharerName?: string;
+  children?: ReactNode;
 }) {
   const { t } = useI18n();
   const stageRef = useRef<HTMLElement>(null);
@@ -54,5 +56,6 @@ export function ScreenStage({
       title={t('screen.fullscreen')}
       onClick={() => { void stageRef.current?.requestFullscreen().catch(() => undefined); }}
     >{t('screen.fullscreenAction')}</button>
+    {children}
   </section>;
 }

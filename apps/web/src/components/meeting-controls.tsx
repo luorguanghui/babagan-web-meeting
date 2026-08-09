@@ -2,7 +2,7 @@ import type { ScreenShareCodec } from '@meeting/contracts';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
-import type { CaptureProfile } from '../meeting/screen-share.js';
+import type { CaptureProfile, MotionBitrate } from '../meeting/screen-share.js';
 
 interface MeetingControlsProps {
   className?: string;
@@ -16,12 +16,14 @@ interface MeetingControlsProps {
   screenShareBusy?: boolean;
   screenProfile?: CaptureProfile;
   screenCodec?: ScreenShareCodec;
+  screenBitrate?: MotionBitrate;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
   onResumeAudio: () => void;
   onScreenProfileChange?: (profile: CaptureProfile) => void;
   onScreenCodecChange?: (codec: ScreenShareCodec) => void;
+  onScreenBitrateChange?: (bitrate: MotionBitrate) => void;
   onScreenShareToggle?: () => void;
   onLeave: () => void;
 }
@@ -55,6 +57,16 @@ export function MeetingControls(props: MeetingControlsProps) {
       <option value="standard">{t('controls.standard')}</option>
       <option value="motion">{t('controls.motion')}</option>
     </select></label>
+    {(props.screenProfile ?? 'standard') === 'motion' && <label>{t('controls.screenBitrate')}<select
+      aria-label={t('controls.screenBitrate')}
+      value={props.screenBitrate ?? 10_000_000}
+      disabled={props.screenShareActive || props.screenShareBusy}
+      onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as MotionBitrate)}
+    >
+      <option value={10_000_000}>10 Mbps</option>
+      <option value={13_000_000}>13 Mbps</option>
+      <option value={15_000_000}>15 Mbps</option>
+    </select></label>}
     <label>{t('controls.screenCodec')}<select
       aria-label={t('controls.screenCodec')}
       value={props.screenCodec ?? 'h264'}

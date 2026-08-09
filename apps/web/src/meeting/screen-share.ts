@@ -20,6 +20,8 @@ export const captureProfiles = {
 } as const;
 
 export type CaptureProfile = keyof typeof captureProfiles;
+export const motionBitrates = [10_000_000, 13_000_000, 15_000_000] as const;
+export type MotionBitrate = typeof motionBitrates[number];
 export type ScreenShareStatus = 'idle' | 'starting' | 'sharing';
 export type UnrestrictedSystemAudioChoice = 'share-audio' | 'video-only' | 'cancel';
 
@@ -41,7 +43,7 @@ export interface ScreenSharePublisher {
 }
 
 export interface ScreenShareController {
-  start(profile: CaptureProfile, codec?: ScreenShareCodec): Promise<void>;
+  start(profile: CaptureProfile, codec?: ScreenShareCodec, motionBitrate?: MotionBitrate): Promise<void>;
   stop(): Promise<void>;
   getState(): ScreenShareState;
   subscribe(listener: (state: ScreenShareState) => void): () => void;
@@ -69,7 +71,11 @@ class BrowserScreenShareController implements ScreenShareController {
     publisher: ScreenSharePublisher;
   }) {}
 
-  async start(profile: CaptureProfile, codec: ScreenShareCodec = 'h264'): Promise<void> {
+  async start(
+    profile: CaptureProfile,
+    codec: ScreenShareCodec = 'h264',
+    motionBitrate: MotionBitrate = 10_000_000
+  ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const settings = captureProfiles[profile];
     let grantAcquired = false;
@@ -124,7 +130,7 @@ class BrowserScreenShareController implements ScreenShareController {
       this.endedTrack = videoTrack;
       videoTrack.addEventListener('ended', this.handleEnded, { once: true });
       const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
-        maxBitrate: settings.maxBitrate,
+        maxBitrate: profile === 'motion' ? motionBitrate : settings.maxBitrate,
         frameRate: settings.frameRate,
         degradationPreference: settings.degradationPreference,
         codec

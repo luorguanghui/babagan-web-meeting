@@ -54,14 +54,15 @@ meter { height: .9rem; width: 100%; }
 .meeting-notices > p { background: #fff; border-left: 4px solid #075d72; margin: 0; padding: .65rem .8rem; }
 .meeting-workspace { align-items: start; display: grid; gap: 1rem; min-width: 0; }
 .meeting-stage-column { display: grid; gap: .75rem; min-width: 0; }
-.webrtc-stats-panel { background: rgba(255, 255, 255, .88); border: 1px solid rgba(7, 93, 114, .2); border-radius: .7rem; font-size: .82rem; padding: .55rem .75rem; }
-.webrtc-stats-panel summary { color: #075d72; cursor: pointer; font-weight: 700; }
-.webrtc-stats-note { color: #48616b; margin: .6rem 0; }
+.webrtc-stats-panel { background: rgba(7, 35, 44, .72); border: 1px solid rgba(255, 255, 255, .2); border-radius: .55rem; bottom: .65rem; color: #eef8fa; font-size: .75rem; left: .65rem; max-width: calc(100% - 1.3rem); padding: .38rem .55rem; position: absolute; z-index: 2; }
+.webrtc-stats-panel[open] { background: rgba(7, 35, 44, .94); max-height: min(60vh, 30rem); overflow: auto; width: min(24rem, calc(100% - 1.3rem)); }
+.webrtc-stats-panel summary { color: #eef8fa; cursor: pointer; font-weight: 700; }
+.webrtc-stats-note { color: #c6dce2; margin: .6rem 0; }
 .webrtc-stats-grid { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); margin-top: .65rem; }
 .webrtc-stats-grid h3 { font-size: .9rem; margin: 0 0 .35rem; }
 .webrtc-stats-grid dl, .webrtc-stats-grid dl div { margin: 0; }
 .webrtc-stats-grid dl div { display: flex; gap: .5rem; justify-content: space-between; padding: .18rem 0; }
-.webrtc-stats-grid dt { color: #536b74; }
+.webrtc-stats-grid dt { color: #c6dce2; }
 .webrtc-stats-grid dd { font-variant-numeric: tabular-nums; font-weight: 650; text-align: right; }
 .screen-stage { align-items: center; aspect-ratio: 16 / 9; background: #102832; border: 1px solid #31515d; box-shadow: 0 1rem 2.75rem rgba(17, 39, 51, .16), inset 0 0 0 1px rgba(255, 255, 255, .06); display: flex; justify-content: center; min-height: 12rem; overflow: hidden; position: relative; width: 100%; }
 .screen-stage video { background: #08191f; display: block; height: 100%; width: 100%; }
@@ -107,6 +108,7 @@ meter { height: .9rem; width: 100%; }
 }
 @media (max-width: 40rem) {
   .meeting-room { padding-inline: .65rem; }
+  .meeting-control-dock { bottom: auto; position: static; }
   .meeting-controls { align-items: stretch; }
   .meeting-controls > button, .meeting-controls > label { flex: 1 1 100%; }
 }

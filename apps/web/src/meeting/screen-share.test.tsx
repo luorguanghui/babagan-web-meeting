@@ -7,6 +7,7 @@ import type { ComponentType } from 'react';
 import { HostMenu } from '../components/host-menu.js';
 import { MeetingControls } from '../components/meeting-controls.js';
 import { ScreenStage } from '../components/screen-stage.js';
+import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { MeetingRoomPage, type MeetingRoomPageProps } from '../pages/meeting-room-page.js';
 import {
   createRoomController,
@@ -449,6 +450,46 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByLabelText('Screen-share codec')).toBeDisabled();
   });
 
+  it('shows 10, 13, and 15 Mbps ceilings only for 1080p60 and locks the choice while sharing', async () => {
+    const onBitrateChange = vi.fn();
+    const common = {
+      connection: 'connected' as const,
+      microphoneEnabled: false,
+      audioPlaybackBlocked: false,
+      devices: [],
+      leaving: false,
+      screenShareAuthorized: true,
+      screenShareBusy: false,
+      screenCodec: 'h264' as const,
+      screenBitrate: 10_000_000 as const,
+      onMicrophoneToggle: () => undefined,
+      onMicrophoneDeviceChange: () => undefined,
+      onSpeakerDeviceChange: () => undefined,
+      onResumeAudio: () => undefined,
+      onScreenProfileChange: () => undefined,
+      onScreenCodecChange: () => undefined,
+      onScreenBitrateChange: onBitrateChange,
+      onScreenShareToggle: () => undefined,
+      onLeave: () => undefined
+    };
+    const rendered = render(<MeetingControls {...common} screenProfile="standard" screenShareActive={false} />);
+
+    expect(screen.queryByLabelText('60fps bitrate ceiling')).not.toBeInTheDocument();
+
+    rendered.rerender(<MeetingControls {...common} screenProfile="motion" screenShareActive={false} />);
+    const selector = screen.getByLabelText('60fps bitrate ceiling');
+    expect(selector).toHaveValue('10000000');
+    expect(screen.getByRole('option', { name: '10 Mbps' })).toBeVisible();
+    expect(screen.getByRole('option', { name: '13 Mbps' })).toBeVisible();
+    expect(screen.getByRole('option', { name: '15 Mbps' })).toBeVisible();
+
+    await userEvent.selectOptions(selector, '13000000');
+    expect(onBitrateChange).toHaveBeenCalledWith(13_000_000);
+
+    rendered.rerender(<MeetingControls {...common} screenProfile="motion" screenShareActive />);
+    expect(screen.getByLabelText('60fps bitrate ceiling')).toBeDisabled();
+  });
+
   it.each([
     ['standard', captureProfiles.standard, 8_000_000, 'detail', 'maintain-resolution'],
     ['motion', captureProfiles.motion, 10_000_000, 'motion', 'maintain-framerate']
@@ -487,6 +528,31 @@ describe('controlled browser screen sharing', () => {
       codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
+  });
+
+  it.each([
+    ['motion', 13_000_000, 13_000_000],
+    ['motion', 15_000_000, 15_000_000],
+    ['standard', 15_000_000, 8_000_000]
+  ] as const)('publishes %s sharing with the selected ceiling resolved to %i bps', async (
+    profile,
+    selectedBitrate,
+    expectedBitrate
+  ) => {
+    const { stream } = displayStream({ audio: true });
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start(profile, 'h264', selectedBitrate);
+
+    expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
+      maxBitrate: expectedBitrate
+    }));
   });
 
   it('keeps monitor audio when the browser confirms own-audio restriction', async () => {
@@ -681,6 +747,21 @@ describe('screen stage', () => {
     await userEvent.click(fullscreenButton);
 
     expect(requestFullscreen).toHaveBeenCalledOnce();
+  });
+
+  it('keeps WebRTC diagnostics inside the active fullscreen container only', () => {
+    const { stream } = displayStream({ audio: false });
+    const rendered = render(<ScreenStage stream={stream} sharerName="Ada">
+      <WebRtcStatsPanel requestedCodec="h264" />
+    </ScreenStage>);
+    const stage = screen.getByLabelText('Shared screen stage');
+
+    expect(stage).toContainElement(screen.getByText('WebRTC statistics'));
+
+    rendered.rerender(<ScreenStage sharerName="Ada">
+      <WebRtcStatsPanel requestedCodec="h264" />
+    </ScreenStage>);
+    expect(screen.queryByText('WebRTC statistics')).not.toBeInTheDocument();
   });
 
   it('keeps the fullscreen control mounted so stale browser events cannot remove it permanently', async () => {

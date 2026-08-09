@@ -20,6 +20,7 @@ import { createRoomController, type MeetingRoomController } from '../meeting/roo
 import {
   createScreenShareController,
   type CaptureProfile,
+  type MotionBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
@@ -130,6 +131,7 @@ export function MeetingRoomPage({
   const hostAuthorizedRef = useRef(false);
   const [screenProfile, setScreenProfile] = useState<CaptureProfile>('standard');
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
+  const [screenBitrate, setScreenBitrate] = useState<MotionBitrate>(10_000_000);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle', profile: 'standard' });
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
@@ -213,7 +215,7 @@ export function MeetingRoomPage({
     setNotice(undefined);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenProfile, screenCodec);
+      else await screenShare.start(screenProfile, screenCodec, screenBitrate);
     } catch {
       setNotice(t('room.shareFailed'));
     }
@@ -288,8 +290,9 @@ export function MeetingRoomPage({
           track={stageTrack}
           audioTrack={stageAudioTrack}
           sharerName={sharerName}
-        />
-        {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
+        >
+          {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
+        </ScreenStage>
         <MeetingControls
           className="meeting-control-dock"
           connection={state.connection}
@@ -302,12 +305,14 @@ export function MeetingRoomPage({
           screenShareBusy={screenState.status === 'starting'}
           screenProfile={screenProfile}
           screenCodec={screenCodec}
+          screenBitrate={screenBitrate}
           onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
           onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
           onResumeAudio={() => void controller.resumeAudioPlayback()}
           onScreenProfileChange={setScreenProfile}
           onScreenCodecChange={setScreenCodec}
+          onScreenBitrateChange={setScreenBitrate}
           onScreenShareToggle={() => void toggleScreenShare()}
           onLeave={() => void leave()}
         />
