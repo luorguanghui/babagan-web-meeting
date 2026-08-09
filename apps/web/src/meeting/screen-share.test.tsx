@@ -284,7 +284,7 @@ describe('controlled browser screen sharing', () => {
 
   it.each([
     ['standard', captureProfiles.standard, 8_000_000, 'detail', 'maintain-resolution'],
-    ['motion', captureProfiles.motion, 10_000_000, 'motion', 'maintain-framerate']
+    ['motion', captureProfiles.motion, 13_000_000, 'motion', 'maintain-framerate']
   ] as const)('requests the exact %s 1080p capture and publish profile after the grant', async (
     profile,
     expected,
@@ -308,7 +308,9 @@ describe('controlled browser screen sharing', () => {
     expect(order).toEqual(['grant', 'capture', 'publish']);
     expect(getDisplayMedia).toHaveBeenCalledWith({
       video: { width: expected.width, height: expected.height, frameRate: expected.frameRate },
-      audio: { restrictOwnAudio: true }
+      audio: { restrictOwnAudio: true },
+      systemAudio: 'exclude',
+      windowAudio: 'window'
     });
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate,
@@ -316,6 +318,24 @@ describe('controlled browser screen sharing', () => {
       degradationPreference
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
+  });
+
+  it('drops whole-system audio returned for a monitor share before publication', async () => {
+    const { stream, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('motion');
+
+    expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
+    expect(stream.getAudioTracks()).toHaveLength(0);
+    expect(audio?.stop).toHaveBeenCalledOnce();
+    expect(controller.getState().audioGuidance).toMatch(/system audio.*disabled.*echo/i);
   });
 
   it('does not capture or publish when the server grant is rejected', async () => {
@@ -597,16 +617,25 @@ describe('host controls', () => {
   });
 });
 
-function displayStream(options: { audio: boolean }) {
+function displayStream(options: { audio: boolean; displaySurface?: string }) {
   const video = eventTrack('video');
+  if (options.displaySurface) {
+    Object.assign(video, { getSettings: () => ({ displaySurface: options.displaySurface }) });
+  }
   const audio = options.audio ? [eventTrack('audio')] : [];
   const tracks = [video, ...audio];
   const stream = {
     getTracks: () => tracks,
     getVideoTracks: () => [video],
-    getAudioTracks: () => audio
+    getAudioTracks: () => audio,
+    removeTrack: (track: MediaStreamTrack) => {
+      const trackIndex = tracks.indexOf(track);
+      if (trackIndex >= 0) tracks.splice(trackIndex, 1);
+      const audioIndex = audio.indexOf(track);
+      if (audioIndex >= 0) audio.splice(audioIndex, 1);
+    }
   } as unknown as MediaStream;
-  return { stream, video };
+  return { stream, video, audio: audio[0] };
 }
 
 function eventTrack(kind: 'audio' | 'video') {

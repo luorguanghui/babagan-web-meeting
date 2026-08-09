@@ -11,7 +11,7 @@ export const captureProfiles = {
     width: 1920,
     height: 1080,
     frameRate: 60,
-    maxBitrate: 10_000_000,
+    maxBitrate: 13_000_000,
     contentHint: 'motion',
     degradationPreference: 'maintain-framerate'
   }
@@ -43,7 +43,8 @@ export interface ScreenShareController {
   subscribe(listener: (state: ScreenShareState) => void): () => void;
 }
 
-const audioGuidance = 'No computer audio was shared. In Chrome or Edge, choose a browser tab and enable “Share tab audio”, or choose Entire screen and enable system audio.';
+const audioGuidance = 'No computer audio was shared. In Chrome or Edge, choose a browser tab and enable “Share tab audio”. Entire screen system audio is excluded to prevent meeting echo.';
+const systemAudioGuidance = 'System audio was disabled for full-screen sharing to prevent meeting echo. Share a browser tab to include its audio.';
 
 class BrowserScreenShareController implements ScreenShareController {
   private state: ScreenShareState = { status: 'idle', profile: 'standard' };
@@ -65,6 +66,7 @@ class BrowserScreenShareController implements ScreenShareController {
     const settings = captureProfiles[profile];
     let grantAcquired = false;
     let stream: MediaStream | undefined;
+    let removedSystemAudio = false;
     this.update({ status: 'starting', profile, stream: undefined, audioGuidance: undefined });
     try {
       await this.dependencies.requestGrant();
@@ -73,10 +75,22 @@ class BrowserScreenShareController implements ScreenShareController {
         video: { width: settings.width, height: settings.height, frameRate: settings.frameRate },
         audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
           restrictOwnAudio: boolean;
-        }
+        },
+        systemAudio: 'exclude',
+        windowAudio: 'window'
+      } as DisplayMediaStreamOptions & {
+        systemAudio: 'exclude';
+        windowAudio: 'window';
       });
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
+      if (videoTrack.getSettings?.().displaySurface === 'monitor') {
+        for (const audioTrack of stream.getAudioTracks()) {
+          stream.removeTrack(audioTrack);
+          audioTrack.stop();
+          removedSystemAudio = true;
+        }
+      }
       videoTrack.contentHint = settings.contentHint;
       this.activeStream = stream;
       this.endedTrack = videoTrack;
@@ -97,7 +111,9 @@ class BrowserScreenShareController implements ScreenShareController {
         status: 'sharing',
         profile,
         stream,
-        audioGuidance: stream.getAudioTracks().length === 0 ? audioGuidance : undefined
+        audioGuidance: removedSystemAudio
+          ? systemAudioGuidance
+          : stream.getAudioTracks().length === 0 ? audioGuidance : undefined
       });
     } catch (error) {
       if (stream && this.activeStream !== stream && this.stopPromise) {
