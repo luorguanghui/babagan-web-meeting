@@ -781,6 +781,119 @@ describe('controlled browser screen sharing', () => {
     expect(releaseGrant).toHaveBeenCalledOnce();
     expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
   });
+
+  it('does not resurrect a superseded start when its grant resolves late', async () => {
+    const grant1 = deferred<void>();
+    const grant2 = deferred<void>();
+    const { stream } = displayStream({ audio: true });
+    const capture = vi.fn(async () => stream);
+    const releaseGrant = vi.fn(async () => undefined);
+    const publish = vi.fn(async () => undefined);
+    const requestGrant = vi.fn()
+      .mockImplementationOnce(() => grant1.promise)
+      .mockImplementationOnce(() => grant2.promise);
+    const controller = createScreenShareController({
+      requestGrant,
+      releaseGrant,
+      getDisplayMedia: capture,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    const start1 = controller.start(); // grant#1 in flight
+    await controller.stop();           // cancelled: idle, button re-enabled
+    const start2 = controller.start(); // grant#2 in flight
+    grant1.resolve();                  // start#1 resumes → must abort, not resurrect
+    await start1;
+
+    expect(capture).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(controller.getState().status).toBe('starting'); // start#2's state untouched
+
+    grant2.resolve();
+    await start2;
+
+    expect(capture).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
+    expect(releaseGrant).toHaveBeenCalledTimes(1); // only start#1's abort released its grant
+    expect(controller.getState()).toMatchObject({ status: 'sharing', stream });
+  });
+
+  it('does not resurrect a start superseded while its capture was in flight', async () => {
+    const grant1 = deferred<void>();
+    const grant2 = deferred<void>();
+    const capture1 = deferred<MediaStream>();
+    const { stream: stream1, video: video1 } = displayStream({ audio: true });
+    const { stream: stream2 } = displayStream({ audio: true });
+    const releaseGrant = vi.fn(async () => undefined);
+    const publish = vi.fn(async () => undefined);
+    const requestGrant = vi.fn()
+      .mockImplementationOnce(() => grant1.promise)
+      .mockImplementationOnce(() => grant2.promise);
+    const getDisplayMedia = vi.fn()
+      .mockImplementationOnce(() => capture1.promise)
+      .mockImplementationOnce(async () => stream2);
+    const controller = createScreenShareController({
+      requestGrant,
+      releaseGrant,
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    const start1 = controller.start();
+    grant1.resolve();
+    await Promise.resolve();  // grant#1 continuation runs; capture#1 now in flight
+    await controller.stop();  // cancelled: idle
+    const start2 = controller.start(); // grant#2 in flight
+    capture1.resolve(stream1); // start#1 resumes → must abort
+    await start1;
+
+    expect(video1.stop).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+    expect(controller.getState().status).toBe('starting');
+
+    grant2.resolve();
+    await start2;
+
+    expect(publish).toHaveBeenCalledWith(stream2, expect.any(Object));
+    expect(controller.getState()).toMatchObject({ status: 'sharing', stream: stream2 });
+  });
+
+  it('does not clobber a newer start when a superseded start fails', async () => {
+    const grant1 = deferred<void>();
+    const grant2 = deferred<void>();
+    const capture1 = deferred<MediaStream>();
+    const { stream } = displayStream({ audio: true });
+    const releaseGrant = vi.fn(async () => undefined);
+    const publish = vi.fn(async () => undefined);
+    const requestGrant = vi.fn()
+      .mockImplementationOnce(() => grant1.promise)
+      .mockImplementationOnce(() => grant2.promise);
+    const getDisplayMedia = vi.fn()
+      .mockImplementationOnce(() => capture1.promise)
+      .mockImplementationOnce(async () => stream);
+    const controller = createScreenShareController({
+      requestGrant,
+      releaseGrant,
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    const start1 = controller.start();
+    grant1.resolve();
+    await Promise.resolve();
+    await controller.stop();
+    const start2 = controller.start();
+    capture1.reject(new Error('picker dismissed'));
+    await start1;
+
+    expect(controller.getState().status).toBe('starting'); // start#2 untouched
+
+    grant2.resolve();
+    await start2;
+
+    expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
+    expect(controller.getState()).toMatchObject({ status: 'sharing', stream });
+  });
 });
 
 describe('screen stage', () => {
@@ -1395,8 +1508,9 @@ function unauthorizedMeetingApi() {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((resolver) => { resolve = resolver; });
-  return { promise, resolve };
+  let reject!: (reason: Error) => void;
+  const promise = new Promise<T>((resolver, rejecter) => { resolve = resolver; reject = rejecter; });
+  return { promise, resolve, reject };
 }
 
 const p2pViewers: Peer[] = [

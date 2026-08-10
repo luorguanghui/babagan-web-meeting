@@ -67,12 +67,15 @@ const tabAudioGuidance = 'Screen sharing was cancelled. Choose a browser tab and
 class BrowserScreenShareController implements ScreenShareController {
   private state: ScreenShareState = { status: 'idle' };
   private readonly listeners = new Set<(state: ScreenShareState) => void>();
-  private endedTrack?: MediaStreamTrack;
   private activeStream?: MediaStream;
   private publication?: Promise<void>;
   private stopPromise?: Promise<void>;
   /** Set by `stop()` while a start is still in flight (grant/capture/audio decision). */
   private cancelRequested = false;
+  /** Monotonic generation of `start()`; a start that is no longer current must abort. */
+  private startGen = 0;
+  /** Removes the current start's `ended` listener; the newer start owns this slot. */
+  private endedCleanup?: () => void;
 
   constructor(private readonly dependencies: {
     requestGrant(): Promise<void>;
@@ -88,6 +91,7 @@ class BrowserScreenShareController implements ScreenShareController {
     maxBitrate: ScreenShareBitrate = screenShareDefaultBitrate
   ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
+    const myGen = ++this.startGen;
     this.cancelRequested = false;
     const settings = adaptiveCaptureProfile;
     let grantAcquired = false;
@@ -97,8 +101,8 @@ class BrowserScreenShareController implements ScreenShareController {
     try {
       await this.dependencies.requestGrant();
       grantAcquired = true;
-      if (this.cancelRequested) {
-        // Revoked while the grant was in flight: release it and stay idle.
+      if (this.cancelRequested || this.startGen !== myGen) {
+        // Revoked or superseded while the grant was in flight.
         await this.cancelStart(undefined, grantAcquired);
         return;
       }
@@ -115,8 +119,8 @@ class BrowserScreenShareController implements ScreenShareController {
         windowAudio: 'window';
         selfBrowserSurface: 'exclude';
       });
-      if (this.cancelRequested) {
-        // Revoked while the source picker was open.
+      if (this.cancelRequested || this.startGen !== myGen) {
+        // Revoked or superseded while the source picker was open.
         await this.cancelStart(stream, grantAcquired);
         return;
       }
@@ -147,15 +151,20 @@ class BrowserScreenShareController implements ScreenShareController {
           }
         }
       }
-      if (this.cancelRequested) {
-        // Revoked while the system-audio decision was pending (or right after capture).
+      if (this.cancelRequested || this.startGen !== myGen) {
+        // Revoked or superseded while the system-audio decision was pending.
         await this.cancelStart(stream, grantAcquired);
         return;
       }
       videoTrack.contentHint = settings.contentHint;
       this.activeStream = stream;
-      this.endedTrack = videoTrack;
-      videoTrack.addEventListener('ended', this.handleEnded, { once: true });
+      const onEnded = () => {
+        // Only the current start's ended track may stop the share; a
+        // superseded start's track ending must not tear down a newer share.
+        if (this.startGen === myGen) void this.stop();
+      };
+      videoTrack.addEventListener('ended', onEnded, { once: true });
+      this.endedCleanup = () => videoTrack.removeEventListener('ended', onEnded);
       const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
         maxBitrate,
         frameRate: settings.frameRate,
@@ -176,19 +185,26 @@ class BrowserScreenShareController implements ScreenShareController {
           ?? (stream.getAudioTracks().length === 0 ? audioGuidance : undefined)
       });
     } catch (error) {
-      if (stream && this.activeStream !== stream && this.stopPromise) {
+      const superseded = this.startGen !== myGen;
+      if (!superseded && stream && this.activeStream !== stream && this.stopPromise) {
         await this.stopPromise;
         return;
       }
-      this.activeStream = undefined;
-      this.publication = undefined;
-      this.endedTrack?.removeEventListener('ended', this.handleEnded);
       for (const track of stream?.getTracks() ?? []) track.stop();
       await Promise.allSettled([
-        ...(stream ? [this.dependencies.publisher.release(stream)] : []),
+        // Only the current start may release the publication: it could belong
+        // to a newer start that superseded this one.
+        ...(stream && !superseded ? [this.dependencies.publisher.release(stream)] : []),
         ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
       ]);
-      this.endedTrack = undefined;
+      if (superseded) {
+        // A superseded start fails silently: a newer start owns the state machine.
+        return;
+      }
+      this.endedCleanup?.();
+      this.endedCleanup = undefined;
+      this.activeStream = undefined;
+      this.publication = undefined;
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       throw error;
     }
@@ -202,8 +218,8 @@ class BrowserScreenShareController implements ScreenShareController {
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       return;
     }
-    this.endedTrack?.removeEventListener('ended', this.handleEnded);
-    this.endedTrack = undefined;
+    this.endedCleanup?.();
+    this.endedCleanup = undefined;
     this.activeStream = undefined;
     this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
     for (const track of stream.getTracks()) track.stop();
@@ -222,22 +238,17 @@ class BrowserScreenShareController implements ScreenShareController {
   }
 
   /**
-   * Aborts a start that was stopped while still in the `starting` window
-   * (grant in flight, source picker open, or audio decision pending): stops
-   * any acquired tracks, releases the grant (and the publication when one
-   * existed), and returns the state to idle.
+   * Aborts a start that was stopped or superseded while still in the
+   * `starting` window (grant in flight, source picker open, or audio decision
+   * pending). Only releases resources owned by this start: its acquired
+   * tracks and its grant. The state machine is left untouched — `stop()` (or
+   * the superseding start) already owns it.
    */
   private async cancelStart(stream: MediaStream | undefined, grantAcquired: boolean): Promise<void> {
-    this.activeStream = undefined;
-    this.publication = undefined;
-    this.endedTrack?.removeEventListener('ended', this.handleEnded);
-    this.endedTrack = undefined;
     for (const track of stream?.getTracks() ?? []) track.stop();
     await Promise.allSettled([
-      ...(stream ? [this.dependencies.publisher.release(stream)] : []),
       ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
     ]);
-    this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
   }
 
   getState(): ScreenShareState { return { ...this.state }; }
@@ -247,8 +258,6 @@ class BrowserScreenShareController implements ScreenShareController {
     listener(this.getState());
     return () => this.listeners.delete(listener);
   }
-
-  private readonly handleEnded = () => { void this.stop(); };
 
   private async verifyOwnAudioRestriction(track: MediaStreamTrack): Promise<boolean> {
     if (!this.dependencies.supportsOwnAudioRestriction()) return false;
@@ -270,7 +279,6 @@ class BrowserScreenShareController implements ScreenShareController {
     for (const listener of this.listeners) listener(snapshot);
   }
 }
-
 export interface HybridScreenSharePublisherDependencies {
   /** LiveKit (SFU) publisher used for the fallback path. */
   sfuPublisher: ScreenSharePublisher;
