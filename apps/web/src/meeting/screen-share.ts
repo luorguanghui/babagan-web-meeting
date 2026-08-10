@@ -71,6 +71,8 @@ class BrowserScreenShareController implements ScreenShareController {
   private activeStream?: MediaStream;
   private publication?: Promise<void>;
   private stopPromise?: Promise<void>;
+  /** Set by `stop()` while a start is still in flight (grant/capture/audio decision). */
+  private cancelRequested = false;
 
   constructor(private readonly dependencies: {
     requestGrant(): Promise<void>;
@@ -86,6 +88,7 @@ class BrowserScreenShareController implements ScreenShareController {
     maxBitrate: ScreenShareBitrate = screenShareDefaultBitrate
   ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
+    this.cancelRequested = false;
     const settings = adaptiveCaptureProfile;
     let grantAcquired = false;
     let stream: MediaStream | undefined;
@@ -94,6 +97,11 @@ class BrowserScreenShareController implements ScreenShareController {
     try {
       await this.dependencies.requestGrant();
       grantAcquired = true;
+      if (this.cancelRequested) {
+        // Revoked while the grant was in flight: release it and stay idle.
+        await this.cancelStart(undefined, grantAcquired);
+        return;
+      }
       stream = await this.dependencies.getDisplayMedia({
         video: { width: settings.width, height: settings.height, frameRate: settings.frameRate },
         audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
@@ -107,6 +115,11 @@ class BrowserScreenShareController implements ScreenShareController {
         windowAudio: 'window';
         selfBrowserSurface: 'exclude';
       });
+      if (this.cancelRequested) {
+        // Revoked while the source picker was open.
+        await this.cancelStart(stream, grantAcquired);
+        return;
+      }
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
       const displaySurface = videoTrack.getSettings?.().displaySurface;
@@ -133,6 +146,11 @@ class BrowserScreenShareController implements ScreenShareController {
             shareAudioGuidance = unrestrictedAudioGuidance;
           }
         }
+      }
+      if (this.cancelRequested) {
+        // Revoked while the system-audio decision was pending (or right after capture).
+        await this.cancelStart(stream, grantAcquired);
+        return;
       }
       videoTrack.contentHint = settings.contentHint;
       this.activeStream = stream;
@@ -178,6 +196,7 @@ class BrowserScreenShareController implements ScreenShareController {
 
   async stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
+    this.cancelRequested = true;
     const stream = this.activeStream ?? this.state.stream;
     if (!stream) {
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
@@ -200,6 +219,25 @@ class BrowserScreenShareController implements ScreenShareController {
         this.stopPromise = undefined;
       });
     return this.stopPromise;
+  }
+
+  /**
+   * Aborts a start that was stopped while still in the `starting` window
+   * (grant in flight, source picker open, or audio decision pending): stops
+   * any acquired tracks, releases the grant (and the publication when one
+   * existed), and returns the state to idle.
+   */
+  private async cancelStart(stream: MediaStream | undefined, grantAcquired: boolean): Promise<void> {
+    this.activeStream = undefined;
+    this.publication = undefined;
+    this.endedTrack?.removeEventListener('ended', this.handleEnded);
+    this.endedTrack = undefined;
+    for (const track of stream?.getTracks() ?? []) track.stop();
+    await Promise.allSettled([
+      ...(stream ? [this.dependencies.publisher.release(stream)] : []),
+      ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
+    ]);
+    this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
   }
 
   getState(): ScreenShareState { return { ...this.state }; }

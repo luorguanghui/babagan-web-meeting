@@ -731,6 +731,56 @@ describe('controlled browser screen sharing', () => {
     expect(releaseGrant).toHaveBeenCalledOnce();
     expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
   });
+
+  it('aborts a start that is stopped while the grant is in flight', async () => {
+    const grant = deferred<void>();
+    const releaseGrant = vi.fn(async () => undefined);
+    const getDisplayMedia = vi.fn();
+    const publish = vi.fn();
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(() => grant.promise),
+      releaseGrant,
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    const starting = controller.start();
+    expect(controller.getState().status).toBe('starting');
+    await controller.stop();
+    grant.resolve();
+    await starting;
+
+    expect(getDisplayMedia).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(releaseGrant).toHaveBeenCalledOnce();
+    expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
+  });
+
+  it('aborts a start that is stopped while the source picker is open', async () => {
+    const { stream, video } = displayStream({ audio: true });
+    const grant = deferred<void>();
+    const capture = deferred<MediaStream>();
+    const releaseGrant = vi.fn(async () => undefined);
+    const publish = vi.fn();
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(() => grant.promise),
+      releaseGrant,
+      getDisplayMedia: vi.fn(() => capture.promise),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    const starting = controller.start();
+    grant.resolve();
+    await Promise.resolve(); // grant continuation runs; the capture is now in flight
+    await controller.stop();
+    capture.resolve(stream);
+    await starting;
+
+    expect(video.stop).toHaveBeenCalledOnce();
+    expect(publish).not.toHaveBeenCalled();
+    expect(releaseGrant).toHaveBeenCalledOnce();
+    expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
+  });
 });
 
 describe('screen stage', () => {
@@ -1243,6 +1293,40 @@ describe('P2P-first screen sharing in the room', () => {
 
     await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
     expect(share.stop).toHaveBeenCalledOnce();
+    expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled();
+  });
+
+  it('cancels a start that is revoked by the host while the grant is in flight', async () => {
+    const grant = deferred<void>();
+    const capture = vi.fn();
+    const releaseOwnShare = vi.fn(async () => undefined);
+    const controller = meetingController();
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+
+    renderP2pRoom({
+      controller,
+      meetingApi: {
+        ...authorizedMeetingApi(),
+        grantShare: vi.fn(() => grant.promise),
+        releaseOwnShare
+      },
+      getDisplayMedia: capture,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+
+    act(() => signaling.shareGone());
+    await act(async () => { grant.resolve(); });
+
+    await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
+    expect(capture).not.toHaveBeenCalled();
+    expect(share.start).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled();
   });
 });
