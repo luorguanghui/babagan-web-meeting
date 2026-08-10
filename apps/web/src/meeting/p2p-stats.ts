@@ -54,8 +54,14 @@ export class P2pStatsCollector {
   private rttCount = 0;
   private maxLossPct = 0;
   private reported = false;
-  /** Per-viewer share sessions (sharer role): set while an attempt is pending. */
-  private readonly shareSessions = new Map<string, { startedAt?: number }>();
+  /**
+   * Per-viewer share sessions (sharer role). `startedAt` is set while an
+   * attempt is pending; `lastState` is the viewer's previous snapshot state
+   * (used to edge-trigger the fallback counter — the controller re-emits the
+   * whole viewer map on every state transition of any viewer, and
+   * `livekit-fallback` persists until the viewer leaves or retries).
+   */
+  private readonly shareSessions = new Map<string, { startedAt?: number; lastState?: ViewerSessionState }>();
   private viewerStartedAt?: number;
 
   constructor(private readonly dependencies: P2pStatsCollectorDependencies) {
@@ -75,7 +81,8 @@ export class P2pStatsCollector {
       if (state === 'negotiating') {
         if (session?.startedAt === undefined) {
           this.attempts++;
-          this.shareSessions.set(identity, { startedAt: at });
+          this.shareSessions.set(identity, { startedAt: at, lastState: state });
+          continue;
         }
       } else if (state === 'p2p') {
         if (session?.startedAt !== undefined) {
@@ -84,11 +91,16 @@ export class P2pStatsCollector {
           session.startedAt = undefined;
         }
       } else if (state === 'livekit-fallback') {
+        // Edge-triggered like the negotiating/p2p branches: a viewer that is
+        // already in `livekit-fallback` must not be counted again on snapshots
+        // emitted for other viewers' transitions.
+        if (session?.lastState !== 'livekit-fallback') this.fallbacks++;
         if (session) session.startedAt = undefined;
-        this.fallbacks++;
       } else if (state === 'closed') {
         if (session) session.startedAt = undefined;
       }
+      if (session) session.lastState = state;
+      else this.shareSessions.set(identity, { lastState: state });
     }
   }
 

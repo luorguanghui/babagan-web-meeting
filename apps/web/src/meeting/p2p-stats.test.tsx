@@ -56,6 +56,53 @@ describe('anonymous P2P quality statistics', () => {
     });
   });
 
+  it('counts a persistent fallback state only once across snapshots emitted for other viewers', () => {
+    const collector = createP2pStatsCollector({
+      slug: 'meeting-slug', sessionId: 'anon-session-1',
+      now: () => 0, sendReport: async () => undefined
+    });
+
+    // The share controller emits the full viewer map on every transition of
+    // any viewer, and `livekit-fallback` persists until that viewer leaves or
+    // retries — repeated snapshots must not re-count the same fallback.
+    collector.observeShareStates(new Map([
+      ['viewer-1', 'negotiating'],
+      ['viewer-2', 'negotiating']
+    ]), 1_000);
+    collector.observeShareStates(new Map([
+      ['viewer-1', 'negotiating'],
+      ['viewer-2', 'livekit-fallback']
+    ]), 2_000);
+    collector.observeShareStates(new Map([
+      ['viewer-1', 'p2p'],
+      ['viewer-2', 'livekit-fallback']
+    ]), 2_500);
+    collector.observeShareStates(new Map([
+      ['viewer-1', 'livekit-fallback'],
+      ['viewer-2', 'livekit-fallback']
+    ]), 3_000);
+
+    expect(collector.reportPayload()).toMatchObject({
+      attempts: 2, p2pSucceeded: 1, fallbacks: 2
+    });
+  });
+
+  it('counts a fallback edge again after the viewer rebuilt its session', () => {
+    const collector = createP2pStatsCollector({
+      slug: 'meeting-slug', sessionId: 'anon-session-1',
+      now: () => 0, sendReport: async () => undefined
+    });
+
+    collector.observeShareStates(new Map([['viewer-1', 'negotiating']]), 1_000);
+    collector.observeShareStates(new Map([['viewer-1', 'livekit-fallback']]), 1_500);
+    collector.observeShareStates(new Map([['viewer-1', 'negotiating']]), 2_000); // rebuilt
+    collector.observeShareStates(new Map([['viewer-1', 'livekit-fallback']]), 2_500);
+
+    expect(collector.reportPayload()).toMatchObject({
+      attempts: 2, p2pSucceeded: 0, fallbacks: 2
+    });
+  });
+
   it('counts viewer-side establishment the same way, resetting on idle', () => {
     const collector = createP2pStatsCollector({
       slug: 'meeting-slug', sessionId: 'anon-session-1',
