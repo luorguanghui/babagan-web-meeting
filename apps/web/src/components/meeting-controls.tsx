@@ -2,7 +2,12 @@ import type { ScreenShareCodec } from '@meeting/contracts';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
-import type { ScreenShareBitrate } from '../meeting/screen-share.js';
+import {
+  recommendP2pBitrate,
+  screenShareBitrates,
+  screenShareDefaultBitrate,
+  type ScreenShareBitrate
+} from '../meeting/screen-share.js';
 
 interface MeetingControlsProps {
   className?: string;
@@ -16,6 +21,8 @@ interface MeetingControlsProps {
   screenShareBusy?: boolean;
   screenCodec?: ScreenShareCodec;
   screenBitrate?: ScreenShareBitrate;
+  /** Online viewer count driving the P2P bitrate suggestion. */
+  screenViewerCount?: number;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
@@ -74,14 +81,18 @@ export function MeetingControls(props: MeetingControlsProps) {
         </select></label>
         <label>{t('controls.screenBitrate')}<select
           aria-label={t('controls.screenBitrate')}
-          value={props.screenBitrate ?? 10_000_000}
+          value={props.screenBitrate ?? screenShareDefaultBitrate}
           disabled={props.screenShareActive || props.screenShareBusy}
           onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}
         >
-          <option value={10_000_000}>10 Mbps</option>
-          <option value={13_000_000}>13 Mbps</option>
-          <option value={15_000_000}>15 Mbps</option>
-        </select></label>
+          {screenShareBitrates.map((bitrate) => (
+            <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>
+          ))}
+        </select>
+        <span className="meeting-controls-hint">{t('controls.p2pHint', {
+          count: props.screenViewerCount ?? 0,
+          bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0) / 1_000_000
+        })}</span></label>
       </div>
     </details>
   </footer>;

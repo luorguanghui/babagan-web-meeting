@@ -16,12 +16,15 @@ import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
-import { createP2pSignalingClient } from '../meeting/p2p-signaling.js';
-import { IceServersResponseSchema } from '../meeting/p2p-share-controller.js';
+import { createP2pSignalingClient, type Peer, type P2pSignalingClient, type P2pSignalingEvents } from '../meeting/p2p-signaling.js';
+import { createP2pShareController, IceServersResponseSchema, type P2pShareController } from '../meeting/p2p-share-controller.js';
 import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
   createScreenShareController,
+  HybridScreenSharePublisher,
+  recommendP2pBitrate,
+  screenShareDefaultBitrate,
   type ScreenShareBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
@@ -39,6 +42,13 @@ export interface MeetingRoomPageProps {
   meetingApi?: MeetingRoomApi;
   getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
   supportsOwnAudioRestriction?: () => boolean;
+  /** Test seam: signaling client factory, defaults to `createP2pSignalingClient`. */
+  createSignalingClient?: (slug: string, identity: string, events: P2pSignalingEvents) => P2pSignalingClient;
+  /** Test seam: sharer-side P2P controller factory, defaults to `createP2pShareController`. */
+  shareControllerFactory?: (deps: {
+    onViewerFallback: (identity: string) => void;
+    onAllViewersClosed: () => void;
+  }) => P2pShareController;
   onLeft?: () => void;
   onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
@@ -113,6 +123,8 @@ export function MeetingRoomPage({
   meetingApi = defaultMeetingApi,
   getDisplayMedia,
   supportsOwnAudioRestriction,
+  createSignalingClient,
+  shareControllerFactory,
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
@@ -132,8 +144,16 @@ export function MeetingRoomPage({
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
-  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(10_000_000);
+  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
+  const screenBitrateTouchedRef = useRef(false);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
+  const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
+  const [viewerCount, setViewerCount] = useState(0);
+  const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
+  const viewerRosterRef = useRef<Peer[]>([]);
+  const p2pShareRef = useRef<P2pShareController | undefined>(undefined);
+  const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
+  const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
@@ -153,6 +173,15 @@ export function MeetingRoomPage({
     setSystemAudioDecision(undefined);
     resolve?.(choice);
   }, []);
+  const createShareController = useCallback((deps: {
+    onViewerFallback: (identity: string) => void;
+    onAllViewersClosed: () => void;
+  }): P2pShareController => {
+    if (shareControllerFactory) return shareControllerFactory(deps);
+    const signaling = signalingRef.current;
+    if (!signaling) throw new Error('P2P signaling is not connected.');
+    return createP2pShareController({ slug, signaling, ...deps });
+  }, [shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
       ? meetingApi.grantShare(slug, join.participantIdentity)
@@ -162,10 +191,50 @@ export function MeetingRoomPage({
     ...(supportsOwnAudioRestriction ? { supportsOwnAudioRestriction } : {}),
     chooseUnrestrictedSystemAudio,
     publisher: {
-      publish: (stream, options) => controller.publishScreenShare(stream, options),
-      release: (stream) => controller.releaseScreenShare(stream)
+      publish: async (stream, options) => {
+        const hybrid = new HybridScreenSharePublisher({
+          sfuPublisher: {
+            // LiveKit stops tracks on unpublish; publish clones so cancelling
+            // the fallback track mid-share can never end the P2P source.
+            publish: async (s, o) => {
+              const cloned = cloneShareStream(s);
+              sfuStreamRef.current = cloned;
+              await controller.publishScreenShare(cloned, o);
+            },
+            release: async () => {
+              const cloned = sfuStreamRef.current;
+              sfuStreamRef.current = undefined;
+              if (cloned) await controller.releaseScreenShare(cloned);
+            }
+          },
+          getViewers: () => viewerRosterRef.current,
+          createShareController,
+          onControllerCreated: (share) => { p2pShareRef.current = share; }
+        });
+        hybridShareRef.current = hybrid;
+        await hybrid.publish(stream, options);
+      },
+      release: async (stream) => {
+        const hybrid = hybridShareRef.current;
+        hybridShareRef.current = undefined;
+        p2pShareRef.current = undefined;
+        if (hybrid) await hybrid.release(stream);
+      }
     }
-  }), [chooseUnrestrictedSystemAudio, controller, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
+  }), [chooseUnrestrictedSystemAudio, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
+
+  useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
+  // Bitrate guidance: while idle and the user has not chosen manually, the
+  // P2P bitrate follows the current online viewer count (1–3 → 8 Mbps, 4+ → 5).
+  useEffect(() => {
+    if (screenBitrateTouchedRef.current) return;
+    if (screenState.status !== 'idle') return;
+    setScreenBitrate(recommendP2pBitrate(viewerCount));
+  }, [screenState.status, viewerCount]);
+  useEffect(() => {
+    // After a share ends the suggestion is re-applied for the next share.
+    if (screenState.status === 'idle') screenBitrateTouchedRef.current = false;
+  }, [screenState.status]);
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
   const viewerP2pRef = useRef<P2pViewerController | undefined>(undefined);
@@ -182,17 +251,56 @@ export function MeetingRoomPage({
       }
       return viewerP2pRef.current;
     };
-    const signaling = createP2pSignalingClient(slug, join.participantIdentity, {
+    const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
       onOffer: (from, sdp) => { void ensureController()?.acceptOffer(from, sdp); },
-      onAnswer: () => undefined,
-      onIce: (from, candidate) => { void ensureController()?.handleIce(from, candidate); },
-      onBye: () => { viewerP2pRef.current?.close(); viewerP2pRef.current = undefined; },
-      onShareGone: () => { viewerP2pRef.current?.close(); viewerP2pRef.current = undefined; },
-      onWelcome: () => undefined,
-      onPeerJoined: () => undefined,
-      onPeerLeft: () => undefined,
+      // While we are the sharer, answers/ice/bye belong to the share session.
+      onAnswer: (from, sdp) => { void p2pShareRef.current?.handleAnswer(from, sdp); },
+      onIce: (from, candidate) => {
+        const share = p2pShareRef.current;
+        if (share) {
+          void share.handleIce(from, candidate);
+          return;
+        }
+        void ensureController()?.handleIce(from, candidate);
+      },
+      onBye: (from, reason) => {
+        const share = p2pShareRef.current;
+        if (share) {
+          hybridShareRef.current?.handleViewerBye(from, reason);
+          return;
+        }
+        viewerP2pRef.current?.close();
+        viewerP2pRef.current = undefined;
+      },
+      onShareGone: () => {
+        viewerP2pRef.current?.close();
+        viewerP2pRef.current = undefined;
+        // The host revoked (or the server ended) our share: tear it down fully.
+        if (screenShareRef.current?.getState().status !== 'idle') {
+          void screenShareRef.current?.stop();
+        }
+      },
+      onWelcome: (peers) => {
+        viewerRosterRef.current = peers;
+        setViewerCount(peers.length);
+        hybridShareRef.current?.viewerRosterChanged();
+      },
+      onPeerJoined: (peer) => {
+        const roster = viewerRosterRef.current;
+        if (!roster.some((existing) => existing.identity === peer.identity)) {
+          viewerRosterRef.current = [...roster, peer];
+          setViewerCount(roster.length + 1);
+        }
+        hybridShareRef.current?.viewerRosterChanged();
+      },
+      onPeerLeft: ({ identity }) => {
+        viewerRosterRef.current = viewerRosterRef.current.filter((peer) => peer.identity !== identity);
+        setViewerCount(viewerRosterRef.current.length);
+        hybridShareRef.current?.viewerLeft(identity);
+      },
       onError: () => undefined
     });
+    signalingRef.current = signaling;
     void apiRequest<{ iceServers: RTCIceServer[] }>(
       `/meetings/${encodeURIComponent(slug)}/ice-servers`,
       IceServersResponseSchema
@@ -211,11 +319,12 @@ export function MeetingRoomPage({
     });
     return () => {
       cancelled = true;
+      signalingRef.current = undefined;
       viewerP2pRef.current?.close();
       viewerP2pRef.current = undefined;
       signaling.close();
     };
-  }, [join.participantIdentity, slug]);
+  }, [createSignalingClient, join.participantIdentity, slug]);
 
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
@@ -372,7 +481,11 @@ export function MeetingRoomPage({
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
           onResumeAudio={() => void controller.resumeAudioPlayback()}
           onScreenCodecChange={setScreenCodec}
-          onScreenBitrateChange={setScreenBitrate}
+          onScreenBitrateChange={(bitrate) => {
+            screenBitrateTouchedRef.current = true;
+            setScreenBitrate(bitrate);
+          }}
+          screenViewerCount={viewerCount}
           onScreenShareToggle={() => void toggleScreenShare()}
           onLeave={() => void leave()}
         />
@@ -403,6 +516,20 @@ export function MeetingRoomPage({
       </aside>
     </div>
   </main>;
+}
+
+/**
+ * Clones every track of the captured share so the LiveKit fallback publication
+ * can be stopped (unpublish stops tracks) without ending the source that the
+ * P2P sessions are sending.
+ */
+function cloneShareStream(stream: MediaStream): MediaStream {
+  const tracks = stream.getTracks().map((track) => track.clone());
+  return {
+    getTracks: () => tracks,
+    getVideoTracks: () => tracks.filter((track) => track.kind === 'video'),
+    getAudioTracks: () => tracks.filter((track) => track.kind === 'audio')
+  } as unknown as MediaStream;
 }
 
 function localizedScreenGuidance(message: string, t: Translate): string {
