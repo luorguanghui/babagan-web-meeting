@@ -16,6 +16,9 @@ import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
+import { createP2pSignalingClient } from '../meeting/p2p-signaling.js';
+import { IceServersResponseSchema } from '../meeting/p2p-share-controller.js';
+import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
   createScreenShareController,
@@ -164,6 +167,56 @@ export function MeetingRoomPage({
     }
   }), [chooseUnrestrictedSystemAudio, controller, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
 
+  const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
+  const viewerP2pRef = useRef<P2pViewerController | undefined>(undefined);
+
+  useEffect(() => {
+    let cancelled = false;
+    let iceServers: RTCIceServer[] | undefined;
+    const ensureController = (): P2pViewerController | undefined => {
+      if (iceServers === undefined) return undefined;
+      if (viewerP2pRef.current === undefined) {
+        const controller = new P2pViewerController(signaling, iceServers);
+        viewerP2pRef.current = controller;
+        controller.subscribe((state) => { if (!cancelled) setViewerP2pState(state); });
+      }
+      return viewerP2pRef.current;
+    };
+    const signaling = createP2pSignalingClient(slug, join.participantIdentity, {
+      onOffer: (from, sdp) => { void ensureController()?.acceptOffer(from, sdp); },
+      onAnswer: () => undefined,
+      onIce: (from, candidate) => { void ensureController()?.handleIce(from, candidate); },
+      onBye: () => { viewerP2pRef.current?.close(); viewerP2pRef.current = undefined; },
+      onShareGone: () => { viewerP2pRef.current?.close(); viewerP2pRef.current = undefined; },
+      onWelcome: () => undefined,
+      onPeerJoined: () => undefined,
+      onPeerLeft: () => undefined,
+      onError: () => undefined
+    });
+    void apiRequest<{ iceServers: RTCIceServer[] }>(
+      `/meetings/${encodeURIComponent(slug)}/ice-servers`,
+      IceServersResponseSchema
+    ).then((response) => {
+      iceServers = response.iceServers;
+      if (cancelled) {
+        signaling.close();
+        return;
+      }
+      ensureController();
+      // connect() may reject while the client keeps reconnecting; P2P stays best-effort.
+      void signaling.connect().catch(() => undefined);
+    }).catch(() => {
+      // Without ICE credentials the viewer stays on the LiveKit track.
+      void signaling.connect().catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      viewerP2pRef.current?.close();
+      viewerP2pRef.current = undefined;
+      signaling.close();
+    };
+  }, [join.participantIdentity, slug]);
+
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
     const unsubscribe = screenShare.subscribe(setScreenState);
@@ -224,9 +277,17 @@ export function MeetingRoomPage({
     name: participant.name,
     isSharing: participant.isSharing
   }));
-  const stageStream = screenState.stream;
-  const stageTrack = screenState.stream ? undefined : state.remoteScreenShare?.track;
-  const stageAudioTrack = screenState.stream ? undefined : state.remoteScreenShare?.audioTrack;
+  // P2P first: the remote P2P stream renders while the viewer state is `p2p`;
+  // during `negotiating` and on `livekit` the stage falls back to the LiveKit
+  // screen track (the hybrid controller switches sources with first-frame
+  // retention, so no black screen while the swap is in flight).
+  const p2pViewerStream = viewerP2pState === 'p2p'
+    ? viewerP2pRef.current?.getStream() ?? undefined
+    : undefined;
+  const stageStream = screenState.stream ?? p2pViewerStream;
+  const stageTrack = stageStream ? undefined : state.remoteScreenShare?.track;
+  const stageAudioTrack = stageStream ? undefined : state.remoteScreenShare?.audioTrack;
+  const stageMuted = Boolean(screenState.stream) || (p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
   const sharerName = screenState.stream
     ? join.participantName
@@ -288,6 +349,7 @@ export function MeetingRoomPage({
             stream={stageStream}
             track={stageTrack}
             audioTrack={stageAudioTrack}
+            muted={stageMuted}
             sharerName={sharerName}
           >
             {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}

@@ -48,7 +48,7 @@ export interface P2pShareControllerDependencies {
   onAllViewersClosed?: () => void;
 }
 
-const IceServersResponseSchema = Type.Object({
+export const IceServersResponseSchema = Type.Object({
   iceServers: Type.Array(Type.Object({
     urls: Type.Array(Type.String()),
     username: Type.Optional(Type.String()),
