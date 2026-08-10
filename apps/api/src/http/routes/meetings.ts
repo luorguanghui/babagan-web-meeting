@@ -11,8 +11,10 @@ import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import type { AppConfig } from '../../config.js';
+import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { HostApplicationService } from '../../services/host-application-service.js';
 import type { MeetingService } from '../../services/meeting-service.js';
+import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { hostCookie, readSignedSessionCookie, setHostSessionCookie } from '../../security/session-token.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { adminPasswordRateLimit, generalApiRateLimit } from '../rate-limit.js';
@@ -23,6 +25,8 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   config: AppConfig;
   meetings: MeetingService;
   hosts: HostApplicationService;
+  participants: ParticipantApplicationService;
+  p2p: P2pRoomRegistry;
 }): void {
   app.post('/api/v1/meetings', {
     schema: { body: CreateMeetingRequestSchema, response: { 201: CreateMeetingResponseSchema } },
@@ -64,6 +68,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);
+    dependencies.p2p.broadcastShareGone(value, 'meeting ended');
     return reply.status(204).send();
   });
 
@@ -73,6 +78,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   }, async (request, reply) => {
     const body = request.body as { adminPassword: string };
     await dependencies.hosts.endMeetingWithAdminPassword(slug(request.params), body.adminPassword);
+    dependencies.p2p.broadcastShareGone(slug(request.params), 'meeting ended');
     return reply.status(204).send();
   });
 
@@ -81,7 +87,11 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   }, async (request, reply) => {
     const value = slug(request.params);
     const body = request.body as { participantIdentity: string };
+    // The share lock is released inside kickParticipant; read the holder first
+    // so `share-gone` is only announced when the kicked peer was the sharer.
+    const wasSharer = dependencies.participants.getShareIdentity(value) === body.participantIdentity;
     await dependencies.hosts.kickParticipant(hostSession(request, dependencies.hosts, value), value, body.participantIdentity);
+    if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 
@@ -97,9 +107,18 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.delete('/api/v1/meetings/:slug/share-grant', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.revokeShare(hostSession(request, dependencies.hosts, value), value);
+    // Broadcasting when no share was active is harmless: clients are already idle.
+    dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 }
+
+/**
+ * Note on `broadcastShareGone` coverage: all explicit HTTP release paths
+ * (revoke, end, sharer self-release, sharer leave, kick) announce `share-gone`.
+ * The background cleanup task (empty/expired meetings) is not wired to the
+ * in-memory registry; those connections die with the socket eventually.
+ */
 
 function hostOptions(app: FastifyInstance) {
   return {

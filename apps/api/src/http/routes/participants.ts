@@ -7,6 +7,7 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { MeetingService } from '../../services/meeting-service.js';
 import type { HostApplicationService } from '../../services/host-application-service.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
@@ -23,6 +24,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   meetings: MeetingService;
   hosts: HostApplicationService;
   participants: ParticipantApplicationService;
+  p2p: P2pRoomRegistry;
 }): void {
   app.post('/api/v1/meetings/:slug/join', {
     schema: { params: SlugParamsSchema, body: JoinMeetingRequestSchema, response: { 200: JoinMeetingResponseSchema } },
@@ -53,7 +55,11 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/leave', participantOptions(app), async (request, reply) => {
     const value = slug(request.params);
     const participant = leaveSession(request, dependencies.participants, value);
+    // leaveMeeting releases the share lock only when the leaver is the sharer;
+    // read the holder first so `share-gone` is only announced in that case.
+    const wasSharer = dependencies.participants.getShareIdentity(value) === participant.identity;
     await dependencies.meetings.leaveMeeting(value, participant.identity);
+    if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 
@@ -61,6 +67,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     const value = slug(request.params);
     const active = session(request, dependencies.participants, value);
     await dependencies.hosts.releaseParticipantShare(value, active.identity);
+    dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 

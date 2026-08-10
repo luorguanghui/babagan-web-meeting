@@ -49,6 +49,12 @@ export class ParticipantApplicationService {
     return session;
   }
 
+  /** Current `meetings.share_identity` for a meeting, used by P2P signaling
+   *  forwarding rules. Callers must have authenticated first. */
+  getShareIdentity(slug: string): string | null {
+    return this.dependencies.repository.findBySlug(slug)?.shareIdentity ?? null;
+  }
+
   async refreshToken(
     session: ActiveParticipantSession,
     slug: string
