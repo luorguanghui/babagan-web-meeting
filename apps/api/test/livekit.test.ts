@@ -155,6 +155,85 @@ describe('LiveKit media adapter', () => {
   });
 });
 
+describe('LiveKit ICE credentials', () => {
+  it('fetches ICE servers from the internal rtc/ice endpoint with a signed service token', async () => {
+    const fetchImpl = fakeFetch({
+      body: {
+        iceServers: [
+          { urls: ['stun:stun.livekit.internal:3478'], ttl: '3600s' },
+          {
+            urls: ['turn:turn.livekit.internal:3478?transport=udp'],
+            username: 'turn-user',
+            credential: 'turn-secret',
+            ttl: '3600s'
+          }
+        ]
+      }
+    });
+    const media = createIceMedia(fetchImpl.impl);
+
+    await expect(media.fetchIceServers()).resolves.toEqual([
+      { urls: ['stun:stun.livekit.internal:3478'] },
+      {
+        urls: ['turn:turn.livekit.internal:3478?transport=udp'],
+        username: 'turn-user',
+        credential: 'turn-secret'
+      }
+    ]);
+
+    expect(fetchImpl.calls).toHaveLength(1);
+    const call = fetchImpl.calls[0];
+    expect(call.url).toBe('http://livekit.internal:7880/rtc/ice');
+    expect(call.init.method).toBe('POST');
+    expect(call.init.body).toBe('{}');
+    const headers = call.init.headers as Record<string, string>;
+    expect(headers['content-type']).toBe('application/json');
+    const token = headers.authorization?.replace(/^Bearer /, '');
+    if (!token) throw new Error('missing bearer authorization header');
+    await expect(new TokenVerifier(apiKey, apiSecret).verify(token)).resolves.toBeDefined();
+  });
+
+  it('serves a cached response without calling LiveKit again', async () => {
+    const fetchImpl = fakeFetch({ body: { iceServers: [{ urls: ['stun:stun.livekit.internal:3478'] }] } });
+    const media = createIceMedia(fetchImpl.impl);
+
+    await expect(media.fetchIceServers()).resolves.toEqual([
+      { urls: ['stun:stun.livekit.internal:3478'] }
+    ]);
+    await expect(media.fetchIceServers()).resolves.toEqual([
+      { urls: ['stun:stun.livekit.internal:3478'] }
+    ]);
+
+    expect(fetchImpl.calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['a non-OK response', { body: {}, ok: false, status: 503 }],
+    ['a missing iceServers key', { body: {} }],
+    ['a malformed server entry', { body: { iceServers: [{ urls: 'stun:stun.example.test' }] } }],
+    ['a network failure', { error: new Error('socket hang up') }]
+  ])('rejects on %s', async (_label, response) => {
+    const media = createIceMedia(fakeFetch(response).impl);
+
+    await expect(media.fetchIceServers()).rejects.toThrow();
+  });
+
+  it('does not serve a stale cache entry after a failure and retries LiveKit', async () => {
+    const fetchImpl = fakeFetch(
+      { error: new Error('unavailable') },
+      { body: { iceServers: [{ urls: ['stun:stun.livekit.internal:3478'] }] } }
+    );
+    const media = createIceMedia(fetchImpl.impl);
+
+    await expect(media.fetchIceServers()).rejects.toThrow();
+    await expect(media.fetchIceServers()).resolves.toEqual([
+      { urls: ['stun:stun.livekit.internal:3478'] }
+    ]);
+
+    expect(fetchImpl.calls).toHaveLength(2);
+  });
+});
+
 describe('LiveKit webhook handler', () => {
   let db: Database.Database;
   let repo: SqliteMeetingRepository;
@@ -373,6 +452,35 @@ function createMedia(rooms: FakeRoomService): LiveKitMediaService {
     apiSecret,
     roomService: rooms
   });
+}
+
+function createIceMedia(fetchImpl: typeof fetch): LiveKitMediaService {
+  return new LiveKitMediaService({
+    internalUrl: 'ws://livekit.internal:7880',
+    apiKey,
+    apiSecret,
+    fetchImpl
+  });
+}
+
+function fakeFetch(...responses: Array<{
+  body?: unknown;
+  ok?: boolean;
+  status?: number;
+  error?: Error;
+}>) {
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  const impl = (async (input: unknown, init?: RequestInit) => {
+    calls.push({ url: String(input), init: init ?? {} });
+    const response = responses[Math.min(calls.length - 1, responses.length - 1)] ?? {};
+    if (response.error) throw response.error;
+    return {
+      ok: response.ok ?? true,
+      status: response.status ?? 200,
+      async json() { return response.body; }
+    } as Response;
+  }) as typeof fetch;
+  return { impl, calls };
 }
 
 class FakeRoomService {

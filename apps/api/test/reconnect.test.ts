@@ -9,7 +9,7 @@ import type { AppConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/database.js';
 import { migrate } from '../src/db/migrate.js';
 import { LiveKitWebhookHandler } from '../src/livekit/webhook-handler.js';
-import type { MediaService, PublishSource } from '../src/livekit/media-service.js';
+import type { IceServer, MediaService, PublishSource } from '../src/livekit/media-service.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import { hashSessionToken } from '../src/security/session-token.js';
 import { ParticipantApplicationService } from '../src/services/participant-application-service.js';
@@ -91,4 +91,5 @@ class TokenMedia implements MediaService {
   async removeParticipant(): Promise<void> {}
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
+  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }

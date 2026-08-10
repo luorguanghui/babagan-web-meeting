@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/database.js';
 import { migrate } from '../src/db/migrate.js';
-import type { MediaService, PublishSource } from '../src/livekit/media-service.js';
+import type { IceServer, MediaService, PublishSource } from '../src/livekit/media-service.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import type { HostSession, ParticipantSession } from '../src/repositories/models.js';
 import { hashSessionToken } from '../src/security/session-token.js';
@@ -349,6 +349,7 @@ class ServiceMediaFake implements MediaService {
 
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
+  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }
 
 function activeHost(meetingId: string): HostSession {

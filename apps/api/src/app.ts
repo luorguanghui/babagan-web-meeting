@@ -8,6 +8,7 @@ import type { AppConfig } from './config.js';
 import { registerErrorHandler } from './http/error-handler.js';
 import { registerStrictOriginValidation } from './http/origin.js';
 import { registerHealthRoutes } from './http/routes/health.js';
+import { registerIceServersRoutes } from './http/routes/ice-servers.js';
 import { registerLiveKitWebhookRoute } from './http/routes/livekit-webhook.js';
 import { registerMeetingRoutes } from './http/routes/meetings.js';
 import { registerParticipantRoutes } from './http/routes/participants.js';
@@ -40,6 +41,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   );
   registerMeetingRoutes(app, dependencies);
   registerParticipantRoutes(app, dependencies);
+  registerIceServersRoutes(app, dependencies);
   registerLiveKitWebhookRoute(app, dependencies.webhooks);
   registerHealthRoutes(app, dependencies);
   await app.ready();
