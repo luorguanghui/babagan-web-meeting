@@ -19,7 +19,9 @@ const publicErrors: Record<ApiErrorCode, { statusCode: number; message: string }
   SHARE_NOT_AUTHORIZED: { statusCode: 403, message: 'Operation is not authorized' },
   UNSUPPORTED_CLIENT: { statusCode: 400, message: 'Request is invalid' },
   RATE_LIMITED: { statusCode: 429, message: 'Too many attempts; try again later' },
-  MEDIA_SERVICE_UNAVAILABLE: { statusCode: 503, message: 'Media service is unavailable' }
+  MEDIA_SERVICE_UNAVAILABLE: { statusCode: 503, message: 'Media service is unavailable' },
+  P2P_FORBIDDEN: { statusCode: 403, message: 'P2P signaling is not permitted' },
+  P2P_PEER_NOT_FOUND: { statusCode: 404, message: 'P2P peer is not online' }
 };
 
 export interface ApiErrorDetails {
