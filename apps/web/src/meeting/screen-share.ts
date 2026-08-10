@@ -1,33 +1,20 @@
 import type { ScreenShareCodec } from '@meeting/contracts';
 
-export const captureProfiles = {
-  standard: {
-    width: 1920,
-    height: 1080,
-    frameRate: 30,
-    maxBitrate: 8_000_000,
-    contentHint: 'detail',
-    degradationPreference: 'maintain-resolution'
-  },
-  motion: {
-    width: 1920,
-    height: 1080,
-    frameRate: 60,
-    maxBitrate: 10_000_000,
-    contentHint: 'motion',
-    degradationPreference: 'maintain-framerate'
-  }
+export const adaptiveCaptureProfile = {
+  width: 1920,
+  height: 1080,
+  frameRate: 60,
+  contentHint: 'detail',
+  degradationPreference: 'maintain-resolution'
 } as const;
 
-export type CaptureProfile = keyof typeof captureProfiles;
-export const motionBitrates = [10_000_000, 13_000_000, 15_000_000] as const;
-export type MotionBitrate = typeof motionBitrates[number];
+export const screenShareBitrates = [10_000_000, 13_000_000, 15_000_000] as const;
+export type ScreenShareBitrate = typeof screenShareBitrates[number];
 export type ScreenShareStatus = 'idle' | 'starting' | 'sharing';
 export type UnrestrictedSystemAudioChoice = 'share-audio' | 'video-only' | 'cancel';
 
 export interface ScreenShareState {
   status: ScreenShareStatus;
-  profile: CaptureProfile;
   stream?: MediaStream;
   audioGuidance?: string;
 }
@@ -43,7 +30,7 @@ export interface ScreenSharePublisher {
 }
 
 export interface ScreenShareController {
-  start(profile: CaptureProfile, codec?: ScreenShareCodec, motionBitrate?: MotionBitrate): Promise<void>;
+  start(codec?: ScreenShareCodec, maxBitrate?: ScreenShareBitrate): Promise<void>;
   stop(): Promise<void>;
   getState(): ScreenShareState;
   subscribe(listener: (state: ScreenShareState) => void): () => void;
@@ -55,7 +42,7 @@ const unrestrictedAudioGuidance = 'The browser could not isolate meeting playbac
 const tabAudioGuidance = 'Screen sharing was cancelled. Choose a browser tab and enable “Share tab audio” for isolated content audio.';
 
 class BrowserScreenShareController implements ScreenShareController {
-  private state: ScreenShareState = { status: 'idle', profile: 'standard' };
+  private state: ScreenShareState = { status: 'idle' };
   private readonly listeners = new Set<(state: ScreenShareState) => void>();
   private endedTrack?: MediaStreamTrack;
   private activeStream?: MediaStream;
@@ -72,16 +59,15 @@ class BrowserScreenShareController implements ScreenShareController {
   }) {}
 
   async start(
-    profile: CaptureProfile,
     codec: ScreenShareCodec = 'h264',
-    motionBitrate: MotionBitrate = 10_000_000
+    maxBitrate: ScreenShareBitrate = 10_000_000
   ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
-    const settings = captureProfiles[profile];
+    const settings = adaptiveCaptureProfile;
     let grantAcquired = false;
     let stream: MediaStream | undefined;
     let shareAudioGuidance: string | undefined;
-    this.update({ status: 'starting', profile, stream: undefined, audioGuidance: undefined });
+    this.update({ status: 'starting', stream: undefined, audioGuidance: undefined });
     try {
       await this.dependencies.requestGrant();
       grantAcquired = true;
@@ -111,7 +97,7 @@ class BrowserScreenShareController implements ScreenShareController {
             await Promise.allSettled([this.dependencies.releaseGrant()]);
             grantAcquired = false;
             stream = undefined;
-            this.update({ status: 'idle', profile, stream: undefined, audioGuidance: tabAudioGuidance });
+            this.update({ status: 'idle', stream: undefined, audioGuidance: tabAudioGuidance });
             return;
           }
           if (choice === 'video-only') {
@@ -130,7 +116,7 @@ class BrowserScreenShareController implements ScreenShareController {
       this.endedTrack = videoTrack;
       videoTrack.addEventListener('ended', this.handleEnded, { once: true });
       const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
-        maxBitrate: profile === 'motion' ? motionBitrate : settings.maxBitrate,
+        maxBitrate,
         frameRate: settings.frameRate,
         degradationPreference: settings.degradationPreference,
         codec
@@ -144,7 +130,6 @@ class BrowserScreenShareController implements ScreenShareController {
       }
       this.update({
         status: 'sharing',
-        profile,
         stream,
         audioGuidance: shareAudioGuidance
           ?? (stream.getAudioTracks().length === 0 ? audioGuidance : undefined)
@@ -163,7 +148,7 @@ class BrowserScreenShareController implements ScreenShareController {
         ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
       ]);
       this.endedTrack = undefined;
-      this.update({ status: 'idle', profile, stream: undefined, audioGuidance: undefined });
+      this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       throw error;
     }
   }

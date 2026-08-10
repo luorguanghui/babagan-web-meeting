@@ -57,7 +57,7 @@ describe('room controller', () => {
     await controller.connect(join);
 
     expect(createRoom).toHaveBeenCalledWith(expect.objectContaining({
-      adaptiveStream: true,
+      adaptiveStream: { pixelDensity: 'screen' },
       dynacast: true,
       audioCaptureDefaults: expect.objectContaining({
         echoCancellation: true,
@@ -277,6 +277,14 @@ function renderRoom(controller = new FakeMeetingRoomController(), leaveMeeting =
 }
 
 describe('meeting room UI', () => {
+  it('uses a compact top bar and a dedicated stage shell', async () => {
+    renderRoom();
+
+    expect(await screen.findByRole('banner')).toHaveClass('meeting-topbar');
+    expect(document.querySelector('.meeting-stage-shell')).toBeInTheDocument();
+    expect(document.querySelector('.meeting-management')).toBeInTheDocument();
+  });
+
   it('creates its default controller only once across page rerenders', async () => {
     const controller = new FakeMeetingRoomController();
     const controllerFactory = vi.fn(() => controller);
@@ -288,6 +296,7 @@ describe('meeting room UI', () => {
       listDevices={async () => devices}
     />);
 
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
     await screen.findByRole('option', { name: 'USB microphone' });
 
     expect(controllerFactory).toHaveBeenCalledOnce();
@@ -316,6 +325,7 @@ describe('meeting room UI', () => {
   it('switches microphone and speaker devices without changing the microphone state', async () => {
     const { controller } = renderRoom();
 
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
     await userEvent.selectOptions(await screen.findByLabelText('Microphone device'), 'microphone-2');
     await userEvent.selectOptions(screen.getByLabelText('Speaker device'), 'speaker-2');
 
@@ -357,7 +367,9 @@ describe('meeting room UI', () => {
     expect(screen.queryByRole('button', { name: '点击恢复声音' })).not.toBeInTheDocument();
 
     controller.blockAudio();
-    await userEvent.click(await screen.findByRole('button', { name: 'Click to resume audio' }));
+    const resumeAudio = await screen.findByRole('button', { name: 'Click to resume audio' });
+    expect(resumeAudio).toBeVisible();
+    await userEvent.click(resumeAudio);
 
     expect(screen.queryByRole('button', { name: 'Click to resume audio' })).not.toBeInTheDocument();
   });

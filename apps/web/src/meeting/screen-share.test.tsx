@@ -15,7 +15,7 @@ import {
   type MeetingRoomController,
   type MeetingRoomState
 } from './room-controller.js';
-import { captureProfiles, createScreenShareController } from './screen-share.js';
+import { createScreenShareController } from './screen-share.js';
 
 afterEach(() => {
   cleanup();
@@ -169,9 +169,11 @@ describe('controlled browser screen sharing', () => {
     const controls = screen.getByLabelText('Meeting controls');
 
     expect(main).toHaveClass('meeting-room-sharing');
-    expect(stage.parentElement).toHaveClass('meeting-stage-column');
-    expect(stage.parentElement?.parentElement).toHaveClass('meeting-workspace');
+    expect(stage.parentElement).toHaveClass('meeting-stage-shell');
+    expect(stage.parentElement?.parentElement).toHaveClass('meeting-stage-column');
+    expect(stage.parentElement?.parentElement?.parentElement).toHaveClass('meeting-workspace');
     expect(sideRail).toContainElement(screen.getByRole('heading', { name: 'Participants (1)' }));
+    await userEvent.click(screen.getByText('Meeting management'));
     expect(sideRail).toContainElement(await screen.findByRole('heading', { name: 'Host controls' }));
     expect(controls).toHaveClass('meeting-control-dock');
   });
@@ -190,6 +192,7 @@ describe('controlled browser screen sharing', () => {
       listDevices={async () => []}
     />);
 
+    await userEvent.click(screen.getByText('Meeting management'));
     const input = await screen.findByLabelText('Admin password to end meeting');
     await userEvent.type(input, 'admin-secret');
     await userEvent.click(screen.getByRole('button', { name: 'End current meeting' }));
@@ -209,6 +212,7 @@ describe('controlled browser screen sharing', () => {
       listDevices={async () => []}
     />);
 
+    await userEvent.click(screen.getByText('Meeting management'));
     expect(await screen.findByRole('heading', { name: 'Host controls' })).toBeVisible();
     expect(screen.queryByLabelText('Admin password to end meeting')).not.toBeInTheDocument();
   });
@@ -367,15 +371,22 @@ describe('controlled browser screen sharing', () => {
     await publisher.publishScreenShare(stream, {
       maxBitrate: 15_000_000,
       frameRate: 60,
-      degradationPreference: 'maintain-framerate',
+      degradationPreference: 'maintain-resolution',
       codec: 'h264'
     });
     await publisher.releaseScreenShare(stream);
 
     expect(publishTrack).toHaveBeenNthCalledWith(1, stream.getVideoTracks()[0], expect.objectContaining({
       source: 'screen_share',
+      simulcast: true,
+      backupCodec: false,
       screenShareEncoding: { maxBitrate: 15_000_000, maxFramerate: 60 },
-      degradationPreference: 'maintain-framerate',
+      screenShareSimulcastLayers: [expect.objectContaining({
+        width: 1280,
+        height: 720,
+        encoding: expect.objectContaining({ maxBitrate: 3_500_000, maxFramerate: 30 })
+      })],
+      degradationPreference: 'maintain-resolution',
       videoCodec: 'h264'
     }));
     expect(publishTrack).toHaveBeenNthCalledWith(2, stream.getAudioTracks()[0], expect.objectContaining({
@@ -394,12 +405,10 @@ describe('controlled browser screen sharing', () => {
       screenShareAuthorized={false}
       screenShareActive={false}
       screenShareBusy={false}
-      screenProfile="standard"
       onMicrophoneToggle={() => undefined}
       onMicrophoneDeviceChange={() => undefined}
       onSpeakerDeviceChange={() => undefined}
       onResumeAudio={() => undefined}
-      onScreenProfileChange={() => undefined}
       onScreenShareToggle={() => undefined}
       onLeave={() => undefined}
     />);
@@ -420,18 +429,17 @@ describe('controlled browser screen sharing', () => {
       screenShareAuthorized
       screenShareActive={false}
       screenShareBusy={false}
-      screenProfile="standard"
       screenCodec="h264"
       onMicrophoneToggle={() => undefined}
       onMicrophoneDeviceChange={() => undefined}
       onSpeakerDeviceChange={() => undefined}
       onResumeAudio={() => undefined}
-      onScreenProfileChange={() => undefined}
       onScreenCodecChange={onCodecChange}
       onScreenShareToggle={() => undefined}
       onLeave={() => undefined}
     />);
 
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
     const selector = screen.getByLabelText('Screen-share codec');
     expect(selector).toHaveValue('h264');
     expect(screen.getByRole('option', { name: 'Auto' })).toBeVisible();
@@ -442,15 +450,15 @@ describe('controlled browser screen sharing', () => {
     rendered.rerender(<MeetingControls
       connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]}
       leaving={false} screenShareAuthorized screenShareActive screenShareBusy={false}
-      screenProfile="standard" screenCodec="h264" onMicrophoneToggle={() => undefined}
+      screenCodec="h264" onMicrophoneToggle={() => undefined}
       onMicrophoneDeviceChange={() => undefined} onSpeakerDeviceChange={() => undefined}
-      onResumeAudio={() => undefined} onScreenProfileChange={() => undefined}
+      onResumeAudio={() => undefined}
       onScreenCodecChange={onCodecChange} onScreenShareToggle={() => undefined} onLeave={() => undefined}
     />);
     expect(screen.getByLabelText('Screen-share codec')).toBeDisabled();
   });
 
-  it('shows 10, 13, and 15 Mbps ceilings only for 1080p60 and locks the choice while sharing', async () => {
+  it('groups the three primary actions separately from adaptive sharing settings', async () => {
     const onBitrateChange = vi.fn();
     const common = {
       connection: 'connected' as const,
@@ -466,18 +474,21 @@ describe('controlled browser screen sharing', () => {
       onMicrophoneDeviceChange: () => undefined,
       onSpeakerDeviceChange: () => undefined,
       onResumeAudio: () => undefined,
-      onScreenProfileChange: () => undefined,
       onScreenCodecChange: () => undefined,
       onScreenBitrateChange: onBitrateChange,
       onScreenShareToggle: () => undefined,
       onLeave: () => undefined
     };
-    const rendered = render(<MeetingControls {...common} screenProfile="standard" screenShareActive={false} />);
+    const rendered = render(<MeetingControls {...common} screenShareActive={false} />);
 
-    expect(screen.queryByLabelText('60fps bitrate ceiling')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const primaryActions = screen.getByRole('group', { name: 'Primary meeting actions' });
+    expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Unmute microphone' }));
+    expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Share screen' }));
+    expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Leave meeting' }));
+    expect(screen.getByText('Adaptive 1080p · 30–60 fps')).toBeVisible();
 
-    rendered.rerender(<MeetingControls {...common} screenProfile="motion" screenShareActive={false} />);
-    const selector = screen.getByLabelText('60fps bitrate ceiling');
+    const selector = screen.getByLabelText('Maximum screen-share bitrate');
     expect(selector).toHaveValue('10000000');
     expect(screen.getByRole('option', { name: '10 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '13 Mbps' })).toBeVisible();
@@ -486,20 +497,12 @@ describe('controlled browser screen sharing', () => {
     await userEvent.selectOptions(selector, '13000000');
     expect(onBitrateChange).toHaveBeenCalledWith(13_000_000);
 
-    rendered.rerender(<MeetingControls {...common} screenProfile="motion" screenShareActive />);
-    expect(screen.getByLabelText('60fps bitrate ceiling')).toBeDisabled();
+    rendered.rerender(<MeetingControls {...common} screenShareActive />);
+    expect(screen.getByLabelText('Maximum screen-share bitrate')).toBeDisabled();
+    expect(screen.queryByLabelText('Screen-share quality')).not.toBeInTheDocument();
   });
 
-  it.each([
-    ['standard', captureProfiles.standard, 8_000_000, 'detail', 'maintain-resolution'],
-    ['motion', captureProfiles.motion, 10_000_000, 'motion', 'maintain-framerate']
-  ] as const)('requests the exact %s 1080p capture and publish profile after the grant', async (
-    profile,
-    expected,
-    maxBitrate,
-    contentHint,
-    degradationPreference
-  ) => {
+  it('requests adaptive 1080p capture and prioritizes resolution after the grant', async () => {
     const order: string[] = [];
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
@@ -511,34 +514,30 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start(profile);
+    await controller.start('h264', 13_000_000);
 
     expect(order).toEqual(['grant', 'capture', 'publish']);
     expect(getDisplayMedia).toHaveBeenCalledWith({
-      video: { width: expected.width, height: expected.height, frameRate: expected.frameRate },
+      video: { width: 1920, height: 1080, frameRate: 60 },
       audio: { restrictOwnAudio: true },
       systemAudio: 'include',
       windowAudio: 'window',
       selfBrowserSurface: 'exclude'
     });
     expect(publish).toHaveBeenCalledWith(stream, {
-      maxBitrate,
-      frameRate: expected.frameRate,
-      degradationPreference,
+      maxBitrate: 13_000_000,
+      frameRate: 60,
+      degradationPreference: 'maintain-resolution',
       codec: 'h264'
     });
-    expect(stream.getVideoTracks()[0]?.contentHint).toBe(contentHint);
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
   });
 
   it.each([
-    ['motion', 13_000_000, 13_000_000],
-    ['motion', 15_000_000, 15_000_000],
-    ['standard', 15_000_000, 8_000_000]
-  ] as const)('publishes %s sharing with the selected ceiling resolved to %i bps', async (
-    profile,
-    selectedBitrate,
-    expectedBitrate
-  ) => {
+    [10_000_000],
+    [13_000_000],
+    [15_000_000]
+  ] as const)('publishes adaptive sharing with the selected %i bps ceiling', async (selectedBitrate) => {
     const { stream } = displayStream({ audio: true });
     const publish = vi.fn(async () => undefined);
     const controller = createScreenShareController({
@@ -548,10 +547,10 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start(profile, 'h264', selectedBitrate);
+    await controller.start('h264', selectedBitrate);
 
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
-      maxBitrate: expectedBitrate
+      maxBitrate: selectedBitrate
     }));
   });
 
@@ -573,7 +572,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('motion');
+    await controller.start();
 
     expect(applyConstraints).toHaveBeenCalledWith({ restrictOwnAudio: { exact: true } });
     expect(publish).toHaveBeenCalledWith(stream, expect.any(Object));
@@ -595,7 +594,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('motion');
+    await controller.start();
 
     expect(chooseUnrestrictedSystemAudio).toHaveBeenCalledWith({ displaySurface: 'monitor' });
     expect(stream.getAudioTracks()).toHaveLength(0);
@@ -616,7 +615,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('motion');
+    await controller.start();
 
     expect(stream.getAudioTracks()).toEqual([audio]);
     expect(audio?.stop).not.toHaveBeenCalled();
@@ -637,7 +636,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('motion');
+    await controller.start();
 
     expect(publish).not.toHaveBeenCalled();
     expect(video.stop).toHaveBeenCalledOnce();
@@ -657,7 +656,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn() }
     });
 
-    await expect(controller.start('standard')).rejects.toThrow('not authorized');
+    await expect(controller.start()).rejects.toThrow('not authorized');
 
     expect(getDisplayMedia).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
@@ -673,7 +672,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish: vi.fn(async () => undefined), release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('standard');
+    await controller.start();
 
     expect(controller.getState().audioGuidance).toMatch(/browser tab.*Share tab audio.*Entire screen.*system audio/i);
   });
@@ -688,7 +687,7 @@ describe('controlled browser screen sharing', () => {
       getDisplayMedia: vi.fn(async () => stream),
       publisher: { publish: vi.fn(async () => undefined), release }
     });
-    await controller.start('motion');
+    await controller.start();
 
     video.dispatchEvent(new Event('ended'));
 
@@ -710,7 +709,7 @@ describe('controlled browser screen sharing', () => {
       getDisplayMedia: vi.fn(async () => stream),
       publisher: { publish, release }
     });
-    const starting = controller.start('motion');
+    const starting = controller.start();
     await waitFor(() => expect(publish).toHaveBeenCalledOnce());
 
     video.dispatchEvent(new Event('ended'));

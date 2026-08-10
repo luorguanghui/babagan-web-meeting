@@ -19,8 +19,7 @@ import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
   createScreenShareController,
-  type CaptureProfile,
-  type MotionBitrate,
+  type ScreenShareBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
@@ -129,10 +128,9 @@ export function MeetingRoomPage({
   const [hostAuthorized, setHostAuthorized] = useState(false);
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
-  const [screenProfile, setScreenProfile] = useState<CaptureProfile>('standard');
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
-  const [screenBitrate, setScreenBitrate] = useState<MotionBitrate>(10_000_000);
-  const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle', profile: 'standard' });
+  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(10_000_000);
+  const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
@@ -215,7 +213,7 @@ export function MeetingRoomPage({
     setNotice(undefined);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenProfile, screenCodec, screenBitrate);
+      else await screenShare.start(screenCodec, screenBitrate);
     } catch {
       setNotice(t('room.shareFailed'));
     }
@@ -260,7 +258,7 @@ export function MeetingRoomPage({
   }, [controller, hasActiveScreenShare]);
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
-    <header className="meeting-room-header">
+    <header className="meeting-topbar meeting-room-header">
       <div className="meeting-room-title">
         <p className="eyebrow">{t('room.eyebrow')}</p>
         <h1>{t('room.heading', { name: join.participantName })}</h1>
@@ -285,14 +283,16 @@ export function MeetingRoomPage({
     </section>
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
-        <ScreenStage
-          stream={stageStream}
-          track={stageTrack}
-          audioTrack={stageAudioTrack}
-          sharerName={sharerName}
-        >
-          {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
-        </ScreenStage>
+        <section className="meeting-stage-shell">
+          <ScreenStage
+            stream={stageStream}
+            track={stageTrack}
+            audioTrack={stageAudioTrack}
+            sharerName={sharerName}
+          >
+            {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
+          </ScreenStage>
+        </section>
         <MeetingControls
           className="meeting-control-dock"
           connection={state.connection}
@@ -303,14 +303,12 @@ export function MeetingRoomPage({
           screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
           screenShareActive={screenState.status === 'sharing'}
           screenShareBusy={screenState.status === 'starting'}
-          screenProfile={screenProfile}
           screenCodec={screenCodec}
           screenBitrate={screenBitrate}
           onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
           onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
           onResumeAudio={() => void controller.resumeAudioPlayback()}
-          onScreenProfileChange={setScreenProfile}
           onScreenCodecChange={setScreenCodec}
           onScreenBitrateChange={setScreenBitrate}
           onScreenShareToggle={() => void toggleScreenShare()}
@@ -319,24 +317,27 @@ export function MeetingRoomPage({
       </div>
       <aside className="meeting-side-rail" aria-label={t('room.sidePanel')}>
         <ParticipantList participants={state.participants} />
-        <HostMenu
-          participants={hostParticipants}
-          authorizeHost={authorizeHost}
-          onAuthorizationChange={authorizationChanged}
-          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
-          onRevokeShare={() => meetingApi.revokeShare(slug)}
-          onKick={(identity) => meetingApi.kick(slug, identity)}
-          onEndMeeting={() => meetingApi.end(slug)}
-          onEnded={() => onTerminal?.('ended')}
-        />
-        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
-          <h2>{t('adminEnd.heading')}</h2>
-          <AdminEndMeetingForm
-            compact
-            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
+        <details className="meeting-management">
+          <summary>{t('room.management')}</summary>
+          <HostMenu
+            participants={hostParticipants}
+            authorizeHost={authorizeHost}
+            onAuthorizationChange={authorizationChanged}
+            onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
+            onRevokeShare={() => meetingApi.revokeShare(slug)}
+            onKick={(identity) => meetingApi.kick(slug, identity)}
+            onEndMeeting={() => meetingApi.end(slug)}
             onEnded={() => onTerminal?.('ended')}
           />
-        </section>}
+          {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
+            <h2>{t('adminEnd.heading')}</h2>
+            <AdminEndMeetingForm
+              compact
+              onEnd={(password) => meetingApi.adminEnd!(slug, password)}
+              onEnded={() => onTerminal?.('ended')}
+            />
+          </section>}
+        </details>
       </aside>
     </div>
   </main>;

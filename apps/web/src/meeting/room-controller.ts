@@ -3,6 +3,7 @@ import {
   Room,
   RoomEvent,
   Track,
+  VideoPreset,
   supportsAudioOutputSelection,
   type AudioCaptureOptions,
   type RoomConnectOptions,
@@ -102,6 +103,7 @@ const voiceConstraints: AudioCaptureOptions = {
 };
 
 const screenSharePlayoutDelaySeconds = 0.5;
+const screenShareFallback = new VideoPreset(1280, 720, 3_500_000, 30, 'medium');
 
 class RoomController implements MeetingRoomController {
   private room?: LiveKitRoomAdapter;
@@ -135,7 +137,7 @@ class RoomController implements MeetingRoomController {
     if (this.room) await this.disconnect();
     const generation = ++this.roomGeneration;
     const room = this.createRoom({
-      adaptiveStream: true,
+      adaptiveStream: { pixelDensity: 'screen' },
       dynacast: true,
       audioCaptureDefaults: voiceConstraints
     });
@@ -192,7 +194,10 @@ class RoomController implements MeetingRoomController {
       options: {
         source: Track.Source.ScreenShare,
         stream: 'screen-share',
+        simulcast: true,
+        backupCodec: false,
         screenShareEncoding: { maxBitrate: options.maxBitrate, maxFramerate: options.frameRate },
+        screenShareSimulcastLayers: [screenShareFallback],
         degradationPreference: options.degradationPreference,
         ...(options.codec === 'auto' ? {} : { videoCodec: options.codec })
       }
