@@ -106,9 +106,11 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
 
   app.delete('/api/v1/meetings/:slug/share-grant', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
+    // revokeShare is a no-op when no share is active; read the holder first so
+    // `share-gone` is only announced when the lock is actually released.
+    const wasSharing = dependencies.participants.getShareIdentity(value) !== null;
     await dependencies.hosts.revokeShare(hostSession(request, dependencies.hosts, value), value);
-    // Broadcasting when no share was active is harmless: clients are already idle.
-    dependencies.p2p.broadcastShareGone(value);
+    if (wasSharing) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 }

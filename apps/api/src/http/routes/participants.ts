@@ -66,8 +66,12 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   app.delete('/api/v1/meetings/:slug/share', participantOptions(app), async (request, reply) => {
     const value = slug(request.params);
     const active = session(request, dependencies.participants, value);
+    // releaseParticipantShare is a silent no-op when the caller is not the
+    // sharer; read the holder first so `share-gone` is only announced when the
+    // lock is actually released.
+    const wasSharer = dependencies.participants.getShareIdentity(value) === active.identity;
     await dependencies.hosts.releaseParticipantShare(value, active.identity);
-    dependencies.p2p.broadcastShareGone(value);
+    if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 

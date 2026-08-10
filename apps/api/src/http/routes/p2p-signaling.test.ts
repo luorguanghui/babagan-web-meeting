@@ -231,6 +231,55 @@ describe('P2P signaling websocket endpoint', () => {
     wsB.close();
   });
 
+  it('does not broadcast share-gone when a non-sharer calls DELETE /share', async () => {
+    const created = await fixture.createMeeting();
+    const ada = await fixture.join(created.slug, 'Ada');
+    const bob = await fixture.join(created.slug, 'Bob');
+    await fixture.grantShare(created.slug, created.hostCookie, ada.identity);
+    const wsA = await fixture.connect(created.slug, ada.cookie);
+    const inboxA = collect(wsA);
+    const wsB = await fixture.connect(created.slug, bob.cookie);
+    const inboxB = collect(wsB);
+    await inboxA.waitFor((message) => message.type === 'welcome');
+
+    const response = await fixture.app.inject({
+      method: 'DELETE', url: `/api/v1/meetings/${created.slug}/share`,
+      headers: { origin: config.publicBaseUrl.origin, cookie: bob.cookie }
+    });
+    expect(response.statusCode, response.body).toBe(204);
+
+    // releaseParticipantShare no-ops for a viewer: no share-gone is announced
+    // and the sharer still holds the lock (offers keep flowing).
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(inboxA.messages.filter((message) => message.type === 'share-gone')).toEqual([]);
+    expect(inboxB.messages.filter((message) => message.type === 'share-gone')).toEqual([]);
+
+    wsA.send(JSON.stringify({ type: 'offer', to: bob.identity, sdp: 'sdp-after' }));
+    expect(await inboxB.waitFor((message) => message.type === 'offer'))
+      .toEqual({ type: 'offer', to: bob.identity, sdp: 'sdp-after', from: ada.identity });
+    wsA.close();
+    wsB.close();
+  });
+
+  it('does not broadcast share-gone when the host revokes without an active share', async () => {
+    const created = await fixture.createMeeting();
+    const ada = await fixture.join(created.slug, 'Ada');
+    const wsA = await fixture.connect(created.slug, ada.cookie);
+    const inboxA = collect(wsA);
+    await inboxA.waitFor((message) => message.type === 'welcome');
+
+    const response = await fixture.app.inject({
+      method: 'DELETE', url: `/api/v1/meetings/${created.slug}/share-grant`,
+      headers: { origin: config.publicBaseUrl.origin, cookie: created.hostCookie }
+    });
+    expect(response.statusCode, response.body).toBe(204);
+
+    // revokeShare no-ops without a holder: no share-gone is announced.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(inboxA.messages.filter((message) => message.type === 'share-gone')).toEqual([]);
+    wsA.close();
+  });
+
   it('broadcasts share-gone when the host ends the meeting', async () => {
     const created = await fixture.createMeeting();
     const ada = await fixture.join(created.slug, 'Ada');
