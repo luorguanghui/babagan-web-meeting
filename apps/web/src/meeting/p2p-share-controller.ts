@@ -165,6 +165,10 @@ class P2pShareControllerImpl implements P2pShareController {
   async stop(): Promise<void> {
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
+      // Mark the session closed synchronously *before* `pc.close()`: a pending
+      // establishSession/handleAnswer may otherwise reject from the close and
+      // fall back after stop() has already cleared the map (phantom fallback).
+      session.state = 'closed';
       this.closeSession(session);
     }
     this.sessions.clear();

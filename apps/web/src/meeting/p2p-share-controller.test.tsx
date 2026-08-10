@@ -47,15 +47,22 @@ class FakeRTCPeerConnection {
   readonly addedIceCandidates: Array<RTCIceCandidateInit | undefined> = [];
   closed = false;
   failRemoteDescription = false;
+  /** Test hooks: a pending (possibly rejecting) promise that parks the matching in-flight operation. */
+  createOfferGate?: Promise<void>;
+  setRemoteDescriptionGate?: Promise<void>;
   iceConnectionState: RTCIceConnectionState = 'new';
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
-  readonly createOffer = vi.fn(async () => ({ type: 'offer', sdp: `offer-${this.id}` }));
+  readonly createOffer = vi.fn(async () => {
+    if (this.createOfferGate) await this.createOfferGate;
+    return { type: 'offer', sdp: `offer-${this.id}` };
+  });
   readonly setLocalDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     this.localDescriptions.push(description);
   });
   readonly setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     if (this.failRemoteDescription) throw new Error('bad sdp');
+    if (this.setRemoteDescriptionGate) await this.setRemoteDescriptionGate;
     this.remoteDescriptions.push(description);
   });
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
@@ -111,7 +118,7 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
   } as unknown as RTCPeerConnectionIceEvent;
 }
 
-function makeHarness() {
+function makeHarness(options: { onPcCreated?: (pc: FakeRTCPeerConnection) => void } = {}) {
   const signaling: P2pShareSignaling = { sendOffer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
   const onViewerFallback = vi.fn();
   const onAllViewersClosed = vi.fn();
@@ -119,7 +126,11 @@ function makeHarness() {
   const controller = createP2pShareController({
     slug: 'meeting-slug',
     signaling,
-    createPeerConnection: (servers) => new FakeRTCPeerConnection({ iceServers: servers }) as unknown as RTCPeerConnection,
+    createPeerConnection: (servers) => {
+      const pc = new FakeRTCPeerConnection({ iceServers: servers });
+      options.onPcCreated?.(pc);
+      return pc as unknown as RTCPeerConnection;
+    },
     fetchIceServers,
     onViewerFallback,
     onAllViewersClosed
@@ -381,6 +392,41 @@ describe('p2p share controller', () => {
 
     vi.advanceTimersByTime(60_000);
     expect(onViewerFallback).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not fire a phantom fallback when stop() races an in-flight offer', async () => {
+    let rejectCreateOffer!: (reason: Error) => void;
+    const offerGate = new Promise<void>((_, reject) => { rejectCreateOffer = reject; });
+    const { controller, onViewerFallback } = makeHarness({
+      onPcCreated: (pc) => { pc.createOfferGate = offerGate; }
+    });
+
+    const startPromise = controller.start(makeStream(), bitrate, [viewers[0]]);
+    await vi.advanceTimersByTimeAsync(0); // PC is created and establishSession parks on createOffer
+    const stopPromise = controller.stop();
+    rejectCreateOffer(new Error('pc closed'));
+    await Promise.all([startPromise, stopPromise]);
+
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    expect(controller.getViewerStates().size).toBe(0);
+  });
+
+  it('does not fire a phantom fallback when stop() races an in-flight answer', async () => {
+    const { controller, onViewerFallback } = makeHarness();
+    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    let rejectRemoteDescription!: (reason: Error) => void;
+    const gate = new Promise<void>((_, reject) => { rejectRemoteDescription = reject; });
+    pc.setRemoteDescriptionGate = gate;
+
+    const answerPromise = controller.handleAnswer('viewer-1', 'answer-sdp');
+    await controller.stop();
+    rejectRemoteDescription(new Error('pc closed'));
+    await answerPromise;
+
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    expect(controller.getViewerStates().size).toBe(0);
   });
 
   it('re-drives offers for negotiating viewers and adds new viewers on a later start', async () => {
