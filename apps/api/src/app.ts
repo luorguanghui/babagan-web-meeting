@@ -12,6 +12,7 @@ import { registerHealthRoutes } from './http/routes/health.js';
 import { registerIceServersRoutes } from './http/routes/ice-servers.js';
 import { registerLiveKitWebhookRoute } from './http/routes/livekit-webhook.js';
 import { registerMeetingRoutes } from './http/routes/meetings.js';
+import { registerP2pStatsRoutes } from './http/routes/p2p-stats.js';
 import { registerParticipantRoutes } from './http/routes/participants.js';
 import { registerP2pSignalingRoute } from './http/routes/p2p-signaling.js';
 import type { MediaService } from './livekit/media-service.js';
@@ -49,6 +50,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   const appDependencies = { ...dependencies, p2p };
   registerMeetingRoutes(app, appDependencies);
   registerParticipantRoutes(app, appDependencies);
+  registerP2pStatsRoutes(app, appDependencies);
   registerIceServersRoutes(app, dependencies);
   registerLiveKitWebhookRoute(app, dependencies.webhooks);
   registerP2pSignalingRoute(app, appDependencies);

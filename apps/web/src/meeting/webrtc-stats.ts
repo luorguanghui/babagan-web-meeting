@@ -14,6 +14,7 @@ export interface WebRtcMediaStats {
   averageEncodeTimeMs?: number;
   qualityLimitationReason?: string;
   packetsLost?: number;
+  packetsReceived?: number;
   roundTripTimeMs?: number;
   jitterMs?: number;
   averageJitterBufferDelayMs?: number;
@@ -65,6 +66,7 @@ export function summarizeWebRtcStats(
       averageEncodeTimeMs: averageMilliseconds(outbound.totalEncodeTime, outbound.framesEncoded),
       qualityLimitationReason: stringValue(outbound.qualityLimitationReason),
       packetsLost: numberValue(remoteInbound?.packetsLost),
+      packetsReceived: numberValue(remoteInbound?.packetsReceived),
       roundTripTimeMs: secondsToMilliseconds(remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime),
       availableOutgoingBitrateMbps: toMbps(candidatePair?.availableOutgoingBitrate),
       nackCount: numberValue(outbound.nackCount),
@@ -89,6 +91,8 @@ export function summarizeWebRtcStats(
       framesDropped: numberValue(inbound.framesDropped),
       freezeCount: numberValue(inbound.freezeCount),
       packetsLost: numberValue(inbound.packetsLost),
+      packetsReceived: numberValue(inbound.packetsReceived),
+      roundTripTimeMs: secondsToMilliseconds(candidatePair?.currentRoundTripTime),
       jitterMs: secondsToMilliseconds(inbound.jitter),
       averageJitterBufferDelayMs: averageMilliseconds(inbound.jitterBufferDelay, inbound.jitterBufferEmittedCount),
       nackCount: numberValue(inbound.nackCount),

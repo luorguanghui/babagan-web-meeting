@@ -62,7 +62,7 @@ describe('host and participant application services', () => {
       config,
       mutex
     });
-    participants = new ParticipantApplicationService({ repository, media, clock, config });
+    participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   });
 
   afterEach(() => {

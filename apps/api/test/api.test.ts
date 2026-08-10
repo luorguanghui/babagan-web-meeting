@@ -408,7 +408,7 @@ async function createFixture(options: { meetingSummaryError?: Error } = {}): Pro
   const hosts = new HostApplicationService({
     repository, meetings, media, passwords, clock, ids, config, mutex
   });
-  const participants = new ParticipantApplicationService({ repository, media, clock, config });
+  const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   const webhooks = new CapturingWebhookHandler();
   const app = await buildApp({ config, meetings, hosts, participants, media, webhooks });
 

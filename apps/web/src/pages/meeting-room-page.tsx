@@ -29,6 +29,7 @@ import {
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
+import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 
@@ -49,6 +50,8 @@ export interface MeetingRoomPageProps {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
   }) => P2pShareController;
+  /** Test seam: anonymous quality-stats collector factory, defaults to `createP2pStatsCollector({ slug })`. */
+  createStatsCollector?: () => P2pStatsCollector;
   onLeft?: () => void;
   onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
@@ -125,11 +128,13 @@ export function MeetingRoomPage({
   supportsOwnAudioRestriction,
   createSignalingClient,
   shareControllerFactory,
+  createStatsCollector,
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
   const { t } = useI18n();
   const [controller] = useState(() => providedController ?? controllerFactory());
+  const [p2pStats] = useState(() => (createStatsCollector ?? (() => createP2pStatsCollector({ slug })))());
   const refresh = useCallback(() => apiRequest<RefreshParticipantTokenResponse>(
     `/meetings/${encodeURIComponent(slug)}/token`,
     RefreshParticipantTokenResponseSchema,
@@ -180,8 +185,10 @@ export function MeetingRoomPage({
     if (shareControllerFactory) return shareControllerFactory(deps);
     const signaling = signalingRef.current;
     if (!signaling) throw new Error('P2P signaling is not connected.');
-    return createP2pShareController({ slug, signaling, ...deps });
-  }, [shareControllerFactory, slug]);
+    const controller = createP2pShareController({ slug, signaling, ...deps });
+    controller.subscribe((states) => { p2pStats.observeShareStates(states); });
+    return controller;
+  }, [p2pStats, shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
       ? meetingApi.grantShare(slug, join.participantIdentity)
@@ -247,7 +254,10 @@ export function MeetingRoomPage({
       if (viewerP2pRef.current === undefined) {
         const controller = new P2pViewerController(signaling, iceServers);
         viewerP2pRef.current = controller;
-        controller.subscribe((state) => { if (!cancelled) setViewerP2pState(state); });
+        controller.subscribe((state) => {
+          if (!cancelled) setViewerP2pState(state);
+          p2pStats.observeViewerState(state);
+        });
       }
       return viewerP2pRef.current;
     };
@@ -338,6 +348,19 @@ export function MeetingRoomPage({
     systemAudioDecisionResolver.current?.('cancel');
     systemAudioDecisionResolver.current = undefined;
   }, []);
+  // Report on page close / meeting end even without a leave click. Deferred so
+  // React StrictMode's simulated unmount cannot consume the one-shot report;
+  // the report itself is deduped against the leave path.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      window.setTimeout(() => {
+        if (!mountedRef.current) void p2pStats.report();
+      }, 0);
+    };
+  }, [p2pStats]);
   useEffect(() => {
     const connected = () => setOnline(true);
     const disconnected = () => setOnline(false);
@@ -355,6 +378,9 @@ export function MeetingRoomPage({
 
   async function leave() {
     setLeaving(true);
+    // Report before the leave request revokes the participant session; the
+    // stats transport is best-effort and failures are silently ignored.
+    void p2pStats.report();
     try {
       await leaveMeeting(slug);
     } catch {
@@ -415,6 +441,7 @@ export function MeetingRoomPage({
         if (cancelled) return;
         previous = summarizeWebRtcStats(reports, previous);
         setScreenStats(previous);
+        p2pStats.observeQuality(previous);
       } catch {
         // Statistics are diagnostic only and must never interrupt the meeting.
       }

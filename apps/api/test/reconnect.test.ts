@@ -12,6 +12,7 @@ import { LiveKitWebhookHandler } from '../src/livekit/webhook-handler.js';
 import type { IceServer, MediaService, PublishSource } from '../src/livekit/media-service.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import { hashSessionToken } from '../src/security/session-token.js';
+import type { IdGenerator } from '../src/services/meeting-service.js';
 import { ParticipantApplicationService } from '../src/services/participant-application-service.js';
 import { FakeClock } from './fakes/fake-clock.js';
 
@@ -35,7 +36,7 @@ describe('participant token refresh and reconnect authorization', () => {
       identity: 'participant-1', meetingId: 'meeting-1', nickname: 'Ada',
       tokenHash: hashSessionToken('participant-cookie'), expiresAt: 9_000, revokedAt: null
     });
-    participants = new ParticipantApplicationService({ repository, media, clock, config });
+    participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   });
 
   afterEach(() => { db.close(); rmSync(directory, { recursive: true, force: true }); });
@@ -72,6 +73,13 @@ describe('participant token refresh and reconnect authorization', () => {
     expect(action).toEqual({ kind: 'remove', roomName: 'meeting-1', identity: 'participant-1' });
   });
 });
+
+const ids: IdGenerator = {
+  uuid: () => 'audit-1',
+  slug: () => 'unused-slug',
+  token: () => 'unused-token',
+  participantIdentity: () => 'unused-identity'
+};
 
 const config: AppConfig = {
   nodeEnv: 'test', publicBaseUrl: new URL('https://meet.example.test'), livekitUrl: new URL('wss://rtc.example.test'),

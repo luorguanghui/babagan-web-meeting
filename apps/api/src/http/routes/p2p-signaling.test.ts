@@ -330,7 +330,7 @@ async function createFixture(): Promise<P2pFixture> {
     passwords, clock, ids, config, mutex
   });
   const hosts = new HostApplicationService({ repository, meetings, media, passwords, clock, ids, config, mutex });
-  const participants = new ParticipantApplicationService({ repository, media, clock, config });
+  const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   const app = await buildApp({
     config, meetings, hosts, participants, media, webhooks: new StubWebhookHandler()
   });

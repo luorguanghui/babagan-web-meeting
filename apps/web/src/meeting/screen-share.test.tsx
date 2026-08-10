@@ -22,6 +22,7 @@ import {
   HybridScreenSharePublisher,
   recommendP2pBitrate
 } from './screen-share.js';
+import { createP2pStatsCollector, type P2pStatsCollector } from './p2p-stats.js';
 
 afterEach(() => {
   cleanup();
@@ -1444,6 +1445,64 @@ describe('P2P-first screen sharing in the room', () => {
   });
 });
 
+describe('anonymous P2P quality stats reporting in the room', () => {
+  it('reports the collected stats on leave, before the leave request revokes the session', async () => {
+    const order: string[] = [];
+    const collector = createP2pStatsCollector({
+      slug: 'meeting-slug',
+      sessionId: 'anon-session-1',
+      sendReport: vi.fn(async () => { order.push('report'); })
+    });
+    const leaveMeeting = vi.fn(async () => { order.push('leave'); });
+    renderP2pRoom({
+      createStatsCollector: () => collector,
+      leaveMeeting,
+      createSignalingClient: fakeSignalingClient().factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
+
+    await waitFor(() => expect(order).toEqual(['report', 'leave']));
+  });
+
+  it('reports once on unmount when the page is closed without a leave', async () => {
+    const sendReport = vi.fn(async () => undefined);
+    const collector = createP2pStatsCollector({
+      slug: 'meeting-slug', sessionId: 'anon-session-1', sendReport
+    });
+    const { unmount } = renderP2pRoom({
+      createStatsCollector: () => collector,
+      createSignalingClient: fakeSignalingClient().factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    unmount();
+
+    await waitFor(() => expect(sendReport).toHaveBeenCalledOnce());
+  });
+
+  it('does not report twice when leaving and then unmounting', async () => {
+    const sendReport = vi.fn(async () => undefined);
+    const collector = createP2pStatsCollector({
+      slug: 'meeting-slug', sessionId: 'anon-session-1', sendReport
+    });
+    const { unmount } = renderP2pRoom({
+      createStatsCollector: () => collector,
+      createSignalingClient: fakeSignalingClient().factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    await userEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
+    await waitFor(() => expect(sendReport).toHaveBeenCalledOnce());
+
+    unmount();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(sendReport).toHaveBeenCalledOnce();
+  });
+});
+
 function displayStream(options: { audio: boolean; displaySurface?: string }) {
   const video = eventTrack('video');
   if (options.displaySurface) {
@@ -1667,6 +1726,8 @@ function renderP2pRoom(props: {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
   }) => P2pShareController;
+  createStatsCollector?: () => P2pStatsCollector;
+  leaveMeeting?: (slug: string) => Promise<void>;
 }) {
   const P2pRoomPage = MeetingRoomPage as ComponentType<MeetingRoomPageProps>;
   return render(<P2pRoomPage
@@ -1682,5 +1743,7 @@ function renderP2pRoom(props: {
     createSignalingClient={props.createSignalingClient}
     shareControllerFactory={props.shareControllerFactory}
     listDevices={async () => []}
+    {...(props.createStatsCollector ? { createStatsCollector: props.createStatsCollector } : {})}
+    {...(props.leaveMeeting ? { leaveMeeting: props.leaveMeeting } : {})}
   />);
 }

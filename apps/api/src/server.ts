@@ -109,7 +109,7 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
     const hosts = new HostApplicationService({
       repository, meetings, media, passwords, clock, ids, config, mutex
     });
-    const participants = new ParticipantApplicationService({ repository, media, clock, config });
+    const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
     const webhooks = new LiveKitWebhookHandler({
       database,
       media,

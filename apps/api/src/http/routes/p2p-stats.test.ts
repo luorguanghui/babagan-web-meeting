@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,42 +24,77 @@ import { MeetingService } from '../../services/meeting-service.js';
 import { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { FakeClock } from '../../../test/fakes/fake-clock.js';
 
-describe('ICE credentials endpoint', () => {
-  let fixture: IceFixture;
+describe('anonymous P2P quality stats endpoint', () => {
+  let fixture: StatsFixture;
 
   beforeEach(async () => { fixture = await createFixture(); });
   afterEach(async () => { await fixture.close(); });
 
-  it('rejects an unauthenticated request with the existing 401 behavior', async () => {
+  const validReport = {
+    sessionId: 'anon-session-1',
+    attempts: 3,
+    p2pSucceeded: 2,
+    fallbacks: 1,
+    avgSetupMs: 412.5,
+    avgRttMs: 88,
+    maxLossPct: 4.2
+  };
+
+  it('rejects an unauthenticated report with the existing 401 behavior and writes no audit event', async () => {
     const created = await fixture.createMeeting();
     const response = await fixture.app.inject({
-      url: `/api/v1/meetings/${created.slug}/ice-servers`
+      method: 'POST',
+      url: `/api/v1/meetings/${created.slug}/p2p-stats`,
+      headers: { origin: config.publicBaseUrl.origin },
+      payload: validReport
     });
 
     expect(response.statusCode, response.body).toBe(401);
     expect(response.json()).toMatchObject({ error: { code: 'ADMIN_AUTH_FAILED' } });
-    expect(fixture.media.fetchCalls).toBe(0);
+    expect(fixture.auditEvents()).toEqual([]);
   });
 
-  it('returns the LiveKit STUN and TURN server list to an authenticated participant', async () => {
+  it('rejects a payload that fails schema validation with 400 and writes no audit event', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
-    fixture.media.iceServers = [
-      { urls: ['stun:stun.livekit.internal:3478'] },
-      {
-        urls: ['turn:turn.livekit.internal:3478?transport=udp'],
-        username: 'turn-user',
-        credential: 'turn-secret'
-      }
-    ];
 
     const response = await fixture.app.inject({
-      url: `/api/v1/meetings/${created.slug}/ice-servers`,
-      headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      method: 'POST',
+      url: `/api/v1/meetings/${created.slug}/p2p-stats`,
+      headers: { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin },
+      payload: { ...validReport, attempts: -1 }
     });
 
-    expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toEqual({ iceServers: fixture.media.iceServers });
+    expect(response.statusCode, response.body).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'UNSUPPORTED_CLIENT' } });
+    expect(fixture.auditEvents()).toEqual([]);
+  });
+
+  it('records exactly one anonymous audit event for a valid report', async () => {
+    const created = await fixture.createMeeting();
+    const joined = await fixture.join(created.slug, 'Ada');
+
+    const response = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/meetings/${created.slug}/p2p-stats`,
+      headers: { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin },
+      payload: validReport
+    });
+
+    expect(response.statusCode, response.body).toBe(204);
+    const events = fixture.auditEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      event_type: 'p2p_stats_report',
+      meeting_id: null,
+      subject_id: null
+    });
+    // The audit event carries only the anonymous payload: the meeting id is
+    // hashed server-side, and no identity, slug, SDP, media or IP fields exist.
+    expect(JSON.parse(events[0].metadata_json)).toEqual({
+      meetingIdHash: createHash('sha256').update('meeting-id').digest('hex').slice(0, 16),
+      ...validReport
+    });
   });
 
   it('returns 404 for an unknown meeting even with a valid participant cookie', async () => {
@@ -66,41 +102,56 @@ describe('ICE credentials endpoint', () => {
     const joined = await fixture.join(created.slug, 'Ada');
 
     const response = await fixture.app.inject({
-      url: '/api/v1/meetings/abcdefghijklmnopqrstuv/ice-servers',
-      headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      method: 'POST',
+      url: '/api/v1/meetings/abcdefghijklmnopqrstuv/p2p-stats',
+      headers: { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin },
+      payload: validReport
     });
 
     expect(response.statusCode, response.body).toBe(404);
     expect(response.json()).toMatchObject({ error: { code: 'MEETING_NOT_FOUND' } });
   });
 
-  it('maps a media-service failure to 503 MEDIA_SERVICE_UNAVAILABLE', async () => {
+  it('accepts a report after the meeting has ended while the join cookie is still signed', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
-    fixture.media.iceServersError = new Error('LiveKit unreachable');
+    const ended = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/meetings/${created.slug}/end`,
+      headers: { cookie: cookiePair(created.hostCookie), origin: config.publicBaseUrl.origin }
+    });
+    expect(ended.statusCode).toBe(204);
 
     const response = await fixture.app.inject({
-      url: `/api/v1/meetings/${created.slug}/ice-servers`,
-      headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      method: 'POST',
+      url: `/api/v1/meetings/${created.slug}/p2p-stats`,
+      headers: { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin },
+      payload: validReport
     });
 
-    expect(response.statusCode, response.body).toBe(503);
-    expect(response.json()).toMatchObject({ error: { code: 'MEDIA_SERVICE_UNAVAILABLE' } });
+    expect(response.statusCode, response.body).toBe(204);
+    const statsEvents = fixture.auditEvents().filter((event) => event.event_type === 'p2p_stats_report');
+    expect(statsEvents).toHaveLength(1);
   });
 });
 
-interface IceFixture {
+interface StatsFixture {
   app: Awaited<ReturnType<typeof buildApp>>;
   db: Database.Database;
   directory: string;
-  media: RouteMediaFake;
-  createMeeting(): Promise<{ slug: string }>;
+  auditEvents(): Array<{
+    event_type: string;
+    meeting_id: string | null;
+    subject_id: string | null;
+    metadata_json: string;
+  }>;
+  createMeeting(): Promise<{ slug: string; hostCookie: string }>;
   join(slug: string, nickname: string): ReturnType<Awaited<ReturnType<typeof buildApp>>['inject']>;
   close(): Promise<void>;
 }
 
-async function createFixture(): Promise<IceFixture> {
-  const directory = mkdtempSync(join(tmpdir(), 'meeting-ice-'));
+async function createFixture(): Promise<StatsFixture> {
+  const directory = mkdtempSync(join(tmpdir(), 'meeting-p2p-stats-'));
   const db = createDatabase(join(directory, 'meetings.sqlite'));
   migrate(db);
   const repository = new SqliteMeetingRepository(db);
@@ -126,13 +177,25 @@ async function createFixture(): Promise<IceFixture> {
   });
 
   return {
-    app, db, directory, media,
+    app, db, directory,
+    auditEvents() {
+      return db.prepare('SELECT event_type, meeting_id, subject_id, metadata_json FROM audit_events ORDER BY occurred_at, id')
+        .all() as Array<{
+          event_type: string;
+          meeting_id: string | null;
+          subject_id: string | null;
+          metadata_json: string;
+        }>;
+    },
     async createMeeting() {
       const response = await app.inject({
         method: 'POST', url: '/api/v1/meetings', headers: { origin: config.publicBaseUrl.origin },
         payload: { adminPassword: 'admin-secret', name: 'Daily', meetingPassword: 'join-secret' }
       });
-      return { slug: response.json().slug as string };
+      return {
+        slug: response.json().slug as string,
+        hostCookie: cookiePair(response.headers['set-cookie'])
+      };
     },
     join(slug, nickname) {
       return app.inject({
@@ -158,21 +221,13 @@ const config: AppConfig = {
 };
 
 class RouteMediaFake implements MediaService {
-  iceServers: IceServer[] = [];
-  iceServersError?: Error;
-  fetchCalls = 0;
-
   async listParticipantIdentities(): Promise<Set<string>> { return new Set(); }
   async issueToken(input: IssueTokenInput): Promise<string> { return `livekit-token:${input.identity}`; }
   async updateParticipantSources(): Promise<void> {}
   async removeParticipant(): Promise<void> {}
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
-  async fetchIceServers(): Promise<IceServer[]> {
-    this.fetchCalls++;
-    if (this.iceServersError) throw this.iceServersError;
-    return this.iceServers;
-  }
+  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }
 
 class StubWebhookHandler implements WebhookHandler {
