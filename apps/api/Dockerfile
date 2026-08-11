@@ -21,7 +21,7 @@ COPY apps/api apps/api
 COPY packages/contracts packages/contracts
 RUN pnpm --filter @meeting/contracts build \
   && pnpm --filter @meeting/api build \
-  && pnpm --filter @meeting/api --prod deploy /opt/api
+  && pnpm --filter @meeting/api --prod deploy /opt/api --legacy
 
 FROM ${NODE_IMAGE} AS runtime
 
