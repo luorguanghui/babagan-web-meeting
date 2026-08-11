@@ -19,6 +19,7 @@ export interface P2pShareController {
   start(stream: MediaStream, bitrate: P2pScreenBitrate, viewers: Peer[]): Promise<void>;
   handleAnswer(from: string, sdp: string): Promise<void>;
   handleIce(from: string, candidate: string | null): Promise<void>;
+  handleMediaReady(from: string): void;
   handleViewerLeft(identity: string): void;
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
@@ -89,6 +90,7 @@ interface ViewerSession {
   pendingOffer: boolean;
   offerSent: boolean;
   pcClosed: boolean;
+  transportConnected: boolean;
   negotiationTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
 }
@@ -151,6 +153,13 @@ class P2pShareControllerImpl implements P2pShareController {
     }
   }
 
+  handleMediaReady(from: string): void {
+    const session = this.sessions.get(from);
+    if (!session || session.state !== 'negotiating' || !session.transportConnected) return;
+    this.clearTimers(session);
+    this.transition(session, 'p2p');
+  }
+
   handleViewerLeft(identity: string): void {
     const session = this.sessions.get(identity);
     if (!session) return;
@@ -204,7 +213,8 @@ class P2pShareControllerImpl implements P2pShareController {
       queuedCandidates: [],
       pendingOffer: false,
       offerSent: false,
-      pcClosed: false
+      pcClosed: false,
+      transportConnected: false
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
       session.videoSender = pc.addTrack(track);
@@ -260,9 +270,10 @@ class P2pShareControllerImpl implements P2pShareController {
     if (session.state === 'closed' || session.state === 'livekit-fallback') return;
     const state = session.pc.iceConnectionState;
     if (state === 'connected' || state === 'completed') {
-      this.clearTimers(session);
-      this.transition(session, 'p2p');
+      session.transportConnected = true;
+      this.clearDisconnectTimer(session);
     } else if (state === 'disconnected') {
+      session.transportConnected = false;
       if (session.disconnectTimer === undefined) {
         session.disconnectTimer = setTimeout(() => {
           session.disconnectTimer = undefined;
@@ -270,6 +281,7 @@ class P2pShareControllerImpl implements P2pShareController {
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
+      session.transportConnected = false;
       this.fallback(session);
     } else if (state === 'closed') {
       this.clearTimers(session);
@@ -329,6 +341,10 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private clearTimers(session: ViewerSession): void {
     this.clearNegotiationTimer(session);
+    this.clearDisconnectTimer(session);
+  }
+
+  private clearDisconnectTimer(session: ViewerSession): void {
     if (session.disconnectTimer !== undefined) {
       clearTimeout(session.disconnectTimer);
       session.disconnectTimer = undefined;

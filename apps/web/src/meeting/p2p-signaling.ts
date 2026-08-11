@@ -19,6 +19,7 @@ export interface P2pSignalingEvents {
   onOffer(from: string, sdp: string): void;
   onAnswer(from: string, sdp: string): void;
   onIce(from: string, candidate: string | null): void;
+  onMediaReady(from: string): void;
   onBye(from: string, reason?: string): void;
   onShareGone(): void;
   onError(code: string): void;
@@ -123,6 +124,10 @@ export class P2pSignalingClient {
     this.send({ type: 'ice', to, candidate });
   }
 
+  sendMediaReady(to: string): void {
+    this.send({ type: 'media-ready', to });
+  }
+
   sendBye(to: string, reason?: string): void {
     this.send(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
   }
@@ -220,6 +225,9 @@ export class P2pSignalingClient {
         }
         break;
       }
+      case 'media-ready':
+        if (from !== undefined) this.events.onMediaReady(from);
+        break;
       case 'bye':
         if (from !== undefined) {
           this.events.onBye(from, typeof message.reason === 'string' ? message.reason : undefined);

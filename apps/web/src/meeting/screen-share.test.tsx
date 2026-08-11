@@ -1706,12 +1706,14 @@ function fakeShareController(): FakeShareController {
   const stop = vi.fn(async () => undefined);
   const handleAnswer = vi.fn(async () => undefined);
   const handleIce = vi.fn(async () => undefined);
+  const handleMediaReady = vi.fn();
   const handleViewerLeft = vi.fn();
   const controller: P2pShareController = {
     start,
     stop,
     handleAnswer,
     handleIce,
+    handleMediaReady,
     handleViewerLeft,
     getViewerStates: () => new Map<string, ViewerSessionState>(),
     subscribe: (listener) => {

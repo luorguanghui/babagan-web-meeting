@@ -279,7 +279,7 @@ describe('p2p share controller', () => {
     expect(pc.closed).toBe(true);
   });
 
-  it('clears the negotiation timer once ICE connects', async () => {
+  it('marks a viewer p2p only after connected transport and media-ready', async () => {
     const { controller, onViewerFallback } = makeHarness();
     await controller.start(makeStream(), bitrate, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -287,6 +287,8 @@ describe('p2p share controller', () => {
     vi.advanceTimersByTime(7_000);
     pc.setIceConnectionState('connected');
 
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    controller.handleMediaReady('viewer-1');
     expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 5_000);
     expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
@@ -298,6 +300,7 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(), bitrate, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
 
     pc.setIceConnectionState('disconnected');
     vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS - 1);
@@ -316,6 +319,7 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(), bitrate, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
 
     pc.setIceConnectionState('disconnected');
     vi.advanceTimersByTime(4_000);
@@ -331,6 +335,7 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(), bitrate, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
 
     pc.setIceConnectionState('failed');
 
@@ -374,7 +379,8 @@ describe('p2p share controller', () => {
     const { controller, signaling, onViewerFallback } = makeHarness();
     await controller.start(makeStream(), bitrate, viewers.slice(0, 2));
     const [pcA, pcB] = FakeRTCPeerConnection.instances;
-    pcA.setIceConnectionState('connected'); // viewer-1: p2p
+    pcA.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1'); // viewer-1: p2p
     pcB.setIceConnectionState('failed'); // viewer-2: livekit-fallback
 
     await controller.stop();
@@ -467,6 +473,7 @@ describe('p2p share controller', () => {
     expect(seen.at(-1)?.get('viewer-1')).toBe('negotiating');
 
     FakeRTCPeerConnection.instances[0].setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
     expect(seen.at(-1)?.get('viewer-1')).toBe('p2p');
 
     unsubscribe();

@@ -273,6 +273,9 @@ export function MeetingRoomPage({
         }
         void ensureController()?.handleIce(from, candidate);
       },
+      onMediaReady: (from) => {
+        p2pShareRef.current?.handleMediaReady(from);
+      },
       onBye: (from, reason) => {
         const share = p2pShareRef.current;
         if (share) {

@@ -38,6 +38,10 @@ export const P2pClientMessageSchema = Type.Union([
     candidate: CandidateSchema
   }, { additionalProperties: false }),
   Type.Object({
+    type: Type.Literal('media-ready'),
+    to: IdentitySchema
+  }, { additionalProperties: false }),
+  Type.Object({
     type: Type.Literal('bye'),
     to: IdentitySchema,
     reason: Type.Optional(Type.String({ minLength: 1, maxLength: 512 }))

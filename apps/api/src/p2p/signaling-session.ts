@@ -152,6 +152,13 @@ export class P2pSignalingSession {
         }
         this.forward(message);
         return;
+      case 'media-ready':
+        if (this.getShareIdentity() !== message.to || this.identity === message.to) {
+          this.sendError('P2P_FORBIDDEN', 'Only a viewer may confirm media to the screen sharer');
+          return;
+        }
+        this.forward(message);
+        return;
       case 'answer':
       case 'ice':
       case 'bye':

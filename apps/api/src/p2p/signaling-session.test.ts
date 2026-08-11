@@ -195,6 +195,19 @@ describe('P2pSignalingSession', () => {
     expect(adaSocket.messages()).toContainEqual({ type: 'bye', to: 'ada', reason: 'done', from: 'bob' });
   });
 
+  it('forwards media-ready only from a viewer to the current sharer', () => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { session: adaSession, socket: adaSocket } = createSession(harness, 'ada', 'Ada');
+    const { session: bobSession } = createSession(harness, 'bob', 'Bob');
+
+    bobSession.handleMessage(JSON.stringify({ type: 'media-ready', to: 'ada' }));
+    expect(adaSocket.messages()).toContainEqual({ type: 'media-ready', to: 'ada', from: 'bob' });
+
+    adaSession.handleMessage(JSON.stringify({ type: 'media-ready', to: 'bob' }));
+    expect(adaSocket.messages().at(-1)).toEqual(errorMessage('P2P_FORBIDDEN'));
+  });
+
   it('forwards ice and bye from the sharer to any online peer', () => {
     const harness = createHarness();
     harness.shareIdentity = 'ada';

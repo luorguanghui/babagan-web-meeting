@@ -55,6 +55,7 @@ function eventHandlers(): P2pSignalingEvents {
     onOffer: vi.fn(),
     onAnswer: vi.fn(),
     onIce: vi.fn(),
+    onMediaReady: vi.fn(),
     onBye: vi.fn(),
     onShareGone: vi.fn(),
     onError: vi.fn()
@@ -140,6 +141,7 @@ describe('p2p signaling client', () => {
     socket.message({ type: 'answer', to: 'participant-1', sdp, from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: 'candidate:1', from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: null, from: 'sharer' });
+    socket.message({ type: 'media-ready', to: 'participant-1', from: 'viewer' });
     socket.message({ type: 'bye', to: 'participant-1', from: 'sharer' });
     socket.message({ type: 'bye', to: 'participant-1', reason: 'stopped', from: 'sharer' });
     socket.message({ type: 'peer-joined', peer: { identity: 'p2', nickname: 'Bob' } });
@@ -152,6 +154,7 @@ describe('p2p signaling client', () => {
     expect(handlers.onAnswer).toHaveBeenCalledWith('sharer', sdp);
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', 'candidate:1');
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', null);
+    expect(handlers.onMediaReady).toHaveBeenCalledWith('viewer');
     expect(handlers.onBye).toHaveBeenCalledWith('sharer', undefined);
     expect(handlers.onBye).toHaveBeenCalledWith('sharer', 'stopped');
     expect(handlers.onPeerJoined).toHaveBeenCalledWith({ identity: 'p2', nickname: 'Bob' });
@@ -270,6 +273,7 @@ describe('p2p signaling client', () => {
     client.sendAnswer('sharer', 'answer-sdp');
     client.sendIce('sharer', 'candidate:1');
     client.sendIce('sharer', null);
+    client.sendMediaReady('sharer');
     client.sendBye('sharer');
     client.sendBye('sharer', 'leaving');
 
@@ -279,6 +283,7 @@ describe('p2p signaling client', () => {
       { type: 'answer', to: 'sharer', sdp: 'answer-sdp' },
       { type: 'ice', to: 'sharer', candidate: 'candidate:1' },
       { type: 'ice', to: 'sharer', candidate: null },
+      { type: 'media-ready', to: 'sharer' },
       { type: 'bye', to: 'sharer' },
       { type: 'bye', to: 'sharer', reason: 'leaving' }
     ]);
