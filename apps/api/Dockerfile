@@ -1,9 +1,12 @@
 ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
 FROM ${NODE_IMAGE} AS build
 
+ARG ALPINE_MIRROR=https://mirrors.aliyun.com/alpine
+
 WORKDIR /workspace
 
-RUN apk add --no-cache python3 make g++ \
+RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
+  && apk add --no-cache python3 make g++ \
   && corepack enable \
   && corepack prepare pnpm@10.34.5 --activate
 
