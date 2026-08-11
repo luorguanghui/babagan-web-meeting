@@ -1,4 +1,4 @@
-import { P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
+import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
 
 import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
@@ -26,22 +26,28 @@ interface ViewerPcSession {
   pcClosed: boolean;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
   mediaTimer?: ReturnType<typeof setTimeout>;
+  disconnectTimer?: ReturnType<typeof setTimeout>;
   videoTrack?: MediaStreamTrack;
 }
 
 /**
  * Viewer-side P2P session controller for the screen share: one `RTCPeerConnection`
  * against the current sharer, with the fallback state machine
- * (`idle -> negotiating -> p2p`, `negotiating -> livekit`).
+ * (`idle -> negotiating -> p2p`, `negotiating|p2p -> livekit`).
  *
  * The controller never sends offers; it answers the sharer's offer, trickle-ICEs
  * over the signaling channel, and collects the incoming screen audio/video into
- * one `MediaStream`. If no video RTP arrives within
- * `P2P_ICE_NEGOTIATION_TIMEOUT_MS` of the answer, it sends a `bye` with reason
- * `fallback`, closes the PC, and moves to `livekit` so the caller can render the
- * LiveKit screen track instead. A fresh offer from the same sharer is treated as
- * renegotiation (the sharer re-drives offers after a signaling reconnect): the
- * old session is torn down and rebuilt, never rejected or double-answered.
+ * one `MediaStream`. It falls back to `livekit` (a `bye` with reason `fallback`
+ * to the sharer, PC closed, `onFallback` fired) when:
+ * - no video RTP arrives within `P2P_ICE_NEGOTIATION_TIMEOUT_MS` of the answer,
+ * - ICE stays `disconnected` for `P2P_ICE_DISCONNECT_TIMEOUT_MS`, or
+ * - ICE reaches `failed` (covers a crashed/disconnected sharer and a dead link
+ *   after media was already flowing — otherwise the viewer would freeze on a
+ *   dead P2P stream while the sharer already moved it to the SFU).
+ *
+ * A fresh offer from the same sharer is treated as renegotiation (the sharer
+ * re-drives offers after a signaling reconnect): the old session is torn down
+ * and rebuilt, never rejected or double-answered.
  */
 export class P2pViewerController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
@@ -112,6 +118,11 @@ export class P2pViewerController {
     return this.state;
   }
 
+  /** Identity of the current P2P sharer, if a session was ever established. */
+  getSharerIdentity(): string | undefined {
+    return this.sharerIdentity;
+  }
+
   subscribe(listener: (state: ViewerP2pState) => void): () => void {
     this.listeners.add(listener);
     listener(this.state);
@@ -132,6 +143,7 @@ export class P2pViewerController {
     const session: ViewerPcSession = { pc, pcClosed: false, queuedCandidates: [] };
     pc.ontrack = (event) => this.handleTrack(session, event);
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
+    pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
     return session;
   }
 
@@ -141,6 +153,7 @@ export class P2pViewerController {
     this.stream = null;
     if (session !== undefined) {
       this.clearMediaTimer(session);
+      this.clearDisconnectTimer(session);
       if (session.videoTrack) session.videoTrack.onunmute = null;
       this.closePc(session);
     }
@@ -219,9 +232,31 @@ export class P2pViewerController {
     }, P2P_ICE_NEGOTIATION_TIMEOUT_MS);
   }
 
+  private handleIceConnectionState(session: ViewerPcSession): void {
+    if (!this.ownsSession(session)) return;
+    const state = session.pc.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      this.clearDisconnectTimer(session);
+    } else if (state === 'disconnected') {
+      if (session.disconnectTimer === undefined) {
+        session.disconnectTimer = setTimeout(() => {
+          session.disconnectTimer = undefined;
+          if (this.ownsSession(session) && (this.state === 'negotiating' || this.state === 'p2p')) {
+            this.fallback(session);
+          }
+        }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
+      }
+    } else if (state === 'failed') {
+      if (this.state === 'negotiating' || this.state === 'p2p') this.fallback(session);
+    } else if (state === 'closed') {
+      this.clearDisconnectTimer(session);
+    }
+  }
+
   private fallback(session: ViewerPcSession): void {
-    if (!this.ownsSession(session) || this.closed || this.state !== 'negotiating') return;
+    if (!this.ownsSession(session) || this.closed || (this.state !== 'negotiating' && this.state !== 'p2p')) return;
     this.clearMediaTimer(session);
+    this.clearDisconnectTimer(session);
     this.closePc(session);
     this.session = undefined;
     this.stream = null;
@@ -234,6 +269,13 @@ export class P2pViewerController {
     if (session.mediaTimer !== undefined) {
       clearTimeout(session.mediaTimer);
       session.mediaTimer = undefined;
+    }
+  }
+
+  private clearDisconnectTimer(session: ViewerPcSession): void {
+    if (session.disconnectTimer !== undefined) {
+      clearTimeout(session.disconnectTimer);
+      session.disconnectTimer = undefined;
     }
   }
 

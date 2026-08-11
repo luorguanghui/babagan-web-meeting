@@ -1443,6 +1443,97 @@ describe('P2P-first screen sharing in the room', () => {
     expect(share.start).not.toHaveBeenCalled();
     expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled();
   });
+
+  it('closes the viewer P2P session when the sharer leaves the room', async () => {
+    PageFakePc.instances = [];
+    let resolveIce!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return new Promise<Response>((resolve) => { resolveIce = resolve; });
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    await act(async () => {
+      resolveIce(new Response(JSON.stringify({ iceServers: [{ urls: ['stun:stun.example.test:3478'] }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      }));
+    });
+    act(() => signaling.welcome([{ identity: 'sharer-1', nickname: 'Ben' }]));
+    act(() => signaling.offer('sharer-1', 'offer-sdp'));
+
+    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
+    const pc = PageFakePc.instances[0];
+    expect(pc.closed).toBe(false);
+
+    act(() => signaling.peerLeft('sharer-1'));
+
+    expect(pc.closed).toBe(true);
+    expect(PageFakePc.instances).toHaveLength(1);
+  });
+
+  it('closes the viewer P2P session when the sharer disappears from a fresh welcome', async () => {
+    PageFakePc.instances = [];
+    let resolveIce!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return new Promise<Response>((resolve) => { resolveIce = resolve; });
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    await act(async () => {
+      resolveIce(new Response(JSON.stringify({ iceServers: [{ urls: ['stun:stun.example.test:3478'] }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      }));
+    });
+    act(() => signaling.welcome([{ identity: 'sharer-1', nickname: 'Ben' }]));
+    act(() => signaling.offer('sharer-1', 'offer-sdp'));
+
+    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
+    const pc = PageFakePc.instances[0];
+
+    act(() => signaling.welcome([{ identity: 'other', nickname: 'Zoe' }]));
+
+    expect(pc.closed).toBe(true);
+  });
+
+  it('prunes sharer-side sessions for viewers missing from a fresh welcome roster', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome(p2pViewers));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    await waitFor(() => expect(share.start).toHaveBeenCalledOnce());
+
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    expect(share.handleViewerLeft).toHaveBeenCalledWith('viewer-2');
+  });
 });
 
 describe('anonymous P2P quality stats reporting in the room', () => {
@@ -1611,7 +1702,7 @@ function fakeShareController(): FakeShareController {
   let fallback: ((identity: string) => void) | undefined;
   let allClosed: (() => void) | undefined;
   let subscriber: ((states: ReadonlyMap<string, ViewerSessionState>) => void) | undefined;
-  const start = vi.fn(async (_stream: MediaStream, _bitrate: number, _viewers: Peer[]) => undefined);
+  const start = vi.fn(async () => undefined);
   const stop = vi.fn(async () => undefined);
   const handleAnswer = vi.fn(async () => undefined);
   const handleIce = vi.fn(async () => undefined);
@@ -1672,6 +1763,36 @@ function hybridHarness(viewers: Peer[]) {
   };
 }
 
+class PageFakePc {
+  static instances: PageFakePc[] = [];
+  closed = false;
+  iceConnectionState: RTCIceConnectionState = 'new';
+  remoteDescriptions: RTCSessionDescriptionInit[] = [];
+  onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+  ontrack: ((event: RTCTrackEvent) => void) | null = null;
+  oniceconnectionstatechange: (() => void) | null = null;
+
+  constructor() {
+    PageFakePc.instances.push(this);
+  }
+
+  async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    this.remoteDescriptions.push(description);
+  }
+
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    return { type: 'answer', sdp: 'answer-sdp' };
+  }
+
+  async setLocalDescription(): Promise<void> {}
+
+  async addIceCandidate(): Promise<void> {}
+
+  close(): void {
+    this.closed = true;
+  }
+}
+
 function fakeSignalingClient() {
   const wiring: { events?: P2pSignalingEvents } = {};
   const client = {
@@ -1691,6 +1812,7 @@ function fakeSignalingClient() {
     welcome: (peers: Peer[]) => wiring.events?.onWelcome(peers),
     peerJoined: (peer: Peer) => wiring.events?.onPeerJoined(peer),
     peerLeft: (identity: string) => wiring.events?.onPeerLeft({ identity }),
+    offer: (from: string, sdp: string) => wiring.events?.onOffer(from, sdp),
     bye: (from: string, reason?: string) => wiring.events?.onBye(from, reason),
     shareGone: () => wiring.events?.onShareGone()
   };

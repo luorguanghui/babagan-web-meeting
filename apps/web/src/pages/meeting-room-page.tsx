@@ -291,8 +291,23 @@ export function MeetingRoomPage({
         }
       },
       onWelcome: (peers) => {
+        const previous = viewerRosterRef.current;
         viewerRosterRef.current = peers;
         setViewerCount(peers.length);
+        // A welcome replaces the roster wholesale; identities missing from the
+        // fresh list are no longer in the room (server restart / disconnect
+        // window). Prune their share sessions and, if the P2P sharer vanished,
+        // the viewer session too — no ghost P2P sessions, no SFU published for
+        // viewers that are gone.
+        for (const gone of previous) {
+          if (!peers.some((peer) => peer.identity === gone.identity)) {
+            hybridShareRef.current?.viewerLeft(gone.identity);
+            if (viewerP2pRef.current?.getSharerIdentity() === gone.identity) {
+              viewerP2pRef.current?.close();
+              viewerP2pRef.current = undefined;
+            }
+          }
+        }
         hybridShareRef.current?.viewerRosterChanged();
       },
       onPeerJoined: (peer) => {
@@ -307,6 +322,12 @@ export function MeetingRoomPage({
         viewerRosterRef.current = viewerRosterRef.current.filter((peer) => peer.identity !== identity);
         setViewerCount(viewerRosterRef.current.length);
         hybridShareRef.current?.viewerLeft(identity);
+        // The P2P sharer left: the session is dead — tear it down so the
+        // LiveKit screen track takes over instead of freezing on a dead stream.
+        if (viewerP2pRef.current?.getSharerIdentity() === identity) {
+          viewerP2pRef.current?.close();
+          viewerP2pRef.current = undefined;
+        }
       },
       onError: () => undefined
     });

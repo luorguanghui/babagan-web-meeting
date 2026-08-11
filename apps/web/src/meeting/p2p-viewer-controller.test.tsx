@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
+import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
 
 import {
   P2pViewerController,
@@ -38,8 +38,10 @@ class FakeRTCPeerConnection {
   failRemoteDescription = false;
   /** Test hook: a pending promise that parks the matching in-flight operation. */
   setRemoteDescriptionGate?: Promise<void>;
+  iceConnectionState: RTCIceConnectionState = 'new';
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+  oniceconnectionstatechange: (() => void) | null = null;
   readonly setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     if (this.failRemoteDescription) throw new Error('bad sdp');
     if (this.setRemoteDescriptionGate) await this.setRemoteDescriptionGate;
@@ -64,6 +66,13 @@ class FakeRTCPeerConnection {
 
   close(): void {
     this.closed = true;
+    this.iceConnectionState = 'closed';
+    this.oniceconnectionstatechange?.();
+  }
+
+  setIceConnectionState(state: RTCIceConnectionState): void {
+    this.iceConnectionState = state;
+    this.oniceconnectionstatechange?.();
   }
 
   fireTrack(kind: 'video' | 'audio', stream: MediaStream, track = new FakeTrack(kind)): FakeTrack {
@@ -345,6 +354,99 @@ describe('p2p viewer controller', () => {
 
     expect(onFallback).not.toHaveBeenCalled();
     expect(controller.getState()).toBe('idle');
+  });
+
+  it('falls back 5 seconds after ICE stays disconnected while media is flowing', async () => {
+    const { controller, signaling, onFallback } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const stream = makeStream();
+    const videoTrack = pc.fireTrack('video', stream);
+    videoTrack.unmute();
+    expect(controller.getState()).toBe('p2p');
+
+    pc.setIceConnectionState('disconnected');
+    vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS - 1);
+    expect(controller.getState()).toBe('p2p');
+
+    vi.advanceTimersByTime(1);
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).toHaveBeenCalledOnce();
+    expect(pc.closed).toBe(true);
+  });
+
+  it('falls back from negotiating when ICE stays disconnected', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    pc.setIceConnectionState('disconnected');
+    vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(pc.closed).toBe(true);
+  });
+
+  it('falls back immediately when ICE reaches failed', async () => {
+    const { controller, signaling, onFallback } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const stream = makeStream();
+    const videoTrack = pc.fireTrack('video', stream);
+    videoTrack.unmute();
+
+    pc.setIceConnectionState('failed');
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).toHaveBeenCalledOnce();
+    expect(pc.closed).toBe(true);
+  });
+
+  it('does not fall back when ICE reconnects within the 5s window', async () => {
+    const { controller, signaling, onFallback } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const stream = makeStream();
+    const videoTrack = pc.fireTrack('video', stream);
+    videoTrack.unmute();
+    expect(controller.getState()).toBe('p2p');
+
+    pc.setIceConnectionState('disconnected');
+    vi.advanceTimersByTime(4_000);
+    pc.setIceConnectionState('connected');
+
+    vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS + 5_000);
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('ignores ICE connection events once the session is closed', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    controller.close();
+    pc.setIceConnectionState('disconnected');
+    vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS + 5_000);
+
+    expect(controller.getState()).toBe('idle');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('exposes the current sharer identity and clears it on close', async () => {
+    const { controller } = makeHarness();
+    expect(controller.getSharerIdentity()).toBeUndefined();
+
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    expect(controller.getSharerIdentity()).toBe('sharer-1');
+
+    controller.close();
+    expect(controller.getSharerIdentity()).toBeUndefined();
   });
 
   it('emits state snapshots on subscribe and on every transition', async () => {
