@@ -107,6 +107,7 @@ const voiceConstraints: AudioCaptureOptions = {
 
 const screenSharePlayoutDelaySeconds = 0.5;
 const screenShareFallback = new VideoPreset(1280, 720, 3_500_000, 30, 'medium');
+const e2eFakeLiveKitPublication = import.meta.env.VITE_E2E_FAKE_LIVEKIT === 'true';
 
 class RoomController implements MeetingRoomController {
   private room?: LiveKitRoomAdapter;
@@ -186,6 +187,13 @@ class RoomController implements MeetingRoomController {
       codec: ScreenShareCodec;
     }
   ): Promise<void> {
+    // The local Playwright harness has no LiveKit process. Its dedicated build
+    // flag preserves the publish-before-P2P call while replacing only the SDK
+    // publication side effect; production builds compile this branch false.
+    if (e2eFakeLiveKitPublication) {
+      this.publishedScreenTracks = stream.getTracks();
+      return;
+    }
     const participant = this.room?.localParticipant;
     if (!participant?.publishTrack || !participant.unpublishTrack) {
       throw new Error('The meeting room is not connected for screen sharing.');
@@ -224,6 +232,11 @@ class RoomController implements MeetingRoomController {
   }
 
   async releaseScreenShare(stream: MediaStream): Promise<void> {
+    if (e2eFakeLiveKitPublication) {
+      const owned = new Set(stream.getTracks());
+      this.publishedScreenTracks = this.publishedScreenTracks.filter((track) => !owned.has(track));
+      return;
+    }
     const participant = this.room?.localParticipant;
     if (!participant?.unpublishTrack) return;
     const owned = new Set(stream.getTracks());

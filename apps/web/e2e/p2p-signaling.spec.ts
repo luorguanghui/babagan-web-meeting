@@ -113,7 +113,9 @@ function p2pWsUrl(slug: string): string {
 
 /** Collects server frames on a raw socket until the first `welcome`. */
 async function connectRawP2p(slug: string, cookie?: string): Promise<{ socket: WebSocket; frames: string[] }> {
-  const socket = new WebSocket(p2pWsUrl(slug), { headers: cookie ? { cookie } : undefined });
+  const socket = new WebSocket(p2pWsUrl(slug), {
+    headers: { origin: e2eOrigin, ...(cookie ? { cookie } : {}) }
+  });
   const frames: string[] = [];
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('P2P signaling welcome timeout')), 10_000);
@@ -188,6 +190,7 @@ test.describe('P2P signaling flow (local mode)', () => {
         await waitForFrame(page, hostFrames, (frame) => frame.type === 'ice');
         await expect.poll(() => parseFrames(hostFrames.sent).some((frame) => frame.type === 'answer')).toBe(true);
         await expect.poll(() => parseFrames(hostFrames.sent).some((frame) => frame.type === 'ice')).toBe(true);
+        await expect.poll(() => parseFrames(hostFrames.sent).some((frame) => frame.type === 'media-ready')).toBe(true);
       });
 
       await test.step('viewer renders and plays P2P media', async () => {
@@ -232,7 +235,7 @@ test.describe('P2P signaling flow (local mode)', () => {
     const slug = ((await created.json()) as { slug: string }).slug;
     try {
       const status = await new Promise<number>((resolve, reject) => {
-        const socket = new WebSocket(p2pWsUrl(slug));
+        const socket = new WebSocket(p2pWsUrl(slug), { headers: { origin: e2eOrigin } });
         const timer = setTimeout(() => { socket.terminate(); reject(new Error('no unexpected-response (401) received')); }, 10_000);
         socket.on('unexpected-response', (_request, response) => {
           clearTimeout(timer);
@@ -241,6 +244,41 @@ test.describe('P2P signaling flow (local mode)', () => {
         socket.on('open', () => { clearTimeout(timer); reject(new Error('upgrade unexpectedly succeeded without a cookie')); });
       });
       expect(status).toBe(401);
+    } finally {
+      await adminEnd(page, slug);
+    }
+  });
+
+  test('rejects a cross-site P2P signaling Origin even with a participant cookie (403)', async ({ page }) => {
+    requireE2EConfiguration();
+    await recoverStaleMeeting(page);
+    const meetingUrl = await createMeeting(page);
+    const slug = new URL(meetingUrl).pathname.split('/').pop() ?? '';
+    try {
+      const joined = await page.request.post(`/api/v1/meetings/${slug}/join`, {
+        headers: { origin: e2eOrigin },
+        data: { nickname: 'Origin check' }
+      });
+      expect(joined.status()).toBe(200);
+      const cookie = (joined.headers()['set-cookie'] ?? '').split(';')[0];
+      const status = await new Promise<number>((resolve, reject) => {
+        const socket = new WebSocket(p2pWsUrl(slug), {
+          headers: { origin: 'https://evil.example', cookie }
+        });
+        const timer = setTimeout(() => {
+          socket.terminate();
+          reject(new Error('no unexpected-response (403) received'));
+        }, 10_000);
+        socket.on('unexpected-response', (_request, response) => {
+          clearTimeout(timer);
+          resolve(response.statusCode ?? 0);
+        });
+        socket.on('open', () => {
+          clearTimeout(timer);
+          reject(new Error('cross-site P2P upgrade unexpectedly succeeded'));
+        });
+      });
+      expect(status).toBe(403);
     } finally {
       await adminEnd(page, slug);
     }

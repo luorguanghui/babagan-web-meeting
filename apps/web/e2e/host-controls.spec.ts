@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test';
 
-import { createMeeting, endMeeting, installFakeMedia, joinMeeting, newParticipant, requireE2EConfiguration } from './helpers.js';
+import { createMeeting, endMeeting, installFakeMedia, joinMeeting, localE2eMode, newParticipant, requireE2EConfiguration } from './helpers.js';
 
 test.describe('host controls', () => {
   test('grants sharing, kicks a participant, then terminally redirects everyone', async ({ browser, page }) => {
+    test.skip(localE2eMode, 'requires real LiveKit connection and participant events');
     requireE2EConfiguration();
     await installFakeMedia(page.context());
     const meetingUrl = await createMeeting(page);

@@ -9,6 +9,8 @@ export const adminPassword = process.env.E2E_ADMIN_PASSWORD ?? 'local-dev-passwo
 
 /** Origin the local harness serves (see playwright.config.ts). */
 export const e2eOrigin = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:8080';
+/** Tests that require LiveKit run only against a configured deployment. */
+export const localE2eMode = process.env.E2E_BASE_URL === undefined;
 
 export function requireE2EConfiguration(): string {
   if (!adminPassword) throw new Error('E2E_ADMIN_PASSWORD is required; start the Compose test stack and provide its test admin password.');

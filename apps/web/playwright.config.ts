@@ -20,7 +20,8 @@ export default defineConfig({
     command: 'pnpm --filter @meeting/contracts build && pnpm --filter @meeting/web exec vite build && pnpm --filter @meeting/api exec tsx test/local-e2e-server.ts',
     url: 'http://127.0.0.1:8080/health/live',
     timeout: 180_000,
-    reuseExistingServer: true
+    reuseExistingServer: true,
+    env: { ...process.env, VITE_E2E_FAKE_LIVEKIT: 'true' }
   }] : undefined,
   use: {
     baseURL,
