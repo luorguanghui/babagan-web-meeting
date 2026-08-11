@@ -11,7 +11,6 @@ import {
   createP2pShareController,
   deserializeIceCandidate,
   serializeIceCandidate,
-  type P2pShareController,
   type P2pShareSignaling,
   type ViewerSessionState
 } from './p2p-share-controller.js';

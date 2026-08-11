@@ -37,11 +37,9 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `EMPTY_GRACE_SECONDS` | `600` | 与 PRD 保持一致 |
 | `RECONNECT_GRACE_SECONDS` | `30` | 与 PRD 保持一致 |
 | `MAX_PARTICIPANTS` | `5` | 服务端强制，不信任客户端 |
-| `P2P_ICE_CACHE_TTL_SECONDS` | `3600` | ICE 凭据缓存有效期（不超过 LiveKit 凭据有效期） |
-| `P2P_ICE_NEGOTIATION_TIMEOUT_MS` | `8000` | 客户端 P2P 协商超时，超时回退 LiveKit（前后端需一致） |
-| `P2P_ICE_DISCONNECT_TIMEOUT_MS` | `5000` | P2P 连接失联判定时长，超时切换 LiveKit 源 |
+| `P2P_STUN_URLS` | 逗号分隔的 `stun:`/`stuns:` URL | 启动时严格校验；当前 LiveKit v1.11.0 不提供可复用的通用 ICE 凭据接口，因此 P2P 只使用显式 STUN，失败即回退已发布的 LiveKit 屏幕轨道 |
 
-启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。
+启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联和 5 秒 RTP 停流阈值是 contracts 包中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
 
 ## 3. 数据模型
 
@@ -128,16 +126,16 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | POST | `/meetings/:slug/token` | 参与者会话 | 为完整重连签发新的 5 分钟 Token |
 | POST | `/meetings/:slug/leave` | 参与者 Token | 提前释放参与状态 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
-| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P 用的 STUN/TURN 服务器列表与凭据（经 LiveKit Server API `/rtc/ice` 获取，服务端缓存 1 小时） |
-| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie | P2P 信令：房间在线名单、SDP/ICE 转发（协议见 `07` 设计 §4） |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回由 `P2P_STUN_URLS` 配置的 P2P STUN 列表 |
+| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`，凭据含有效期，客户端应在共享开始时重新获取。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`；当前响应只含配置的 STUN URL，客户端在建立 P2P 控制器前获取。
 
 ### 4.3 P2P 信令端点行为
 
-- 握手必须携带有效参与者安全 Cookie；无效则拒绝升级。
+- 握手必须携带有效参与者安全 Cookie，且 `Origin` 必须与 `PUBLIC_BASE_URL` 完全一致；缺失、无效或跨站来源均拒绝升级。
 - 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。
-- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice` 只能发送给当前共享者；目标必须是同会议在线成员。
+- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice` 只能发送给当前共享者；观看者在确认直连视频已解码后可向当前共享者发送 `media-ready`；目标必须是同会议在线成员。
 - 共享锁释放（撤销/结束/共享者离开）时向全员发送共享失效通知，客户端关闭全部 P2P 连接。
 - 消息上限 64 KiB；单连接速率限制与 SDP 总量限制；SDP、ICE 候选与凭据不写入日志。
 - 服务重启时在线表清空，客户端重连后以 `welcome` 全量恢复；LiveKit 参与者仍在时不影响其语音。
@@ -149,7 +147,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 ### 4.5 健康检查
 
 - `GET /health/live`：进程存活，不访问外部依赖。
-- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问（含 `/rtc/ice` 依赖，异常时报告降级）。
+- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问；P2P STUN 配置已在进程启动时完成校验。
 
 ## 5. LiveKit 权限
 
@@ -161,7 +159,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 禁止创建其他房间或执行管理 API。
 - JWT 有效期固定为 5 分钟；完整重连通过未撤销的参与者安全会话刷新。
 
-共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**P2P 混合模式下该权限只用于回退路径**：仅当存在回退观看者时才实际发布 LiveKit 屏幕轨道，全部观看者 P2P 直连时不发布（节省云端带宽）。撤销时先更新服务端权限，再要求客户端停止轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
+共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**P2P 混合模式始终先发布并保留 LiveKit 屏幕轨道作为兼容与恢复安全网**。确认 P2P 首帧已经渲染的现代观看者仅在本客户端取消订阅 LiveKit 屏幕；旧客户端继续通过 LiveKit 观看。撤销时先更新服务端权限，再要求客户端停止 LiveKit 轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
 
 ## 6. 前端状态与页面
 
@@ -196,7 +194,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 **传输模式（P2P 优先，LiveKit 回退）**：
 
 - **P2P 直连模式**：共享者对每名观看者各建一条 `RTCPeerConnection`，同一条连接上发布屏幕视频与屏幕音频两条轨道（音画同步硬约束，禁止拆到两条连接）。观看者端若在 8 秒内未收到媒体，通知共享者回退。
-- **LiveKit 回退模式**：P2P 协商超时（8 秒）、ICE `failed` 或 RTP 失联（5 秒）的观看者改用 LiveKit 屏幕订阅；共享者按需发布 LiveKit 屏幕轨道，双源不并存。
+- **LiveKit 安全网模式**：共享者先发布 LiveKit 再启动 P2P，并保持发布至共享结束。观看者只有在直连候选对、视频字节与解码帧均确认后才发送 `media-ready` 并切到 P2P；连续检查 RTP，协商超时（8 秒）、ICE `failed` 或 5 秒无 RTP 进展时重新订阅 LiveKit。旧源保留到新源首帧后才关闭，双源可短暂并行用于无黑屏交接，但不会长期双重接收。
 
 **码率**：
 
@@ -213,13 +211,13 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。
 
-**共享端流程**：授权 → 获取屏幕流（含音频）→ 获取 ICE 凭据 → 对每名在线观看者发起 P2P 协商 → 收敛成功者发布 P2P 轨道，失败者走 LiveKit 回退。共享停止/撤销时关闭全部连接并释放共享锁。
+**共享端流程**：授权 → 获取屏幕流（含音频）→ 先发布 LiveKit 安全网 → 获取显式 STUN 配置 → 对 P2P 信令在线的观看者发起协商 → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
 
 ## 8. 定时任务与恢复
 
 API 每 30 秒执行一次轻量清理：
 
-1. 将过期会议置为 `expired` 并关闭 LiveKit 房间。
+1. 将过期会议置为 `expired`，关闭 LiveKit 房间，并通知后关闭对应 P2P 信令房间的全部连接。
 2. 查询活动房间人数，维护 `active/grace` 状态。
 3. 清理超过 10 分钟的空房。
 4. 撤销终态会议的主持人会话和共享锁。

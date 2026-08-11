@@ -17,9 +17,9 @@
 | 主持人会话窃取 | Secure/HttpOnly/SameSite Cookie、短时效、结束即撤销 |
 | Token 重放 | 短 TTL、绑定房间与身份、移除时撤销权限并断开 |
 | 越权屏幕共享 | 服务端共享锁、LiveKit 发布来源限制、权限更新审计 |
-| P2P 信令越权（P2P 新增） | WS 握手校验参与者 Cookie；服务端强制"仅共享者发 offer、应答仅能回共享者"；非法目标拒绝 |
+| P2P 信令越权（P2P 新增） | WS 握手校验参与者 Cookie 与同源 Origin；服务端强制"仅共享者发 offer、应答与 media-ready 仅能回共享者"；非法目标拒绝 |
 | P2P 信令放大/滥用（P2P 新增） | 消息 64 KiB 上限、单连接速率限制、在线表仅限本会议成员 |
-| SDP/ICE 泄露（P2P 新增） | 日志禁用 SDP 全文与 ICE 凭据；信令经 WSS 加密；凭据 TTL 1 小时 |
+| SDP/ICE 泄露（P2P 新增） | 日志禁用 SDP 全文、ICE 候选与配置；信令经 WSS 加密；当前只下发非敏感 STUN URL |
 | XSS/CSRF | React 安全渲染、CSP、Origin 检查、SameSite Cookie |
 | SQL 注入 | 参数化语句、Schema 校验、数据库最小权限 |
 | 媒体窃听 | HTTPS/WSS、ICE、DTLS-SRTP、证书严格校验；P2P 直连媒体不经服务器（零可见性） |
@@ -68,7 +68,7 @@
 - `Permissions-Policy`：仅顶层自身来源使用麦克风和屏幕捕获相关能力。
 - `frame-ancestors 'none'` 或等效防点击劫持策略。
 
-API 只接受 `https://meet.babagan.cloud` 的浏览器来源。修改请求验证 `Origin` 和 JSON Content-Type，并限制请求体、字段长度、连接时间和并发。
+API 只接受 `https://meet.babagan.cloud` 的浏览器来源。修改请求验证 `Origin` 和 JSON Content-Type；P2P WebSocket GET 握手也必须显式验证同源 `Origin`，缺失或跨站来源返回 403。所有入口限制请求体、字段长度、连接时间和并发。
 
 ## 5. 传输与证书
 

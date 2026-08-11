@@ -324,7 +324,7 @@ describe('p2p signaling client', () => {
 
   it('ignores connect() after close()', async () => {
     const client = createClient();
-    const socket = await connectClient(client);
+    await connectClient(client);
     client.close();
 
     await expect(client.connect()).resolves.toBeUndefined();

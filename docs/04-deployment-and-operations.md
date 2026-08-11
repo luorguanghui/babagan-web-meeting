@@ -38,10 +38,10 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 | TCP | 80 | 公网 | ACME HTTP 验证及 HTTPS 跳转 |
 | TCP | 443 | 公网 | HTTPS/WSS（含 P2P 信令，复用 `/api/*` 反代，无新增端口） |
 | TCP | 7881 | 公网 | LiveKit RTC/TCP 回退 |
-| UDP | 443 | 公网 | LiveKit TURN/UDP（P2P 直连失败时的兜底） |
+| UDP | 443 | 公网 | LiveKit 媒体路径的 TURN/UDP（P2P 本身不复用其凭据） |
 | UDP | 50000–60000 | 公网 | WebRTC 直接媒体（麦克风；回退时屏幕） |
 
-P2P 屏幕直连不新增任何云端入站端口；STUN/TURN 凭据复用 LiveKit 现有 TURN 服务（经 Server API `/rtc/ice` 发放）。不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
+P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Server v1.11.0 不提供可复用的通用 ICE 凭据接口，API 通过 `P2P_STUN_URLS` 下发显式 STUN；无法直连时使用始终已发布的 LiveKit 屏幕安全网。不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
 
 ### 3.2 主机防火墙
 
@@ -89,10 +89,10 @@ P2P 屏幕直连不新增任何云端入站端口；STUN/TURN 凭据复用 LiveK
 4. 创建应用目录、持久卷目录和权限受限的 secrets。
 5. 验证 DNS 记录及 `rtc`/`turn` 直连解析。
 6. 启动 Caddy 并确认 ACME 证书成功。
-7. 启动 LiveKit，验证内部健康与公网候选地址，确认 `/rtc/ice` 可返回 STUN/TURN 凭据。
+7. 启动固定 digest 的 LiveKit v1.11.0，验证内部健康与公网候选地址，并确认 API 的已认证 `/ice-servers` 响应与 `P2P_STUN_URLS` 一致。
 8. 运行数据库迁移，启动 API 和静态 Web。
 9. 执行 HTTP、WSS、UDP、TURN 和 5 人冒烟测试。
-10. 验证 P2P 信令端点：无 Cookie 拒绝升级、有 Cookie 可加入房间名单、offer/answer/ice 转发正常。
+10. 验证 P2P 信令端点：无 Cookie、缺失 Origin、跨站 Origin 均拒绝升级；有 Cookie 且同源可加入房间名单，offer/answer/ice/media-ready 转发正常。
 11. 在两端真实公网环境验证 P2P 直连建立与回退（见 `05` 文档 §4.3）。
 12. 将 Cloudflare 设置为 Full (strict)，验证完整访问路径。
 
@@ -125,7 +125,7 @@ P2P 屏幕直连不新增任何云端入站端口；STUN/TURN 凭据复用 LiveK
 | CPU | 5 分钟平均 >80% |
 | 内存 | 已用 >1.8 GiB 或发生 OOM/交换抖动 |
 | 磁盘 | 使用率 >80% |
-| 公网带宽 | 持续 >50 Mbps 或出现突发（P2P 混合模式后屏幕媒体不再经云端，阈值下调；若屏幕共享时仍出现 16–60 Mbps 尖峰说明回退路径异常） |
+| 公网带宽 | 持续 >50 Mbps 或出现突发（直连成功的现代观看者不再消费云端屏幕下行；旧客户端或回退观看者仍会产生正常 LiveKit 屏幕流量） |
 | API | 5xx 比例 >2%/5 分钟 |
 | LiveKit | 连接失败率 >5%/5 分钟 |
 | P2P 回退率 | 会议结束后聚合的回退率 >50%（人工观察项，用于评估直连穿透质量） |

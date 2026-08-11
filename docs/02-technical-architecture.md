@@ -50,8 +50,8 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 - 签发最小权限 LiveKit Token。
 - 更新成员共享权限、移除成员和结束会议。
 - 执行过期与空房清理任务。
-- **P2P 信令端点（新增）**：`/api/v1/meetings/:slug/p2p` WebSocket，校验参与者 Cookie，维护房间在线名单，转发 SDP/ICE 消息，强制"仅共享者发 offer"等权限规则（见 `07` 设计 §4）。
-- **ICE 凭据端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经 LiveKit Server API 获取 STUN/TURN 凭据并缓存返回客户端。
+- **P2P 信令端点（新增）**：`/api/v1/meetings/:slug/p2p` WebSocket，校验参与者 Cookie 与同源 Origin，维护房间在线名单，转发 SDP/ICE/`media-ready` 消息，强制"仅共享者发 offer"等权限规则（见 `07` 设计 §4）。
+- **ICE 配置端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经参与者会话鉴权后返回启动时校验的 `P2P_STUN_URLS`。
 
 ### 2.3 SQLite
 
@@ -59,10 +59,10 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 
 ### 2.4 LiveKit
 
-- SFU 转发 Opus 麦克风音频；屏幕轨道仅在 P2P 回退时转发。
+- SFU 转发 Opus 麦克风音频；共享开始时先发布屏幕安全网并保持到共享结束，现代观看者可在 P2P 首帧后取消自己的屏幕订阅。
 - 管理房间、参与者、订阅、连接质量和重连。
 - 优先使用直接 UDP；提供 TURN/UDP 443 和 RTC/TCP 7881 回退。
-- 经 Server API 提供 STUN/TURN ICE 凭据，供 P2P `RTCPeerConnection` 复用（`/rtc/ice`）。
+- API 从启动时校验的 `P2P_STUN_URLS` 提供 P2P STUN 配置；固定 LiveKit v1.11.0 不提供可供独立 P2P 使用的通用 ICE 凭据接口。
 - 不启用 Egress、Ingress、录制、转码、Agent 或 SIP 服务。
 
 ### 2.5 Caddy
@@ -78,12 +78,12 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 |---|---|---|---|
 | `meet.babagan.cloud:443` | HTTPS/WSS | Cloudflare → Caddy | 网页、API 与 P2P 信令（`/api/*` 反代覆盖 WSS 升级） |
 | `rtc.babagan.cloud:443` | HTTPS/WSS | 客户端 → Caddy → LiveKit | LiveKit 信令 |
-| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | UDP 中继（P2P 直连失败时的兜底） |
+| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | LiveKit 媒体路径的 UDP 中继；不作为独立 P2P 凭据接口 |
 | 公网 IP `50000–60000` | WebRTC UDP | 客户端 → LiveKit | 直接媒体（麦克风；回退时的屏幕） |
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
 
-P2P 屏幕共享**不新增任何云端端口**：信令复用 `meet` 的 WSS 路径；STUN/TURN 凭据复用 LiveKit 现有 TURN 服务（`/rtc/ice` 发放）。直连媒体在共享者与观看者的家庭网络之间流动，不经过云端。
+P2P 屏幕共享**不新增任何云端端口**：信令复用 `meet` 的 WSS 路径，STUN 使用 `P2P_STUN_URLS`。成功直连的媒体在共享者与观看者网络之间流动；无法直连时观看者继续使用已发布的 LiveKit 屏幕安全网。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 
@@ -106,10 +106,10 @@ Token 允许所有成员发布 `microphone`，禁止 `camera` 和数据轨道。
 ### 4.3 屏幕共享（P2P 优先，回退 SFU）
 
 1. 主持人通过 API 授权目标成员（共享锁，语义不变）。
-2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源（回退路径所需，不发布则不占带宽）。
+2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源。
 3. 共享者客户端调用浏览器屏幕捕获接口，要求用户主动选择来源；屏幕音频轨道必须保留（P2P 音画同步硬约束）。
-4. 共享者通过 P2P 信令向每名在线观看者发起协商；观看者建立直连后，共享者发布屏幕视频 + 屏幕音频轨道（同一条 `RTCPeerConnection`）。
-5. 观看者级回退：某观看者 ICE 8 秒未收敛或中途断线 → 该观看者改用 LiveKit 屏幕订阅；存在任一回退观看者时共享者才通过 LiveKit 发布屏幕轨道。
+4. 共享者先发布 LiveKit 屏幕安全网，再通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。
+5. 观看者验证直连候选对、RTP 增长和视频解码，渲染 P2P 首帧后才取消自己的 LiveKit 屏幕订阅；8 秒未收到媒体、ICE 失败或 5 秒无 RTP 进展时先恢复 LiveKit 订阅，首帧后关闭 P2P。
 6. 共享停止、断线或撤销时，关闭全部 P2P 连接与 LiveKit 屏幕轨道，API/LiveKit 释放共享锁。
 
 ## 5. 状态模型
@@ -135,7 +135,7 @@ stateDiagram-v2
 
 **2026-08-11 起（P2P 混合模式）**：
 
-- **屏幕媒体不再经云端转发**：P2P 直连时共享者家庭上行承担屏幕流量（4 人 × 8 Mbps ≈ 32 Mbps，共享者实测上行 100 Mbps 充裕）；云端仅剩 5 路 Opus 麦克风音频（全部约 1 Mbps）与回退观看者的屏幕流量。云端峰值带宽从 16–60 Mbps 骤降至约 1–8 Mbps。
+- **现代观看者成功切到 P2P 后不再从云端接收屏幕**：共享者上行承担直连流量；LiveKit 屏幕发布仍常驻，但只有旧客户端、协商中或回退观看者保持订阅。实际节省取决于直连成功率和观看者网络，不能用单台设备的 100 Mbps 测量外推全部共享者。
 - P2P 信令为控制面消息（SDP/ICE），每连接数 KB，对 API 进程可忽略。
 - 云端带宽告警阈值相应下调（见 `04` 文档 §9 变更）。
 
@@ -146,14 +146,14 @@ stateDiagram-v2
 | 决策 | 选择 | 原因 |
 |---|---|---|
 | 媒体拓扑（音频） | SFU | 5 人音频经云端仅约 1 Mbps，保留 LiveKit 成熟能力 |
-| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + SFU 回退** | 云端 200 Mbps 峰值带宽无 SLA、波动导致接收画面不稳定；共享者实测 100 Mbps 稳定上行 + 公网 IPv4，P2P 移除云端这一单点。直连失败自动回退，不劣于现状 |
-| 媒体平台 | LiveKit | 屏幕音频、权限、重连与 TURN 成熟；经 `/rtc/ice` 复用其 STUN/TURN 凭据 |
+| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + 常驻 SFU 安全网** | 直连成功者绕开云端带宽波动；旧客户端与失败者始终可使用 LiveKit。共享者实际可用上行决定可行档位 |
+| 媒体平台 | LiveKit | 屏幕音频、权限、重连与兼容兜底成熟；P2P STUN 独立由 API 配置 |
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
 | TURN | UDP 443 | 与 Caddy TCP 443 不冲突，适合现有单公网 IP |
 | Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
-| P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 不新增域名与端口；参与者 Cookie 鉴权；服务器零媒体可见性 |
+| P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 不新增域名与端口；参与者 Cookie + 同源 Origin 鉴权；服务器零媒体可见性 |
 
 ## 8. 已知限制
 

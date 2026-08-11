@@ -1,5 +1,7 @@
 # P2P 屏幕共享混合模式实施计划
 
+> **已废弃（2026-08-11）**：本计划保留为历史记录，不得用于部署或验收。LiveKit v1.11.0、STUN 配置、常驻 LiveKit 安全网、Origin、RTP 健康检查与隐私修复以 `2026-08-11-p2p-production-hardening.md` 及当前规范为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在现有会议系统中实现"屏幕共享 P2P 直连优先、LiveKit SFU 回退"的混合模式，使屏幕媒体不再依赖不稳定的云端带宽。
