@@ -1,4 +1,5 @@
-FROM node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS build
+ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
+FROM ${NODE_IMAGE} AS build
 
 WORKDIR /workspace
 
@@ -16,7 +17,7 @@ COPY packages/contracts packages/contracts
 RUN pnpm --filter @meeting/api build \
   && pnpm --filter @meeting/api --prod deploy /opt/api
 
-FROM node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 ENV NODE_ENV=production
 WORKDIR /app

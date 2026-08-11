@@ -1,4 +1,6 @@
-FROM node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f AS build
+ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f
+ARG CADDY_IMAGE=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+FROM ${NODE_IMAGE} AS build
 
 WORKDIR /workspace
 
@@ -14,7 +16,7 @@ COPY apps/web apps/web
 COPY packages/contracts packages/contracts
 RUN pnpm --filter @meeting/web build
 
-FROM caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
+FROM ${CADDY_IMAGE}
 
 # The container listens only on 8080.  Removing Caddy's file capability keeps
 # the no-new-privileges policy compatible with the image entrypoint.

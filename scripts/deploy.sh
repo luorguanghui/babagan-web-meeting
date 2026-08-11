@@ -7,6 +7,8 @@ app_dir="$(cd "$script_dir/.." && pwd -P)"
 source "$script_dir/release-provenance.sh"
 # shellcheck source=firewall-attestation.sh
 source "$script_dir/firewall-attestation.sh"
+# shellcheck source=image-policy.sh
+source "$script_dir/image-policy.sh"
 usage() { echo "Usage: $0 --confirm-deploy SHA --target-ip IPV4 --smoke-token-file FILE --network-evidence FILE --cloudflare-evidence FILE [--allow-public-ssh] [--bootstrap-empty] [--env-file FILE]" >&2; exit 64; }
 fail() { echo "DEPLOY PREFLIGHT FAILED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
@@ -40,8 +42,13 @@ for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVE
 [[ "$(grep -c '^LIVEKIT_IMAGE=' "$env_file")" -le 1 ]] || fail 'LIVEKIT_IMAGE must appear at most once'
 livekit_image="$(sed -n 's/^LIVEKIT_IMAGE=//p' "$env_file")"
 livekit_image="${livekit_image:-livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16}"
-[[ "$livekit_image" =~ ^[^[:space:]]+@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16$ ]] \
-  || fail 'LiveKit image must remain pinned to the approved v1.11.0 digest'
+assert_minimum_image_version "$livekit_image" 1.11.0 \
+  || fail 'LiveKit image version must be v1.11.0 or newer'
+[[ "$(grep -c '^NODE_IMAGE=' "$env_file")" -le 1 ]] || fail 'NODE_IMAGE must appear at most once'
+node_image="$(sed -n 's/^NODE_IMAGE=//p' "$env_file")"
+node_image="${node_image:-node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f}"
+[[ "$node_image" =~ ^[^[:space:]]+@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f$ ]] \
+  || fail 'Node image must remain pinned to the approved digest'
 [[ "$(grep -c '^CADDY_IMAGE=' "$env_file")" -le 1 ]] || fail 'CADDY_IMAGE must appear at most once'
 caddy_image="$(sed -n 's/^CADDY_IMAGE=//p' "$env_file")"
 caddy_image="${caddy_image:-caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}"

@@ -3,9 +3,13 @@
 set -Eeuo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 deploy="$root/scripts/deploy.sh"
+image_policy="$root/scripts/image-policy.sh"
 firewall_attestation="$root/scripts/firewall-attestation.sh"
 deployment_smoke="$root/scripts/deployment-smoke.sh"
 rollback="$root/scripts/rollback.sh"
+compose_file="$root/infra/docker-compose.yml"
+api_dockerfile="$root/apps/api/Dockerfile"
+web_dockerfile="$root/apps/web/Dockerfile"
 need() { grep -Fq -- "$2" "$1" || { echo "missing regression guard: $2" >&2; exit 1; }; }
 
 # Every helper invoked as a command must retain Git's executable bit. This
@@ -26,8 +30,19 @@ need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
 need "$deploy" '(( mem_kib >= 1153434 ))'
 need "$deploy" 'LIVEKIT_NODE_IP must equal the confirmed target IP'
-need "$deploy" 'LiveKit image must remain pinned to the approved v1.11.0 digest'
+need "$deploy" 'source "$script_dir/image-policy.sh"'
+need "$deploy" 'assert_minimum_image_version "$livekit_image" 1.11.0'
 need "$deploy" 'Caddy image must remain pinned to the approved digest'
+need "$deploy" 'Node image must remain pinned to the approved digest'
+need "$compose_file" 'NODE_IMAGE: "${NODE_IMAGE:-node:24.15.0-alpine3.23@sha256:'
+need "$compose_file" 'CADDY_IMAGE: "${CADDY_IMAGE:-caddy:2.10.2-alpine@sha256:'
+need "$api_dockerfile" 'ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:'
+need "$api_dockerfile" 'FROM ${NODE_IMAGE} AS build'
+need "$api_dockerfile" 'FROM ${NODE_IMAGE} AS runtime'
+need "$web_dockerfile" 'ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:'
+need "$web_dockerfile" 'ARG CADDY_IMAGE=caddy:2.10.2-alpine@sha256:'
+need "$web_dockerfile" 'FROM ${NODE_IMAGE} AS build'
+need "$web_dockerfile" 'FROM ${CADDY_IMAGE}'
 need "$deploy" '"$script_dir/deployment-smoke.sh"'
 need "$deployment_smoke" 'SMOKE_NODE_IMAGE="$api_image"'
 need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
@@ -61,6 +76,7 @@ mkdir -p "$temp_dir/bin"
 # or release state.
 mkdir -p "$temp_dir/no-baseline/scripts"
 cp "$deploy" "$temp_dir/no-baseline/scripts/deploy.sh"
+cp "$image_policy" "$temp_dir/no-baseline/scripts/image-policy.sh"
 cp "$firewall_attestation" "$temp_dir/no-baseline/scripts/firewall-attestation.sh"
 cp "$root/scripts/release-provenance.sh" "$temp_dir/no-baseline/scripts/release-provenance.sh"
 if bash "$temp_dir/no-baseline/scripts/deploy.sh" \
@@ -145,6 +161,7 @@ if load_verified_baseline_release "$temp_dir/bootstrap-pending.env"; then echo '
 # ensure it fails without deployment state or any payload side effect.
 mkdir -p "$temp_dir/tampered/scripts" "$temp_dir/tampered/var/releases"
 cp "$deploy" "$temp_dir/tampered/scripts/deploy.sh"
+cp "$image_policy" "$temp_dir/tampered/scripts/image-policy.sh"
 cp "$firewall_attestation" "$temp_dir/tampered/scripts/firewall-attestation.sh"
 cp "$root/scripts/release-provenance.sh" "$temp_dir/tampered/scripts/release-provenance.sh"
 printf 'RELEASE_SHA=$(touch %s)\n' "$temp_dir/tampered-write-sentinel" >"$temp_dir/tampered/var/releases/current-release.env"

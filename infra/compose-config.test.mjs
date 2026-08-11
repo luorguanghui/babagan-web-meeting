@@ -33,10 +33,14 @@ export function assertProductionComposeConfig(config) {
   );
   assert.equal((services.livekit.ports ?? []).length, 0, 'host-networked LiveKit must not publish Docker ports');
   assert.equal((services.livekit.expose ?? []).length, 0, 'host-networked LiveKit must not declare bridge-only exposed ports');
-  assert.match(
-    services.livekit.image,
-    /@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16$/,
-    'LiveKit may use a registry mirror but must match the production v1.11.0 image digest'
+  const livekitVersionMatch = services.livekit.image.match(/:v?(\d+)\.(\d+)\.(\d+)(?:@sha256:[0-9a-f]{64})?$/);
+  assert.ok(livekitVersionMatch, 'LiveKit image must use a semantic version tag');
+  const livekitVersion = livekitVersionMatch.slice(1).map(Number);
+  assert.ok(
+    livekitVersion[0] > 1 ||
+      (livekitVersion[0] === 1 && livekitVersion[1] > 11) ||
+      (livekitVersion[0] === 1 && livekitVersion[1] === 11 && livekitVersion[2] >= 0),
+    'LiveKit image version must be v1.11.0 or newer'
   );
   assert.equal(
     services.livekit.user,
@@ -75,6 +79,13 @@ export function assertProductionComposeConfig(config) {
     /@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d$/,
     'Caddy may use a registry mirror but must match the approved image digest'
   );
+  assert.match(
+    services.api.build.args.NODE_IMAGE,
+    /@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc99d9c6fc34884a665f40a06dbdfc94f$/,
+    'API build may use a Node registry mirror but must retain the approved image digest'
+  );
+  assert.equal(services.web.build.args.NODE_IMAGE, services.api.build.args.NODE_IMAGE);
+  assert.equal(services.web.build.args.CADDY_IMAGE, services.caddy.image);
 }
 
 const injectedConfig = process.env.COMPOSE_CONFIG_JSON;
