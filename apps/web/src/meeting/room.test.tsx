@@ -49,6 +49,34 @@ function roomAdapter(): LiveKitRoomAdapter {
 }
 
 describe('room controller', () => {
+  it('toggles only remote LiveKit screen-share publications for P2P handover', async () => {
+    const screenVideo = { source: 'screen_share', setSubscribed: vi.fn() };
+    const screenAudio = { source: 'screen_share_audio', setSubscribed: vi.fn() };
+    const microphone = { source: 'microphone', setSubscribed: vi.fn() };
+    const room = roomAdapter();
+    room.remoteParticipants.set('participant-2', {
+      identity: 'participant-2',
+      name: 'Ben',
+      isMicrophoneEnabled: true,
+      isScreenShareEnabled: true,
+      trackPublications: new Map([
+        ['screen-video', screenVideo],
+        ['screen-audio', screenAudio],
+        ['microphone', microphone]
+      ])
+    } as never);
+    const controller = createRoomController(() => room) as MeetingRoomController & {
+      setRemoteScreenShareSubscribed(subscribed: boolean): Promise<void>;
+    };
+    await controller.connect(join);
+
+    await controller.setRemoteScreenShareSubscribed(false);
+
+    expect(screenVideo.setSubscribed).toHaveBeenCalledWith(false);
+    expect(screenAudio.setSubscribed).toHaveBeenCalledWith(false);
+    expect(microphone.setSubscribed).not.toHaveBeenCalled();
+  });
+
   it('connects with subscription optimizations while keeping the local microphone muted', async () => {
     const room = roomAdapter();
     const createRoom = vi.fn(() => room);
@@ -257,6 +285,7 @@ class FakeMeetingRoomController implements MeetingRoomController {
   async switchAudioOutput(deviceId: string) { this.outputChanges.push(deviceId); return 'changed' as const; }
   async publishScreenShare() {}
   async releaseScreenShare() {}
+  async setRemoteScreenShareSubscribed() {}
   async disconnect() { this.disconnectCount += 1; }
   async resumeAudioPlayback() { this.state = { ...this.state, audioPlaybackBlocked: false }; this.emit(); }
   subscribe(listener: (state: MeetingRoomState) => void) { this.listeners.add(listener); listener(this.state); return () => this.listeners.delete(listener); }

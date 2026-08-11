@@ -245,6 +245,8 @@ export function MeetingRoomPage({
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
   const viewerP2pRef = useRef<P2pViewerController | undefined>(undefined);
+  const pendingFallbackCompletionRef = useRef<(() => void) | undefined>(undefined);
+  const [fallbackP2pStream, setFallbackP2pStream] = useState<MediaStream>();
 
   useEffect(() => {
     let cancelled = false;
@@ -252,9 +254,17 @@ export function MeetingRoomPage({
     const ensureController = (): P2pViewerController | undefined => {
       if (iceServers === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
-        const controller = new P2pViewerController(signaling, iceServers);
-        viewerP2pRef.current = controller;
-        controller.subscribe((state) => {
+        const viewerController = new P2pViewerController(signaling, iceServers, {
+          onFallbackRequested: (complete) => {
+            pendingFallbackCompletionRef.current = complete;
+            setFallbackP2pStream(viewerP2pRef.current?.getStream() ?? undefined);
+            // Keep the P2P PC alive until ScreenStage confirms that the
+            // re-subscribed LiveKit source has rendered its first frame.
+            void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+          }
+        });
+        viewerP2pRef.current = viewerController;
+        viewerController.subscribe((state) => {
           if (!cancelled) setViewerP2pState(state);
           p2pStats.observeViewerState(state);
         });
@@ -284,10 +294,16 @@ export function MeetingRoomPage({
         }
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
+        pendingFallbackCompletionRef.current = undefined;
+        setFallbackP2pStream(undefined);
+        void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
       },
       onShareGone: () => {
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
+        pendingFallbackCompletionRef.current = undefined;
+        setFallbackP2pStream(undefined);
+        void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
         // The host revoked (or the server ended) our share: tear it down fully.
         if (screenShareRef.current?.getState().status !== 'idle') {
           void screenShareRef.current?.stop();
@@ -308,6 +324,9 @@ export function MeetingRoomPage({
             if (viewerP2pRef.current?.getSharerIdentity() === gone.identity) {
               viewerP2pRef.current?.close();
               viewerP2pRef.current = undefined;
+              pendingFallbackCompletionRef.current = undefined;
+              setFallbackP2pStream(undefined);
+              void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
             }
           }
         }
@@ -330,6 +349,9 @@ export function MeetingRoomPage({
         if (viewerP2pRef.current?.getSharerIdentity() === identity) {
           viewerP2pRef.current?.close();
           viewerP2pRef.current = undefined;
+          pendingFallbackCompletionRef.current = undefined;
+          setFallbackP2pStream(undefined);
+          void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
         }
       },
       onError: () => undefined
@@ -354,11 +376,22 @@ export function MeetingRoomPage({
     return () => {
       cancelled = true;
       signalingRef.current = undefined;
+      pendingFallbackCompletionRef.current?.();
+      pendingFallbackCompletionRef.current = undefined;
       viewerP2pRef.current?.close();
       viewerP2pRef.current = undefined;
       signaling.close();
     };
-  }, [createSignalingClient, join.participantIdentity, slug]);
+  }, [controller, createSignalingClient, join.participantIdentity, p2pStats, slug]);
+
+  useEffect(() => {
+    if (viewerP2pState === 'p2p') return;
+    // A renegotiation may replace an established P2P session. Restore the
+    // safety net while it negotiates so the stage never drops to an empty source.
+    if (viewerP2pState === 'negotiating') {
+      void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+    }
+  }, [controller, viewerP2pState]);
 
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
@@ -440,9 +473,12 @@ export function MeetingRoomPage({
   // during `negotiating` and on `livekit` the stage falls back to the LiveKit
   // screen track (the hybrid controller switches sources with first-frame
   // retention, so no black screen while the swap is in flight).
+  const livekitViewerTrack = state.remoteScreenShare?.track;
   const p2pViewerStream = viewerP2pState === 'p2p'
     ? viewerP2pRef.current?.getStream() ?? undefined
-    : undefined;
+    : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
+      ? fallbackP2pStream
+      : undefined;
   const stageStream = screenState.stream ?? p2pViewerStream;
   const stageTrack = stageStream ? undefined : state.remoteScreenShare?.track;
   const stageAudioTrack = stageStream ? undefined : state.remoteScreenShare?.audioTrack;
@@ -451,6 +487,19 @@ export function MeetingRoomPage({
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
+  const handleStageSourceReady = useCallback(() => {
+    if (screenState.stream) return;
+    if (viewerP2pState === 'p2p' && p2pViewerStream) {
+      void controller.setRemoteScreenShareSubscribed(false).catch(() => undefined);
+      return;
+    }
+    if (viewerP2pState === 'livekit' && livekitViewerTrack) {
+      const complete = pendingFallbackCompletionRef.current;
+      pendingFallbackCompletionRef.current = undefined;
+      setFallbackP2pStream(undefined);
+      complete?.();
+    }
+  }, [controller, livekitViewerTrack, p2pViewerStream, screenState.stream, viewerP2pState]);
 
   useEffect(() => {
     if (!hasActiveScreenShare || !controller.getScreenShareStatsReports) {
@@ -511,6 +560,7 @@ export function MeetingRoomPage({
             audioTrack={stageAudioTrack}
             muted={stageMuted}
             sharerName={sharerName}
+            onSourceReady={handleStageSourceReady}
           >
             {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
           </ScreenStage>

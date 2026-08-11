@@ -50,6 +50,7 @@ export interface MeetingRoomController {
     codec: ScreenShareCodec;
   }): Promise<void>;
   releaseScreenShare(stream: MediaStream): Promise<void>;
+  setRemoteScreenShareSubscribed(subscribed: boolean): Promise<void>;
   getScreenShareStatsReports?(): Promise<RTCStatsReport[]>;
   disconnect(): Promise<void>;
   subscribe(listener: (state: MeetingRoomState) => void): () => void;
@@ -65,6 +66,7 @@ export interface LiveKitParticipantAdapter {
   setMicrophoneEnabled?(enabled: boolean, options?: AudioCaptureOptions): Promise<unknown>;
   publishTrack?(track: MediaStreamTrack, options?: TrackPublishOptions): Promise<unknown>;
   unpublishTrack?(track: MediaStreamTrack, stopOnUnpublish?: boolean): Promise<unknown>;
+  trackPublications?: Map<string, LiveKitTrackPublicationAdapter>;
 }
 
 export interface LiveKitTrackAdapter {
@@ -80,8 +82,9 @@ interface LiveKitLocalPublicationAdapter {
   track?: { getRTCStatsReport?(): Promise<RTCStatsReport | undefined> };
 }
 
-interface LiveKitTrackPublicationAdapter {
+export interface LiveKitTrackPublicationAdapter {
   source?: string;
+  setSubscribed?(subscribed: boolean): void;
 }
 
 export interface LiveKitRoomAdapter {
@@ -229,6 +232,19 @@ class RoomController implements MeetingRoomController {
     await Promise.allSettled(tracks.map((track) => participant.unpublishTrack!(track, true)));
     this.localScreenStatsSources = [];
     this.refreshParticipants();
+  }
+
+  async setRemoteScreenShareSubscribed(subscribed: boolean): Promise<void> {
+    const room = this.room;
+    if (!room) throw new Error('The meeting room is not connected.');
+    for (const participant of room.remoteParticipants.values()) {
+      for (const publication of participant.trackPublications?.values() ?? []) {
+        if (publication.source === Track.Source.ScreenShare
+          || publication.source === Track.Source.ScreenShareAudio) {
+          publication.setSubscribed?.(subscribed);
+        }
+      }
+    }
   }
 
   async getScreenShareStatsReports(): Promise<RTCStatsReport[]> {

@@ -1019,6 +1019,25 @@ describe('screen stage', () => {
     expect(audioTrack.detach).toHaveBeenCalledWith(video);
     expect(videoTrack.detach).toHaveBeenCalledWith(video);
   });
+
+  it('reports the replacement source ready only after its probe renders a frame', () => {
+    const first = displayStream({ audio: false }).stream;
+    const second = displayStream({ audio: false }).stream;
+    const ready = vi.fn();
+    const rendered = render(<ScreenStage stream={first} sharerName="Ada" onSourceReady={ready} />);
+    const visible = screen.getByLabelText("Ada's shared screen");
+    act(() => visible.dispatchEvent(new Event('playing')));
+    expect(ready).toHaveBeenCalledOnce();
+
+    rendered.rerender(<ScreenStage stream={second} sharerName="Ada" onSourceReady={ready} />);
+    expect(ready).toHaveBeenCalledOnce();
+    const probe = document.querySelector<HTMLVideoElement>('[data-stage-probe="true"]');
+    expect(probe).not.toBeNull();
+    act(() => probe?.dispatchEvent(new Event('playing')));
+
+    expect(ready).toHaveBeenCalledTimes(2);
+    expect((visible as HTMLVideoElement).srcObject).toBe(second);
+  });
 });
 
 describe('host controls', () => {
@@ -1129,16 +1148,43 @@ describe('host controls', () => {
 });
 
 describe('hybrid P2P-first screen share publisher', () => {
-  it('starts P2P sessions with the online roster and bitrate before any SFU publish', async () => {
+  it('publishes the LiveKit safety net before starting P2P sessions', async () => {
     const { hybrid, sfuPublisher, fake, createShareController } = hybridHarness(p2pViewers);
     const { stream } = displayStream({ audio: true });
+    const order: string[] = [];
+    sfuPublisher.publish.mockImplementation(async () => { order.push('livekit-publish'); });
+    fake.start.mockImplementation(async () => { order.push('p2p-start'); });
 
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
 
     expect(createShareController).toHaveBeenCalledOnce();
     expect(fake.start).toHaveBeenCalledWith(stream, 8_000_000, p2pViewers);
-    expect(sfuPublisher.publish).not.toHaveBeenCalled();
+    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 10_000_000 }));
+    expect(order).toEqual(['livekit-publish', 'p2p-start']);
     expect(hybrid.getShareController()).toBe(fake.controller);
+  });
+
+  it('keeps the LiveKit safety net published through every P2P viewer state', async () => {
+    const { hybrid, sfuPublisher, fake } = hybridHarness(p2pViewers);
+    const { stream } = displayStream({ audio: true });
+    await hybrid.publish(stream, p2pPublishOptions(8_000_000));
+
+    fake.triggerStates([['viewer-1', 'negotiating'], ['viewer-2', 'p2p']]);
+    fake.triggerStates([['viewer-1', 'livekit-fallback'], ['viewer-2', 'p2p']]);
+
+    expect(sfuPublisher.publish).toHaveBeenCalledOnce();
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
+  });
+
+  it('propagates LiveKit publish failures without starting P2P', async () => {
+    const { hybrid, sfuPublisher, fake } = hybridHarness(p2pViewers);
+    const { stream } = displayStream({ audio: true });
+    sfuPublisher.publish.mockRejectedValueOnce(new Error('SFU publish failed'));
+
+    await expect(hybrid.publish(stream, p2pPublishOptions(8_000_000)))
+      .rejects.toThrow('SFU publish failed');
+
+    expect(fake.start).not.toHaveBeenCalled();
   });
 
   it('publishes via the SFU publisher at the fallback bitrate when no viewers are online', async () => {
@@ -1155,23 +1201,24 @@ describe('hybrid P2P-first screen share publisher', () => {
     }));
   });
 
-  it('publishes the SFU track when a viewer falls back and releases it once every viewer is on p2p', async () => {
+  it('keeps the SFU track when viewers fall back or recover to p2p', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness(p2pViewers);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
 
     fake.triggerFallback('viewer-1');
 
-    await waitFor(() => expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({
+    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       maxBitrate: 10_000_000
-    })));
+    }));
 
     // viewer-1 re-establishes a fresh P2P session while viewer-2 stays on p2p
     fake.triggerStates([['viewer-1', 'p2p'], ['viewer-2', 'p2p']]);
-    await waitFor(() => expect(sfuPublisher.release).toHaveBeenCalledWith(stream));
+    expect(sfuPublisher.publish).toHaveBeenCalledOnce();
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
   });
 
-  it('keeps the SFU publication for late joiners until every viewer is on p2p', async () => {
+  it('keeps the SFU publication after late joiners reach p2p', async () => {
     const { hybrid, sfuPublisher, fake, setViewers } = hybridHarness([]);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1181,13 +1228,13 @@ describe('hybrid P2P-first screen share publisher', () => {
     hybrid.viewerRosterChanged(); // late joiner arrives mid-share
 
     expect(fake.start).toHaveBeenCalledWith(stream, 8_000_000, [p2pViewers[0]]);
-    expect(sfuPublisher.release).not.toHaveBeenCalled(); // still negotiating
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
 
     fake.triggerStates([['viewer-1', 'p2p']]);
-    await waitFor(() => expect(sfuPublisher.release).toHaveBeenCalledWith(stream));
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
   });
 
-  it('releases the SFU track when every fallback viewer leaves', async () => {
+  it('keeps the SFU track when fallback viewers leave', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness([p2pViewers[0]]);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1196,7 +1243,7 @@ describe('hybrid P2P-first screen share publisher', () => {
 
     hybrid.viewerLeft('viewer-1');
 
-    await waitFor(() => expect(sfuPublisher.release).toHaveBeenCalledWith(stream));
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
   });
 
   it('closes the viewer session and keeps the SFU track when a viewer reports a fallback bye', async () => {
@@ -1225,7 +1272,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     await waitFor(() => expect(sfuPublisher.publish).toHaveBeenCalledTimes(1)); // LiveKit stays for the fallback viewers
   });
 
-  it('stops the P2P sessions and releases the SFU track when all viewers leave', async () => {
+  it('stops P2P sessions but keeps the SFU track when all viewers leave', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness([p2pViewers[0]]);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1234,8 +1281,8 @@ describe('hybrid P2P-first screen share publisher', () => {
     fake.triggerAllViewersClosed();
 
     expect(fake.stop).toHaveBeenCalledOnce();
-    expect(sfuPublisher.publish).not.toHaveBeenCalled();
-    expect(sfuPublisher.release).not.toHaveBeenCalled(); // nothing was published via SFU
+    expect(sfuPublisher.publish).toHaveBeenCalledOnce();
+    expect(sfuPublisher.release).not.toHaveBeenCalled();
   });
 
   it('re-drives P2P sessions when a viewer joins mid-share', async () => {
@@ -1249,7 +1296,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     expect(fake.start).toHaveBeenLastCalledWith(stream, 8_000_000, p2pViewers);
   });
 
-  it('falls back to the SFU publisher when the P2P start fails', async () => {
+  it('continues with the already-published SFU safety net when P2P start fails', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness([p2pViewers[0]]);
     const { stream } = displayStream({ audio: true });
     fake.start.mockRejectedValueOnce(new Error('no ICE credentials'));
@@ -1259,7 +1306,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 10_000_000 }));
   });
 
-  it('is idempotent across repeated releases on the P2P path', async () => {
+  it('is idempotent across repeated releases on the hybrid path', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness([p2pViewers[0]]);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1268,7 +1315,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     await hybrid.release(stream);
 
     expect(fake.stop).toHaveBeenCalledOnce();
-    expect(sfuPublisher.release).not.toHaveBeenCalled();
+    expect(sfuPublisher.release).toHaveBeenCalledOnce();
   });
 
   it('releases the SFU publication once across repeated releases on the SFU path', async () => {
@@ -1292,7 +1339,7 @@ describe('hybrid P2P-first screen share publisher', () => {
 });
 
 describe('P2P-first screen sharing in the room', () => {
-  it('starts P2P negotiation after the grant and capture when viewers are online', async () => {
+  it('publishes the SFU safety net before P2P negotiation when viewers are online', async () => {
     const order: string[] = [];
     const { stream } = displayStream({ audio: true });
     const controller = meetingController();
@@ -1324,8 +1371,8 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(shareButton).toBeEnabled());
     await userEvent.click(shareButton);
 
-    await waitFor(() => expect(order).toEqual(['grant', 'capture', 'p2p']));
-    expect(publishScreenShare).not.toHaveBeenCalled();
+    await waitFor(() => expect(order).toEqual(['grant', 'capture', 'sfu', 'p2p']));
+    expect(publishScreenShare).toHaveBeenCalledOnce();
   });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
@@ -1344,7 +1391,7 @@ describe('P2P-first screen sharing in the room', () => {
     expect(screen.getByText(/suggested 5 Mbps for 4 online viewers/)).toBeVisible();
   });
 
-  it('publishes the LiveKit screen on viewer fallback and cancels it once every viewer is on p2p', async () => {
+  it('keeps the cloned LiveKit screen published through fallback and P2P recovery', async () => {
     const { stream } = displayStream({ audio: true });
     const controller = meetingController();
     const publishScreenShare = vi.fn(async () => undefined);
@@ -1377,9 +1424,7 @@ describe('P2P-first screen sharing in the room', () => {
     }));
 
     act(() => share.triggerStates([['viewer-1', 'p2p']]));
-    await waitFor(() => expect(releaseScreenShare).toHaveBeenCalledOnce());
-    // The SFU publication runs on cloned tracks so stopping it cannot end the share source.
-    expect(releaseScreenShare).not.toHaveBeenCalledWith(stream);
+    expect(releaseScreenShare).not.toHaveBeenCalled();
   });
 
   it('stops the whole share when the host revokes it via share-gone', async () => {
@@ -1477,6 +1522,64 @@ describe('P2P-first screen sharing in the room', () => {
 
     expect(pc.closed).toBe(true);
     expect(PageFakePc.instances).toHaveLength(1);
+  });
+
+  it('unsubscribes LiveKit only after P2P renders and retains P2P until LiveKit renders on fallback', async () => {
+    PageFakePc.instances = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: [{ urls: ['stun:stun.example.test:3478'] }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const livekitStream = displayStream({ audio: false }).stream;
+    const livekitTrack = {
+      kind: 'video',
+      attach: vi.fn((element: HTMLMediaElement) => { element.srcObject = livekitStream; return element; }),
+      detach: vi.fn((element: HTMLMediaElement) => element)
+    };
+    const controller = meetingController({
+      remoteScreenShare: {
+        track: livekitTrack,
+        sharerIdentity: 'sharer-1',
+        sharerName: 'Ben'
+      }
+    });
+    const setSubscribed = vi.mocked(controller.setRemoteScreenShareSubscribed);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      controller,
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
+    act(() => signaling.welcome([{ identity: 'sharer-1', nickname: 'Ben' }]));
+    act(() => signaling.offer('sharer-1', 'offer-sdp'));
+    await waitFor(() => expect(PageFakePc.instances).toHaveLength(1));
+    const pc = PageFakePc.instances[0]!;
+    const { stream: p2pStream, video: p2pVideo } = displayStream({ audio: false });
+    Object.assign(p2pVideo, { muted: false });
+
+    act(() => pc.ontrack?.({ track: p2pVideo, streams: [p2pStream] } as unknown as RTCTrackEvent));
+    await waitFor(() => expect(document.querySelector('[data-stage-probe="true"]')).not.toBeNull());
+    expect(setSubscribed).not.toHaveBeenCalledWith(false);
+    act(() => document.querySelector('[data-stage-probe="true"]')?.dispatchEvent(new Event('playing')));
+    await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
+
+    act(() => {
+      pc.iceConnectionState = 'failed';
+      pc.oniceconnectionstatechange?.();
+    });
+    await waitFor(() => expect(setSubscribed).toHaveBeenLastCalledWith(true));
+    expect(pc.closed).toBe(false);
+    await waitFor(() => expect(document.querySelector('[data-stage-probe="true"]')).not.toBeNull());
+    act(() => document.querySelector('[data-stage-probe="true"]')?.dispatchEvent(new Event('playing')));
+
+    expect(pc.closed).toBe(true);
   });
 
   it('closes the viewer P2P session when the sharer disappears from a fresh welcome', async () => {
@@ -1638,6 +1741,7 @@ function meetingController(change: Partial<MeetingRoomState> = {}): MeetingRoomC
     switchAudioOutput: vi.fn(async () => 'changed' as const),
     publishScreenShare: vi.fn(async () => undefined),
     releaseScreenShare: vi.fn(async () => undefined),
+    setRemoteScreenShareSubscribed: vi.fn(async () => undefined),
     disconnect: vi.fn(async () => undefined),
     subscribe: vi.fn((listener: (value: MeetingRoomState) => void) => { listener(state); return () => undefined; }),
     resumeAudioPlayback: vi.fn(async () => undefined)
@@ -1790,6 +1894,22 @@ class PageFakePc {
 
   async addIceCandidate(): Promise<void> {}
 
+  async getStats(): Promise<RTCStatsReport> {
+    return new Map<string, RTCStats>([
+      ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
+      ['pair', {
+        id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
+        localCandidateId: 'local', remoteCandidateId: 'remote'
+      } as RTCStats],
+      ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType: 'srflx' } as RTCStats],
+      ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats],
+      ['video', {
+        id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video',
+        bytesReceived: 1_200, framesDecoded: 3
+      } as RTCStats]
+    ]) as unknown as RTCStatsReport;
+  }
+
   close(): void {
     this.closed = true;
   }
@@ -1803,6 +1923,7 @@ function fakeSignalingClient() {
     sendOffer: vi.fn(),
     sendAnswer: vi.fn(),
     sendIce: vi.fn(),
+    sendMediaReady: vi.fn(),
     sendBye: vi.fn()
   } as unknown as P2pSignalingClient;
   return {

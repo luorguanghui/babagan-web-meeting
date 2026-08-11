@@ -51,6 +51,7 @@ export function ScreenStage({
   audioTrack,
   muted,
   sharerName,
+  onSourceReady,
   children
 }: {
   stream?: MediaStream;
@@ -59,6 +60,8 @@ export function ScreenStage({
   /** Forces the element's muted state; defaults to muting local streams without remote audio. */
   muted?: boolean;
   sharerName?: string;
+  /** Called after the selected source has rendered its first browser media event. */
+  onSourceReady?: () => void;
   children?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -103,7 +106,18 @@ export function ScreenStage({
       if (element === null) return;
       applySource(element, desired);
       committedRef.current = desired;
-      return;
+      let notified = false;
+      const ready = () => {
+        if (notified) return;
+        notified = true;
+        onSourceReady?.();
+      };
+      element.addEventListener('loadedmetadata', ready);
+      element.addEventListener('playing', ready);
+      return () => {
+        element.removeEventListener('loadedmetadata', ready);
+        element.removeEventListener('playing', ready);
+      };
     }
 
     if (element === null) return; // no visible element to swap (empty stage)
@@ -132,6 +146,7 @@ export function ScreenStage({
       if (previous !== null && !sameSource(previous, desired) && previous.kind === 'track') {
         releaseSource(element, previous);
       }
+      onSourceReady?.();
     };
 
     probe = document.createElement('video');
@@ -151,7 +166,7 @@ export function ScreenStage({
       probe?.removeEventListener('playing', firstFrame);
       releaseProbe();
     };
-  }, [audioTrack, stream, track]);
+  }, [audioTrack, onSourceReady, stream, track]);
 
   useEffect(() => {
     // Unmount: release whatever the stage is showing. Empty deps mean this

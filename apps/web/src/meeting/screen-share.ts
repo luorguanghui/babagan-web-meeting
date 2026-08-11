@@ -1,6 +1,6 @@
 import { P2P_SCREEN_BITRATES, type P2pScreenBitrate, type ScreenShareCodec } from '@meeting/contracts';
 
-import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
+import type { P2pShareController } from './p2p-share-controller.js';
 import type { Peer } from './p2p-signaling.js';
 
 export const adaptiveCaptureProfile = {
@@ -303,21 +303,10 @@ export interface ScreenSharePublishOptions {
 }
 
 /**
- * P2P-first screen share publisher: a share starts over direct peer-to-peer
- * connections (one `RTCPeerConnection` per online viewer) and the LiveKit/SFU
- * screen track is published only as a fallback:
- *
- * - Any viewer whose P2P session is `livekit-fallback` (detected sharer-side
- *   or reported via a `bye` with reason `fallback`) turns the SFU track on.
- * - The SFU track turns off again once every tracked viewer is confirmed on a
- *   healthy P2P session (set is empty) or has left.
- * - A share started with no online viewers skips P2P and goes straight to the
- *   SFU path (existing behavior), so late joiners keep receiving it.
- *
- * The publisher never publishes two sources for the same viewer: a viewer on a
- * `p2p` session is never in the fallback set, and `p2p`/`livekit-fallback` are
- * terminal per-session states that only a fresh session (rejoin or re-drive)
- * can leave, at which point the fallback set is re-evaluated.
+ * Hybrid screen-share publisher. LiveKit is published first and stays active
+ * for the full share as a compatibility and recovery safety net. P2P-capable
+ * viewers may unsubscribe their own LiveKit screen publications only after
+ * direct media is rendering; the sharer never removes the fallback globally.
  */
 export class HybridScreenSharePublisher implements ScreenSharePublisher {
   private readonly sfuFallbackBitrate: number;
@@ -325,10 +314,7 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
   private activeOptions?: ScreenSharePublishOptions;
   private shareController?: P2pShareController;
   private unsubscribeController?: () => void;
-  private controllerStates: ReadonlyMap<string, ViewerSessionState> = new Map();
-  private readonly fallbackViewers = new Set<string>();
   private sfuPublished = false;
-  private sfuOnlyStart = false;
   private sfuTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: HybridScreenSharePublisherDependencies) {
@@ -343,20 +329,14 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
   async publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void> {
     this.activeStream = stream;
     this.activeOptions = options;
+    await this.publishSfu(stream);
     const viewers = this.deps.getViewers();
-    if (viewers.length === 0) {
-      // No online viewers: keep the existing SFU path so late joiners see the share.
-      await this.publishSfu(stream);
-      this.sfuOnlyStart = true;
-      return;
-    }
+    if (viewers.length === 0) return;
     const controller = this.ensureController();
     try {
       await controller.start(stream, options.maxBitrate as P2pScreenBitrate, viewers);
     } catch {
-      // P2P unavailable (e.g. ICE credentials endpoint): fall back to the SFU path.
-      await this.publishSfu(stream);
-      this.sfuOnlyStart = true;
+      // LiveKit is already carrying the share; P2P remains a best-effort path.
     }
   }
 
@@ -365,11 +345,8 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
     this.shareController = undefined;
     this.unsubscribeController?.();
     this.unsubscribeController = undefined;
-    this.controllerStates = new Map();
-    this.fallbackViewers.clear();
     this.activeStream = undefined;
     this.activeOptions = undefined;
-    this.sfuOnlyStart = false;
     if (controller) await controller.stop();
     if (this.sfuPublished) {
       this.sfuPublished = false;
@@ -392,21 +369,19 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
 
   /** A viewer left (`peer-left`): drop them from fallback tracking and close their session. */
   viewerLeft(identity: string): void {
-    this.fallbackViewers.delete(identity);
     this.shareController?.handleViewerLeft(identity);
-    this.syncLiveKit();
   }
 
   /** A `bye` arrived from a viewer; a `fallback` bye means they need the SFU track. */
   handleViewerBye(identity: string, reason?: string): void {
-    if (reason === 'fallback') this.noteViewerFallback(identity);
+    void reason;
     this.shareController?.handleViewerLeft(identity);
   }
 
   private ensureController(): P2pShareController {
     if (this.shareController === undefined) {
       const controller = this.deps.createShareController({
-        onViewerFallback: (identity) => this.noteViewerFallback(identity),
+        onViewerFallback: () => undefined,
         onAllViewersClosed: () => {
           // Every tracked viewer is gone: clear the P2P sessions; the share
           // itself stays active and re-drives if a viewer joins again.
@@ -414,55 +389,15 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
         }
       });
       this.shareController = controller;
-      this.unsubscribeController = controller.subscribe((states) => this.onControllerStates(states));
+      this.unsubscribeController = controller.subscribe(() => undefined);
       this.deps.onControllerCreated?.(controller);
     }
     return this.shareController;
   }
 
-  private noteViewerFallback(identity: string): void {
-    if (!this.fallbackViewers.has(identity)) {
-      this.fallbackViewers.add(identity);
-      this.syncLiveKit();
-    }
-  }
-
-  private onControllerStates(states: ReadonlyMap<string, ViewerSessionState>): void {
-    this.controllerStates = states;
-    // A viewer whose (fresh) session reached `p2p` no longer needs the SFU track.
-    for (const identity of [...this.fallbackViewers]) {
-      if (states.get(identity) === 'p2p') this.fallbackViewers.delete(identity);
-    }
-    this.syncLiveKit();
-  }
-
-  private livekitNeeded(): boolean {
-    if (this.fallbackViewers.size > 0) return true;
-    if (!this.sfuOnlyStart) return false;
-    // SFU-only start: keep broadcasting until every online viewer is on P2P.
-    const roster = this.deps.getViewers();
-    if (roster.length === 0) return true; // still no viewers: keep the existing SFU behavior
-    return roster.some((viewer) => this.controllerStates.get(viewer.identity) !== 'p2p');
-  }
-
-  private syncLiveKit(): void {
-    if (this.activeStream === undefined) return;
-    const stream = this.activeStream;
-    const needed = this.livekitNeeded();
-    if (needed && !this.sfuPublished) {
-      this.sfuPublished = true;
-      void this.queueSfu(() => this.deps.sfuPublisher.publish(stream, this.sfuOptions()))
-        .catch(() => { this.sfuPublished = false; });
-    } else if (!needed && this.sfuPublished) {
-      this.sfuPublished = false;
-      void this.queueSfu(() => this.deps.sfuPublisher.release(stream)).catch(() => undefined);
-    }
-  }
-
-  private publishSfu(stream: MediaStream): Promise<void> {
+  private async publishSfu(stream: MediaStream): Promise<void> {
+    await this.queueSfu(() => this.deps.sfuPublisher.publish(stream, this.sfuOptions()));
     this.sfuPublished = true;
-    return this.queueSfu(() => this.deps.sfuPublisher.publish(stream, this.sfuOptions()))
-      .catch(() => { this.sfuPublished = false; });
   }
 
   private sfuOptions(): ScreenSharePublishOptions {
