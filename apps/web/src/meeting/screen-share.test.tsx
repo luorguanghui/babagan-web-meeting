@@ -1639,8 +1639,8 @@ describe('P2P-first screen sharing in the room', () => {
   });
 });
 
-describe('anonymous P2P quality stats reporting in the room', () => {
-  it('reports the collected stats on leave, before the leave request revokes the session', async () => {
+describe('private P2P quality stats in the room', () => {
+  it('does not upload collected stats when leaving', async () => {
     const order: string[] = [];
     const collector = createP2pStatsCollector({
       slug: 'meeting-slug',
@@ -1657,10 +1657,10 @@ describe('anonymous P2P quality stats reporting in the room', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
 
-    await waitFor(() => expect(order).toEqual(['report', 'leave']));
+    await waitFor(() => expect(order).toEqual(['leave']));
   });
 
-  it('reports once on unmount when the page is closed without a leave', async () => {
+  it('does not upload stats on unmount', async () => {
     const sendReport = vi.fn(async () => undefined);
     const collector = createP2pStatsCollector({
       slug: 'meeting-slug', sessionId: 'anon-session-1', sendReport
@@ -1673,10 +1673,11 @@ describe('anonymous P2P quality stats reporting in the room', () => {
 
     unmount();
 
-    await waitFor(() => expect(sendReport).toHaveBeenCalledOnce());
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(sendReport).not.toHaveBeenCalled();
   });
 
-  it('does not report twice when leaving and then unmounting', async () => {
+  it('does not upload stats after leaving and then unmounting', async () => {
     const sendReport = vi.fn(async () => undefined);
     const collector = createP2pStatsCollector({
       slug: 'meeting-slug', sessionId: 'anon-session-1', sendReport
@@ -1688,12 +1689,12 @@ describe('anonymous P2P quality stats reporting in the room', () => {
     });
 
     await userEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
-    await waitFor(() => expect(sendReport).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Leave meeting' })).toBeEnabled());
 
     unmount();
     await new Promise((resolve) => setTimeout(resolve, 20));
 
-    expect(sendReport).toHaveBeenCalledOnce();
+    expect(sendReport).not.toHaveBeenCalled();
   });
 });
 

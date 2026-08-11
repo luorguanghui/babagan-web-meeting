@@ -68,7 +68,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);
-    dependencies.p2p.broadcastShareGone(value, 'meeting ended');
+    dependencies.p2p.closeRoom(value, 'meeting ended');
     return reply.status(204).send();
   });
 
@@ -77,8 +77,9 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     preHandler: app.rateLimit(adminPasswordRateLimit())
   }, async (request, reply) => {
     const body = request.body as { adminPassword: string };
-    await dependencies.hosts.endMeetingWithAdminPassword(slug(request.params), body.adminPassword);
-    dependencies.p2p.broadcastShareGone(slug(request.params), 'meeting ended');
+    const value = slug(request.params);
+    await dependencies.hosts.endMeetingWithAdminPassword(value, body.adminPassword);
+    dependencies.p2p.closeRoom(value, 'meeting ended');
     return reply.status(204).send();
   });
 
@@ -114,13 +115,6 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     return reply.status(204).send();
   });
 }
-
-/**
- * Note on `broadcastShareGone` coverage: all explicit HTTP release paths
- * (revoke, end, sharer self-release, sharer leave, kick) announce `share-gone`.
- * The background cleanup task (empty/expired meetings) is not wired to the
- * in-memory registry; those connections die with the socket eventually.
- */
 
 function hostOptions(app: FastifyInstance) {
   return {

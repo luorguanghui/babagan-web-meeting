@@ -405,19 +405,6 @@ export function MeetingRoomPage({
     systemAudioDecisionResolver.current?.('cancel');
     systemAudioDecisionResolver.current = undefined;
   }, []);
-  // Report on page close / meeting end even without a leave click. Deferred so
-  // React StrictMode's simulated unmount cannot consume the one-shot report;
-  // the report itself is deduped against the leave path.
-  const mountedRef = useRef(true);
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      window.setTimeout(() => {
-        if (!mountedRef.current) void p2pStats.report();
-      }, 0);
-    };
-  }, [p2pStats]);
   useEffect(() => {
     const connected = () => setOnline(true);
     const disconnected = () => setOnline(false);
@@ -435,9 +422,6 @@ export function MeetingRoomPage({
 
   async function leave() {
     setLeaving(true);
-    // Report before the leave request revokes the participant session; the
-    // stats transport is best-effort and failures are silently ignored.
-    void p2pStats.report();
     try {
       await leaveMeeting(slug);
     } catch {

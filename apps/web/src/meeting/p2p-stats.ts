@@ -36,8 +36,9 @@ export interface P2pStatsCollectorDependencies {
 }
 
 /**
- * Collects anonymous P2P quality statistics for one meeting-room session and
- * reports them once on leave / unmount. Both roles feed the same counters:
+ * Collects anonymous P2P quality statistics locally for one meeting-room
+ * session. `report()` is never called automatically; a future explicit-consent
+ * UI may invoke it after the user opts in. Both roles feed the same counters:
  * the sharer's per-viewer share sessions and the viewer's own P2P session.
  * Quality (RTT, loss) reuses the existing `webrtc-stats` snapshot source.
  */

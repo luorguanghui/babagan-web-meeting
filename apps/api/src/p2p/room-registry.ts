@@ -86,4 +86,18 @@ export class P2pRoomRegistry {
   broadcastShareGone(slug: string, reason = 'share released'): void {
     this.broadcast(slug, { type: 'share-gone', reason });
   }
+
+  /** Terminates every signaling session for a meeting and forgets the room. */
+  closeRoom(slug: string, reason: string): void {
+    const room = this.rooms.get(slug);
+    if (!room) return;
+    // Delete first so synchronous socket close handlers cannot mutate a room
+    // that is in the middle of terminal cleanup.
+    this.rooms.delete(slug);
+    const raw = JSON.stringify({ type: 'share-gone', reason } satisfies P2pServerMessage);
+    for (const entry of room.values()) {
+      try { entry.socket.send(raw); } catch { /* continue closing every peer */ }
+      try { entry.socket.close(1000); } catch { /* terminal cleanup is best effort per socket */ }
+    }
+  }
 }

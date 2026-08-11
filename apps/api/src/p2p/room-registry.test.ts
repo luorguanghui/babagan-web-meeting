@@ -83,6 +83,22 @@ describe('P2pRoomRegistry', () => {
     expect(ada.messages()).toEqual([{ type: 'share-gone', reason: 'meeting ended' }]);
   });
 
+  it('closes every socket and removes the room after notifying peers', () => {
+    const registry = new P2pRoomRegistry();
+    const ada = new FakeSocket();
+    const bob = new FakeSocket();
+    registry.join('meeting-a', 'ada', 'Ada', ada);
+    registry.join('meeting-a', 'bob', 'Bob', bob);
+
+    registry.closeRoom('meeting-a', 'meeting expired');
+
+    expect(ada.messages().at(-1)).toEqual({ type: 'share-gone', reason: 'meeting expired' });
+    expect(bob.messages().at(-1)).toEqual({ type: 'share-gone', reason: 'meeting expired' });
+    expect(ada.closeCalls).toEqual([1000]);
+    expect(bob.closeCalls).toEqual([1000]);
+    expect(registry.listPeers('meeting-a')).toEqual([]);
+  });
+
   it('leave removes the peer, reports whether it removed, and cleans up empty rooms', () => {
     const registry = new P2pRoomRegistry();
     const socket = new FakeSocket();

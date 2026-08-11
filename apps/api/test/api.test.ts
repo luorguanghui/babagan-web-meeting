@@ -392,6 +392,33 @@ describe('server lifecycle', () => {
     await managed.shutdown();
     vi.useRealTimers();
   });
+
+  it('reports every slug returned by scheduled cleanup', async () => {
+    vi.useFakeTimers();
+    const onMeetingsCleaned = vi.fn();
+    const meetings = {
+      runCleanup: vi.fn()
+        .mockResolvedValueOnce(['expired-at-startup'])
+        .mockResolvedValueOnce(['expired-on-interval'])
+    };
+    const app = {
+      listen: vi.fn(async () => 'http://127.0.0.1:3000'),
+      close: vi.fn(async () => undefined),
+      log: { error: vi.fn() }
+    };
+    const database = { close: vi.fn() };
+
+    const managed = await startManagedServer({
+      app, database, meetings, onMeetingsCleaned, intervalMs: 30_000
+    });
+    expect(onMeetingsCleaned).toHaveBeenCalledWith(['expired-at-startup']);
+
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(onMeetingsCleaned).toHaveBeenLastCalledWith(['expired-on-interval']);
+
+    await managed.shutdown();
+    vi.useRealTimers();
+  });
 });
 
 interface ApiFixture {

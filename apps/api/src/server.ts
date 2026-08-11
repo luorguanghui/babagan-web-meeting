@@ -11,6 +11,7 @@ import { migrate } from './db/migrate.js';
 import { LiveKitMediaService } from './livekit/livekit-media-service.js';
 import type { MediaService as LiveKitMediaPort } from './livekit/media-service.js';
 import { LiveKitWebhookHandler } from './livekit/webhook-handler.js';
+import { P2pRoomRegistry } from './p2p/room-registry.js';
 import { SqliteMeetingRepository } from './repositories/sqlite-meeting-repository.js';
 import { Argon2PasswordHasher } from './security/password-hasher.js';
 import { HostApplicationService } from './services/host-application-service.js';
@@ -36,6 +37,7 @@ export async function startManagedServer(dependencies: {
   signals?: SignalSource;
   intervalMs?: number;
   port?: number;
+  onMeetingsCleaned?: (slugs: string[]) => void;
 }): Promise<{ shutdown(): Promise<void> }> {
   const signals = dependencies.signals ?? process;
   const intervalMs = dependencies.intervalMs ?? 30_000;
@@ -46,7 +48,8 @@ export async function startManagedServer(dependencies: {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       try {
-        await dependencies.meetings.runCleanup();
+        const cleaned = await dependencies.meetings.runCleanup();
+        dependencies.onMeetingsCleaned?.(cleaned);
       } catch {
         dependencies.app.log.error({}, 'Meeting cleanup failed');
       } finally {
@@ -110,6 +113,7 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
       repository, meetings, media, passwords, clock, ids, config, mutex
     });
     const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
+    const p2p = new P2pRoomRegistry();
     const webhooks = new LiveKitWebhookHandler({
       database,
       media,
@@ -117,8 +121,15 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
       apiSecret: config.livekitApiSecret,
       clock
     });
-    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks });
-    const managed = await startManagedServer({ app, database, meetings });
+    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p });
+    const managed = await startManagedServer({
+      app,
+      database,
+      meetings,
+      onMeetingsCleaned: (slugs) => {
+        for (const slug of slugs) p2p.closeRoom(slug, 'meeting ended');
+      }
+    });
     return { app, shutdown: managed.shutdown };
   } catch (error) {
     database.close();
