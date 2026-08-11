@@ -8,6 +8,14 @@ deployment_smoke="$root/scripts/deployment-smoke.sh"
 rollback="$root/scripts/rollback.sh"
 need() { grep -Fq -- "$2" "$1" || { echo "missing regression guard: $2" >&2; exit 1; }; }
 
+# Every helper invoked as a command must retain Git's executable bit. This
+# catches release bundles that would pass content tests but fail on the host
+# before the protected database backup can be created.
+for helper in backup.sh restore.sh smoke-test.sh deployment-smoke.sh; do
+  mode="$(git -C "$root" ls-files -s "scripts/$helper" | awk '{print $1}')"
+  [[ "$mode" == 100755 ]] || { echo "deployment helper is not executable in Git: scripts/$helper ($mode)" >&2; exit 1; }
+done
+
 # Failed candidate deployments retain this protected record before any pull/build
 # or migration, and only archive it after smoke success.
 need "$deploy" 'pending-release.env'
