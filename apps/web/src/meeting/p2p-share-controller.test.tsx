@@ -11,11 +11,19 @@ import {
   createP2pShareController,
   deserializeIceCandidate,
   serializeIceCandidate,
+  type P2pShareOptions,
   type P2pShareSignaling,
   type ViewerSessionState
 } from './p2p-share-controller.js';
 
 const bitrate: P2pScreenBitrate = 8_000_000;
+
+const shareOptions: P2pShareOptions = {
+  maxBitrate: bitrate,
+  frameRate: 30,
+  degradationPreference: 'maintain-framerate',
+  codec: 'h264'
+};
 
 class FakeRtpSender {
   readonly track: MediaStreamTrack;
@@ -33,6 +41,17 @@ class FakeRtpSender {
   }
 }
 
+class FakeRtpTransceiver {
+  readonly sender: FakeRtpSender;
+  readonly setCodecPreferences = vi.fn(() => undefined);
+  readonly options?: RTCRtpTransceiverInit;
+
+  constructor(track: MediaStreamTrack, options?: RTCRtpTransceiverInit) {
+    this.sender = new FakeRtpSender(track);
+    this.options = options;
+  }
+}
+
 let pcCounter = 0;
 
 class FakeRTCPeerConnection {
@@ -40,6 +59,7 @@ class FakeRTCPeerConnection {
   readonly id = pcCounter++;
   readonly config: RTCConfiguration;
   readonly addedTracks: MediaStreamTrack[] = [];
+  readonly transceivers: FakeRtpTransceiver[] = [];
   readonly senders: FakeRtpSender[] = [];
   readonly remoteDescriptions: RTCSessionDescriptionInit[] = [];
   readonly localDescriptions: RTCSessionDescriptionInit[] = [];
@@ -84,6 +104,14 @@ class FakeRTCPeerConnection {
     const sender = new FakeRtpSender(track);
     this.senders.push(sender);
     return sender as unknown as RTCRtpSender;
+  }
+
+  addTransceiver(track: MediaStreamTrack, options?: RTCRtpTransceiverInit): RTCRtpTransceiver {
+    this.addedTracks.push(track);
+    const transceiver = new FakeRtpTransceiver(track, options);
+    this.transceivers.push(transceiver);
+    this.senders.push(transceiver.sender);
+    return transceiver as unknown as RTCRtpTransceiver;
   }
 
   close(): void {
@@ -161,6 +189,7 @@ const viewers: Peer[] = [
 beforeEach(() => {
   FakeRTCPeerConnection.instances = [];
   pcCounter = 0;
+  vi.unstubAllGlobals();
   vi.useFakeTimers();
 });
 
@@ -172,7 +201,7 @@ describe('p2p share controller', () => {
   it('creates one PC per viewer with video and audio on the same connection and sends offers', async () => {
     const { controller, signaling, fetchIceServers } = makeHarness();
 
-    await controller.start(makeStream(), bitrate, viewers);
+    await controller.start(makeStream(), shareOptions, viewers);
 
     expect(fetchIceServers).toHaveBeenCalledOnce();
     expect(FakeRTCPeerConnection.instances).toHaveLength(4);
@@ -191,29 +220,67 @@ describe('p2p share controller', () => {
     }
   });
 
-  it('sets the bitrate on the video sender only', async () => {
+  it('caps bitrate and frame rate and applies the degradation preference on the video sender only', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
 
     const pc = FakeRTCPeerConnection.instances[0];
     const videoSender = pc.senders.find((sender) => sender.track.kind === 'video')!;
     const audioSender = pc.senders.find((sender) => sender.track.kind === 'audio')!;
     expect(videoSender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
-      encodings: [{ maxBitrate: bitrate }]
+      encodings: [{ maxBitrate: bitrate, maxFramerate: 30 }],
+      degradationPreference: 'maintain-framerate'
     }));
     expect(audioSender.setParameters).not.toHaveBeenCalled();
   });
 
+  it('prefers the selected codec on the video transceiver', async () => {
+    const { controller } = makeHarness();
+    const capabilities = {
+      codecs: [
+        { mimeType: 'video/VP8' },
+        { mimeType: 'video/H264' },
+        { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f' },
+        { mimeType: 'video/VP9' }
+      ]
+    };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: vi.fn(() => capabilities) });
+
+    await controller.start(makeStream(), { ...shareOptions, codec: 'h264' }, [viewers[0]]);
+
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTransceiver = pc.transceivers.find((transceiver) => transceiver.sender.track.kind === 'video')!;
+    expect(videoTransceiver.setCodecPreferences).toHaveBeenCalledWith([
+      { mimeType: 'video/H264' },
+      { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f' },
+      { mimeType: 'video/VP8' },
+      { mimeType: 'video/VP9' }
+    ]);
+  });
+
+  it('leaves codec preferences untouched for the auto codec', async () => {
+    const { controller } = makeHarness();
+    vi.stubGlobal('RTCRtpSender', {
+      getCapabilities: vi.fn(() => ({ codecs: [{ mimeType: 'video/VP8' }] }))
+    });
+
+    await controller.start(makeStream(), { ...shareOptions, codec: 'auto' }, [viewers[0]]);
+
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTransceiver = pc.transceivers.find((transceiver) => transceiver.sender.track.kind === 'video')!;
+    expect(videoTransceiver.setCodecPreferences).not.toHaveBeenCalled();
+  });
+
   it('adds only the video track when the stream has no audio', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(true, false), bitrate, [viewers[0]]);
+    await controller.start(makeStream(true, false), shareOptions, [viewers[0]]);
 
     expect(FakeRTCPeerConnection.instances[0].addedTracks.map((track) => track.kind)).toEqual(['video']);
   });
 
   it('forwards local trickle candidates and end-of-candidates to signaling', async () => {
     const { controller, signaling } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     pc.onicecandidate?.(makeCandidate('candidate:1 1 udp 2122260223 1.2.3.4 5000 typ host'));
@@ -228,7 +295,7 @@ describe('p2p share controller', () => {
 
   it('queues remote candidates until the answer is applied, then flushes them in order', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     await controller.handleIce('viewer-1', JSON.stringify({ candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 }));
@@ -248,7 +315,7 @@ describe('p2p share controller', () => {
 
   it('applies end-of-candidates and bare-string candidates after the answer', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     await controller.handleIce('viewer-1', null);
@@ -262,7 +329,7 @@ describe('p2p share controller', () => {
 
   it('ignores signaling for unknown viewers and for viewers that already fell back', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     await controller.handleAnswer('ghost', 'answer-sdp');
@@ -278,7 +345,7 @@ describe('p2p share controller', () => {
 
   it('falls back after the 8s negotiation timeout when ICE never connects', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS - 1);
@@ -294,7 +361,7 @@ describe('p2p share controller', () => {
 
   it('marks a viewer p2p only after connected transport and media-ready', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     vi.advanceTimersByTime(7_000);
@@ -310,7 +377,7 @@ describe('p2p share controller', () => {
 
   it('reports TURN when the selected candidate pair uses a relay', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
     pc.setIceConnectionState('connected');
@@ -321,7 +388,7 @@ describe('p2p share controller', () => {
 
   it('returns stats for active viewer sessions and omits closed sessions', async () => {
     const { controller } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0], viewers[1]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0], viewers[1]]);
 
     expect(await controller.getStatsReports()).toHaveLength(2);
     controller.handleViewerLeft('viewer-1');
@@ -332,7 +399,7 @@ describe('p2p share controller', () => {
 
   it('falls back after ICE stays disconnected for 5 seconds', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
@@ -351,7 +418,7 @@ describe('p2p share controller', () => {
 
   it('does not fall back when ICE reconnects within the 5s window', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
@@ -367,7 +434,7 @@ describe('p2p share controller', () => {
 
   it('falls back immediately when ICE reaches failed', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
@@ -380,7 +447,7 @@ describe('p2p share controller', () => {
 
   it('falls back when applying the remote answer fails', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.failRemoteDescription = true;
 
@@ -392,7 +459,7 @@ describe('p2p share controller', () => {
 
   it('marks a departed viewer closed without sending a bye and notifies when all viewers are gone', async () => {
     const { controller, signaling, onAllViewersClosed } = makeHarness();
-    await controller.start(makeStream(), bitrate, viewers.slice(0, 2));
+    await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
     const first = FakeRTCPeerConnection.instances[0];
 
     controller.handleViewerLeft('viewer-1');
@@ -412,7 +479,7 @@ describe('p2p share controller', () => {
 
   it('stops all sessions with a bye for non-closed viewers, clears state, and is idempotent', async () => {
     const { controller, signaling, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, viewers.slice(0, 2));
+    await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
     const [pcA, pcB] = FakeRTCPeerConnection.instances;
     pcA.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1'); // viewer-1: p2p
@@ -442,7 +509,7 @@ describe('p2p share controller', () => {
       onPcCreated: (pc) => { pc.createOfferGate = offerGate; }
     });
 
-    const startPromise = controller.start(makeStream(), bitrate, [viewers[0]]);
+    const startPromise = controller.start(makeStream(), shareOptions, [viewers[0]]);
     await vi.advanceTimersByTimeAsync(0); // PC is created and establishSession parks on createOffer
     const stopPromise = controller.stop();
     rejectCreateOffer(new Error('pc closed'));
@@ -454,7 +521,7 @@ describe('p2p share controller', () => {
 
   it('does not fire a phantom fallback when stop() races an in-flight answer', async () => {
     const { controller, onViewerFallback } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
 
     let rejectRemoteDescription!: (reason: Error) => void;
@@ -472,10 +539,10 @@ describe('p2p share controller', () => {
 
   it('re-drives offers for negotiating viewers and adds new viewers on a later start', async () => {
     const { controller, signaling } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
 
-    await controller.start(makeStream(), bitrate, viewers.slice(0, 2));
+    await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
 
     expect(FakeRTCPeerConnection.instances).toHaveLength(2);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(3); // re-offer viewer-1 + first offer viewer-2
@@ -486,10 +553,10 @@ describe('p2p share controller', () => {
 
   it('replaces a closed session when the viewer returns in a later roster', async () => {
     const { controller, signaling } = makeHarness();
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     controller.handleViewerLeft('viewer-1');
 
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
 
     expect(FakeRTCPeerConnection.instances).toHaveLength(2);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(2);
@@ -504,7 +571,7 @@ describe('p2p share controller', () => {
     expect(seen).toHaveLength(1); // immediate snapshot
     expect(seen[0].size).toBe(0);
 
-    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
     expect(seen.at(-1)?.get('viewer-1')).toBe('negotiating');
 
     FakeRTCPeerConnection.instances[0].setIceConnectionState('connected');

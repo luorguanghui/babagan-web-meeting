@@ -514,7 +514,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.queryByLabelText('Screen-share quality')).not.toBeInTheDocument();
   });
 
-  it('requests adaptive 1080p capture and prioritizes resolution after the grant', async () => {
+  it('requests adaptive 1080p60 capture in high-motion mode and prioritizes resolution', async () => {
     const order: string[] = [];
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
@@ -526,7 +526,7 @@ describe('controlled browser screen sharing', () => {
       publisher: { publish, release: vi.fn(async () => undefined) }
     });
 
-    await controller.start('h264', 8_000_000);
+    await controller.start('h264', 8_000_000, 'motion');
 
     expect(order).toEqual(['grant', 'capture', 'publish']);
     expect(getDisplayMedia).toHaveBeenCalledWith({
@@ -543,6 +543,50 @@ describe('controlled browser screen sharing', () => {
       codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
+  });
+
+  it('captures and publishes at the flow preset (frame-rate first, 720p30)', async () => {
+    const { stream } = displayStream({ audio: true });
+    const getDisplayMedia = vi.fn(async () => stream);
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('h264', 8_000_000, 'flow');
+
+    expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      video: { width: 1280, height: 720, frameRate: 30 }
+    }));
+    expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
+      frameRate: 30,
+      degradationPreference: 'maintain-framerate'
+    }));
+  });
+
+  it('defaults to the standard 1080p30 preset when no quality is selected', async () => {
+    const { stream } = displayStream({ audio: true });
+    const getDisplayMedia = vi.fn(async () => stream);
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('h264', 8_000_000);
+
+    expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
+      video: { width: 1920, height: 1080, frameRate: 30 }
+    }));
+    expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
+      frameRate: 30,
+      degradationPreference: 'maintain-resolution'
+    }));
   });
 
   it.each([
@@ -1167,7 +1211,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
 
     expect(createShareController).toHaveBeenCalledOnce();
-    expect(fake.start).toHaveBeenCalledWith(stream, 8_000_000, p2pViewers);
+    expect(fake.start).toHaveBeenCalledWith(stream, p2pPublishOptions(8_000_000), p2pViewers);
     expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 10_000_000 }));
     expect(order).toEqual(['livekit-publish', 'p2p-start']);
     expect(hybrid.getShareController()).toBe(fake.controller);
@@ -1236,7 +1280,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     setViewers([p2pViewers[0]]);
     hybrid.viewerRosterChanged(); // late joiner arrives mid-share
 
-    expect(fake.start).toHaveBeenCalledWith(stream, 8_000_000, [p2pViewers[0]]);
+    expect(fake.start).toHaveBeenCalledWith(stream, p2pPublishOptions(8_000_000), [p2pViewers[0]]);
     expect(sfuPublisher.release).not.toHaveBeenCalled();
 
     fake.triggerStates([['viewer-1', 'p2p']]);
@@ -1302,7 +1346,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     setViewers(p2pViewers);
     hybrid.viewerRosterChanged();
 
-    expect(fake.start).toHaveBeenLastCalledWith(stream, 8_000_000, p2pViewers);
+    expect(fake.start).toHaveBeenLastCalledWith(stream, p2pPublishOptions(8_000_000), p2pViewers);
   });
 
   it('continues with the already-published SFU safety net when P2P start fails', async () => {

@@ -75,6 +75,18 @@ export const ScreenShareCodecSchema = Type.Union([
 
 export type ScreenShareCodec = Static<typeof ScreenShareCodecSchema>;
 
+/**
+ * Screen-share quality presets. Each preset fixes the capture resolution,
+ * frame rate and degradation policy; `standard` is the default.
+ */
+export const ScreenShareQualitySchema = Type.Union([
+  Type.Literal('flow'),      // 720p30, frame-rate first (weak-network friendly)
+  Type.Literal('standard'),  // 1080p30, resolution first (default)
+  Type.Literal('motion')     // 1080p60, resolution first (high-motion content)
+]);
+
+export type ScreenShareQuality = Static<typeof ScreenShareQualitySchema>;
+
 export const ParticipantSummarySchema = Type.Object({
   identity: Type.String({ minLength: 1, maxLength: 256 }),
   name: Type.String({ minLength: 1, maxLength: 40 }),

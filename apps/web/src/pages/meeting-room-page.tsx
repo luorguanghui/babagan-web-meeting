@@ -3,7 +3,8 @@ import {
   type JoinMeetingResponse,
   type ParticipantSummary,
   type RefreshParticipantTokenResponse,
-  type ScreenShareCodec
+  type ScreenShareCodec,
+  type ScreenShareQuality
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -30,6 +31,7 @@ import {
   HybridScreenSharePublisher,
   recommendP2pBitrate,
   screenShareDefaultBitrate,
+  screenShareDefaultQuality,
   type ScreenShareBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
@@ -160,6 +162,7 @@ export function MeetingRoomPage({
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
   const screenBitrateTouchedRef = useRef(false);
+  const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(screenShareDefaultQuality);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
   const [viewerCount, setViewerCount] = useState(0);
@@ -466,7 +469,7 @@ export function MeetingRoomPage({
     setNotice(undefined);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenCodec, screenBitrate);
+      else await screenShare.start(screenCodec, screenBitrate, screenQuality);
     } catch {
       setNotice(t('room.shareFailed'));
     }
@@ -606,6 +609,7 @@ export function MeetingRoomPage({
           screenShareBusy={screenState.status === 'starting'}
           screenCodec={screenCodec}
           screenBitrate={screenBitrate}
+          screenQuality={screenQuality}
           onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
           onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
@@ -615,6 +619,7 @@ export function MeetingRoomPage({
             screenBitrateTouchedRef.current = true;
             setScreenBitrate(bitrate);
           }}
+          onScreenQualityChange={setScreenQuality}
           screenViewerCount={viewerCount}
           onScreenShareToggle={() => void toggleScreenShare()}
           onLeave={() => void leave()}

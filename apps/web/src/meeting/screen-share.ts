@@ -1,15 +1,34 @@
-import { P2P_SCREEN_BITRATES, type P2pScreenBitrate, type ScreenShareCodec } from '@meeting/contracts';
+import {
+  P2P_SCREEN_BITRATES,
+  type P2pScreenBitrate,
+  type ScreenShareCodec,
+  type ScreenShareQuality
+} from '@meeting/contracts';
 
 import type { P2pShareController } from './p2p-share-controller.js';
 import type { Peer } from './p2p-signaling.js';
 
-export const adaptiveCaptureProfile = {
-  width: 1920,
-  height: 1080,
-  frameRate: 60,
-  contentHint: 'detail',
-  degradationPreference: 'maintain-resolution'
-} as const;
+export interface ScreenShareQualityPreset {
+  width: number;
+  height: number;
+  frameRate: number;
+  degradationPreference: RTCDegradationPreference;
+}
+
+/**
+ * Screen-share quality presets applied to both the SFU fallback and the P2P
+ * path. `flow` trades resolution for a stable frame rate under limited
+ * bandwidth (`maintain-framerate`); `standard` and `motion` keep the text
+ * crisp and let the encoder drop frames only when the network forces it.
+ */
+export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
+  flow: { width: 1280, height: 720, frameRate: 30, degradationPreference: 'maintain-framerate' },
+  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
+  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
+};
+
+export const screenShareDefaultQuality: ScreenShareQuality = 'standard';
+export const screenShareContentHint = 'detail' as const;
 
 /**
  * P2P screen-share bitrate tiers (contracts constants): the direct peer-to-peer
@@ -53,7 +72,11 @@ export interface ScreenSharePublisher {
 }
 
 export interface ScreenShareController {
-  start(codec?: ScreenShareCodec, maxBitrate?: ScreenShareBitrate): Promise<void>;
+  start(
+    codec?: ScreenShareCodec,
+    maxBitrate?: ScreenShareBitrate,
+    quality?: ScreenShareQuality
+  ): Promise<void>;
   stop(): Promise<void>;
   getState(): ScreenShareState;
   subscribe(listener: (state: ScreenShareState) => void): () => void;
@@ -88,12 +111,13 @@ class BrowserScreenShareController implements ScreenShareController {
 
   async start(
     codec: ScreenShareCodec = 'h264',
-    maxBitrate: ScreenShareBitrate = screenShareDefaultBitrate
+    maxBitrate: ScreenShareBitrate = screenShareDefaultBitrate,
+    quality: ScreenShareQuality = screenShareDefaultQuality
   ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const myGen = ++this.startGen;
     this.cancelRequested = false;
-    const settings = adaptiveCaptureProfile;
+    const settings = screenShareQualityPresets[quality];
     let grantAcquired = false;
     let stream: MediaStream | undefined;
     let shareAudioGuidance: string | undefined;
@@ -156,7 +180,7 @@ class BrowserScreenShareController implements ScreenShareController {
         await this.cancelStart(stream, grantAcquired);
         return;
       }
-      videoTrack.contentHint = settings.contentHint;
+      videoTrack.contentHint = screenShareContentHint;
       this.activeStream = stream;
       const onEnded = () => {
         // Only the current start's ended track may stop the share; a
@@ -334,7 +358,7 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
     if (viewers.length === 0) return;
     const controller = this.ensureController();
     try {
-      await controller.start(stream, options.maxBitrate as P2pScreenBitrate, viewers);
+      await controller.start(stream, options, viewers);
     } catch {
       // LiveKit is already carrying the share; P2P remains a best-effort path.
     }
@@ -360,11 +384,7 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
     const viewers = this.deps.getViewers();
     if (viewers.length === 0) return;
     const controller = this.ensureController();
-    void controller.start(
-      this.activeStream,
-      this.activeOptions!.maxBitrate as P2pScreenBitrate,
-      viewers
-    ).catch(() => undefined);
+    void controller.start(this.activeStream, this.activeOptions!, viewers).catch(() => undefined);
   }
 
   /** A viewer left (`peer-left`): drop them from fallback tracking and close their session. */

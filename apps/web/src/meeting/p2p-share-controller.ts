@@ -1,4 +1,9 @@
-import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS, type P2pScreenBitrate } from '@meeting/contracts';
+import {
+  P2P_ICE_DISCONNECT_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_TIMEOUT_MS,
+  type P2pScreenBitrate,
+  type ScreenShareCodec
+} from '@meeting/contracts';
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
@@ -6,6 +11,18 @@ import { inspectP2pMediaHealth } from './p2p-media-health.js';
 import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
+
+/**
+ * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
+ * Mirrors `ScreenSharePublishOptions` so both the SFU fallback and the direct
+ * path encode the share the same way (codec, frame rate, degradation).
+ */
+export interface P2pShareOptions {
+  maxBitrate: number;
+  frameRate: number;
+  degradationPreference: RTCDegradationPreference;
+  codec: ScreenShareCodec;
+}
 
 /**
  * Sharer-side P2P session controller for the screen share: one `RTCPeerConnection`
@@ -17,7 +34,7 @@ export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallb
  * decides whether to publish a LiveKit screen track for those viewers.
  */
 export interface P2pShareController {
-  start(stream: MediaStream, bitrate: P2pScreenBitrate, viewers: Peer[]): Promise<void>;
+  start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[]): Promise<void>;
   handleAnswer(from: string, sdp: string): Promise<void>;
   handleIce(from: string, candidate: string | null): Promise<void>;
   handleMediaReady(from: string): void;
@@ -86,7 +103,7 @@ interface ViewerSession {
   identity: string;
   pc: RTCPeerConnection;
   videoSender?: RTCRtpSender;
-  bitrate: P2pScreenBitrate;
+  options: P2pShareOptions;
   state: ViewerSessionState;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
   pendingOffer: boolean;
@@ -110,7 +127,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.fetchIceServers = deps.fetchIceServers ?? defaultFetchIceServers(deps.slug);
   }
 
-  async start(stream: MediaStream, bitrate: P2pScreenBitrate, viewers: Peer[]): Promise<void> {
+  async start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[]): Promise<void> {
     const iceServers = await this.resolveIceServers();
     const establishes: Promise<void>[] = [];
     for (const viewer of viewers) {
@@ -118,7 +135,7 @@ class P2pShareControllerImpl implements P2pShareController {
       // A viewer that left and rejoined starts a fresh session; p2p/fallback sessions keep running.
       if (existing && existing.state !== 'closed') continue;
       if (existing) this.closeSession(existing);
-      const session = this.createSession(viewer.identity, stream, bitrate, iceServers);
+      const session = this.createSession(viewer.identity, stream, options, iceServers);
       establishes.push(this.establishSession(session));
     }
     this.emit();
@@ -211,12 +228,12 @@ class P2pShareControllerImpl implements P2pShareController {
     return this.iceServers;
   }
 
-  private createSession(identity: string, stream: MediaStream, bitrate: P2pScreenBitrate, iceServers: RTCIceServer[]): ViewerSession {
+  private createSession(identity: string, stream: MediaStream, options: P2pShareOptions, iceServers: RTCIceServer[]): ViewerSession {
     const pc = this.createPeerConnection(iceServers);
     const session: ViewerSession = {
       identity,
       pc,
-      bitrate,
+      options,
       state: 'negotiating',
       queuedCandidates: [],
       pendingOffer: false,
@@ -225,7 +242,12 @@ class P2pShareControllerImpl implements P2pShareController {
       transportConnected: false
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
-      session.videoSender = pc.addTrack(track);
+      // A transceiver (not `addTrack`) so we can set codec preferences before
+      // the offer is created; the bitrate/frame-rate cap is applied later via
+      // `setParameters` so a failure there stays best-effort.
+      const transceiver = pc.addTransceiver(track, { direction: 'sendonly' });
+      applyCodecPreference(transceiver, options.codec);
+      session.videoSender = transceiver.sender;
     }
     for (const track of stream.getAudioTracks().slice(0, 1)) {
       pc.addTrack(track);
@@ -242,10 +264,13 @@ class P2pShareControllerImpl implements P2pShareController {
     try {
       if (session.videoSender) {
         try {
-          // Single encoding, no simulcast: cap the video bitrate for this viewer.
+          // Single encoding, no simulcast: cap the video bitrate and frame
+          // rate for this viewer, and apply the chosen degradation policy.
+          const { options } = session;
           await session.videoSender.setParameters({
             ...session.videoSender.getParameters(),
-            encodings: [{ maxBitrate: session.bitrate }]
+            encodings: [{ maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }],
+            degradationPreference: options.degradationPreference
           });
         } catch {
           // Bitrate tuning is best-effort; a failure must not kill the session.
@@ -392,6 +417,26 @@ class P2pShareControllerImpl implements P2pShareController {
     const snapshot = this.getViewerStates();
     for (const listener of this.listeners) listener(snapshot);
   }
+}
+
+/**
+ * Orders the transceiver's codec list so the chosen codec is preferred during
+ * SDP negotiation. `auto` keeps the browser default. Best-effort: browsers
+ * without `RTCRtpSender.getCapabilities` (or without `setCodecPreferences`)
+ * simply use their default codec.
+ */
+function applyCodecPreference(transceiver: RTCRtpTransceiver, codec: ScreenShareCodec): void {
+  if (codec === 'auto') return;
+  const capabilities = typeof RTCRtpSender !== 'undefined'
+    ? RTCRtpSender.getCapabilities?.('video')?.codecs
+    : undefined;
+  if (!capabilities || capabilities.length === 0) return;
+  const wanted = codec === 'h264' ? 'video/h264' : 'video/vp8';
+  const fallback = codec === 'h264' ? ['video/vp8', 'video/vp9'] : ['video/h264', 'video/vp9'];
+  const preferred = capabilities
+    .filter((codecCapability) => codecCapability.mimeType.toLowerCase() === wanted)
+    .concat(capabilities.filter((codecCapability) => fallback.includes(codecCapability.mimeType.toLowerCase())));
+  if (preferred.length > 0) transceiver.setCodecPreferences(preferred);
 }
 
 function defaultFetchIceServers(slug: string): () => Promise<RTCIceServer[]> {

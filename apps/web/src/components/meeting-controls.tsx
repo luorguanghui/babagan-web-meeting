@@ -1,4 +1,4 @@
-import type { ScreenShareCodec } from '@meeting/contracts';
+import type { ScreenShareCodec, ScreenShareQuality } from '@meeting/contracts';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
@@ -6,6 +6,7 @@ import {
   recommendP2pBitrate,
   screenShareBitrates,
   screenShareDefaultBitrate,
+  screenShareDefaultQuality,
   type ScreenShareBitrate
 } from '../meeting/screen-share.js';
 
@@ -21,6 +22,7 @@ interface MeetingControlsProps {
   screenShareBusy?: boolean;
   screenCodec?: ScreenShareCodec;
   screenBitrate?: ScreenShareBitrate;
+  screenQuality?: ScreenShareQuality;
   /** Online viewer count driving the P2P bitrate suggestion. */
   screenViewerCount?: number;
   onMicrophoneToggle: () => void;
@@ -29,6 +31,7 @@ interface MeetingControlsProps {
   onResumeAudio: () => void;
   onScreenCodecChange?: (codec: ScreenShareCodec) => void;
   onScreenBitrateChange?: (bitrate: ScreenShareBitrate) => void;
+  onScreenQualityChange?: (quality: ScreenShareQuality) => void;
   onScreenShareToggle?: () => void;
   onLeave: () => void;
 }
@@ -68,6 +71,16 @@ export function MeetingControls(props: MeetingControlsProps) {
         <label>{t('controls.speakerDevice')}<select aria-label={t('controls.speakerDevice')} defaultValue="" onChange={(event) => props.onSpeakerDeviceChange(event.target.value)}>
           <option value="" disabled>{t('controls.selectSpeaker')}</option>
           {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
+        </select></label>
+        <label>{t('controls.screenQuality')}<select
+          aria-label={t('controls.screenQuality')}
+          value={props.screenQuality ?? screenShareDefaultQuality}
+          disabled={props.screenShareActive || props.screenShareBusy}
+          onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}
+        >
+          <option value="flow">{t('controls.flow')}</option>
+          <option value="standard">{t('controls.standard')}</option>
+          <option value="motion">{t('controls.motion')}</option>
         </select></label>
         <label>{t('controls.screenCodec')}<select
           aria-label={t('controls.screenCodec')}
