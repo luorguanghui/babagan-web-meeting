@@ -2,10 +2,13 @@ ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc9
 ARG CADDY_IMAGE=caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
 FROM ${NODE_IMAGE} AS build
 
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+
 WORKDIR /workspace
 
 RUN corepack enable \
-  && corepack prepare pnpm@10.34.5 --activate
+  && corepack prepare pnpm@10.34.5 --activate \
+  && pnpm config set registry "$NPM_REGISTRY"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY apps/web/package.json apps/web/package.json

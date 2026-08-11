@@ -2,13 +2,15 @@ ARG NODE_IMAGE=node:24.15.0-alpine3.23@sha256:d1b3b4da11eefd5941e7f0b9cf17783fc9
 FROM ${NODE_IMAGE} AS build
 
 ARG ALPINE_MIRROR=https://mirrors.aliyun.com/alpine
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /workspace
 
 RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
   && apk add --no-cache python3 make g++ \
   && corepack enable \
-  && corepack prepare pnpm@10.34.5 --activate
+  && corepack prepare pnpm@10.34.5 --activate \
+  && pnpm config set registry "$NPM_REGISTRY"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
