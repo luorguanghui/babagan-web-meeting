@@ -129,11 +129,20 @@ image_id() {
   # resolve the configured image reference and inspect Docker's image store
   # directly instead. This intentionally uses only POSIX host tooling so the
   # deployment host does not need a separate Node.js installation.
-  image_ref="$(compose config | awk -v service="$1" '
-    $0 ~ "^  " service ":$" { in_service = 1; next }
-    in_service && $0 ~ "^  [A-Za-z0-9_-]+:$" { exit }
-    in_service && $1 == "image:" { print $2; exit }
-  ')"
+  case "$1" in
+    api|web)
+      # Compose assigns this deterministic project/service tag to build-only
+      # services, which intentionally have no `image:` entry in the config.
+      image_ref="babagan-meeting-$1:latest"
+      ;;
+    *)
+      image_ref="$(compose config | awk -v service="$1" '
+        $0 ~ "^  " service ":$" { in_service = 1; next }
+        in_service && $0 ~ "^  [A-Za-z0-9_-]+:$" { exit }
+        in_service && $1 == "image:" { print $2; exit }
+      ')"
+      ;;
+  esac
   [[ -n "$image_ref" ]] || return 1
   docker image inspect --format '{{.Id}}' "$image_ref"
 }

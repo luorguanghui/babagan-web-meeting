@@ -65,6 +65,7 @@ need "$rollback" 'SMOKE_NODE_IMAGE="$PREVIOUS_API_IMAGE_TAG"'
 need "$deploy" 'wss://meet.babagan.cloud/rtc'
 need "$rollback" 'wss://meet.babagan.cloud/rtc'
 need "$deploy" 'compose config | awk -v service="$1"'
+need "$deploy" 'image_ref="babagan-meeting-$1:latest"'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before
