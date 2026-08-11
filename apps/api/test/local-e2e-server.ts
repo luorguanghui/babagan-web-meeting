@@ -175,22 +175,18 @@ function serveOrigin(): ReturnType<typeof createHttpServer> {
 }
 
 function proxyToApi(req: import('node:http').IncomingMessage, res: ServerResponse): void {
-  // The web client sends `Content-Type: application/json` even on bodyless
-  // POSTs (e.g. POST /token, POST /leave). Fastify then runs the JSON parser
-  // on an empty body and fails with FST_ERR_CTP_EMPTY_JSON_BODY, which the
-  // API error handler maps to a 500 instead of a 400 (reported as a concern
-  // to the coordinator). For bodyless requests the harness therefore sends
-  // Content-Length: 0 and drops the content type so fastify skips parsing.
+  // Bodyless upstream requests would otherwise be sent with chunked transfer
+  // encoding; normalize to Content-Length: 0 so fastify sees the same framing
+  // a browser sends. (The web client no longer sends a JSON content type on
+  // bodyless requests, and the API maps any FST_ERR_CTP_* rejection to a 400,
+  // so the proxy performs no header rewriting beyond this.)
   const hasBody = req.headers['transfer-encoding'] !== undefined
     || (Number(req.headers['content-length'] ?? 0) > 0);
   const headers: Record<string, string | string[] | number> = {
     ...req.headers,
     host: `${API_HOST}:${API_PORT}`
   };
-  if (!hasBody) {
-    headers['content-length'] = 0;
-    delete headers['content-type'];
-  }
+  if (!hasBody) headers['content-length'] = 0;
   const upstream = httpRequest({
     host: API_HOST,
     port: API_PORT,

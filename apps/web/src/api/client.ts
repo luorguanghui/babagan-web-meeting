@@ -10,7 +10,7 @@ export class ApiRequestError extends Error {
 }
 
 export async function apiRequest<T>(path: string, schema: TSchema, init: RequestInit = {}): Promise<T> {
-  const headers = jsonHeaders(init.headers);
+  const headers = jsonHeaders(init.headers, init.body != null);
   const response = await fetch(`/api/v1${path}`, {
     ...init,
     credentials: 'include',
@@ -26,12 +26,17 @@ export async function apiNoContent(path: string, init: RequestInit = {}): Promis
   const response = await fetch(`/api/v1${path}`, {
     ...init,
     credentials: 'include',
-    headers: jsonHeaders(init.headers)
+    headers: jsonHeaders(init.headers, init.body != null)
   });
   if (!response.ok) throw await parseApiError(response);
 }
 
-function jsonHeaders(value: HeadersInit | undefined): Record<string, string> {
+/**
+ * Builds the request headers. The JSON content type is only sent when there is
+ * a body: a bodyless POST with `Content-Type: application/json` is rejected by
+ * fastify (FST_ERR_CTP_EMPTY_JSON_BODY) and previously surfaced as a 500.
+ */
+function jsonHeaders(value: HeadersInit | undefined, hasBody: boolean): Record<string, string> {
   const headers = value instanceof Headers
     ? Object.fromEntries(value.entries())
     : Array.isArray(value)
@@ -40,7 +45,7 @@ function jsonHeaders(value: HeadersInit | undefined): Record<string, string> {
   for (const key of Object.keys(headers)) {
     if (key.toLowerCase() === 'content-type') delete headers[key];
   }
-  return { ...headers, 'Content-Type': 'application/json' };
+  return hasBody ? { ...headers, 'Content-Type': 'application/json' } : headers;
 }
 
 async function parseApiError(response: Response): Promise<ApiRequestError> {

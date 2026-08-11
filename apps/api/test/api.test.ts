@@ -131,6 +131,30 @@ describe('meeting HTTP API', () => {
     expect(left.statusCode).toBe(204);
   });
 
+  it('maps a bodyless JSON POST to 400 UNSUPPORTED_CLIENT instead of a 500', async () => {
+    const created = await fixture.createMeeting();
+    const joined = await fixture.join(created.slug, 'Ada');
+    const cookie = cookiePair(joined.headers['set-cookie']);
+
+    // The web client historically sent `Content-Type: application/json` even
+    // without a body; fastify rejects that with FST_ERR_CTP_EMPTY_JSON_BODY,
+    // which must be a 400 client error, not a 500.
+    const leave = await fixture.app.inject({
+      method: 'POST', url: `/api/v1/meetings/${created.slug}/leave`,
+      headers: { origin: config.publicBaseUrl.origin, cookie, 'content-type': 'application/json' }
+    });
+    expect(leave.statusCode, leave.body).toBe(400);
+    expect(leave.json()).toMatchObject({ error: { code: 'UNSUPPORTED_CLIENT' } });
+
+    // The same endpoint class still works with a well-formed JSON body.
+    const token = await fixture.app.inject({
+      method: 'POST', url: `/api/v1/meetings/${created.slug}/token`,
+      headers: { origin: config.publicBaseUrl.origin, cookie, 'content-type': 'application/json' },
+      payload: '{}'
+    });
+    expect(token.statusCode, token.body).toBe(200);
+  });
+
   it('retries a failed leave over HTTP with the same revoked participant cookie before releasing the share lock', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');

@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { CreateMeetingResponseSchema } from '@meeting/contracts';
+import { CreateMeetingResponseSchema, RefreshParticipantTokenResponseSchema } from '@meeting/contracts';
 
 import { apiNoContent, apiRequest } from '../api/client.js';
 import { App } from '../app.js';
@@ -133,10 +133,28 @@ describe('API client', () => {
     const fetchMock = vi.fn().mockResolvedValue(success({ slug, joinUrl: `https://meet.example/m/${slug}` }));
     vi.stubGlobal('fetch', fetchMock);
 
-    await apiRequest('/meetings', CreateMeetingResponseSchema, { headers: { 'Content-Type': 'text/plain' } });
+    await apiRequest('/meetings', CreateMeetingResponseSchema, {
+      headers: { 'Content-Type': 'text/plain' },
+      body: JSON.stringify({ adminPassword: 'admin-secret', name: 'Daily' })
+    });
 
     expect(fetchMock).toHaveBeenCalledWith('/api/v1/meetings', expect.objectContaining({
       credentials: 'include', headers: { 'Content-Type': 'application/json' }
+    }));
+  });
+
+  it('omits the JSON content type on bodyless requests', async () => {
+    installBrowserFakes();
+    const fetchMock = vi.fn().mockResolvedValue(success({
+      participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
+      meetingExpiresAt: 1_725_000_000_000, permissions: { canPublishMicrophone: true, canShareScreen: false }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await apiRequest('/meetings/slug-abcdefghijklmnopqrstuv/token', RefreshParticipantTokenResponseSchema, { method: 'POST' });
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/v1/meetings/slug-abcdefghijklmnopqrstuv/token', expect.objectContaining({
+      credentials: 'include', method: 'POST', headers: {}
     }));
   });
 

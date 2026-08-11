@@ -49,6 +49,13 @@ export function apiErrorDetails(error: unknown, correlationId: string): ApiError
   if (isValidationError(error)) {
     return details('UNSUPPORTED_CLIENT', 400, 'Request validation failed', correlationId);
   }
+  if (isFastifyContentTypeError(error)) {
+    // Fastify rejects malformed request bodies (e.g. `Content-Type:
+    // application/json` with an empty body) with `FST_ERR_CTP_*` errors that
+    // carry their own 4xx status. These are client request-format problems and
+    // must not surface as 500s.
+    return details('UNSUPPORTED_CLIENT', error.statusCode ?? 400, 'Request body is invalid', correlationId);
+  }
   return details('MEDIA_SERVICE_UNAVAILABLE', 500, 'Internal server error', correlationId);
 }
 
@@ -78,4 +85,19 @@ function details(
 
 function isValidationError(error: unknown): error is FastifyError {
   return error instanceof Error && 'validation' in error;
+}
+
+/**
+ * Fastify content-type parser errors (`FST_ERR_CTP_*`) that describe a
+ * client-side request-body problem. Only 4xx variants are recognized; parser
+ * plugin-configuration errors (500) are left to the unhandled-error fallback.
+ */
+function isFastifyContentTypeError(error: unknown): error is FastifyError {
+  if (!(error instanceof Error)) return false;
+  const candidate = error as Error & { code?: unknown; statusCode?: unknown };
+  return typeof candidate.code === 'string'
+    && candidate.code.startsWith('FST_ERR_CTP_')
+    && typeof candidate.statusCode === 'number'
+    && candidate.statusCode >= 400
+    && candidate.statusCode < 500;
 }
