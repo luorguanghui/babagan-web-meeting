@@ -10,14 +10,14 @@ trap 'rm -rf "$temp_dir"' EXIT
 
 restricted="$temp_dir/restricted.txt"
 cat >"$restricted" <<'EOF'
-Alibaba inbound: TCP 80,443,7881; UDP 443,50000-60000; SSH restricted
-Host firewall: TCP 80,443,7881; UDP 443,50000-60000; SSH restricted; default deny inbound
+Alibaba inbound: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH restricted
+Host firewall: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH restricted; default deny inbound
 EOF
 
 public="$temp_dir/public.txt"
 cat >"$public" <<'EOF'
-Alibaba inbound: TCP 80,443,7881; UDP 443,50000-60000; SSH public by operator decision
-Host firewall: TCP 80,443,7881; UDP 443,50000-60000; SSH public by operator decision; default deny inbound
+Alibaba inbound: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH public by operator decision
+Host firewall: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH public by operator decision; default deny inbound
 EOF
 
 verify_firewall_attestation "$restricted" 0

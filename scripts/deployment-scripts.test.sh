@@ -23,7 +23,9 @@ done
 # Failed candidate deployments retain this protected record before any pull/build
 # or migration, and only archive it after smoke success.
 need "$deploy" 'pending-release.env'
-need "$deploy" 'compose pull --policy missing caddy livekit'
+need "$deploy" 'compose pull --policy missing caddy livekit coturn'
+need "$deploy" 'coturn_image='
+need "$deploy" 'for service in caddy api livekit web coturn'
 need "$deploy" 'compose run --rm --no-deps api'
 need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'

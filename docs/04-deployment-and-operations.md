@@ -37,11 +37,15 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 | TCP | 22 | 管理员固定 IP | SSH 管理 |
 | TCP | 80 | 公网 | ACME HTTP 验证及 HTTPS 跳转 |
 | TCP | 443 | 公网 | HTTPS/WSS（含 P2P 信令，复用 `/api/*` 反代，无新增端口） |
+| TCP | 3478 | 公网 | coturn TURN/TCP，供无法使用 UDP 的自定义屏幕共享连接 |
+| TCP | 5349 | 公网 | coturn TURN/TLS，使用 `turn.babagan.cloud` 公网证书 |
 | TCP | 7881 | 公网 | LiveKit RTC/TCP 回退 |
 | UDP | 443 | 公网 | LiveKit 媒体路径的 TURN/UDP（P2P 本身不复用其凭据） |
+| UDP | 3478 | 公网 | coturn TURN/UDP 分配入口 |
+| UDP | 49160–49200 | 公网 | coturn 屏幕共享中继端口池（最多 41 个并发 allocation） |
 | UDP | 50000–60000 | 公网 | WebRTC 直接媒体（麦克风；回退时屏幕） |
 
-P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Server v1.11.0 不提供可复用的通用 ICE 凭据接口，API 通过 `P2P_STUN_URLS` 下发显式 STUN；无法直连时使用始终已发布的 LiveKit 屏幕安全网。不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
+当前固定的 LiveKit Server v1.11.0 不提供可复用的通用 ICE 凭据接口，因此自定义屏幕共享使用独立 coturn。API 通过 `P2P_STUN_URLS` 下发 STUN，并使用 TURN REST HMAC 为已认证参与者签发 600 秒凭据；无法直连时先走 coturn，coturn 也不可用时仍由始终发布的 LiveKit 屏幕安全网接管。不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
 
 ### 3.2 主机防火墙
 
@@ -52,6 +56,7 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 - `caddy`：发布 TCP 80/443，挂载配置、数据和证书卷。
 - `api`：仅加入内部网络，挂载 SQLite 数据卷和只读 secret。
 - `livekit`：主机网络模式或等效低开销网络；发布 RTC/TURN 端口。
+- `coturn`：主机网络模式；固定 `4.17.2-r0` 摘要；只读挂载 Caddy 证书卷；仅使用 3478、5349 和 49160–49200，不占用 LiveKit UDP 443。
 - `web`：构建产物由 Caddy 直接提供，不常驻单独 Node 开发服务器。
 
 生产环境禁止使用浮动镜像标签。镜像以版本号和不可变摘要固定，升级前记录当前摘要。
@@ -62,6 +67,7 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 
 - `meet.babagan.cloud`：`/api/*` 反代 API，其他路径提供 SPA，并设置安全响应头。
 - `rtc.babagan.cloud`：反代 LiveKit 7880，保留 WebSocket Upgrade 和真实协议头。
+- `turn.babagan.cloud`：保持 DNS only；Caddy 为该主机名申请公众信任的证书并把证书卷只读提供给 coturn。
 - 禁用服务器侧 UDP 443 的 HTTP/3，给 TURN/UDP 使用。
 - 启用压缩仅针对静态文本资源，不对媒体流做处理。
 
@@ -80,6 +86,14 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 - 数据库迁移在服务就绪前完成，失败则不接收流量。
 - 健康检查必须区分存活和就绪。
 - 严格限制请求体大小、并发、超时和密码尝试频率。
+- `P2P_TURN_SECRET` 与 coturn 的 `TURN_SHARED_SECRET` 必须完全相同、至少 32 字符且权限为 600；浏览器只接收参与者绑定的短期凭据，响应设置 `Cache-Control: no-store`。
+
+### 5.4 coturn
+
+- 监听 3478/UDP+TCP 和 5349/TCP；禁用 DTLS 与管理 CLI；relay 端口严格限制为 49160–49200/UDP。
+- `TURN_EXTERNAL_IP` 使用服务器公网 IPv4，`TURN_RELAY_IP` 使用实例私网 IPv4；ECS 的端口映射必须保持 relay 端口号不变。
+- 禁止 relay 访问 loopback、RFC1918、链路本地、云元数据和组播地址，避免把 TURN 变成内网代理。
+- Caddy 证书续期后在无活动会议窗口执行 `docker compose restart coturn`，随后验证 5349/TCP；短暂重启不会影响 LiveKit 语音和 SFU 安全网。
 
 ## 6. 首次部署顺序
 
@@ -89,12 +103,13 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 4. 创建应用目录、持久卷目录和权限受限的 secrets。
 5. 验证 DNS 记录及 `rtc`/`turn` 直连解析。
 6. 启动 Caddy 并确认 ACME 证书成功。
-7. 启动固定 digest 的 LiveKit v1.11.0，验证内部健康与公网候选地址，并确认 API 的已认证 `/ice-servers` 响应与 `P2P_STUN_URLS` 一致。
-8. 运行数据库迁移，启动 API 和静态 Web。
-9. 执行 HTTP、WSS、UDP、TURN 和 5 人冒烟测试。
-10. 验证 P2P 信令端点：无 Cookie、缺失 Origin、跨站 Origin 均拒绝升级；有 Cookie 且同源可加入房间名单，offer/answer/ice/media-ready 转发正常。
-11. 在两端真实公网环境验证 P2P 直连建立与回退（见 `05` 文档 §4.3）。
-12. 将 Cloudflare 设置为 Full (strict)，验证完整访问路径。
+7. 启动固定 digest 的 LiveKit v1.11.0，验证内部健康与公网候选地址。
+8. 确认 Caddy 已生成 `turn.babagan.cloud` 证书，启动固定摘要 coturn，并验证 3478/UDP+TCP、5349/TCP 与 49160–49200/UDP。
+9. 运行数据库迁移，启动 API 和静态 Web；确认已认证 `/ice-servers` 同时返回 STUN、三条 TURN URL、短期 username/credential 和 `Cache-Control: no-store`。
+10. 执行 HTTP、WSS、P2P 直连、强制 TURN 中继、SFU 回退和 5 人冒烟测试。
+11. 验证 P2P 信令端点：无 Cookie、缺失 Origin、跨站 Origin 均拒绝升级；有 Cookie 且同源可加入房间名单，offer/answer/ice/media-ready 转发正常。
+12. 在两端真实公网环境验证 `P2P 直连`、`TURN 中继` 和 `SFU 中转` 标签与统计持续更新（见 `05` 文档 §4.3）。
+13. 将 Cloudflare 设置为 Full (strict)，验证完整访问路径。
 
 ## 7. 发布与回滚
 
@@ -125,7 +140,7 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 | CPU | 5 分钟平均 >80% |
 | 内存 | 已用 >1.8 GiB 或发生 OOM/交换抖动 |
 | 磁盘 | 使用率 >80% |
-| 公网带宽 | 持续 >50 Mbps 或出现突发（直连成功的现代观看者不再消费云端屏幕下行；旧客户端或回退观看者仍会产生正常 LiveKit 屏幕流量） |
+| 公网带宽 | 持续 >50 Mbps 或出现突发（P2P 直连不消费云端屏幕下行；TURN 和 SFU 都会消耗服务器上下行，应结合界面 transport 标签判断） |
 | API | 5xx 比例 >2%/5 分钟 |
 | LiveKit | 连接失败率 >5%/5 分钟 |
 | P2P 回退率 | 会议结束后聚合的回退率 >50%（人工观察项，用于评估直连穿透质量） |
@@ -137,6 +152,7 @@ P2P 屏幕直连不新增任何云端入站端口。当前固定的 LiveKit Serv
 ## 10. 日常运维
 
 - 每周检查系统安全更新、容器健康、磁盘和证书状态。
+- 每周检查 coturn allocation 数、relay 端口余量和 3478/5349 可达性；Caddy 续期 `turn` 证书后安排 coturn 重启并复测 TLS allocation。
 - 每月演练一次创建、5 人加入、共享（含 P2P 直连与回退）、弱网回退和结束会议。
 - 依赖升级前阅读变更说明，并在测试环境完成兼容性验证。
 - 出现质量问题时收集匿名连接统计（含 P2P 建立成功率、回退率）和浏览器 `webrtc-internals` 导出；必须先征得用户同意，不收集媒体内容。

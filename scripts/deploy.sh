@@ -38,7 +38,7 @@ need docker; need sqlite3; need sha256sum; need getent; need ss; need git; need 
 . /etc/os-release; [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12* ]] || fail 'target must run Debian 12'
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
 grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" && fail 'production environment contains example values'
-for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
+for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET P2P_STUN_URLS P2P_TURN_URLS P2P_TURN_SECRET P2P_TURN_TTL_SECONDS TURN_SHARED_SECRET TURN_EXTERNAL_IP TURN_RELAY_IP; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
 [[ "$(grep -c '^LIVEKIT_IMAGE=' "$env_file")" -le 1 ]] || fail 'LIVEKIT_IMAGE must appear at most once'
 livekit_image="$(sed -n 's/^LIVEKIT_IMAGE=//p' "$env_file")"
 livekit_image="${livekit_image:-livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16}"
@@ -54,8 +54,25 @@ caddy_image="$(sed -n 's/^CADDY_IMAGE=//p' "$env_file")"
 caddy_image="${caddy_image:-caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}"
 [[ "$caddy_image" =~ ^[^[:space:]]+@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d$ ]] \
   || fail 'Caddy image must remain pinned to the approved digest'
+[[ "$(grep -c '^COTURN_IMAGE=' "$env_file")" -le 1 ]] || fail 'COTURN_IMAGE must appear at most once'
+coturn_image="$(sed -n 's/^COTURN_IMAGE=//p' "$env_file")"
+coturn_image="${coturn_image:-coturn/coturn:4.17.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e}"
+[[ "$coturn_image" =~ ^[^[:space:]]*coturn/coturn:4\.17\.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e$ ]] \
+  || fail 'coturn image must remain pinned to the approved digest'
 configured_node_ip="$(sed -n 's/^LIVEKIT_NODE_IP=//p' "$env_file")"
 [[ "$configured_node_ip" == "$target_ip" ]] || fail 'LIVEKIT_NODE_IP must equal the confirmed target IP'
+turn_external_ip="$(sed -n 's/^TURN_EXTERNAL_IP=//p' "$env_file")"
+turn_relay_ip="$(sed -n 's/^TURN_RELAY_IP=//p' "$env_file")"
+[[ "$turn_external_ip" == "$target_ip" ]] || fail 'TURN_EXTERNAL_IP must equal the confirmed target IP'
+[[ "$turn_relay_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'TURN_RELAY_IP must be IPv4'
+p2p_turn_secret="$(sed -n 's/^P2P_TURN_SECRET=//p' "$env_file")"
+turn_shared_secret="$(sed -n 's/^TURN_SHARED_SECRET=//p' "$env_file")"
+[[ ${#p2p_turn_secret} -ge 32 && "$p2p_turn_secret" == "$turn_shared_secret" ]] \
+  || fail 'P2P_TURN_SECRET and TURN_SHARED_SECRET must match and contain at least 32 characters'
+[[ "$(sed -n 's/^P2P_TURN_TTL_SECONDS=//p' "$env_file")" == 600 ]] \
+  || fail 'P2P_TURN_TTL_SECONDS must be 600 in production'
+grep -Eq '^P2P_TURN_URLS=.*turn\.babagan\.cloud:3478.*turns:turn\.babagan\.cloud:5349' "$env_file" \
+  || fail 'P2P_TURN_URLS must include UDP/TCP TURN and TLS TURN endpoints'
 [[ "$(git -C "$app_dir" rev-parse HEAD)" == "$sha" ]] || fail 'confirmation SHA does not equal checked-out release'
 mem_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"; disk_kib="$(df -Pk "$app_dir" | awk 'NR==2 {print $4}')"
 (( mem_kib >= 1153434 )) || fail 'requires at least 1.1 GiB available RAM'; (( disk_kib >= 10485760 )) || fail 'requires at least 10 GiB free disk'
@@ -67,7 +84,7 @@ verify_firewall_attestation "$network_file" "$allow_public_ssh" || fail 'firewal
 grep -Fqx 'Cloudflare: meet proxied; rtc DNS-only; turn DNS-only; SSL/TLS Full (strict)' "$cloudflare_file" || fail 'missing Cloudflare attestation'
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
-for spec in '80 t' '443 t' '7881 t' '443 u' '50000 u' '60000 u'; do
+for spec in '80 t' '443 t' '3478 t' '5349 t' '7881 t' '443 u' '3478 u' '49160 u' '49200 u' '50000 u' '60000 u'; do
   read -r port protocol <<<"$spec"
   if ss -H -l"$protocol" | awk -v p="$port" '$4 ~ (":" p "$") || $4 ~ ("\\]" p "$") {found=1} END {exit !found}'; then
     mapfile -t owners < <(docker ps -q --filter "publish=$port")
@@ -107,7 +124,7 @@ ssh_policy=restricted; (( allow_public_ssh )) && ssh_policy=public-operator-waiv
   fi
 } >"$pending_tmp"
 chmod 600 "$pending_tmp"; mv "$pending_tmp" "$pending"
-compose pull --policy missing caddy livekit; compose build --pull api web
+compose pull --policy missing caddy livekit coturn; compose build --pull api web
 # One-shot migration: no listening service is started by this command.
 compose run --rm --no-deps api node --input-type=module -e 'import {createDatabase} from "./dist/db/database.js"; import {migrate} from "./dist/db/migrate.js"; const db=createDatabase(process.env.DATABASE_PATH); try { migrate(db); } finally { db.close(); }'
 if (( bootstrap_empty )); then
@@ -159,7 +176,7 @@ chmod 600 "$override"; compose -f "$override" up -d --no-build
 deadline=$((SECONDS+180)); healthy=0
 while ((SECONDS<deadline)); do
   healthy=1
-  for service in caddy api livekit web; do id="$(compose ps -q "$service")"; status="${id:+$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id")}"; [[ "$status" == healthy ]] || healthy=0; done
+  for service in caddy api livekit web coturn; do id="$(compose ps -q "$service")"; status="${id:+$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$id")}"; [[ "$status" == healthy ]] || healthy=0; done
   ((healthy)) && break; sleep 3
 done
 ((healthy)) || { compose ps >&2; fail 'health wait exceeded 180 seconds'; }

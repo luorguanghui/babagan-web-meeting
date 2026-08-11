@@ -27,6 +27,7 @@ cat >"$temp_dir/scripts/smoke-test.sh" <<'EOF'
   printf 'slug=%s\n' "$SMOKE_MEETING_SLUG"
   printf 'cookie=%s\n' "$SMOKE_PARTICIPANT_COOKIE"
   printf 'stun=%s\n' "$P2P_STUN_URLS"
+  printf 'turn=%s\n' "$P2P_TURN_URLS"
   printf 'image=%s\n' "$SMOKE_NODE_IMAGE"
   printf 'args=%s|%s\n' "$1" "$2"
 } >>"$MOCK_SMOKE_LOG"
@@ -34,7 +35,12 @@ cat >"$temp_dir/scripts/smoke-test.sh" <<'EOF'
 EOF
 chmod 700 "$temp_dir/scripts/smoke-test.sh"
 
-printf '%s\n' 'P2P_STUN_URLS=stun:stun.cloudflare.com:3478' >"$temp_dir/production.env"
+printf '%s\n' \
+  'P2P_STUN_URLS=stun:stun.cloudflare.com:3478' \
+  'P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' \
+  'P2P_TURN_SECRET=0123456789abcdef0123456789abcdef' \
+  'P2P_TURN_TTL_SECONDS=600' \
+  'TURN_SHARED_SECRET=0123456789abcdef0123456789abcdef' >"$temp_dir/production.env"
 chmod 600 "$temp_dir/production.env"
 printf '%s\n' 'services: {}' >"$temp_dir/docker-compose.yml"
 
@@ -55,6 +61,7 @@ grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$tem
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
 grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.cloudflare.com:3478' "$temp_dir/smoke.log"
+grep -Fqx 'turn=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' "$temp_dir/smoke.log"
 grep -Fqx 'image=meeting-api:test' "$temp_dir/smoke.log"
 
 : >"$temp_dir/docker.log"

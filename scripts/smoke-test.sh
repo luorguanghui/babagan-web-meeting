@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: SMOKE_LIVEKIT_TOKEN=token [SMOKE_CORE_ONLY=1 | SMOKE_MEETING_SLUG=slug SMOKE_PARTICIPANT_COOKIE='name=value' P2P_STUN_URLS=stun:host:3478] $0 https://meet.example.com wss://rtc.example.com" >&2
+  echo "Usage: SMOKE_LIVEKIT_TOKEN=token [SMOKE_CORE_ONLY=1 | SMOKE_MEETING_SLUG=slug SMOKE_PARTICIPANT_COOKIE='name=value' P2P_STUN_URLS=stun:host:3478 P2P_TURN_URLS=turn:host:3478] $0 https://meet.example.com wss://rtc.example.com" >&2
   exit 64
 }
 
@@ -18,6 +18,7 @@ if [[ "$core_only" == 0 ]]; then
   [[ -n ${SMOKE_MEETING_SLUG:-} ]] || { echo 'SMOKE_MEETING_SLUG is required to verify P2P endpoints.' >&2; exit 64; }
   [[ -n ${SMOKE_PARTICIPANT_COOKIE:-} ]] || { echo 'SMOKE_PARTICIPANT_COOKIE is required to verify authenticated P2P endpoints.' >&2; exit 64; }
   [[ -n ${P2P_STUN_URLS:-} ]] || { echo 'P2P_STUN_URLS is required to verify the deployed STUN configuration.' >&2; exit 64; }
+  [[ -n ${P2P_TURN_URLS:-} ]] || { echo 'P2P_TURN_URLS is required to verify the deployed TURN configuration.' >&2; exit 64; }
 fi
 
 fail() { echo "SMOKE FAILED: $1" >&2; exit 1; }
@@ -40,13 +41,22 @@ curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/" | g
 
 if [[ "$core_only" == 0 ]]; then
   expected_stun=${P2P_STUN_URLS%%,*}
-  ice_response=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+  expected_turn=${P2P_TURN_URLS%%,*}
+  ice_response=$(curl --dump-header - --fail --silent --show-error --proto '=https' --tlsv1.2 \
     -H "Origin: $public_base" \
     -H "Cookie: $SMOKE_PARTICIPANT_COOKIE" \
     "$public_base/api/v1/meetings/$SMOKE_MEETING_SLUG/ice-servers") \
     || fail 'authenticated ICE configuration request failed'
   grep -Fq "\"$expected_stun\"" <<<"$ice_response" \
     || fail 'authenticated ICE response does not contain the configured STUN URL'
+  grep -Fq "\"$expected_turn\"" <<<"$ice_response" \
+    || fail 'authenticated ICE response does not contain the configured TURN URL'
+  grep -Eq '"username":"[0-9]+:[^"]+"' <<<"$ice_response" \
+    || fail 'authenticated ICE response does not contain an expiring TURN username'
+  grep -Eq '"credential":"[A-Za-z0-9+/]+=*"' <<<"$ice_response" \
+    || fail 'authenticated ICE response does not contain a TURN credential'
+  grep -Eiq '^cache-control: no-store\r?$' <<<"$ice_response" \
+    || fail 'authenticated ICE response is missing Cache-Control: no-store'
 
   cross_site_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
     --proto '=https' --tlsv1.2 --http1.1 \

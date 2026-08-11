@@ -21,6 +21,19 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 p2p_stun_urls="$(sed -n 's/^P2P_STUN_URLS=//p' "$env_file")"
 [[ "$p2p_stun_urls" == stun:* || "$p2p_stun_urls" == stuns:* ]] \
   || { echo 'production P2P_STUN_URLS is invalid' >&2; exit 1; }
+for key in P2P_TURN_URLS P2P_TURN_SECRET P2P_TURN_TTL_SECONDS TURN_SHARED_SECRET; do
+  [[ "$(grep -c "^${key}=" "$env_file")" == 1 ]] \
+    || { echo "production environment must contain exactly one $key entry" >&2; exit 1; }
+done
+p2p_turn_urls="$(sed -n 's/^P2P_TURN_URLS=//p' "$env_file")"
+p2p_turn_secret="$(sed -n 's/^P2P_TURN_SECRET=//p' "$env_file")"
+turn_shared_secret="$(sed -n 's/^TURN_SHARED_SECRET=//p' "$env_file")"
+turn_ttl="$(sed -n 's/^P2P_TURN_TTL_SECONDS=//p' "$env_file")"
+[[ "$p2p_turn_urls" == turn:* || "$p2p_turn_urls" == turns:* ]] \
+  || { echo 'production P2P_TURN_URLS is invalid' >&2; exit 1; }
+[[ ${#p2p_turn_secret} -ge 32 && "$p2p_turn_secret" == "$turn_shared_secret" ]] \
+  || { echo 'API and coturn secrets must match and contain at least 32 characters' >&2; exit 1; }
+[[ "$turn_ttl" == 600 ]] || { echo 'production TURN credential TTL must be 600 seconds' >&2; exit 1; }
 
 probe_output="$(docker run --rm --network none --env-file "$env_file" \
   -e DATABASE_PATH=/data/meetings.sqlite \
@@ -55,6 +68,7 @@ trap cleanup_on_exit EXIT
 SMOKE_MEETING_SLUG="$smoke_slug" \
 SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
 P2P_STUN_URLS="$p2p_stun_urls" \
+P2P_TURN_URLS="$p2p_turn_urls" \
 SMOKE_NODE_IMAGE="$api_image" \
   "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
 
