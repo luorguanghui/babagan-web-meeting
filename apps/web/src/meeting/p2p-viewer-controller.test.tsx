@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
+import {
+  P2P_ICE_DISCONNECT_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_TIMEOUT_MS,
+  P2P_RTP_STALL_TIMEOUT_MS
+} from '@meeting/contracts';
 
 import {
   P2pViewerController,
@@ -42,6 +46,10 @@ class FakeRTCPeerConnection {
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
+  statsCandidateType: RTCIceCandidateType = 'srflx';
+  statsBytes = 1_200;
+  statsFrames = 3;
+  autoProgress = true;
   readonly setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     if (this.failRemoteDescription) throw new Error('bad sdp');
     if (this.setRemoteDescriptionGate) await this.setRemoteDescriptionGate;
@@ -53,6 +61,14 @@ class FakeRTCPeerConnection {
   });
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
+  });
+  readonly getStats = vi.fn(async () => {
+    const report = statsReport(this.statsCandidateType, this.statsBytes, this.statsFrames);
+    if (this.autoProgress) {
+      this.statsBytes += 1_000;
+      this.statsFrames += 1;
+    }
+    return report;
   });
 
   constructor(config: RTCConfiguration) {
@@ -81,6 +97,21 @@ class FakeRTCPeerConnection {
   }
 }
 
+function statsReport(candidateType: RTCIceCandidateType, bytesReceived: number, framesDecoded: number): RTCStatsReport {
+  return new Map<string, RTCStats>([
+    ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
+    ['pair', {
+      id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
+      localCandidateId: 'local', remoteCandidateId: 'remote'
+    } as RTCStats],
+    ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
+    ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats],
+    ['video', {
+      id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video', bytesReceived, framesDecoded
+    } as RTCStats]
+  ]) as unknown as RTCStatsReport;
+}
+
 function makeStream(): MediaStream {
   return {} as unknown as MediaStream;
 }
@@ -93,8 +124,15 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
   } as unknown as RTCPeerConnectionIceEvent;
 }
 
-function makeHarness(options: { onPcCreated?: (pc: FakeRTCPeerConnection) => void } = {}) {
-  const signaling: P2pViewerSignaling = { sendAnswer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
+function makeHarness(options: {
+  onPcCreated?: (pc: FakeRTCPeerConnection) => void;
+  onFallbackRequested?: (complete: () => void) => void;
+  now?: () => number;
+} = {}) {
+  let healthCheck: (() => Promise<void>) | undefined;
+  const signaling: P2pViewerSignaling = {
+    sendAnswer: vi.fn(), sendIce: vi.fn(), sendMediaReady: vi.fn(), sendBye: vi.fn()
+  };
   const onFallback = vi.fn();
   const controller = new P2pViewerController(signaling, iceServers, {
     createPeerConnection: (servers) => {
@@ -102,9 +140,24 @@ function makeHarness(options: { onPcCreated?: (pc: FakeRTCPeerConnection) => voi
       options.onPcCreated?.(pc);
       return pc as unknown as RTCPeerConnection;
     },
-    onFallback
+    onFallback,
+    onFallbackRequested: options.onFallbackRequested,
+    healthSampleIntervalMs: 1_000,
+    now: options.now,
+    scheduleHealthChecks: (check) => {
+      healthCheck = check;
+      return () => undefined;
+    }
   });
-  return { controller, signaling, onFallback };
+  return {
+    controller,
+    signaling,
+    onFallback,
+    async runHealthCheck() {
+      if (!healthCheck) throw new Error('health check was not scheduled');
+      await healthCheck();
+    }
+  };
 }
 
 beforeEach(() => {
@@ -154,7 +207,9 @@ describe('p2p viewer controller', () => {
     const stream = makeStream();
     const videoTrack = first.fireTrack('video', stream);
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
 
     await controller.acceptOffer('sharer-1', 'offer-2');
 
@@ -257,6 +312,7 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('negotiating'); // muted: no RTP yet
 
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(controller.getState()).toBe('p2p');
     expect(audioTrack.muted).toBe(true); // audio alone does not count as media
 
@@ -273,8 +329,65 @@ describe('p2p viewer controller', () => {
     liveTrack.muted = false;
 
     pc.fireTrack('video', makeStream(), liveTrack);
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(controller.getState()).toBe('p2p');
+  });
+
+  it('rejects relay media and falls back instead of reporting direct p2p', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendMediaReady).not.toHaveBeenCalled();
+  });
+
+  it('falls back after inbound video RTP stops growing for five seconds', async () => {
+    let now = 0;
+    const { controller, runHealthCheck } = makeHarness({ now: () => now });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.getState()).toBe('p2p');
+
+    pc.autoProgress = false;
+    for (let elapsed = 0; elapsed < P2P_RTP_STALL_TIMEOUT_MS + 1_000; elapsed += 1_000) {
+      now += 1_000;
+      await runHealthCheck();
+    }
+
+    expect(pc.getStats.mock.calls.length).toBeGreaterThanOrEqual(6);
+    expect(controller.getState()).toBe('livekit');
+  });
+
+  it('keeps the p2p stream and connection until fallback handover completes', async () => {
+    let completeFallback: (() => void) | undefined;
+    const { controller } = makeHarness({
+      onFallbackRequested: (complete) => { completeFallback = complete; }
+    });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const stream = makeStream();
+    const videoTrack = pc.fireTrack('video', stream);
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    pc.setIceConnectionState('failed');
+
+    expect(controller.getState()).toBe('livekit');
+    expect(controller.getStream()).toBe(stream);
+    expect(pc.closed).toBe(false);
+    completeFallback?.();
+    expect(controller.getStream()).toBeNull();
+    expect(pc.closed).toBe(true);
   });
 
   it('falls back 8 seconds after the answer when no track ever arrives', async () => {
@@ -325,6 +438,7 @@ describe('p2p viewer controller', () => {
     const stream = makeStream();
     const videoTrack = pc.fireTrack('video', stream);
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
 
     controller.close();
 
@@ -363,6 +477,7 @@ describe('p2p viewer controller', () => {
     const stream = makeStream();
     const videoTrack = pc.fireTrack('video', stream);
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(controller.getState()).toBe('p2p');
 
     pc.setIceConnectionState('disconnected');
@@ -397,6 +512,7 @@ describe('p2p viewer controller', () => {
     const stream = makeStream();
     const videoTrack = pc.fireTrack('video', stream);
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
 
     pc.setIceConnectionState('failed');
 
@@ -413,6 +529,7 @@ describe('p2p viewer controller', () => {
     const stream = makeStream();
     const videoTrack = pc.fireTrack('video', stream);
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(controller.getState()).toBe('p2p');
 
     pc.setIceConnectionState('disconnected');
@@ -462,6 +579,7 @@ describe('p2p viewer controller', () => {
     const pc = FakeRTCPeerConnection.instances[0];
     const videoTrack = pc.fireTrack('video', makeStream());
     videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
     expect(seen.at(-1)).toBe('p2p');
 
     unsubscribe();

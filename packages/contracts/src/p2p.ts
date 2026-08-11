@@ -5,6 +5,7 @@ import { SchemaError } from './errors.js';
 
 export const P2P_ICE_NEGOTIATION_TIMEOUT_MS = 8000;
 export const P2P_ICE_DISCONNECT_TIMEOUT_MS = 5000;
+export const P2P_RTP_STALL_TIMEOUT_MS = 5000;
 export const P2P_MESSAGE_MAX_BYTES = 64 * 1024;
 export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000] as const;
 

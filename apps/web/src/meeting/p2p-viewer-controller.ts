@@ -1,5 +1,10 @@
-import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS } from '@meeting/contracts';
+import {
+  P2P_ICE_DISCONNECT_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_TIMEOUT_MS,
+  P2P_RTP_STALL_TIMEOUT_MS
+} from '@meeting/contracts';
 
+import { inspectP2pMediaHealth } from './p2p-media-health.js';
 import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
 export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'livekit';
@@ -11,6 +16,7 @@ export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'livekit';
 export interface P2pViewerSignaling {
   sendAnswer(to: string, sdp: string): void;
   sendIce(to: string, candidate: string | null): void;
+  sendMediaReady(to: string): void;
   sendBye(to: string, reason?: string): void;
 }
 
@@ -19,6 +25,11 @@ export interface P2pViewerControllerDependencies {
   createPeerConnection?: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   /** Fired once when the viewer moves to `livekit` (the caller subscribes the LiveKit screen track). */
   onFallback?: () => void;
+  /** Requests the LiveKit handover; invoke `complete` only after its first frame is rendered. */
+  onFallbackRequested?: (complete: () => void) => void;
+  healthSampleIntervalMs?: number;
+  now?: () => number;
+  scheduleHealthChecks?: (check: () => Promise<void>, intervalMs: number) => () => void;
 }
 
 interface ViewerPcSession {
@@ -28,6 +39,11 @@ interface ViewerPcSession {
   mediaTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
   videoTrack?: MediaStreamTrack;
+  stopHealthMonitor?: () => void;
+  lastBytesReceived: number;
+  lastFramesDecoded: number;
+  lastProgressAt: number;
+  fallbackPending: boolean;
 }
 
 /**
@@ -52,6 +68,10 @@ interface ViewerPcSession {
 export class P2pViewerController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private readonly onFallback?: () => void;
+  private readonly onFallbackRequested?: (complete: () => void) => void;
+  private readonly healthSampleIntervalMs: number;
+  private readonly now: () => number;
+  private readonly scheduleHealthChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
   private readonly listeners = new Set<(state: ViewerP2pState) => void>();
   private state: ViewerP2pState = 'idle';
   private sharerIdentity?: string;
@@ -67,6 +87,13 @@ export class P2pViewerController {
     this.createPeerConnection = dependencies.createPeerConnection
       ?? ((servers) => new RTCPeerConnection({ iceServers: servers }));
     this.onFallback = dependencies.onFallback;
+    this.onFallbackRequested = dependencies.onFallbackRequested;
+    this.healthSampleIntervalMs = dependencies.healthSampleIntervalMs ?? 1_000;
+    this.now = dependencies.now ?? Date.now;
+    this.scheduleHealthChecks = dependencies.scheduleHealthChecks ?? ((check, intervalMs) => {
+      const timer = setInterval(() => { void check(); }, intervalMs);
+      return () => clearInterval(timer);
+    });
   }
 
   /**
@@ -94,6 +121,7 @@ export class P2pViewerController {
       await this.flushCandidates(session);
       if (!this.ownsSession(session)) return;
       this.armMediaTimer(session);
+      this.armHealthMonitor(session);
     } catch {
       if (this.ownsSession(session)) this.fallback(session);
     }
@@ -140,7 +168,15 @@ export class P2pViewerController {
 
   private createSession(): ViewerPcSession {
     const pc = this.createPeerConnection(this.iceServers);
-    const session: ViewerPcSession = { pc, pcClosed: false, queuedCandidates: [] };
+    const session: ViewerPcSession = {
+      pc,
+      pcClosed: false,
+      queuedCandidates: [],
+      lastBytesReceived: 0,
+      lastFramesDecoded: 0,
+      lastProgressAt: this.now(),
+      fallbackPending: false
+    };
     pc.ontrack = (event) => this.handleTrack(session, event);
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
     pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
@@ -154,6 +190,7 @@ export class P2pViewerController {
     if (session !== undefined) {
       this.clearMediaTimer(session);
       this.clearDisconnectTimer(session);
+      this.clearHealthMonitor(session);
       if (session.videoTrack) session.videoTrack.onunmute = null;
       this.closePc(session);
     }
@@ -183,14 +220,59 @@ export class P2pViewerController {
    */
   private watchVideoMedia(session: ViewerPcSession, track: MediaStreamTrack): void {
     session.videoTrack = track;
-    track.onunmute = () => this.markMediaReceived(session);
-    if (!track.muted) this.markMediaReceived(session);
+    track.onunmute = () => { void this.sampleMediaHealth(session); };
+    if (!track.muted) void this.sampleMediaHealth(session);
   }
 
-  private markMediaReceived(session: ViewerPcSession): void {
-    if (!this.ownsSession(session) || this.state !== 'negotiating') return;
-    this.clearMediaTimer(session);
-    this.transition('p2p');
+  private async sampleMediaHealth(session: ViewerPcSession): Promise<void> {
+    if (!this.ownsSession(session) || session.fallbackPending) return;
+    try {
+      const health = inspectP2pMediaHealth(await session.pc.getStats());
+      if (!this.ownsSession(session) || session.fallbackPending) return;
+      const progressed = health.bytesReceived > session.lastBytesReceived
+        || health.framesDecoded > session.lastFramesDecoded;
+      if (progressed) {
+        session.lastBytesReceived = health.bytesReceived;
+        session.lastFramesDecoded = health.framesDecoded;
+        session.lastProgressAt = this.now();
+      }
+
+      const hasDecodedDirectVideo = session.videoTrack !== undefined
+        && !session.videoTrack.muted
+        && health.direct
+        && health.bytesReceived > 0
+        && health.framesDecoded > 0;
+      if (this.state === 'negotiating' && hasDecodedDirectVideo) {
+        this.clearMediaTimer(session);
+        this.transition('p2p');
+        if (this.sharerIdentity !== undefined) this.signaling.sendMediaReady(this.sharerIdentity);
+        return;
+      }
+      if (this.state === 'negotiating'
+        && session.videoTrack !== undefined
+        && !session.videoTrack.muted
+        && !health.direct
+        && (health.bytesReceived > 0 || health.framesDecoded > 0)) {
+        this.fallback(session);
+        return;
+      }
+      if (this.state === 'p2p' && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
+        this.fallback(session);
+      }
+    } catch {
+      // A transient getStats failure is handled by the negotiation/stall timers.
+    }
+  }
+
+  private armHealthMonitor(session: ViewerPcSession): void {
+    this.clearHealthMonitor(session);
+    session.stopHealthMonitor = this.scheduleHealthChecks(
+      async () => {
+        const current = this.session;
+        if (current !== undefined) await this.sampleMediaHealth(current);
+      },
+      this.healthSampleIntervalMs
+    );
   }
 
   private handleLocalCandidate(session: ViewerPcSession, event: RTCPeerConnectionIceEvent): void {
@@ -255,14 +337,25 @@ export class P2pViewerController {
 
   private fallback(session: ViewerPcSession): void {
     if (!this.ownsSession(session) || this.closed || (this.state !== 'negotiating' && this.state !== 'p2p')) return;
+    session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);
-    this.closePc(session);
-    this.session = undefined;
-    this.stream = null;
+    this.clearHealthMonitor(session);
     if (this.sharerIdentity !== undefined) this.signaling.sendBye(this.sharerIdentity, 'fallback');
     this.transition('livekit');
     this.onFallback?.();
+    let completed = false;
+    const complete = () => {
+      if (completed) return;
+      completed = true;
+      this.closePc(session);
+      if (this.session === session) {
+        this.session = undefined;
+        this.stream = null;
+      }
+    };
+    if (this.onFallbackRequested) this.onFallbackRequested(complete);
+    else complete();
   }
 
   private clearMediaTimer(session: ViewerPcSession): void {
@@ -276,6 +369,13 @@ export class P2pViewerController {
     if (session.disconnectTimer !== undefined) {
       clearTimeout(session.disconnectTimer);
       session.disconnectTimer = undefined;
+    }
+  }
+
+  private clearHealthMonitor(session: ViewerPcSession): void {
+    if (session.stopHealthMonitor !== undefined) {
+      session.stopHealthMonitor();
+      session.stopHealthMonitor = undefined;
     }
   }
 
