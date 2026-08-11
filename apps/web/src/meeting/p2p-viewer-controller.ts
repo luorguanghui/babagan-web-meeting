@@ -7,7 +7,7 @@ import {
 import { inspectP2pMediaHealth } from './p2p-media-health.js';
 import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
-export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
+export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'livekit';
 
 /**
  * Minimal signaling surface the viewer controller needs. `P2pSignalingClient`
@@ -250,12 +250,18 @@ export class P2pViewerController {
         && health.framesDecoded > 0;
       if (this.state === 'negotiating' && hasDecodedVideo) {
         this.clearMediaTimer(session);
-        this.transition(health.path === 'relay' ? 'turn' : 'p2p');
+        if (health.path === 'relay') {
+          // Media only arrived over a TURN relay: that path costs the same
+          // server bandwidth as the SFU but has no retransmission or
+          // congestion control, so prefer the LiveKit fallback over it.
+          this.fallback(session);
+          return;
+        }
+        this.transition('p2p');
         if (this.sharerIdentity !== undefined) this.signaling.sendMediaReady(this.sharerIdentity);
         return;
       }
-      if ((this.state === 'p2p' || this.state === 'turn')
-        && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
+      if (this.state === 'p2p' && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
         this.fallback(session);
       }
     } catch {
@@ -322,14 +328,13 @@ export class P2pViewerController {
       if (session.disconnectTimer === undefined) {
         session.disconnectTimer = setTimeout(() => {
           session.disconnectTimer = undefined;
-          if (this.ownsSession(session)
-            && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
+          if (this.ownsSession(session) && (this.state === 'negotiating' || this.state === 'p2p')) {
             this.fallback(session);
           }
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
-      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.fallback(session);
+      if (this.state === 'negotiating' || this.state === 'p2p') this.fallback(session);
     } else if (state === 'closed') {
       this.clearDisconnectTimer(session);
     }
@@ -338,7 +343,7 @@ export class P2pViewerController {
   private fallback(session: ViewerPcSession): void {
     if (!this.ownsSession(session)
       || this.closed
-      || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
+      || (this.state !== 'negotiating' && this.state !== 'p2p')) return;
     session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);

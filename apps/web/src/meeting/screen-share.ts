@@ -17,13 +17,15 @@ export interface ScreenShareQualityPreset {
 
 /**
  * Screen-share quality presets applied to both the SFU fallback and the P2P
- * path. `flow` trades resolution for a stable frame rate under limited
- * bandwidth (`maintain-framerate`); `standard` and `motion` keep the text
- * crisp and let the encoder drop frames only when the network forces it.
+ * path. All presets capture at 60 fps; the difference is how the encoder
+ * degrades under bandwidth pressure. `flow` and `standard` are
+ * frame-rate-first (`maintain-framerate` drops resolution before frame rate,
+ * keeping the stream smooth); `motion` keeps the picture crisp and drops
+ * frames only when the network forces it.
  */
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
-  flow: { width: 1280, height: 720, frameRate: 30, degradationPreference: 'maintain-framerate' },
-  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
+  flow: { width: 1280, height: 720, frameRate: 60, degradationPreference: 'maintain-framerate' },
+  standard: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' },
   motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
 };
 

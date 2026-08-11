@@ -1,7 +1,6 @@
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
-  type P2pScreenBitrate,
   type ScreenShareCodec
 } from '@meeting/contracts';
 import { Type } from '@sinclair/typebox';

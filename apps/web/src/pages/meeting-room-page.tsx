@@ -412,7 +412,7 @@ export function MeetingRoomPage({
   }, [controller, createSignalingClient, join.participantIdentity, p2pStats, slug]);
 
   useEffect(() => {
-    if (viewerP2pState === 'p2p' || viewerP2pState === 'turn') return;
+    if (viewerP2pState === 'p2p') return;
     // A renegotiation may replace an established P2P session. Restore the
     // safety net while it negotiates so the stage never drops to an empty source.
     if (viewerP2pState === 'negotiating') {
@@ -485,7 +485,7 @@ export function MeetingRoomPage({
   // screen track (the hybrid controller switches sources with first-frame
   // retention, so no black screen while the swap is in flight).
   const livekitViewerTrack = state.remoteScreenShare?.track;
-  const p2pViewerStream = viewerP2pState === 'p2p' || viewerP2pState === 'turn'
+  const p2pViewerStream = viewerP2pState === 'p2p'
     ? viewerP2pRef.current?.getStream() ?? undefined
     : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
       ? fallbackP2pStream
@@ -503,7 +503,7 @@ export function MeetingRoomPage({
     : state.remoteScreenShare?.sharerName;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
-    if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
+    if (viewerP2pState === 'p2p' && p2pViewerStream) {
       void controller.setRemoteScreenShareSubscribed(false).catch(() => undefined);
       return;
     }
@@ -528,7 +528,7 @@ export function MeetingRoomPage({
         if (reports && reports.length > 0) return reports;
       } else if (viewerP2pState === 'negotiating'
         || viewerP2pState === 'p2p'
-        || viewerP2pState === 'turn') {
+        ) {
         const report = await viewerP2pRef.current?.getStatsReport();
         if (report) return [report];
       }

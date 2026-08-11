@@ -498,7 +498,7 @@ describe('controlled browser screen sharing', () => {
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Unmute microphone' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Share screen' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Leave meeting' }));
-    expect(screen.getByText('Adaptive 1080p · 30–60 fps')).toBeVisible();
+    expect(screen.getByText('Adaptive 1080p · 60 fps')).toBeVisible();
 
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
     expect(selector).toHaveValue('8000000');
@@ -545,7 +545,7 @@ describe('controlled browser screen sharing', () => {
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
   });
 
-  it('captures and publishes at the flow preset (frame-rate first, 720p30)', async () => {
+  it('captures and publishes at the flow preset (frame-rate first, 720p60)', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
     const publish = vi.fn(async () => undefined);
@@ -559,15 +559,15 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000, 'flow');
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1280, height: 720, frameRate: 30 }
+      video: { width: 1280, height: 720, frameRate: 60 }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
-      frameRate: 30,
+      frameRate: 60,
       degradationPreference: 'maintain-framerate'
     }));
   });
 
-  it('defaults to the standard 1080p30 preset when no quality is selected', async () => {
+  it('defaults to the standard 1080p60 preset with frame-rate-first degradation', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
     const publish = vi.fn(async () => undefined);
@@ -581,11 +581,11 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000);
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1920, height: 1080, frameRate: 30 }
+      video: { width: 1920, height: 1080, frameRate: 60 }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
-      frameRate: 30,
-      degradationPreference: 'maintain-resolution'
+      frameRate: 60,
+      degradationPreference: 'maintain-framerate'
     }));
   });
 
