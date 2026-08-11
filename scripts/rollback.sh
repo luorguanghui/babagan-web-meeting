@@ -98,7 +98,7 @@ done
 ((healthy)) || { echo 'Health wait failed; recover from the additional backup.' | tee -a "$log" >&2; exit 1; }
 token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'
 SMOKE_CORE_ONLY=1 SMOKE_NODE_IMAGE="$PREVIOUS_API_IMAGE_TAG" SMOKE_LIVEKIT_TOKEN="$token" \
-  "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud
+  "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://meet.babagan.cloud/rtc
 unset token
 if (( recover_pending )); then
   mv "$source_record" "$state_dir/rollback/pending-release.recovered-$stamp.env"

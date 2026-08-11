@@ -32,6 +32,8 @@ need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
 need "$root/scripts/smoke-test.sh" 'SMOKE_CORE_ONLY'
 need "$rollback" 'SMOKE_CORE_ONLY=1'
 need "$rollback" 'SMOKE_NODE_IMAGE="$PREVIOUS_API_IMAGE_TAG"'
+need "$deploy" 'wss://meet.babagan.cloud/rtc'
+need "$rollback" 'wss://meet.babagan.cloud/rtc'
 need "$deploy" 'compose config | awk -v service="$1"'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use

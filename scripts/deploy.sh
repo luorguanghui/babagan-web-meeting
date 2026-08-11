@@ -140,7 +140,7 @@ done
 token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'
 SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/deployment-smoke.sh" \
   "$compose_file" "$env_file" "babagan-meeting-api:release-$sha" \
-  https://meet.babagan.cloud wss://rtc.babagan.cloud
+  https://meet.babagan.cloud wss://meet.babagan.cloud/rtc
 unset token
 record="$state_dir/releases/$sha.env"
 {
