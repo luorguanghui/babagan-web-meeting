@@ -52,6 +52,7 @@ class FakeRTCPeerConnection {
   iceConnectionState: RTCIceConnectionState = 'new';
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
+  statsCandidateType: RTCIceCandidateType = 'srflx';
   readonly createOffer = vi.fn(async () => {
     if (this.createOfferGate) await this.createOfferGate;
     return { type: 'offer', sdp: `offer-${this.id}` };
@@ -67,6 +68,7 @@ class FakeRTCPeerConnection {
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
+  readonly getStats = vi.fn(async () => statsReport(this.statsCandidateType));
 
   constructor(config: RTCConfiguration) {
     this.config = config;
@@ -94,6 +96,18 @@ class FakeRTCPeerConnection {
     this.iceConnectionState = state;
     this.oniceconnectionstatechange?.();
   }
+}
+
+function statsReport(candidateType: RTCIceCandidateType): RTCStatsReport {
+  return new Map<string, RTCStats>([
+    ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
+    ['pair', {
+      id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
+      localCandidateId: 'local', remoteCandidateId: 'remote'
+    } as RTCStats],
+    ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
+    ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats]
+  ]) as unknown as RTCStatsReport;
 }
 
 function makeTrack(kind: 'video' | 'audio'): MediaStreamTrack {
@@ -292,6 +306,28 @@ describe('p2p share controller', () => {
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 5_000);
     expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
     expect(onViewerFallback).not.toHaveBeenCalled();
+  });
+
+  it('reports TURN when the selected candidate pair uses a relay', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), bitrate, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+  });
+
+  it('returns stats for active viewer sessions and omits closed sessions', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), bitrate, [viewers[0], viewers[1]]);
+
+    expect(await controller.getStatsReports()).toHaveLength(2);
+    controller.handleViewerLeft('viewer-1');
+    expect(await controller.getStatsReports()).toHaveLength(1);
+    await controller.stop();
+    expect(await controller.getStatsReports()).toEqual([]);
   });
 
   it('falls back after ICE stays disconnected for 5 seconds', async () => {

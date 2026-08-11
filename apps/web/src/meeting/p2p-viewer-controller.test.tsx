@@ -334,7 +334,7 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('p2p');
   });
 
-  it('rejects relay media and falls back instead of reporting direct p2p', async () => {
+  it('keeps healthy relay media and reports the TURN transport state', async () => {
     const { controller, signaling } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -344,8 +344,20 @@ describe('p2p viewer controller', () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendMediaReady).not.toHaveBeenCalled();
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
+  });
+
+  it('exposes stats only while its peer connection session is active', async () => {
+    const { controller } = makeHarness();
+    expect(await controller.getStatsReport()).toBeUndefined();
+
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const report = await controller.getStatsReport();
+    expect(report?.get('transport')).toMatchObject({ selectedCandidatePairId: 'pair' });
+
+    controller.close();
+    expect(await controller.getStatsReport()).toBeUndefined();
   });
 
   it('falls back after inbound video RTP stops growing for five seconds', async () => {

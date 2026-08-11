@@ -2,9 +2,10 @@ import { P2P_ICE_DISCONNECT_TIMEOUT_MS, P2P_ICE_NEGOTIATION_TIMEOUT_MS, type P2p
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
+import { inspectP2pMediaHealth } from './p2p-media-health.js';
 import type { Peer } from './p2p-signaling.js';
 
-export type ViewerSessionState = 'negotiating' | 'p2p' | 'livekit-fallback' | 'closed';
+export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
 /**
  * Sharer-side P2P session controller for the screen share: one `RTCPeerConnection`
@@ -23,6 +24,7 @@ export interface P2pShareController {
   handleViewerLeft(identity: string): void;
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
+  getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
 }
 
@@ -144,7 +146,7 @@ class P2pShareControllerImpl implements P2pShareController {
 
   async handleIce(from: string, candidate: string | null): Promise<void> {
     const session = this.sessions.get(from);
-    if (!session || (session.state !== 'negotiating' && session.state !== 'p2p')) return;
+    if (!session || (session.state !== 'negotiating' && session.state !== 'p2p' && session.state !== 'turn')) return;
     const init = candidate === null ? undefined : deserializeIceCandidate(candidate);
     if (session.pc.remoteDescription === null) {
       session.queuedCandidates.push(init);
@@ -158,6 +160,7 @@ class P2pShareControllerImpl implements P2pShareController {
     if (!session || session.state !== 'negotiating' || !session.transportConnected) return;
     this.clearTimers(session);
     this.transition(session, 'p2p');
+    void this.updateTransportState(session);
   }
 
   handleViewerLeft(identity: string): void {
@@ -188,6 +191,11 @@ class P2pShareControllerImpl implements P2pShareController {
     const snapshot = new Map<string, ViewerSessionState>();
     for (const [identity, session] of this.sessions) snapshot.set(identity, session.state);
     return snapshot;
+  }
+
+  async getStatsReports(): Promise<RTCStatsReport[]> {
+    const active = [...this.sessions.values()].filter((session) => !session.pcClosed);
+    return Promise.all(active.map((session) => session.pc.getStats()));
   }
 
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void {
@@ -277,7 +285,9 @@ class P2pShareControllerImpl implements P2pShareController {
       if (session.disconnectTimer === undefined) {
         session.disconnectTimer = setTimeout(() => {
           session.disconnectTimer = undefined;
-          if (session.state === 'p2p' || session.state === 'negotiating') this.fallback(session);
+          if (session.state === 'p2p' || session.state === 'turn' || session.state === 'negotiating') {
+            this.fallback(session);
+          }
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
@@ -301,6 +311,17 @@ class P2pShareControllerImpl implements P2pShareController {
     session.queuedCandidates = [];
     for (const init of queued) {
       await this.applyCandidate(session, init);
+    }
+  }
+
+  private async updateTransportState(session: ViewerSession): Promise<void> {
+    try {
+      const health = inspectP2pMediaHealth(await session.pc.getStats());
+      if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
+      if (health.path === 'relay' && session.state === 'p2p') this.transition(session, 'turn');
+    } catch {
+      // Candidate-pair stats may be briefly unavailable after media-ready.
+      // The usable session remains active and later UI stats can classify it.
     }
   }
 

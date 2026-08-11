@@ -1,5 +1,7 @@
+export type P2pTransportPath = 'direct' | 'relay' | 'unknown';
+
 export interface P2pMediaHealth {
-  direct: boolean;
+  path: P2pTransportPath;
   bytesReceived: number;
   framesDecoded: number;
 }
@@ -32,7 +34,7 @@ export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
 
   const pair = (selectedPairId === undefined ? undefined : report.get(selectedPairId) as StatsRecord | undefined)
     ?? fallbackPair;
-  if (!pair) return { direct: false, bytesReceived, framesDecoded };
+  if (!pair) return { path: 'unknown', bytesReceived, framesDecoded };
 
   const local = typeof pair.localCandidateId === 'string'
     ? report.get(pair.localCandidateId) as StatsRecord | undefined
@@ -40,9 +42,11 @@ export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
   const remote = typeof pair.remoteCandidateId === 'string'
     ? report.get(pair.remoteCandidateId) as StatsRecord | undefined
     : undefined;
-  const direct = local !== undefined
-    && remote !== undefined
-    && local.candidateType !== 'relay'
-    && remote.candidateType !== 'relay';
-  return { direct, bytesReceived, framesDecoded };
+  if (local === undefined || remote === undefined) {
+    return { path: 'unknown', bytesReceived, framesDecoded };
+  }
+  const path: P2pTransportPath = local.candidateType === 'relay' || remote.candidateType === 'relay'
+    ? 'relay'
+    : 'direct';
+  return { path, bytesReceived, framesDecoded };
 }

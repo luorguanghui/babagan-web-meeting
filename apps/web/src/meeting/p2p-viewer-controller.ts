@@ -7,7 +7,7 @@ import {
 import { inspectP2pMediaHealth } from './p2p-media-health.js';
 import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
-export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'livekit';
+export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
 
 /**
  * Minimal signaling surface the viewer controller needs. `P2pSignalingClient`
@@ -146,6 +146,12 @@ export class P2pViewerController {
     return this.state;
   }
 
+  async getStatsReport(): Promise<RTCStatsReport | undefined> {
+    const session = this.session;
+    if (session === undefined || session.pcClosed || this.closed) return undefined;
+    return session.pc.getStats();
+  }
+
   /** Identity of the current P2P sharer, if a session was ever established. */
   getSharerIdentity(): string | undefined {
     return this.sharerIdentity;
@@ -237,26 +243,19 @@ export class P2pViewerController {
         session.lastProgressAt = this.now();
       }
 
-      const hasDecodedDirectVideo = session.videoTrack !== undefined
+      const hasDecodedVideo = session.videoTrack !== undefined
         && !session.videoTrack.muted
-        && health.direct
+        && health.path !== 'unknown'
         && health.bytesReceived > 0
         && health.framesDecoded > 0;
-      if (this.state === 'negotiating' && hasDecodedDirectVideo) {
+      if (this.state === 'negotiating' && hasDecodedVideo) {
         this.clearMediaTimer(session);
-        this.transition('p2p');
+        this.transition(health.path === 'relay' ? 'turn' : 'p2p');
         if (this.sharerIdentity !== undefined) this.signaling.sendMediaReady(this.sharerIdentity);
         return;
       }
-      if (this.state === 'negotiating'
-        && session.videoTrack !== undefined
-        && !session.videoTrack.muted
-        && !health.direct
-        && (health.bytesReceived > 0 || health.framesDecoded > 0)) {
-        this.fallback(session);
-        return;
-      }
-      if (this.state === 'p2p' && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
+      if ((this.state === 'p2p' || this.state === 'turn')
+        && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
         this.fallback(session);
       }
     } catch {
@@ -323,20 +322,23 @@ export class P2pViewerController {
       if (session.disconnectTimer === undefined) {
         session.disconnectTimer = setTimeout(() => {
           session.disconnectTimer = undefined;
-          if (this.ownsSession(session) && (this.state === 'negotiating' || this.state === 'p2p')) {
+          if (this.ownsSession(session)
+            && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
             this.fallback(session);
           }
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
-      if (this.state === 'negotiating' || this.state === 'p2p') this.fallback(session);
+      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.fallback(session);
     } else if (state === 'closed') {
       this.clearDisconnectTimer(session);
     }
   }
 
   private fallback(session: ViewerPcSession): void {
-    if (!this.ownsSession(session) || this.closed || (this.state !== 'negotiating' && this.state !== 'p2p')) return;
+    if (!this.ownsSession(session)
+      || this.closed
+      || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
     session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);

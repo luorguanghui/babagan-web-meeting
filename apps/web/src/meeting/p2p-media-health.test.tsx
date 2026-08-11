@@ -2,15 +2,20 @@ import { describe, expect, it } from 'vitest';
 
 import { inspectP2pMediaHealth } from './p2p-media-health.js';
 
-function report(candidateType: RTCIceCandidateType, bytesReceived = 1_200, framesDecoded = 3): RTCStatsReport {
+function report(
+  localCandidateType: RTCIceCandidateType,
+  remoteCandidateType: RTCIceCandidateType = 'host',
+  bytesReceived = 1_200,
+  framesDecoded = 3
+): RTCStatsReport {
   return new Map<string, RTCStats>([
     ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
     ['pair', {
       id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
       localCandidateId: 'local', remoteCandidateId: 'remote'
     } as RTCStats],
-    ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
-    ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats],
+    ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType: localCandidateType } as RTCStats],
+    ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: remoteCandidateType } as RTCStats],
     ['video', {
       id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video',
       bytesReceived, framesDecoded
@@ -21,19 +26,22 @@ function report(candidateType: RTCIceCandidateType, bytesReceived = 1_200, frame
 describe('inspectP2pMediaHealth', () => {
   it('returns direct video counters for a non-relay selected pair', () => {
     expect(inspectP2pMediaHealth(report('srflx'))).toEqual({
-      direct: true,
+      path: 'direct',
       bytesReceived: 1_200,
       framesDecoded: 3
     });
   });
 
-  it('rejects a relay pair even when media counters are growing', () => {
-    expect(inspectP2pMediaHealth(report('relay')).direct).toBe(false);
+  it.each([
+    ['local', 'relay', 'host'],
+    ['remote', 'srflx', 'relay']
+  ] as const)('classifies a %s relay candidate as TURN relay', (_side, local, remote) => {
+    expect(inspectP2pMediaHealth(report(local, remote)).path).toBe('relay');
   });
 
-  it('requires a selected pair and video inbound RTP', () => {
+  it('leaves the path unknown until a selected pair and both candidates exist', () => {
     expect(inspectP2pMediaHealth(new Map() as unknown as RTCStatsReport)).toEqual({
-      direct: false,
+      path: 'unknown',
       bytesReceived: 0,
       framesDecoded: 0
     });
