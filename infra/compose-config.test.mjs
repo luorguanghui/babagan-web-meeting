@@ -33,6 +33,24 @@ export function assertProductionComposeConfig(config) {
   );
   assert.equal((services.livekit.ports ?? []).length, 0, 'host-networked LiveKit must not publish Docker ports');
   assert.equal((services.livekit.expose ?? []).length, 0, 'host-networked LiveKit must not declare bridge-only exposed ports');
+  assert.ok(services.coturn, 'coturn relay service must be present');
+  assert.equal(services.coturn.network_mode, 'host', 'coturn must preserve host ICE addresses and relay ports');
+  assert.equal((services.coturn.ports ?? []).length, 0, 'host-networked coturn must not publish Docker ports');
+  assert.equal(services.coturn.read_only, true, 'coturn root filesystem must be read-only');
+  assert.match(
+    services.coturn.image,
+    /coturn\/coturn:4\.17\.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e$/,
+    'coturn must use the approved immutable multi-architecture image'
+  );
+  assert.ok((services.coturn.cap_drop ?? []).includes('ALL'), 'coturn must drop inherited Linux capabilities');
+  assert.ok(
+    (services.coturn.volumes ?? []).some((volume) =>
+      volume.target === '/caddy-data' && volume.read_only === true
+    ),
+    'coturn must mount Caddy certificate storage read-only'
+  );
+  assert.equal(services.api.environment.P2P_TURN_TTL_SECONDS, '600');
+  assert.match(services.api.environment.P2P_TURN_URLS, /turns:turn\.babagan\.cloud:5349\?transport=tcp/);
   const livekitVersionMatch = services.livekit.image.match(/:v?(\d+)\.(\d+)\.(\d+)(?:@sha256:[0-9a-f]{64})?$/);
   assert.ok(livekitVersionMatch, 'LiveKit image must use a semantic version tag');
   const livekitVersion = livekitVersionMatch.slice(1).map(Number);

@@ -1,4 +1,5 @@
 {
+  acme_ca https://acme-v02.api.letsencrypt.org/directory
   servers {
     protocols h1 h2
   }
@@ -33,4 +34,9 @@ meet.babagan.cloud {
 
 rtc.babagan.cloud {
   reverse_proxy host.docker.internal:7880
+}
+
+turn.babagan.cloud {
+  respond /health 200
+  respond 404
 }

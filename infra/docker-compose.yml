@@ -68,6 +68,9 @@ services:
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
       P2P_STUN_URLS: ${P2P_STUN_URLS:?P2P_STUN_URLS is required}
+      P2P_TURN_URLS: ${P2P_TURN_URLS:?P2P_TURN_URLS is required}
+      P2P_TURN_SECRET: ${P2P_TURN_SECRET:?P2P_TURN_SECRET is required}
+      P2P_TURN_TTL_SECONDS: ${P2P_TURN_TTL_SECONDS:-600}
       DATABASE_PATH: /data/meetings.sqlite
     volumes:
       - api-data:/data
@@ -109,6 +112,33 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  coturn:
+    image: "${COTURN_IMAGE:-coturn/coturn:4.17.2-r0@sha256:aa68aab64a3b929d57fc2924c98ea447bf996cf8dade2508e7b71eaf23f1f14e}"
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/usr/local/bin/start-turnserver.sh"]
+    environment:
+      TURN_SHARED_SECRET: ${TURN_SHARED_SECRET:?TURN_SHARED_SECRET is required}
+      TURN_EXTERNAL_IP: ${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP is required}
+      TURN_RELAY_IP: ${TURN_RELAY_IP:?TURN_RELAY_IP is required}
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+      - ./coturn/start-turnserver.sh:/usr/local/bin/start-turnserver.sh:ro
+      - caddy-data:/caddy-data:ro
+    depends_on:
+      caddy:
+        condition: service_healthy
+    logging: *default-logging
+    <<: *default-security
+    cap_add:
+      - NET_BIND_SERVICE
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /tmp/turnserver.pid && kill -0 $$(cat /tmp/turnserver.pid)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
   web:
     build:
