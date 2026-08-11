@@ -8,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { AppConfig } from '../src/config.js';
 import { createDatabase } from '../src/db/database.js';
 import { migrate } from '../src/db/migrate.js';
-import type { IceServer, MediaService, PublishSource } from '../src/livekit/media-service.js';
+import type { MediaService, PublishSource } from '../src/livekit/media-service.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import type { HostSession, ParticipantSession } from '../src/repositories/models.js';
 import { hashSessionToken } from '../src/security/session-token.js';
@@ -296,7 +296,8 @@ const config: AppConfig = {
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:',
   meetingTtlMs: 86_400_000, emptyGraceMs: 600_000, reconnectGraceMs: 30_000,
-  reservationTtlMs: 60_000, maxParticipants: 5
+  reservationTtlMs: 60_000, maxParticipants: 5,
+  p2pStunUrls: ['stun:stun.example.test:3478']
 };
 
 class LiteralPasswordHasher implements PasswordHasher {
@@ -349,7 +350,6 @@ class ServiceMediaFake implements MediaService {
 
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
-  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }
 
 function activeHost(meetingId: string): HostSession {

@@ -11,7 +11,6 @@ import type { AppConfig } from '../../config.js';
 import { createDatabase } from '../../db/database.js';
 import { migrate } from '../../db/migrate.js';
 import type {
-  IceServer,
   IssueTokenInput,
   MediaService
 } from '../../livekit/media-service.js';
@@ -217,7 +216,8 @@ const config: AppConfig = {
   livekitUrl: new URL('wss://rtc.example.test'), livekitInternalUrl: new URL('ws://livekit.internal'),
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:', meetingTtlMs: 86_400_000,
-  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5
+  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5,
+  p2pStunUrls: ['stun:stun.example.test:3478']
 };
 
 class RouteMediaFake implements MediaService {
@@ -227,7 +227,6 @@ class RouteMediaFake implements MediaService {
   async removeParticipant(): Promise<void> {}
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
-  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }
 
 class StubWebhookHandler implements WebhookHandler {

@@ -8,6 +8,7 @@ export interface AppConfig {
   adminPasswordHash: string;
   cookieSecret: string;
   databasePath: string;
+  p2pStunUrls: string[];
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -40,6 +41,17 @@ function parseUrl(env: Environment, name: string, protocols: readonly string[]):
   return url;
 }
 
+function parseStunUrls(env: Environment): string[] {
+  const urls = requireValue(env, 'P2P_STUN_URLS')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (urls.length === 0 || urls.some((value) => !/^stuns?:/i.test(value))) {
+    throw new Error('P2P_STUN_URLS must contain only stun: or stuns: URLs');
+  }
+  return urls;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -66,6 +78,7 @@ export function loadConfig(env: Environment): AppConfig {
     adminPasswordHash: requireValue(env, 'ADMIN_PASSWORD_HASH'),
     cookieSecret,
     databasePath: requireValue(env, 'DATABASE_PATH'),
+    p2pStunUrls: parseStunUrls(env),
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

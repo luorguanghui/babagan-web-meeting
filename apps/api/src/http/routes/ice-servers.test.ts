@@ -10,7 +10,6 @@ import type { AppConfig } from '../../config.js';
 import { createDatabase } from '../../db/database.js';
 import { migrate } from '../../db/migrate.js';
 import type {
-  IceServer,
   IssueTokenInput,
   MediaService
 } from '../../livekit/media-service.js';
@@ -40,16 +39,11 @@ describe('ICE credentials endpoint', () => {
     expect(fixture.media.fetchCalls).toBe(0);
   });
 
-  it('returns the LiveKit STUN and TURN server list to an authenticated participant', async () => {
+  it('returns configured STUN servers without calling LiveKit', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     fixture.media.iceServers = [
-      { urls: ['stun:stun.livekit.internal:3478'] },
-      {
-        urls: ['turn:turn.livekit.internal:3478?transport=udp'],
-        username: 'turn-user',
-        credential: 'turn-secret'
-      }
+      { urls: ['turn:must-not-be-used.example.test:3478'] }
     ];
 
     const response = await fixture.app.inject({
@@ -58,7 +52,10 @@ describe('ICE credentials endpoint', () => {
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toEqual({ iceServers: fixture.media.iceServers });
+    expect(response.json()).toEqual({
+      iceServers: [{ urls: ['stun:stun1.example.test:3478'] }]
+    });
+    expect(fixture.media.fetchCalls).toBe(0);
   });
 
   it('returns 404 for an unknown meeting even with a valid participant cookie', async () => {
@@ -74,7 +71,7 @@ describe('ICE credentials endpoint', () => {
     expect(response.json()).toMatchObject({ error: { code: 'MEETING_NOT_FOUND' } });
   });
 
-  it('maps a media-service failure to 503 MEDIA_SERVICE_UNAVAILABLE', async () => {
+  it('does not depend on LiveKit availability', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     fixture.media.iceServersError = new Error('LiveKit unreachable');
@@ -84,8 +81,11 @@ describe('ICE credentials endpoint', () => {
       headers: { cookie: cookiePair(joined.headers['set-cookie']) }
     });
 
-    expect(response.statusCode, response.body).toBe(503);
-    expect(response.json()).toMatchObject({ error: { code: 'MEDIA_SERVICE_UNAVAILABLE' } });
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual({
+      iceServers: [{ urls: ['stun:stun1.example.test:3478'] }]
+    });
+    expect(fixture.media.fetchCalls).toBe(0);
   });
 });
 
@@ -154,11 +154,12 @@ const config: AppConfig = {
   livekitUrl: new URL('wss://rtc.example.test'), livekitInternalUrl: new URL('ws://livekit.internal'),
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:', meetingTtlMs: 86_400_000,
-  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5
+  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5,
+  p2pStunUrls: ['stun:stun1.example.test:3478']
 };
 
 class RouteMediaFake implements MediaService {
-  iceServers: IceServer[] = [];
+  iceServers: Array<{ urls: string[] }> = [];
   iceServersError?: Error;
   fetchCalls = 0;
 
@@ -168,7 +169,7 @@ class RouteMediaFake implements MediaService {
   async removeParticipant(): Promise<void> {}
   async deleteRoom(): Promise<void> {}
   async ping(): Promise<void> {}
-  async fetchIceServers(): Promise<IceServer[]> {
+  async fetchIceServers(): Promise<Array<{ urls: string[] }>> {
     this.fetchCalls++;
     if (this.iceServersError) throw this.iceServersError;
     return this.iceServers;

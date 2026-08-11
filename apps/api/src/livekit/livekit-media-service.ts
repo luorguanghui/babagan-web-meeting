@@ -1,6 +1,4 @@
-import { P2P_ICE_CACHE_TTL_SECONDS } from '@meeting/contracts';
 import {
-  AccessToken,
   RoomServiceClient,
   ServerError,
   TrackSource
@@ -8,7 +6,6 @@ import {
 
 import {
   normalizePublishSources,
-  type IceServer,
   type IssueTokenInput,
   type MediaService,
   type PublishSource
@@ -32,17 +29,11 @@ export interface LiveKitMediaServiceOptions {
   apiKey: string;
   apiSecret: string;
   roomService?: RoomAdministrationClient;
-  fetchImpl?: typeof fetch;
 }
 
 export class LiveKitMediaService implements MediaService {
   private readonly rooms: RoomAdministrationClient;
   private readonly tokens: TokenService;
-  private readonly serverApiUrl: string;
-  private readonly apiKey: string;
-  private readonly apiSecret: string;
-  private readonly iceFetch: typeof fetch;
-  private iceServersCache: { value: IceServer[]; expiresAt: number } | null = null;
 
   public constructor(options: LiveKitMediaServiceOptions) {
     this.rooms = options.roomService ?? new RoomServiceClient(
@@ -51,10 +42,6 @@ export class LiveKitMediaService implements MediaService {
       options.apiSecret
     ) as RoomAdministrationClient;
     this.tokens = new TokenService(options.apiKey, options.apiSecret);
-    this.serverApiUrl = toLiveKitServerApiUrl(options.internalUrl);
-    this.apiKey = options.apiKey;
-    this.apiSecret = options.apiSecret;
-    this.iceFetch = options.fetchImpl ?? fetch;
   }
 
   async listParticipantIdentities(roomName: string): Promise<Set<string>> {
@@ -104,51 +91,6 @@ export class LiveKitMediaService implements MediaService {
     await this.rooms.listRooms([]);
   }
 
-  async fetchIceServers(): Promise<IceServer[]> {
-    const now = Date.now();
-    const cached = this.iceServersCache;
-    if (cached && cached.expiresAt > now) return cached.value;
-
-    const authorization = `Bearer ${await new AccessToken(this.apiKey, this.apiSecret).toJwt()}`;
-    const response = await this.iceFetch(`${this.serverApiUrl}rtc/ice`, {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization
-      },
-      body: '{}'
-    });
-    if (!response.ok) {
-      throw new Error(`LiveKit ICE endpoint returned HTTP ${response.status}`);
-    }
-    const servers = parseIceServers(await response.json());
-    this.iceServersCache = { value: servers, expiresAt: now + P2P_ICE_CACHE_TTL_SECONDS * 1_000 };
-    return servers;
-  }
-}
-
-function parseIceServers(body: unknown): IceServer[] {
-  const iceServers = isRecord(body) ? body.iceServers : undefined;
-  if (!Array.isArray(iceServers)) {
-    throw new Error('LiveKit ICE response is missing the iceServers list');
-  }
-  return iceServers.map(parseIceServer);
-}
-
-function parseIceServer(entry: unknown): IceServer {
-  if (!isRecord(entry)
-    || !Array.isArray(entry.urls)
-    || entry.urls.some((url) => typeof url !== 'string')) {
-    throw new Error('LiveKit ICE response contains a malformed server entry');
-  }
-  const server: IceServer = { urls: entry.urls };
-  if (typeof entry.username === 'string') server.username = entry.username;
-  if (typeof entry.credential === 'string') server.credential = entry.credential;
-  return server;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 export function toLiveKitServerApiUrl(input: string | URL): string {

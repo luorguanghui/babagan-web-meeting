@@ -85,7 +85,8 @@ async function main(): Promise<void> {
     LIVEKIT_API_SECRET: 'local-e2e-secret',
     ADMIN_PASSWORD_HASH: adminPasswordHash,
     COOKIE_SECRET: 'local-e2e-cookie-secret-0123456789abcdef',
-    DATABASE_PATH: databasePath
+    DATABASE_PATH: databasePath,
+    P2P_STUN_URLS: 'stun:stun.example.test:3478'
   });
 
   const database = createDatabase(config.databasePath);

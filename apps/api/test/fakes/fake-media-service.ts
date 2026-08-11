@@ -1,5 +1,4 @@
 import type {
-  IceServer,
   IssueTokenInput,
   MediaService,
   PublishSource
@@ -17,8 +16,6 @@ export class FakeMediaService implements MediaService {
   readonly deletedRooms: string[] = [];
   pingCount = 0;
   removeError?: Error;
-  iceServers: IceServer[] = [];
-  iceServersError?: Error;
 
   async listParticipantIdentities(roomName: string): Promise<Set<string>> {
     return new Set(this.identities.get(roomName) ?? []);
@@ -52,8 +49,4 @@ export class FakeMediaService implements MediaService {
     this.pingCount++;
   }
 
-  async fetchIceServers(): Promise<IceServer[]> {
-    if (this.iceServersError) throw this.iceServersError;
-    return this.iceServers;
-  }
 }

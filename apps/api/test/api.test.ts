@@ -12,7 +12,7 @@ import { migrate } from '../src/db/migrate.js';
 import { DomainError } from '../src/domain/errors.js';
 import { buildApp } from '../src/app.js';
 import { apiErrorDetails } from '../src/http/error-handler.js';
-import type { IceServer, MediaService, PublishSource } from '../src/livekit/media-service.js';
+import type { MediaService, PublishSource } from '../src/livekit/media-service.js';
 import type { WebhookHandler } from '../src/livekit/webhook-handler.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import type { IdGenerator, PasswordHasher } from '../src/services/meeting-service.js';
@@ -472,7 +472,8 @@ const config: AppConfig = {
   livekitUrl: new URL('wss://rtc.example.test'), livekitInternalUrl: new URL('ws://livekit.internal'),
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:', meetingTtlMs: 86_400_000,
-  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5
+  emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5,
+  p2pStunUrls: ['stun:stun.example.test:3478']
 };
 
 class LiteralPasswordHasher implements PasswordHasher {
@@ -511,7 +512,6 @@ class ApiMediaFake implements MediaService {
   }
   async deleteRoom(roomName: string): Promise<void> { this.identities.delete(roomName); }
   async ping(): Promise<void> { if (this.pingError) throw this.pingError; }
-  async fetchIceServers(): Promise<IceServer[]> { return []; }
 }
 
 class CapturingWebhookHandler implements WebhookHandler {

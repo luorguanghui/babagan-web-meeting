@@ -63,6 +63,7 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
+      P2P_STUN_URLS: ${P2P_STUN_URLS:?P2P_STUN_URLS is required}
       DATABASE_PATH: /data/meetings.sqlite
     volumes:
       - api-data:/data
@@ -86,7 +87,7 @@ services:
       start_period: 20s
 
   livekit:
-    image: livekit/livekit-server:v1.9.12@sha256:2c13cbf2edcbf13ea7b20d05c10b394d04d8fb3fe358269cff845a90b4de9576
+    image: livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16
     restart: unless-stopped
     command: ["--config", "/etc/livekit/livekit.yaml", "--node-ip", "${LIVEKIT_NODE_IP:?LIVEKIT_NODE_IP is required}"]
     environment:

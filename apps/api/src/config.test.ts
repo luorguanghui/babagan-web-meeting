@@ -12,6 +12,7 @@ const validEnv = (overrides: Record<string, string | undefined> = {}) => ({
   ADMIN_PASSWORD_HASH: '$argon2id$v=19$m=65536,t=3,p=4$salt$hash',
   COOKIE_SECRET: 'a-very-long-development-cookie-secret',
   DATABASE_PATH: './data/meetings.sqlite',
+  P2P_STUN_URLS: 'stun:stun1.example.test:3478',
   ...overrides
 });
 
@@ -53,5 +54,17 @@ describe('loadConfig', () => {
       NODE_ENV: 'production',
       LIVEKIT_API_SECRET: undefined
     })).toThrow(/LIVEKIT_API_SECRET/);
+  });
+
+  it('parses configured STUN URLs and rejects non-STUN protocols', () => {
+    expect(loadConfig(validEnv({
+      P2P_STUN_URLS: ' stun:stun1.example.test:3478,stuns:stun2.example.test:5349 '
+    })).p2pStunUrls).toEqual([
+      'stun:stun1.example.test:3478',
+      'stuns:stun2.example.test:5349'
+    ]);
+
+    expect(() => loadConfig(validEnv({ P2P_STUN_URLS: 'turn:relay.example.test:3478' })))
+      .toThrow('P2P_STUN_URLS must contain only stun: or stuns: URLs');
   });
 });

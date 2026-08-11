@@ -268,7 +268,8 @@ const config: AppConfig = {
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:',
   meetingTtlMs: 86_400_000, emptyGraceMs: 600_000, reconnectGraceMs: 30_000,
-  reservationTtlMs: 60_000, maxParticipants: 5
+  reservationTtlMs: 60_000, maxParticipants: 5,
+  p2pStunUrls: ['stun:stun.example.test:3478']
 };
 
 class FakePasswordHasher implements PasswordHasher {

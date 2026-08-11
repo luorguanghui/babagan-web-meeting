@@ -34,6 +34,11 @@ export function assertProductionComposeConfig(config) {
   assert.equal((services.livekit.ports ?? []).length, 0, 'host-networked LiveKit must not publish Docker ports');
   assert.equal((services.livekit.expose ?? []).length, 0, 'host-networked LiveKit must not declare bridge-only exposed ports');
   assert.equal(
+    services.livekit.image,
+    'livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16',
+    'LiveKit must match the production v1.11.0 image digest'
+  );
+  assert.equal(
     services.livekit.user,
     undefined,
     'host-networked LiveKit must use the image default user so TURN can bind UDP 443 under the host low-port policy'

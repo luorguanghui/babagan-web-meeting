@@ -7,12 +7,6 @@ export interface IssueTokenInput {
   sources?: PublishSource[];
 }
 
-export interface IceServer {
-  urls: string[];
-  username?: string;
-  credential?: string;
-}
-
 export interface MediaService {
   listParticipantIdentities(roomName: string): Promise<Set<string>>;
   issueToken(input: IssueTokenInput): Promise<string>;
@@ -24,7 +18,6 @@ export interface MediaService {
   removeParticipant(roomName: string, identity: string): Promise<void>;
   deleteRoom(roomName: string): Promise<void>;
   ping(): Promise<void>;
-  fetchIceServers(): Promise<IceServer[]>;
 }
 
 export const NORMAL_PUBLISH_SOURCES = ['microphone'] as const;

@@ -1,8 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
-import { domainError } from '../../domain/errors.js';
-import type { IceServer, MediaService } from '../../livekit/media-service.js';
+import type { AppConfig } from '../../config.js';
 import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { SessionAuthenticationError } from '../auth.js';
@@ -18,7 +17,7 @@ const IceServersResponseSchema = Type.Object({ iceServers: Type.Array(IceServerS
 
 export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
   participants: ParticipantApplicationService;
-  media: MediaService;
+  config: AppConfig;
 }): void {
   app.get('/api/v1/meetings/:slug/ice-servers', {
     schema: { params: SlugParamsSchema, response: { 200: IceServersResponseSchema } },
@@ -27,13 +26,7 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
     const value = slug(request.params);
     participantSession(request, dependencies.participants, value);
 
-    let iceServers: IceServer[];
-    try {
-      iceServers = await dependencies.media.fetchIceServers();
-    } catch {
-      throw domainError('MEDIA_SERVICE_UNAVAILABLE');
-    }
-    return { iceServers };
+    return { iceServers: [{ urls: dependencies.config.p2pStunUrls }] };
   });
 }
 
