@@ -6,6 +6,15 @@ export const P2P_HEARTBEAT_INTERVAL_MS = 25_000;
 export const P2P_RECONNECT_BACKOFF_BASE_MS = 1_000;
 /** Ceiling for the exponential reconnect backoff. */
 export const P2P_RECONNECT_BACKOFF_MAX_MS = 30_000;
+/**
+ * Consecutive failed connections before the client gives up. Chrome surfaces
+ * an HTTP 401 handshake rejection as a generic 1006 close, so the client
+ * cannot tell "session revoked" from a transient network drop; five straight
+ * failures mean the session is gone (expired or revoked), and retrying
+ * forever would only fan a 401 storm against the server. A `welcome` resets
+ * the counter.
+ */
+export const P2P_MAX_CONSECUTIVE_RECONNECTS = 5;
 
 export interface Peer {
   identity: string;
@@ -43,6 +52,14 @@ export interface P2pSignalingDependencies {
   heartbeatIntervalMs?: number;
   backoffBaseMs?: number;
   backoffMaxMs?: number;
+  maxReconnectAttempts?: number;
+  /**
+   * Registers a `visibilitychange` listener (defaults to `document`). The
+   * client pings on every visibility change so a tab that comes back from the
+   * background immediately refreshes the server-side heartbeat timer instead
+   * of waiting for the throttled interval.
+   */
+  addVisibilityListener?: (listener: () => void) => () => void;
 }
 
 export function buildP2pSignalingUrl(slug: string, pageLocation: { protocol: string; host: string }): string {
@@ -65,6 +82,8 @@ export class P2pSignalingClient {
   private readonly heartbeatIntervalMs: number;
   private readonly backoffBaseMs: number;
   private readonly backoffMaxMs: number;
+  private readonly maxReconnectAttempts: number;
+  private readonly removeVisibilityListener: () => void;
 
   private socket?: P2pWebSocket;
   private closed = false;
@@ -73,6 +92,7 @@ export class P2pSignalingClient {
   private rejectConnect?: (reason: Error) => void;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
+  /** Consecutive failed connections since the last `welcome`; reset on success. */
   private backoff = 0;
 
   constructor(
@@ -87,6 +107,15 @@ export class P2pSignalingClient {
     this.heartbeatIntervalMs = dependencies.heartbeatIntervalMs ?? P2P_HEARTBEAT_INTERVAL_MS;
     this.backoffBaseMs = dependencies.backoffBaseMs ?? P2P_RECONNECT_BACKOFF_BASE_MS;
     this.backoffMaxMs = dependencies.backoffMaxMs ?? P2P_RECONNECT_BACKOFF_MAX_MS;
+    this.maxReconnectAttempts = dependencies.maxReconnectAttempts ?? P2P_MAX_CONSECUTIVE_RECONNECTS;
+    const addVisibilityListener = dependencies.addVisibilityListener ?? ((listener: () => void) => {
+      document.addEventListener('visibilitychange', listener);
+      return () => document.removeEventListener('visibilitychange', listener);
+    });
+    // A backgrounded tab throttles the 25 s heartbeat to ~60 s; pinging on
+    // visibility changes keeps the server-side timer fresh when the tab
+    // returns (and again right before it is throttled).
+    this.removeVisibilityListener = addVisibilityListener(() => this.send({ type: 'ping' }));
   }
 
   /**
@@ -136,6 +165,7 @@ export class P2pSignalingClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.removeVisibilityListener();
     this.cancelReconnect();
     this.disarmHeartbeat();
     if (this.socket) {
@@ -260,6 +290,10 @@ export class P2pSignalingClient {
 
   private scheduleReconnect(): void {
     if (this.closed || this.reconnectTimer !== undefined) return;
+    // `backoff` counts consecutive failures since the last welcome; beyond the
+    // cap the session is effectively gone and retrying would only hammer the
+    // server with 401s forever.
+    if (this.backoff >= this.maxReconnectAttempts) return;
     const delay = Math.min(this.backoffBaseMs * (2 ** this.backoff), this.backoffMaxMs);
     this.backoff += 1;
     this.reconnectTimer = setTimeout(() => {

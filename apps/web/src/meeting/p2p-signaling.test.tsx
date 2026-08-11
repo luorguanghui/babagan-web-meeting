@@ -237,7 +237,23 @@ describe('p2p signaling client', () => {
     ]);
   });
 
-  it('doubles the reconnect delay up to the 30-second cap', async () => {
+  it('pings immediately when the tab visibility changes', async () => {
+    // Chrome throttles background-tab timers, so a backgrounded client's 25 s
+    // heartbeat can drift to ~60 s. The client re-pings on visibility changes
+    // so a returning tab immediately refreshes the server heartbeat timer.
+    const client = createClient();
+    const socket = await connectClient(client);
+
+    document.dispatchEvent(new Event('visibilitychange'));
+    document.dispatchEvent(new Event('visibilitychange'));
+
+    const pings = socket.sent.filter((message) => (message as { type?: string }).type === 'ping');
+    expect(pings).toHaveLength(2);
+  });
+
+  it('doubles the reconnect delay and gives up after five consecutive failures', async () => {
+    // Five consecutive failures mean the session is gone (expired or revoked):
+    // keep retrying would only fan a 401 storm against the server forever.
     const client = createClient();
     const connected = client.connect();
     const first = lastSocket();
@@ -246,7 +262,7 @@ describe('p2p signaling client', () => {
     await connected;
     first.fail();
 
-    const delays = [1_000, 2_000, 4_000, 8_000, 16_000, 30_000, 30_000];
+    const delays = [1_000, 2_000, 4_000, 8_000, 16_000];
     delays.forEach((delay, index) => {
       vi.advanceTimersByTime(delay - 1);
       expect(FakeWebSocket.instances).toHaveLength(index + 1);
@@ -254,7 +270,37 @@ describe('p2p signaling client', () => {
       expect(FakeWebSocket.instances).toHaveLength(index + 2);
       lastSocket().fail();
     });
+
+    // Five consecutive failures: the client stops reconnecting.
+    vi.advanceTimersByTime(120_000);
     expect(FakeWebSocket.instances).toHaveLength(delays.length + 1);
+  });
+
+  it('resets the failure count once the server welcomes the client again', async () => {
+    const client = createClient();
+    const connected = client.connect();
+    const first = lastSocket();
+    first.open();
+    first.message({ type: 'welcome', peers: [] });
+    await connected;
+
+    // Four failures, then a successful reconnect: the counter resets, so five
+    // more failures are allowed before the client gives up.
+    for (let i = 0; i < 4; i += 1) {
+      lastSocket().fail();
+      vi.advanceTimersByTime(16_000);
+    }
+    const recovered = lastSocket();
+    recovered.open();
+    recovered.message({ type: 'welcome', peers: [] });
+
+    for (let i = 0; i < 5; i += 1) {
+      lastSocket().fail();
+      vi.advanceTimersByTime(16_000);
+    }
+    const afterTenFailures = FakeWebSocket.instances.length;
+    vi.advanceTimersByTime(120_000);
+    expect(FakeWebSocket.instances).toHaveLength(afterTenFailures);
   });
 
   it('rejects connect() when the first connection closes before the welcome', async () => {

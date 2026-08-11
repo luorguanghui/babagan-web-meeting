@@ -267,11 +267,11 @@ describe('P2pSignalingSession', () => {
     expect(socket.messages().at(-1)).toEqual(errorMessage('INVALID_MESSAGE'));
   });
 
-  it('closes a connection that stays silent for 30 seconds', () => {
+  it('closes a connection that stays silent for 120 seconds', () => {
     const harness = createHarness();
     const { socket } = createSession(harness, 'ada', 'Ada');
 
-    vi.advanceTimersByTime(29_999);
+    vi.advanceTimersByTime(119_999);
     expect(socket.closed).toBe(false);
 
     vi.advanceTimersByTime(1);
@@ -280,16 +280,32 @@ describe('P2pSignalingSession', () => {
     expect(harness.registry.listPeers('meeting-a')).toEqual([]);
   });
 
-  it('treats any message as activity and resets the 30 second timeout', () => {
+  it('keeps the connection alive through a 60-second background-tab gap', () => {
+    // Chrome throttles background-tab timers to roughly one firing per minute,
+    // so a client can legitimately go silent for a full minute without being
+    // dead. The 120 s timeout must tolerate that gap (regression test for the
+    // 30 s timeout that dropped backgrounded meetings every half minute).
+    const harness = createHarness();
+    const { socket } = createSession(harness, 'ada', 'Ada');
+
+    vi.advanceTimersByTime(60_000);
+    expect(socket.closed).toBe(false);
+  });
+
+  it('treats any message as activity and resets the heartbeat timeout', () => {
     const harness = createHarness();
     const { session, socket } = createSession(harness, 'ada', 'Ada');
 
-    vi.advanceTimersByTime(20_000);
+    // A backgrounded client would only get to ping after ~60 s; a message then
+    // must reset the timer and keep the connection alive past the old 30 s cap.
+    vi.advanceTimersByTime(60_000);
     session.handleMessage(ping);
-    vi.advanceTimersByTime(20_000);
     expect(socket.closed).toBe(false);
 
-    vi.advanceTimersByTime(10_000);
+    vi.advanceTimersByTime(119_999);
+    expect(socket.closed).toBe(false);
+
+    vi.advanceTimersByTime(1);
     expect(socket.closed).toBe(true);
   });
 
@@ -298,7 +314,7 @@ describe('P2pSignalingSession', () => {
     createSession(harness, 'ada', 'Ada');
     const { socket: bobSocket } = createSession(harness, 'bob', 'Bob');
 
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(120_000);
 
     expect(bobSocket.messages()).toContainEqual({ type: 'peer-left', peer: { identity: 'ada' } });
   });

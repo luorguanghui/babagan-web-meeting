@@ -3,8 +3,16 @@ import { parseP2pClientMessage } from '@meeting/contracts';
 
 import type { P2pRoomRegistry, P2pSocket } from './room-registry.js';
 
-/** A connection that sends nothing for this long is considered lost. */
-export const P2P_HEARTBEAT_TIMEOUT_MS = 30_000;
+/**
+ * A connection that sends nothing for this long is considered lost.
+ *
+ * Must stay well above the browser's background-tab timer throttling: Chrome
+ * throttles invisible-tab timers to roughly one firing per minute, so a client
+ * whose tab is backgrounded can legitimately stay silent for ~60 s. The old
+ * 30 s timeout dropped backgrounded meetings every half minute and broke ICE
+ * candidate exchange, forcing viewers onto the TURN relay path.
+ */
+export const P2P_HEARTBEAT_TIMEOUT_MS = 120_000;
 /** Per-connection fixed window, aligned with the general API rate limit (120 msg / 60 s). */
 export const P2P_MESSAGE_RATE_LIMIT = { max: 120, windowMs: 60_000 };
 /** Application close code for a silent (dead) connection. */
