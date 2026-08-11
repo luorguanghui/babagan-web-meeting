@@ -50,6 +50,7 @@ run_smoke() {
 output="$(run_smoke)"
 [[ "$output" != *'signed%2Fcookie.value'* ]] || { echo 'smoke cookie leaked to stdout' >&2; exit 1; }
 grep -Fq 'deployment-smoke-session-cli.js create' "$temp_dir/docker.log"
+grep -Fq -- '-e DATABASE_PATH=/data/meetings.sqlite' "$temp_dir/docker.log"
 grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log"
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
 grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"

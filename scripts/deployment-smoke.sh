@@ -23,6 +23,7 @@ p2p_stun_urls="$(sed -n 's/^P2P_STUN_URLS=//p' "$env_file")"
   || { echo 'production P2P_STUN_URLS is invalid' >&2; exit 1; }
 
 probe_output="$(docker run --rm --network none --env-file "$env_file" \
+  -e DATABASE_PATH=/data/meetings.sqlite \
   -v babagan-meeting_api-data:/data --entrypoint node "$api_image" \
   dist/smoke/deployment-smoke-session-cli.js create)"
 [[ "$(grep -c '^SMOKE_MEETING_SLUG=' <<<"$probe_output")" == 1 ]] \
@@ -39,6 +40,7 @@ unset probe_output
 
 cleanup_probe() {
   docker run --rm --network none --env-file "$env_file" \
+    -e DATABASE_PATH=/data/meetings.sqlite \
     -v babagan-meeting_api-data:/data --entrypoint node "$api_image" \
     dist/smoke/deployment-smoke-session-cli.js delete "$smoke_slug" >/dev/null
 }
