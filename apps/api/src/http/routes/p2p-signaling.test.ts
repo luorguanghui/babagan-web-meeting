@@ -35,15 +35,35 @@ describe('P2P signaling websocket endpoint', () => {
   it('rejects the handshake with 401 without a participant cookie', async () => {
     const created = await fixture.createMeeting();
     await expect(
-      fixture.app.injectWS(`/api/v1/meetings/${created.slug}/p2p`)
+      fixture.app.injectWS(`/api/v1/meetings/${created.slug}/p2p`, {
+        headers: { origin: config.publicBaseUrl.origin }
+      })
     ).rejects.toThrow('Unexpected server response: 401');
+  });
+
+  it.each([
+    ['missing Origin', undefined],
+    ['cross-site Origin', 'https://evil.example']
+  ])('rejects a handshake with %s', async (_label, origin) => {
+    const created = await fixture.createMeeting();
+    const joined = await fixture.join(created.slug, 'Ada');
+    await expect(
+      fixture.app.injectWS(`/api/v1/meetings/${created.slug}/p2p`, {
+        headers: {
+          cookie: joined.cookie,
+          ...(origin === undefined ? {} : { origin })
+        }
+      })
+    ).rejects.toThrow('Unexpected server response: 403');
   });
 
   it('rejects the handshake with 404 for an unknown meeting', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     await expect(
-      fixture.app.injectWS('/api/v1/meetings/abcdefghijklmnopqrstuv/p2p', { headers: { cookie: joined.cookie } })
+      fixture.app.injectWS('/api/v1/meetings/abcdefghijklmnopqrstuv/p2p', {
+        headers: { cookie: joined.cookie, origin: config.publicBaseUrl.origin }
+      })
     ).rejects.toThrow('Unexpected server response: 404');
   });
 
@@ -55,7 +75,9 @@ describe('P2P signaling websocket endpoint', () => {
     // Ending the meeting revokes participant sessions, so the stale cookie
     // fails session authentication with the same 401 as the other endpoints.
     await expect(
-      fixture.app.injectWS(`/api/v1/meetings/${created.slug}/p2p`, { headers: { cookie: joined.cookie } })
+      fixture.app.injectWS(`/api/v1/meetings/${created.slug}/p2p`, {
+        headers: { cookie: joined.cookie, origin: config.publicBaseUrl.origin }
+      })
     ).rejects.toThrow('Unexpected server response: 401');
   });
 
@@ -374,7 +396,7 @@ async function createFixture(): Promise<P2pFixture> {
     connect(slug, cookie) {
       return new Promise((resolve, reject) => {
         const ws = new WebSocket(`ws://127.0.0.1:${port}/api/v1/meetings/${slug}/p2p`, {
-          headers: { cookie }
+          headers: { cookie, origin: config.publicBaseUrl.origin }
         });
         // Buffer frames from the very start: with ws >= 8.18 the server's
         // first frame (welcome) can be emitted synchronously before 'open',

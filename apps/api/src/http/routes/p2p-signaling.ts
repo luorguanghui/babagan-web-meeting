@@ -2,18 +2,21 @@ import type { WebSocket } from '@fastify/websocket';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { AppConfig } from '../../config.js';
 import type { P2pSocket } from '../../p2p/room-registry.js';
 import { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import { P2pSignalingSession } from '../../p2p/signaling-session.js';
 import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { SessionAuthenticationError } from '../auth.js';
+import { assertTrustedOrigin } from '../origin.js';
 
 const SlugParamsSchema = Type.Object({ slug: Type.String({ minLength: 22, maxLength: 256 }) });
 
 export interface P2pSignalingDependencies {
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
+  config: Pick<AppConfig, 'publicBaseUrl'>;
 }
 
 export interface P2pHandshakeSession {
@@ -55,6 +58,7 @@ export function registerP2pSignalingRoute(app: FastifyInstance, dependencies: P2
     // hook chain stalled for upgrade requests. A passing `preValidation` hook
     // also hangs the upgrade with @fastify/websocket 11.x, so we avoid it.
     onRequest: async (request) => {
+      assertTrustedOrigin(request, dependencies.config.publicBaseUrl);
       // Auth is performed once, before the upgrade, so a throw becomes an HTTP
       // error response. The result is reused by the ws handler — re-running
       // authentication there could throw uncaught inside the socket callback
