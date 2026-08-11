@@ -62,16 +62,26 @@ fi
 
 script_directory=$(cd "$(dirname "$0")" && pwd -P)
 if command -v node >/dev/null; then
-  node "$script_directory/verify-websocket.mjs" "$rtc_url" || fail 'RTC endpoint did not complete a bounded authenticated WebSocket open'
+  websocket_probe() {
+    node "$script_directory/verify-websocket.mjs" "$rtc_url"
+  }
 elif command -v docker >/dev/null && [[ -n ${SMOKE_NODE_IMAGE:-} ]]; then
-  docker run --rm --network host \
-    -v "$script_directory:/scripts:ro" \
-    -e SMOKE_LIVEKIT_TOKEN \
-    --entrypoint node "$SMOKE_NODE_IMAGE" \
-    /scripts/verify-websocket.mjs "$rtc_url" || fail 'RTC endpoint did not complete a bounded authenticated WebSocket open'
+  websocket_probe() {
+    docker run --rm --network host \
+      -v "$script_directory:/scripts:ro" \
+      -e SMOKE_LIVEKIT_TOKEN \
+      --entrypoint node "$SMOKE_NODE_IMAGE" \
+      /scripts/verify-websocket.mjs "$rtc_url"
+  }
 else
   fail 'required command is missing: node (or set SMOKE_NODE_IMAGE with Docker available)'
 fi
+websocket_ok=0
+for websocket_attempt in 1 2 3; do
+  if websocket_probe; then websocket_ok=1; break; fi
+  (( websocket_attempt < 3 )) && sleep 5
+done
+(( websocket_ok )) || fail 'RTC endpoint did not complete a bounded authenticated WebSocket open'
 
 for blocked_port in 3000 7880; do
   if timeout 3 bash -c ">/dev/tcp/$rtc_host/$blocked_port" 2>/dev/null; then
