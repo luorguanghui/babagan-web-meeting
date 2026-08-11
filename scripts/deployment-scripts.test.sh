@@ -19,7 +19,7 @@ done
 # Failed candidate deployments retain this protected record before any pull/build
 # or migration, and only archive it after smoke success.
 need "$deploy" 'pending-release.env'
-need "$deploy" 'compose pull caddy livekit'
+need "$deploy" 'compose pull --policy missing caddy livekit'
 need "$deploy" 'compose run --rm --no-deps api'
 need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'
@@ -29,6 +29,9 @@ need "$deploy" 'LIVEKIT_NODE_IP must equal the confirmed target IP'
 need "$deploy" '"$script_dir/deployment-smoke.sh"'
 need "$deployment_smoke" 'SMOKE_NODE_IMAGE="$api_image"'
 need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
+need "$root/scripts/smoke-test.sh" 'SMOKE_CORE_ONLY'
+need "$rollback" 'SMOKE_CORE_ONLY=1'
+need "$rollback" 'SMOKE_NODE_IMAGE="$PREVIOUS_API_IMAGE_TAG"'
 need "$deploy" 'compose config | awk -v service="$1"'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use

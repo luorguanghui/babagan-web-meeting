@@ -90,7 +90,7 @@ ssh_policy=restricted; (( allow_public_ssh )) && ssh_policy=public-operator-waiv
   fi
 } >"$pending_tmp"
 chmod 600 "$pending_tmp"; mv "$pending_tmp" "$pending"
-compose pull caddy livekit; compose build --pull api web
+compose pull --policy missing caddy livekit; compose build --pull api web
 # One-shot migration: no listening service is started by this command.
 compose run --rm --no-deps api node --input-type=module -e 'import {createDatabase} from "./dist/db/database.js"; import {migrate} from "./dist/db/migrate.js"; const db=createDatabase(process.env.DATABASE_PATH); try { migrate(db); } finally { db.close(); }'
 if (( bootstrap_empty )); then
