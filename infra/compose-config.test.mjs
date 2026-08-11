@@ -70,6 +70,11 @@ export function assertProductionComposeConfig(config) {
     undefined,
     'Caddy must use its image default user so fresh TLS volumes can initialize safely'
   );
+  assert.match(
+    services.caddy.image,
+    /@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d$/,
+    'Caddy may use a registry mirror but must match the approved image digest'
+  );
 }
 
 const injectedConfig = process.env.COMPOSE_CONFIG_JSON;

@@ -42,6 +42,11 @@ livekit_image="$(sed -n 's/^LIVEKIT_IMAGE=//p' "$env_file")"
 livekit_image="${livekit_image:-livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16}"
 [[ "$livekit_image" =~ ^[^[:space:]]+@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16$ ]] \
   || fail 'LiveKit image must remain pinned to the approved v1.11.0 digest'
+[[ "$(grep -c '^CADDY_IMAGE=' "$env_file")" -le 1 ]] || fail 'CADDY_IMAGE must appear at most once'
+caddy_image="$(sed -n 's/^CADDY_IMAGE=//p' "$env_file")"
+caddy_image="${caddy_image:-caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d}"
+[[ "$caddy_image" =~ ^[^[:space:]]+@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d$ ]] \
+  || fail 'Caddy image must remain pinned to the approved digest'
 configured_node_ip="$(sed -n 's/^LIVEKIT_NODE_IP=//p' "$env_file")"
 [[ "$configured_node_ip" == "$target_ip" ]] || fail 'LIVEKIT_NODE_IP must equal the confirmed target IP'
 [[ "$(git -C "$app_dir" rev-parse HEAD)" == "$sha" ]] || fail 'confirmation SHA does not equal checked-out release'
