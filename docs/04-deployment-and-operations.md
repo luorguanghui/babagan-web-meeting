@@ -36,12 +36,12 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 |---|---:|---|---|
 | TCP | 22 | 管理员固定 IP | SSH 管理 |
 | TCP | 80 | 公网 | ACME HTTP 验证及 HTTPS 跳转 |
-| TCP | 443 | 公网 | HTTPS/WSS |
+| TCP | 443 | 公网 | HTTPS/WSS（含 P2P 信令，复用 `/api/*` 反代，无新增端口） |
 | TCP | 7881 | 公网 | LiveKit RTC/TCP 回退 |
-| UDP | 443 | 公网 | LiveKit TURN/UDP |
-| UDP | 50000–60000 | 公网 | WebRTC 直接媒体 |
+| UDP | 443 | 公网 | LiveKit TURN/UDP（P2P 直连失败时的兜底） |
+| UDP | 50000–60000 | 公网 | WebRTC 直接媒体（麦克风；回退时屏幕） |
 
-不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
+P2P 屏幕直连不新增任何云端入站端口；STUN/TURN 凭据复用 LiveKit 现有 TURN 服务（经 Server API `/rtc/ice` 发放）。不得直接开放 API、SQLite、LiveKit 7880、容器管理端口或监控管理接口。出站允许 DNS、NTP、ACME、系统更新和必要镜像仓库访问。
 
 ### 3.2 主机防火墙
 
@@ -89,10 +89,12 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 4. 创建应用目录、持久卷目录和权限受限的 secrets。
 5. 验证 DNS 记录及 `rtc`/`turn` 直连解析。
 6. 启动 Caddy 并确认 ACME 证书成功。
-7. 启动 LiveKit，验证内部健康与公网候选地址。
+7. 启动 LiveKit，验证内部健康与公网候选地址，确认 `/rtc/ice` 可返回 STUN/TURN 凭据。
 8. 运行数据库迁移，启动 API 和静态 Web。
 9. 执行 HTTP、WSS、UDP、TURN 和 5 人冒烟测试。
-10. 将 Cloudflare 设置为 Full (strict)，验证完整访问路径。
+10. 验证 P2P 信令端点：无 Cookie 拒绝升级、有 Cookie 可加入房间名单、offer/answer/ice 转发正常。
+11. 在两端真实公网环境验证 P2P 直连建立与回退（见 `05` 文档 §4.3）。
+12. 将 Cloudflare 设置为 Full (strict)，验证完整访问路径。
 
 ## 7. 发布与回滚
 
@@ -123,9 +125,10 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 | CPU | 5 分钟平均 >80% |
 | 内存 | 已用 >1.8 GiB 或发生 OOM/交换抖动 |
 | 磁盘 | 使用率 >80% |
-| 公网带宽 | 持续 >120 Mbps 或出现丢包上升 |
+| 公网带宽 | 持续 >50 Mbps 或出现突发（P2P 混合模式后屏幕媒体不再经云端，阈值下调；若屏幕共享时仍出现 16–60 Mbps 尖峰说明回退路径异常） |
 | API | 5xx 比例 >2%/5 分钟 |
 | LiveKit | 连接失败率 >5%/5 分钟 |
+| P2P 回退率 | 会议结束后聚合的回退率 >50%（人工观察项，用于评估直连穿透质量） |
 | 证书 | 距到期 <21 天仍未续期 |
 | 备份 | 连续 24 小时没有成功备份 |
 
@@ -134,7 +137,8 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 ## 10. 日常运维
 
 - 每周检查系统安全更新、容器健康、磁盘和证书状态。
-- 每月演练一次创建、5 人加入、共享、弱网回退和结束会议。
+- 每月演练一次创建、5 人加入、共享（含 P2P 直连与回退）、弱网回退和结束会议。
 - 依赖升级前阅读变更说明，并在测试环境完成兼容性验证。
-- 出现质量问题时收集匿名连接统计和浏览器 `webrtc-internals` 导出；必须先征得用户同意，不收集媒体内容。
+- 出现质量问题时收集匿名连接统计（含 P2P 建立成功率、回退率）和浏览器 `webrtc-internals` 导出；必须先征得用户同意，不收集媒体内容。
+- 前端与 API 同时发布时优先保证 P2P 信令与回退路径的兼容：旧前端无 P2P 客户端时自动走 LiveKit 回退路径，不影响会议。
 

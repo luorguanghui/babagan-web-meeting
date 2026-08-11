@@ -37,6 +37,9 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `EMPTY_GRACE_SECONDS` | `600` | 与 PRD 保持一致 |
 | `RECONNECT_GRACE_SECONDS` | `30` | 与 PRD 保持一致 |
 | `MAX_PARTICIPANTS` | `5` | 服务端强制，不信任客户端 |
+| `P2P_ICE_CACHE_TTL_SECONDS` | `3600` | ICE 凭据缓存有效期（不超过 LiveKit 凭据有效期） |
+| `P2P_ICE_NEGOTIATION_TIMEOUT_MS` | `8000` | 客户端 P2P 协商超时，超时回退 LiveKit（前后端需一致） |
+| `P2P_ICE_DISCONNECT_TIMEOUT_MS` | `5000` | P2P 连接失联判定时长，超时切换 LiveKit 源 |
 
 启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。
 
@@ -125,17 +128,28 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | POST | `/meetings/:slug/token` | 参与者会话 | 为完整重连签发新的 5 分钟 Token |
 | POST | `/meetings/:slug/leave` | 参与者 Token | 提前释放参与状态 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P 用的 STUN/TURN 服务器列表与凭据（经 LiveKit Server API `/rtc/ice` 获取，服务端缓存 1 小时） |
+| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie | P2P 信令：房间在线名单、SDP/ICE 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`，凭据含有效期，客户端应在共享开始时重新获取。
 
-### 4.3 LiveKit Webhook
+### 4.3 P2P 信令端点行为
+
+- 握手必须携带有效参与者安全 Cookie；无效则拒绝升级。
+- 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。
+- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice` 只能发送给当前共享者；目标必须是同会议在线成员。
+- 共享锁释放（撤销/结束/共享者离开）时向全员发送共享失效通知，客户端关闭全部 P2P 连接。
+- 消息上限 64 KiB；单连接速率限制与 SDP 总量限制；SDP、ICE 候选与凭据不写入日志。
+- 服务重启时在线表清空，客户端重连后以 `welcome` 全量恢复；LiveKit 参与者仍在时不影响其语音。
+
+### 4.4 LiveKit Webhook
 
 `POST /internal/livekit/webhook` 只接收 LiveKit 使用 Server API Secret 签名的事件，并可限制为 Docker 内部来源。它处理参与者加入/离开、轨道发布/取消和房间结束事件，用于清理加入预留、释放共享锁和维护空房时间。签名无效或重复事件不得改变状态；处理逻辑按事件 ID 幂等。
 
-### 4.4 健康检查
+### 4.5 健康检查
 
 - `GET /health/live`：进程存活，不访问外部依赖。
-- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问。
+- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问（含 `/rtc/ice` 依赖，异常时报告降级）。
 
 ## 5. LiveKit 权限
 
@@ -147,7 +161,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 禁止创建其他房间或执行管理 API。
 - JWT 有效期固定为 5 分钟；完整重连通过未撤销的参与者安全会话刷新。
 
-共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。撤销时先更新服务端权限，再要求客户端停止轨道。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
+共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**P2P 混合模式下该权限只用于回退路径**：仅当存在回退观看者时才实际发布 LiveKit 屏幕轨道，全部观看者 P2P 直连时不发布（节省云端带宽）。撤销时先更新服务端权限，再要求客户端停止轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
 
 ## 6. 前端状态与页面
 
@@ -165,8 +179,9 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 ### 6.3 会议室
 
 - 主区域使用 `object-fit: contain` 展示共享屏幕，不裁剪文字内容。
+- 观看者端屏幕源为双源渲染：P2P 直连流优先，LiveKit 轨道为回退；切换时不出现重复画面或黑屏超过 2 秒。
 - 成员列表显示昵称、麦克风状态、共享者和连接质量。
-- 控制栏只包含麦克风、设备、屏幕共享、离开/结束和连接状态。
+- 控制栏只包含麦克风、设备、屏幕共享（含码率档位选择与在线观看人数联动建议）、离开/结束和连接状态。
 - 主持人操作通过成员菜单提供，不占用普通成员界面。
 - 无共享时显示会议名称和等待状态。
 
@@ -178,11 +193,27 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 
 ### 7.2 屏幕
 
-- 标准模式：1920×1080 目标、30fps、4–8 Mbps 目标范围。
-- 高动态模式：1920×1080 目标、60fps、8–15 Mbps 目标范围。
-- 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定。
+**传输模式（P2P 优先，LiveKit 回退）**：
+
+- **P2P 直连模式**：共享者对每名观看者各建一条 `RTCPeerConnection`，同一条连接上发布屏幕视频与屏幕音频两条轨道（音画同步硬约束，禁止拆到两条连接）。观看者端若在 8 秒内未收到媒体，通知共享者回退。
+- **LiveKit 回退模式**：P2P 协商超时（8 秒）、ICE `failed` 或 RTP 失联（5 秒）的观看者改用 LiveKit 屏幕订阅；共享者按需发布 LiveKit 屏幕轨道，双源不并存。
+
+**码率**：
+
+- P2P 直连档位：5 / 8 / 10 Mbps，默认 8 Mbps（受共享者上行约束：N 人 × 档位 < 可用上行）。
+- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变。
+- 共享开始时按在线观看者数给出建议档位并默认选中，可手动调整。
+
+**编码与自适应**：
+
+- 标准模式：1920×1080 目标、30fps；高动态模式：1920×1080 目标、60fps。
+- 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
+- `degradationPreference: maintain-resolution`（保分辨率、降帧率），文字可读性优先。
+- 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
-- 启用自适应流和动态订阅；页面不可见时降低非关键渲染负载。
+- 页面不可见时降低非关键渲染负载。
+
+**共享端流程**：授权 → 获取屏幕流（含音频）→ 获取 ICE 凭据 → 对每名在线观看者发起 P2P 协商 → 收敛成功者发布 P2P 轨道，失败者走 LiveKit 回退。共享停止/撤销时关闭全部连接并释放共享锁。
 
 ## 8. 定时任务与恢复
 
@@ -210,9 +241,11 @@ API 每 30 秒执行一次轻量清理：
 | `UNSUPPORTED_CLIENT` | 400 | 请使用 Windows 最新版 Chrome 或 Edge |
 | `RATE_LIMITED` | 429 | 尝试过于频繁，请稍后再试 |
 | `MEDIA_SERVICE_UNAVAILABLE` | 503 | 媒体服务暂时不可用，请重试 |
+| `P2P_FORBIDDEN` | 403 | 当前成员无权发起或应答 P2P 协商（信令层，仅日志，不直接展示） |
+| `P2P_PEER_NOT_FOUND` | 404 | P2P 消息目标不在线或不在本会议（信令层，仅日志） |
 
-内部错误返回关联 ID，不返回堆栈、SQL、密钥或内部地址。
+内部错误返回关联 ID，不返回堆栈、SQL、密钥或内部地址。P2P 信令错误在客户端表现为静默回退或状态提示，不打断会议流程。
 
 ## 10. 完成定义
 
-实现只有在以下条件全部满足时才算完成：功能需求逐项通过、API 契约有自动化测试、两种浏览器完成 E2E、5 人 1080p60 负载达标、两小时稳定性通过、部署和回滚在目标服务器演练成功、安全检查没有高危问题。
+实现只有在以下条件全部满足时才算完成：功能需求（含 FR-015/FR-016）逐项通过、API 契约（含 P2P 信令与 ICE 凭据）有自动化测试、两种浏览器完成 E2E、P2P 直连与回退在真实公网 NAT 场景验证通过、5 人 1080p60 负载达标、两小时稳定性通过、部署和回滚在目标服务器演练成功、安全检查没有高危问题。

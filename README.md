@@ -20,29 +20,21 @@
 4. [部署与运维](docs/04-deployment-and-operations.md)
 5. [测试与验收](docs/05-test-and-acceptance.md)
 6. [安全与隐私](docs/06-security-and-privacy.md)
-7. [经确认的总体设计](docs/superpowers/specs/2026-08-07-web-meeting-design.md)
-8. [测试驱动实施计划](docs/superpowers/plans/2026-08-07-web-meeting-implementation.md)
-9. [初始发布验收状态](docs/acceptance/initial-release.md)
-10. [部署记录与安全发布步骤](docs/runbooks/deployment-record.md)
-11. [回滚记录与演练步骤](docs/runbooks/rollback-record.md)
+7. [P2P 屏幕共享混合模式设计](docs/07-p2p-screen-share-design.md)
+8. [经确认的总体设计](docs/superpowers/specs/2026-08-07-web-meeting-design.md)
+9. [经确认的 P2P 混合模式设计](docs/superpowers/specs/2026-08-11-p2p-screen-share-hybrid.md)
+10. [测试驱动实施计划](docs/superpowers/plans/2026-08-07-web-meeting-implementation.md)
+11. [P2P 混合模式实施计划](docs/superpowers/plans/2026-08-11-p2p-hybrid-implementation.md)
 
 ## 核心技术决策
 
 - React + TypeScript 构建网页界面。
-- Node.js + Fastify 提供会议、权限和 Token API。
+- Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
-- LiveKit 单节点 SFU 转发语音与屏幕轨道，不做服务端转码。
-- LiveKit 内置 TURN/UDP 443，RTC/TCP 7881 作为 UDP 不可用时的回退。
+- 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，直连失败自动回退 LiveKit SFU，云端不承载直连屏幕媒体。
+- LiveKit 内置 TURN/UDP 443（同时为 P2P 直连兜底），RTC/TCP 7881 作为 UDP 不可用时的回退。
 - Caddy 负责 HTTPS、证书续期和反向代理。
 - Docker Compose 统一部署和管理进程。
-
-## 生产发布
-
-生产发布只允许在目标 Debian 12 主机上执行。`scripts/deploy.sh` 会进行严格预检、
-可恢复的 SQLite 备份、构建、迁移、健康检查和 HTTPS/WSS 冒烟测试；
-`scripts/rollback.sh` 只允许按已记录的前一版本镜像和预发布备份回滚。
-两者均要求受保护的 secrets、显式 SHA 确认以及 Cloudflare/防火墙人工证据，且不删除旧镜像或备份。
-完整步骤与当前未完成的验收项见[部署记录](docs/runbooks/deployment-record.md)。
 
 ## 项目边界
 

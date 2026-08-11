@@ -4,20 +4,28 @@
 
 ```mermaid
 flowchart LR
-    U[Windows Chrome / Edge] -->|HTTPS| CF[Cloudflare 橙云\nmeet.babagan.cloud]
-    CF -->|HTTPS| C[Caddy]
+    U[Windows Chrome / Edge] -->|HTTPS/WSS| CF[Cloudflare 橙云\nmeet.babagan.cloud]
+    CF -->|HTTPS/WSS| C[Caddy]
     C --> W[React 静态站点]
     C --> A[Fastify API]
     A --> D[(SQLite)]
     A -->|Server API / JWT| L[LiveKit SFU]
+    S[共享者] <-->|"P2P 直连 屏幕视频+音频"| V[观看者]
+    S -->|WSS 信令 SDP/ICE| C
+    V -->|WSS 信令 SDP/ICE| C
     U -->|WSS rtc.babagan.cloud| C
     C -->|HTTP 7880 内网| L
-    U -->|SRTP / UDP| L
+    U -->|SRTP / UDP 麦克风| L
     U -->|TURN/UDP 443\nturn.babagan.cloud| L
     U -.->|RTC/TCP 7881 回退| L
 ```
 
 控制面和媒体面严格分离：网页、业务 API 和权限属于控制面；LiveKit 的 WebRTC 连接属于媒体面。Node.js 不转发媒体，Cloudflare 普通代理也不承载 UDP 媒体。
+
+**媒体拓扑（2026-08-11 变更，详见 `07-p2p-screen-share-design.md`）**：
+
+- **麦克风音频**：全部经 LiveKit SFU 转发（5 人全部音频经云端仅约 1 Mbps，保持现状）。
+- **屏幕共享（视频 + 音频）**：优先走浏览器间 **P2P 直连**（共享者 → 观看者，1:N 星型），云端只承担 SDP/ICE 信令（每连接数 KB）；直连失败自动回退 LiveKit SFU 屏幕订阅，体验不劣于现状。云端不承载 P2P 屏幕媒体，解决云带宽波动导致接收画面不稳定的问题。
 
 ## 2. 组件职责
 
@@ -26,7 +34,9 @@ flowchart LR
 - 创建会议、入会准备和会议室三个界面。
 - 浏览器与设备能力检测。
 - 调用 API 获取会议状态和 LiveKit Token。
-- 使用 LiveKit Web SDK 发布麦克风、屏幕和屏幕音频轨道。
+- 使用 LiveKit Web SDK 发布麦克风；屏幕共享优先使用 P2P 通道（新增），失败回退发布 LiveKit 屏幕轨道。
+- P2P 信令客户端：连接 `wss://meet.babagan.cloud/api/v1/meetings/:slug/p2p`，交换 SDP/ICE 候选。
+- P2P 会话控制器：为每名观看者维护独立 `RTCPeerConnection` 会话与回退状态机（见 `07` 设计 §5）。
 - 显示连接质量、共享状态、权限和可恢复错误。
 
 Web 不包含业务密钥，不自行判断主持人权限，不把会议密码写入 URL、本地存储或日志。
@@ -40,16 +50,19 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 - 签发最小权限 LiveKit Token。
 - 更新成员共享权限、移除成员和结束会议。
 - 执行过期与空房清理任务。
+- **P2P 信令端点（新增）**：`/api/v1/meetings/:slug/p2p` WebSocket，校验参与者 Cookie，维护房间在线名单，转发 SDP/ICE 消息，强制"仅共享者发 offer"等权限规则（见 `07` 设计 §4）。
+- **ICE 凭据端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经 LiveKit Server API 获取 STUN/TURN 凭据并缓存返回客户端。
 
 ### 2.3 SQLite
 
-保存会议、主持人会话和有限审计事件。参与者在线状态、媒体轨道和连接质量由 LiveKit 管理，不复制到数据库。
+保存会议、主持人会话和有限审计事件。参与者在线状态、媒体轨道和连接质量由 LiveKit 管理，不复制到数据库。P2P 信令会话为内存态，不落库。
 
 ### 2.4 LiveKit
 
-- SFU 转发 Opus 音频与屏幕视频/音频轨道。
+- SFU 转发 Opus 麦克风音频；屏幕轨道仅在 P2P 回退时转发。
 - 管理房间、参与者、订阅、连接质量和重连。
 - 优先使用直接 UDP；提供 TURN/UDP 443 和 RTC/TCP 7881 回退。
+- 经 Server API 提供 STUN/TURN ICE 凭据，供 P2P `RTCPeerConnection` 复用（`/rtc/ice`）。
 - 不启用 Egress、Ingress、录制、转码、Agent 或 SIP 服务。
 
 ### 2.5 Caddy
@@ -63,12 +76,14 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 
 | 名称/端口 | 协议 | 路径 | 用途 |
 |---|---|---|---|
-| `meet.babagan.cloud:443` | HTTPS/WSS | Cloudflare → Caddy | 网页与 API |
+| `meet.babagan.cloud:443` | HTTPS/WSS | Cloudflare → Caddy | 网页、API 与 P2P 信令（`/api/*` 反代覆盖 WSS 升级） |
 | `rtc.babagan.cloud:443` | HTTPS/WSS | 客户端 → Caddy → LiveKit | LiveKit 信令 |
-| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | UDP 中继 |
-| 公网 IP `50000–60000` | WebRTC UDP | 客户端 → LiveKit | 直接媒体 |
+| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | UDP 中继（P2P 直连失败时的兜底） |
+| 公网 IP `50000–60000` | WebRTC UDP | 客户端 → LiveKit | 直接媒体（麦克风；回退时的屏幕） |
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
+
+P2P 屏幕共享**不新增任何云端端口**：信令复用 `meet` 的 WSS 路径；STUN/TURN 凭据复用 LiveKit 现有 TURN 服务（`/rtc/ice` 发放）。直连媒体在共享者与观看者的家庭网络之间流动，不经过云端。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 
@@ -81,19 +96,21 @@ Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突�
 3. API 在事务/互斥区中确认会议有效且人数未满。
 4. API 生成唯一参与者身份和最小权限 Token。
 5. Web 使用 `wss://rtc.babagan.cloud` 连接 LiveKit。
-6. LiveKit 建立 ICE/DTLS/SRTP 媒体连接。
+6. LiveKit 建立 ICE/DTLS/SRTP 媒体连接（麦克风路径）。
+7. Web 打开 P2P 信令 WS（`meet` 域），获得房间成员名单与进退通知，为屏幕共享 P2P 协商做准备。
 
 ### 4.2 麦克风
 
 Token 允许所有成员发布 `microphone`，禁止 `camera` 和数据轨道。Web 首次连接不发布音频；用户点击开麦后才创建并发布麦克风轨道。
 
-### 4.3 屏幕共享
+### 4.3 屏幕共享（P2P 优先，回退 SFU）
 
-1. 主持人通过 API 授权目标成员。
-2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源。
-3. 客户端调用浏览器屏幕捕获接口，要求用户主动选择来源。
-4. 如果浏览器没有返回屏幕音频轨道，UI 明确提示重新选择“整个屏幕/标签页并共享音频”。
-5. 停止、断线或撤销时，API/LiveKit 释放共享锁。
+1. 主持人通过 API 授权目标成员（共享锁，语义不变）。
+2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源（回退路径所需，不发布则不占带宽）。
+3. 共享者客户端调用浏览器屏幕捕获接口，要求用户主动选择来源；屏幕音频轨道必须保留（P2P 音画同步硬约束）。
+4. 共享者通过 P2P 信令向每名在线观看者发起协商；观看者建立直连后，共享者发布屏幕视频 + 屏幕音频轨道（同一条 `RTCPeerConnection`）。
+5. 观看者级回退：某观看者 ICE 8 秒未收敛或中途断线 → 该观看者改用 LiveKit 屏幕订阅；存在任一回退观看者时共享者才通过 LiveKit 发布屏幕轨道。
+6. 共享停止、断线或撤销时，关闭全部 P2P 连接与 LiveKit 屏幕轨道，API/LiveKit 释放共享锁。
 
 ## 5. 状态模型
 
@@ -116,27 +133,37 @@ stateDiagram-v2
 
 ## 6. 容量与资源预算
 
-单路 1080p30 预估发布码率 4–8 Mbps，向 4 名观看者转发约 16–32 Mbps；1080p60 预估发布码率 8–15 Mbps，转发约 32–60 Mbps。加上语音和协议开销，仍低于 200 Mbps 峰值，但峰值带宽不属于严格 SLA。
+**2026-08-11 起（P2P 混合模式）**：
 
-内存预算：LiveKit 900–1200 MiB、Node/Web 200–350 MiB、Caddy 50–100 MiB、系统及页缓存保留 400 MiB 左右。超过 1.8 GiB 或发生交换应告警。
+- **屏幕媒体不再经云端转发**：P2P 直连时共享者家庭上行承担屏幕流量（4 人 × 8 Mbps ≈ 32 Mbps，共享者实测上行 100 Mbps 充裕）；云端仅剩 5 路 Opus 麦克风音频（全部约 1 Mbps）与回退观看者的屏幕流量。云端峰值带宽从 16–60 Mbps 骤降至约 1–8 Mbps。
+- P2P 信令为控制面消息（SDP/ICE），每连接数 KB，对 API 进程可忽略。
+- 云端带宽告警阈值相应下调（见 `04` 文档 §9 变更）。
+
+内存预算：LiveKit 900–1200 MiB、Node/Web 200–350 MiB、Caddy 50–100 MiB、系统及页缓存保留 400 MiB 左右。超过 1.8 GiB 或发生交换应告警。P2P 信令在线名单与转发缓冲在内存中，规模恒为单会议 ≤5 人，无额外内存压力。
 
 ## 7. 架构决策记录
 
 | 决策 | 选择 | 原因 |
 |---|---|---|
-| 媒体拓扑 | SFU | 避免共享者向 4 人重复上传 |
-| 媒体平台 | LiveKit | 屏幕音频、权限、重连与 TURN 成熟 |
+| 媒体拓扑（音频） | SFU | 5 人音频经云端仅约 1 Mbps，保留 LiveKit 成熟能力 |
+| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + SFU 回退** | 云端 200 Mbps 峰值带宽无 SLA、波动导致接收画面不稳定；共享者实测 100 Mbps 稳定上行 + 公网 IPv4，P2P 移除云端这一单点。直连失败自动回退，不劣于现状 |
+| 媒体平台 | LiveKit | 屏幕音频、权限、重连与 TURN 成熟；经 `/rtc/ice` 复用其 STUN/TURN 凭据 |
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
 | TURN | UDP 443 | 与 Caddy TCP 443 不冲突，适合现有单公网 IP |
 | Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
+| P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 不新增域名与端口；参与者 Cookie 鉴权；服务器零媒体可见性 |
 
 ## 8. 已知限制
 
 - 极严格的企业网络可能同时阻止 UDP 443 和 TCP 7881。此类环境需要额外的 TURN/TLS 443 架构、第二公网 IP 或商业中继服务。
 - Cloudflare 免费通用证书只覆盖根域名和一级子域名，本系统仅使用一级子域名。
 - 系统声音捕获由 Windows 与 Chrome/Edge 决定，网页不能绕过用户授权或浏览器限制。
+- P2P 直连依赖双方 NAT 可穿透：CGNAT 且无 IPv6 的观看者只能回退 SFU/TURN（该观看者体验不劣于现状，但不享受直连收益）。
+- 客户端代理/TUN 软件（如 Mihomo、Clash TUN 模式）会劫持 WebRTC UDP 媒体，需配置直连规则或临时关闭（共享者与观看者均受影响，见 `07` 设计 §6.4）。
+- 共享者家庭 IP 随拨号变化：不影响已建立的连接，只影响下次会议协商（不依赖 DDNS）。
+- P2P 直连时屏幕内容不经过云端服务器；对端之间将看到彼此直连 IP，属 WebRTC 直连固有特征。
 
 ## 9. 官方参考
 
