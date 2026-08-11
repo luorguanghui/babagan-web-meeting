@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 deploy="$root/scripts/deploy.sh"
+deployment_smoke="$root/scripts/deployment-smoke.sh"
 rollback="$root/scripts/rollback.sh"
 need() { grep -Fq -- "$2" "$1" || { echo "missing regression guard: $2" >&2; exit 1; }; }
 
@@ -16,7 +17,8 @@ need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
 need "$deploy" '(( mem_kib >= 1153434 ))'
 need "$deploy" 'LIVEKIT_NODE_IP must equal the confirmed target IP'
-need "$deploy" 'SMOKE_NODE_IMAGE="babagan-meeting-api:release-$sha"'
+need "$deploy" '"$script_dir/deployment-smoke.sh"'
+need "$deployment_smoke" 'SMOKE_NODE_IMAGE="$api_image"'
 need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
 need "$deploy" 'compose config | awk -v service="$1"'
 

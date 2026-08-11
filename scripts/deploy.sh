@@ -133,7 +133,11 @@ while ((SECONDS<deadline)); do
   ((healthy)) && break; sleep 3
 done
 ((healthy)) || { compose ps >&2; fail 'health wait exceeded 180 seconds'; }
-token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'; SMOKE_LIVEKIT_TOKEN="$token" SMOKE_NODE_IMAGE="babagan-meeting-api:release-$sha" "$script_dir/smoke-test.sh" https://meet.babagan.cloud wss://rtc.babagan.cloud; unset token
+token="$(<"$token_file")"; [[ -n "$token" ]] || fail 'smoke token is empty'
+SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/deployment-smoke.sh" \
+  "$compose_file" "$env_file" "babagan-meeting-api:release-$sha" \
+  https://meet.babagan.cloud wss://rtc.babagan.cloud
+unset token
 record="$state_dir/releases/$sha.env"
 {
  printf 'RELEASE_SHA=%s\n' "$sha"; printf 'DEPLOYED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'OVERRIDE_FILE=%s\n' "$override"
