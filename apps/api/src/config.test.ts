@@ -13,6 +13,9 @@ const validEnv = (overrides: Record<string, string | undefined> = {}) => ({
   COOKIE_SECRET: 'a-very-long-development-cookie-secret',
   DATABASE_PATH: './data/meetings.sqlite',
   P2P_STUN_URLS: 'stun:stun1.example.test:3478',
+  P2P_TURN_URLS: 'turn:turn.example.test:3478?transport=udp,turns:turn.example.test:5349?transport=tcp',
+  P2P_TURN_SECRET: '0123456789abcdef0123456789abcdef',
+  P2P_TURN_TTL_SECONDS: '600',
   ...overrides
 });
 
@@ -66,5 +69,24 @@ describe('loadConfig', () => {
 
     expect(() => loadConfig(validEnv({ P2P_STUN_URLS: 'turn:relay.example.test:3478' })))
       .toThrow('P2P_STUN_URLS must contain only stun: or stuns: URLs');
+  });
+
+  it('parses TURN URLs, secret and credential lifetime', () => {
+    const config = loadConfig(validEnv());
+    expect(config.p2pTurnUrls).toEqual([
+      'turn:turn.example.test:3478?transport=udp',
+      'turns:turn.example.test:5349?transport=tcp'
+    ]);
+    expect(config.p2pTurnSecret).toBe('0123456789abcdef0123456789abcdef');
+    expect(config.p2pTurnTtlSeconds).toBe(600);
+  });
+
+  it('rejects unsafe TURN configuration', () => {
+    expect(() => loadConfig(validEnv({ P2P_TURN_URLS: 'stun:turn.example.test:3478' })))
+      .toThrow('P2P_TURN_URLS must contain only turn: or turns: URLs');
+    expect(() => loadConfig(validEnv({ P2P_TURN_SECRET: 'short' }))).toThrow(/32/);
+    expect(() => loadConfig(validEnv({ P2P_TURN_TTL_SECONDS: '59' }))).toThrow(/60/);
+    expect(() => loadConfig(validEnv({ P2P_TURN_TTL_SECONDS: '3601' }))).toThrow(/3600/);
+    expect(() => loadConfig(validEnv({ P2P_TURN_TTL_SECONDS: '600.5' }))).toThrow(/integer/);
   });
 });

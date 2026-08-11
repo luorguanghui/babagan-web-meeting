@@ -3,7 +3,11 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 
 import type { AppConfig } from '../../config.js';
 import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
-import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
+import type {
+  ActiveParticipantSession,
+  ParticipantApplicationService
+} from '../../services/participant-application-service.js';
+import { createTurnCredentials } from '../../services/turn-credentials.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { generalApiRateLimit } from '../rate-limit.js';
 
@@ -22,11 +26,21 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
   app.get('/api/v1/meetings/:slug/ice-servers', {
     schema: { params: SlugParamsSchema, response: { 200: IceServersResponseSchema } },
     preHandler: app.rateLimit(generalApiRateLimit())
-  }, async (request) => {
+  }, async (request, reply) => {
     const value = slug(request.params);
-    participantSession(request, dependencies.participants, value);
+    const session = participantSession(request, dependencies.participants, value);
+    const turn = createTurnCredentials({
+      secret: dependencies.config.p2pTurnSecret,
+      participantIdentity: session.identity,
+      ttlSeconds: dependencies.config.p2pTurnTtlSeconds,
+      nowSeconds: Date.now() / 1_000
+    });
+    reply.header('Cache-Control', 'no-store');
 
-    return { iceServers: [{ urls: dependencies.config.p2pStunUrls }] };
+    return { iceServers: [
+      { urls: dependencies.config.p2pStunUrls },
+      { urls: dependencies.config.p2pTurnUrls, ...turn }
+    ] };
   });
 }
 
@@ -34,10 +48,10 @@ function participantSession(
   request: FastifyRequest,
   participants: ParticipantApplicationService,
   slugValue: string
-): void {
+): ActiveParticipantSession {
   const raw = readSignedSessionCookie(request, participantCookie);
   if (!raw) throw new SessionAuthenticationError();
-  participants.authenticate(raw, slugValue);
+  return participants.authenticate(raw, slugValue);
 }
 
 function slug(params: unknown): string {

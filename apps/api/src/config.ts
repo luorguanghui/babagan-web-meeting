@@ -9,6 +9,9 @@ export interface AppConfig {
   cookieSecret: string;
   databasePath: string;
   p2pStunUrls: string[];
+  p2pTurnUrls: string[];
+  p2pTurnSecret: string;
+  p2pTurnTtlSeconds: number;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -52,6 +55,27 @@ function parseStunUrls(env: Environment): string[] {
   return urls;
 }
 
+function parseTurnUrls(env: Environment): string[] {
+  const urls = requireValue(env, 'P2P_TURN_URLS')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (urls.length === 0 || urls.some((value) => !/^turns?:/i.test(value))) {
+    throw new Error('P2P_TURN_URLS must contain only turn: or turns: URLs');
+  }
+  return urls;
+}
+
+function parseTurnTtlSeconds(env: Environment): number {
+  const raw = requireValue(env, 'P2P_TURN_TTL_SECONDS');
+  const value = Number(raw);
+  if (!Number.isInteger(value)) throw new Error('P2P_TURN_TTL_SECONDS must be an integer');
+  if (value < 60 || value > 3_600) {
+    throw new Error('P2P_TURN_TTL_SECONDS must be between 60 and 3600');
+  }
+  return value;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -68,6 +92,11 @@ export function loadConfig(env: Environment): AppConfig {
     throw new Error('COOKIE_SECRET must be at least 32 bytes');
   }
 
+  const p2pTurnSecret = requireValue(env, 'P2P_TURN_SECRET');
+  if (Buffer.byteLength(p2pTurnSecret, 'utf8') < 32) {
+    throw new Error('P2P_TURN_SECRET must be at least 32 bytes');
+  }
+
   return {
     nodeEnv,
     publicBaseUrl,
@@ -79,6 +108,9 @@ export function loadConfig(env: Environment): AppConfig {
     cookieSecret,
     databasePath: requireValue(env, 'DATABASE_PATH'),
     p2pStunUrls: parseStunUrls(env),
+    p2pTurnUrls: parseTurnUrls(env),
+    p2pTurnSecret,
+    p2pTurnTtlSeconds: parseTurnTtlSeconds(env),
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

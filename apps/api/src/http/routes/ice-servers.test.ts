@@ -39,7 +39,7 @@ describe('ICE credentials endpoint', () => {
     expect(fixture.media.fetchCalls).toBe(0);
   });
 
-  it('returns configured STUN servers without calling LiveKit', async () => {
+  it('returns STUN and participant-bound short-lived TURN credentials without calling LiveKit', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     fixture.media.iceServers = [
@@ -52,9 +52,20 @@ describe('ICE credentials endpoint', () => {
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toEqual({
-      iceServers: [{ urls: ['stun:stun1.example.test:3478'] }]
+    const body = response.json() as { iceServers: Array<{
+      urls: string[]; username?: string; credential?: string;
+    }> };
+    expect(body.iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+    expect(body.iceServers[1]).toMatchObject({
+      urls: ['turn:turn.example.test:3478?transport=udp', 'turns:turn.example.test:5349?transport=tcp']
     });
+    const participantIdentity = (joined.json() as { participantIdentity: string }).participantIdentity;
+    expect(body.iceServers[1].username).toMatch(new RegExp(`^\\d+:${participantIdentity}$`));
+    expect(body.iceServers[1].credential).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    const expiry = Number(body.iceServers[1].username?.split(':', 1)[0]);
+    expect(expiry).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1_000) + 599);
+    expect(expiry).toBeLessThanOrEqual(Math.floor(Date.now() / 1_000) + 601);
+    expect(response.headers['cache-control']).toBe('no-store');
     expect(fixture.media.fetchCalls).toBe(0);
   });
 
@@ -82,9 +93,7 @@ describe('ICE credentials endpoint', () => {
     });
 
     expect(response.statusCode, response.body).toBe(200);
-    expect(response.json()).toEqual({
-      iceServers: [{ urls: ['stun:stun1.example.test:3478'] }]
-    });
+    expect((response.json() as { iceServers: unknown[] }).iceServers).toHaveLength(2);
     expect(fixture.media.fetchCalls).toBe(0);
   });
 });
@@ -155,7 +164,9 @@ const config: AppConfig = {
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:', meetingTtlMs: 86_400_000,
   emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5,
-  p2pStunUrls: ['stun:stun1.example.test:3478']
+  p2pStunUrls: ['stun:stun1.example.test:3478'],
+  p2pTurnUrls: ['turn:turn.example.test:3478?transport=udp', 'turns:turn.example.test:5349?transport=tcp'],
+  p2pTurnSecret: '0123456789abcdef0123456789abcdef', p2pTurnTtlSeconds: 600
 };
 
 class RouteMediaFake implements MediaService {
