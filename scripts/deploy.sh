@@ -5,15 +5,18 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 app_dir="$(cd "$script_dir/.." && pwd -P)"
 # shellcheck source=release-provenance.sh
 source "$script_dir/release-provenance.sh"
-usage() { echo "Usage: $0 --confirm-deploy SHA --target-ip IPV4 --smoke-token-file FILE --network-evidence FILE --cloudflare-evidence FILE [--bootstrap-empty] [--env-file FILE]" >&2; exit 64; }
+# shellcheck source=firewall-attestation.sh
+source "$script_dir/firewall-attestation.sh"
+usage() { echo "Usage: $0 --confirm-deploy SHA --target-ip IPV4 --smoke-token-file FILE --network-evidence FILE --cloudflare-evidence FILE [--allow-public-ssh] [--bootstrap-empty] [--env-file FILE]" >&2; exit 64; }
 fail() { echo "DEPLOY PREFLIGHT FAILED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
 need_file() { [[ -s "$1" ]] || fail "missing non-empty file: $1"; }
-sha='' target_ip='' token_file='' network_file='' cloudflare_file='' env_file='' bootstrap_empty=0
+sha='' target_ip='' token_file='' network_file='' cloudflare_file='' env_file='' bootstrap_empty=0 allow_public_ssh=0
 while (($#)); do case "$1" in
   --confirm-deploy) sha="${2:-}"; shift 2 ;; --target-ip) target_ip="${2:-}"; shift 2 ;;
   --smoke-token-file) token_file="${2:-}"; shift 2 ;; --network-evidence) network_file="${2:-}"; shift 2 ;;
-  --cloudflare-evidence) cloudflare_file="${2:-}"; shift 2 ;; --bootstrap-empty) bootstrap_empty=1; shift ;; --env-file) env_file="${2:-}"; shift 2 ;; *) usage ;; esac; done
+  --cloudflare-evidence) cloudflare_file="${2:-}"; shift 2 ;; --allow-public-ssh) allow_public_ssh=1; shift ;;
+  --bootstrap-empty) bootstrap_empty=1; shift ;; --env-file) env_file="${2:-}"; shift 2 ;; *) usage ;; esac; done
 [[ -n "$sha" && -n "$target_ip" && -n "$token_file" && -n "$network_file" && -n "$cloudflare_file" ]] || usage
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail 'confirmation must be a full 40-character Git SHA'
 [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'target IP must be IPv4'
@@ -43,8 +46,7 @@ getent ahostsv4 meet.babagan.cloud >/dev/null || fail 'meet DNS does not resolve
 for host in rtc.babagan.cloud turn.babagan.cloud; do getent ahostsv4 "$host" | awk '{print $1}' | grep -Fxq "$target_ip" || fail "$host must resolve to target IP"; done
 # meet is intentionally Cloudflare-proxied, so it must not be required to return origin IP.
 need_file "$network_file"; need_file "$cloudflare_file"
-grep -Fqx 'Alibaba inbound: TCP 80,443,7881; UDP 443,50000-60000; SSH restricted' "$network_file" || fail 'missing Alibaba firewall attestation'
-grep -Fqx 'Host firewall: TCP 80,443,7881; UDP 443,50000-60000; SSH restricted; default deny inbound' "$network_file" || fail 'missing host firewall attestation'
+verify_firewall_attestation "$network_file" "$allow_public_ssh" || fail 'firewall attestation does not match the selected SSH policy'
 grep -Fqx 'Cloudflare: meet proxied; rtc DNS-only; turn DNS-only; SSL/TLS Full (strict)' "$cloudflare_file" || fail 'missing Cloudflare attestation'
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
@@ -76,9 +78,11 @@ fi
 # later failure it is the sole guarded recovery source, even though current-release still names the predecessor.
 pending="$state_dir/pending-release.env"
 pending_tmp="$pending.$$.tmp"
+ssh_policy=restricted; (( allow_public_ssh )) && ssh_policy=public-operator-waiver
 {
   if (( bootstrap_empty )); then printf 'RECORD_STATE=bootstrap-pending\nBOOTSTRAP_EMPTY=1\n'; else printf 'RECORD_STATE=pending\n'; fi
   printf 'CANDIDATE_SHA=%s\n' "$sha"
+  printf 'SSH_POLICY=%s\n' "$ssh_policy"
   printf 'STARTED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if (( ! bootstrap_empty )); then
     printf 'DATABASE_BACKUP=%s\n' "$backup"; printf 'DATABASE_BACKUP_SHA256=%s\n' "$backup_checksum"; printf 'PREVIOUS_RELEASE_SHA=%s\n' "$previous_sha"
@@ -140,7 +144,7 @@ SMOKE_LIVEKIT_TOKEN="$token" "$script_dir/deployment-smoke.sh" \
 unset token
 record="$state_dir/releases/$sha.env"
 {
- printf 'RELEASE_SHA=%s\n' "$sha"; printf 'DEPLOYED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'OVERRIDE_FILE=%s\n' "$override"
+ printf 'RELEASE_SHA=%s\n' "$sha"; printf 'DEPLOYED_AT_UTC=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"; printf 'OVERRIDE_FILE=%s\n' "$override"; printf 'SSH_POLICY=%s\n' "$ssh_policy"
  if (( bootstrap_empty )); then printf 'BOOTSTRAP_EMPTY=1\n'; else printf 'DATABASE_BACKUP=%s\nDATABASE_BACKUP_SHA256=%s\n' "$backup" "$backup_checksum"; fi
  for service in api web caddy livekit; do upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; printf '%s_IMAGE_TAG=%s\n' "$upper" "babagan-meeting-$service:release-$sha"; printf '%s_IMAGE_ID=%s\n' "$upper" "$(image_id "$service")"; done
  if (( ! bootstrap_empty )); then printf 'PREVIOUS_RELEASE_SHA=%s\n' "$previous_sha"; printf 'PREVIOUS_API_IMAGE_TAG=%s\n' "$previous_api"; printf 'PREVIOUS_API_IMAGE_ID=%s\n' "$previous_api_id"; printf 'PREVIOUS_WEB_IMAGE_TAG=%s\n' "$previous_web"; printf 'PREVIOUS_WEB_IMAGE_ID=%s\n' "$previous_web_id"; printf 'PREVIOUS_CADDY_IMAGE_TAG=%s\n' "$previous_caddy"; printf 'PREVIOUS_CADDY_IMAGE_ID=%s\n' "$previous_caddy_id"; printf 'PREVIOUS_LIVEKIT_IMAGE_TAG=%s\n' "$previous_livekit"; printf 'PREVIOUS_LIVEKIT_IMAGE_ID=%s\n' "$previous_livekit_id"; fi

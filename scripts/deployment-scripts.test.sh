@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 deploy="$root/scripts/deploy.sh"
+firewall_attestation="$root/scripts/firewall-attestation.sh"
 deployment_smoke="$root/scripts/deployment-smoke.sh"
 rollback="$root/scripts/rollback.sh"
 need() { grep -Fq -- "$2" "$1" || { echo "missing regression guard: $2" >&2; exit 1; }; }
@@ -43,6 +44,7 @@ mkdir -p "$temp_dir/bin"
 # or release state.
 mkdir -p "$temp_dir/no-baseline/scripts"
 cp "$deploy" "$temp_dir/no-baseline/scripts/deploy.sh"
+cp "$firewall_attestation" "$temp_dir/no-baseline/scripts/firewall-attestation.sh"
 cp "$root/scripts/release-provenance.sh" "$temp_dir/no-baseline/scripts/release-provenance.sh"
 if bash "$temp_dir/no-baseline/scripts/deploy.sh" \
   --confirm-deploy aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --target-ip 203.0.113.10 \
@@ -126,6 +128,7 @@ if load_verified_baseline_release "$temp_dir/bootstrap-pending.env"; then echo '
 # ensure it fails without deployment state or any payload side effect.
 mkdir -p "$temp_dir/tampered/scripts" "$temp_dir/tampered/var/releases"
 cp "$deploy" "$temp_dir/tampered/scripts/deploy.sh"
+cp "$firewall_attestation" "$temp_dir/tampered/scripts/firewall-attestation.sh"
 cp "$root/scripts/release-provenance.sh" "$temp_dir/tampered/scripts/release-provenance.sh"
 printf 'RELEASE_SHA=$(touch %s)\n' "$temp_dir/tampered-write-sentinel" >"$temp_dir/tampered/var/releases/current-release.env"
 if bash "$temp_dir/tampered/scripts/deploy.sh" \
