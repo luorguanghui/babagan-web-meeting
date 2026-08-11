@@ -170,7 +170,7 @@ describe('P2P signaling websocket endpoint', () => {
     wsA.close();
   });
 
-  it('rejects a message over the 64 KiB contract limit', async () => {
+  it('rejects a message over the 64 KiB contract limit at the socket level', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     const ws = await fixture.connect(created.slug, joined.cookie);
@@ -179,8 +179,8 @@ describe('P2P signaling websocket endpoint', () => {
 
     ws.send(JSON.stringify({ type: 'offer', to: 'x', sdp: 'y'.repeat(P2P_MESSAGE_MAX_BYTES) }));
 
-    expect((await inbox.closed()).code).toBe(P2P_CLOSE_POLICY_VIOLATION);
-    expect(inbox.messages.at(-1)).toMatchObject({ type: 'error', code: 'INVALID_MESSAGE' });
+    // The ws server maxPayload kills oversized frames before app processing (1009).
+    expect((await inbox.closed()).code).toBe(1009);
   });
 
   it('broadcasts share-gone to all peers when the host revokes the share', async () => {

@@ -1,3 +1,4 @@
+import { P2P_MESSAGE_MAX_BYTES } from '@meeting/contracts';
 import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
@@ -39,7 +40,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   await app.register(cors, { origin: dependencies.config.publicBaseUrl.origin, credentials: true });
   await app.register(helmet);
   await app.register(rateLimit, { global: false });
-  await app.register(websocket);
+  await app.register(websocket, { options: { maxPayload: P2P_MESSAGE_MAX_BYTES } });
   registerErrorHandler(app);
   registerStrictOriginValidation(
     app,

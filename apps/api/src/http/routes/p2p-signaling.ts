@@ -21,6 +21,13 @@ export interface P2pHandshakeSession {
   nickname: string;
 }
 
+declare module 'fastify' {
+  interface FastifyRequest {
+    /** Auth result captured by the pre-upgrade `onRequest` hook. */
+    p2pAuth?: P2pHandshakeSession;
+  }
+}
+
 /**
  * Authenticates the upgrade request with the participant session cookie and
  * rejects invalid or expired sessions/meetings. Throws are turned into HTTP
@@ -48,11 +55,15 @@ export function registerP2pSignalingRoute(app: FastifyInstance, dependencies: P2
     // hook chain stalled for upgrade requests. A passing `preValidation` hook
     // also hangs the upgrade with @fastify/websocket 11.x, so we avoid it.
     onRequest: async (request) => {
-      authenticateP2pHandshake(request, dependencies.participants, slug(request.params));
+      // Auth is performed once, before the upgrade, so a throw becomes an HTTP
+      // error response. The result is reused by the ws handler — re-running
+      // authentication there could throw uncaught inside the socket callback
+      // (e.g. when a session is revoked between upgrade and first message).
+      request.p2pAuth = authenticateP2pHandshake(request, dependencies.participants, slug(request.params));
     }
   }, (socket, request) => {
     const value = slug(request.params);
-    const auth = authenticateP2pHandshake(request, dependencies.participants, value);
+    const auth = request.p2pAuth ?? authenticateP2pHandshake(request, dependencies.participants, value);
     const adapter = createSocketAdapter(socket);
     const session = new P2pSignalingSession({
       registry: dependencies.p2p,
