@@ -14,7 +14,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY apps/web apps/web
 COPY packages/contracts packages/contracts
-RUN pnpm --filter @meeting/web build
+RUN pnpm --filter @meeting/contracts build \
+  && pnpm --filter @meeting/web build
 
 FROM ${CADDY_IMAGE}
 

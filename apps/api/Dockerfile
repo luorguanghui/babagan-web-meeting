@@ -14,7 +14,8 @@ RUN pnpm install --frozen-lockfile
 
 COPY apps/api apps/api
 COPY packages/contracts packages/contracts
-RUN pnpm --filter @meeting/api build \
+RUN pnpm --filter @meeting/contracts build \
+  && pnpm --filter @meeting/api build \
   && pnpm --filter @meeting/api --prod deploy /opt/api
 
 FROM ${NODE_IMAGE} AS runtime
