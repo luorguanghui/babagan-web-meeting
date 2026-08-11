@@ -5,8 +5,7 @@ export type ScreenTransportMode = 'negotiating' | 'p2p' | 'turn' | 'sfu' | 'mixe
 
 export function deriveViewerScreenTransportMode(state: ViewerP2pState): ScreenTransportMode {
   if (state === 'negotiating') return 'negotiating';
-  if (state === 'p2p') return state;
-  // A relayed P2P session is treated as a P2P failure and moves to the SFU.
+  if (state === 'p2p' || state === 'turn') return state;
   return 'sfu';
 }
 

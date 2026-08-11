@@ -10,6 +10,7 @@ describe('screen transport mode', () => {
     ['idle', 'sfu'],
     ['negotiating', 'negotiating'],
     ['p2p', 'p2p'],
+    ['turn', 'turn'],
     ['livekit', 'sfu']
   ] as const)('maps viewer state %s to %s', (state, expected) => {
     expect(deriveViewerScreenTransportMode(state)).toBe(expected);

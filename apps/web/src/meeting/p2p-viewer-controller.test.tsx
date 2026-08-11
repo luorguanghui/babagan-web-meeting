@@ -334,8 +334,8 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('p2p');
   });
 
-  it('prefers the SFU over a TURN relay: media arriving only over a relay falls back to livekit', async () => {
-    const { controller, signaling, onFallback } = makeHarness();
+  it('keeps healthy relay media and reports the TURN transport state', async () => {
+    const { controller, signaling } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -344,13 +344,10 @@ describe('p2p viewer controller', () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
 
-    // A relayed P2P session carries the same server bandwidth cost as the SFU
-    // but without retransmission or congestion control, so the viewer moves
-    // the share to LiveKit instead of staying on the relay.
-    expect(controller.getState()).toBe('livekit');
-    expect(onFallback).toHaveBeenCalledOnce();
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(signaling.sendMediaReady).not.toHaveBeenCalled();
+    // A relayed session stays on the TURN path: coturn forwards UDP at kernel
+    // level, which measured smoother than the SFU on the small 2-core host.
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
   });
 
   it('exposes stats only while its peer connection session is active', async () => {
