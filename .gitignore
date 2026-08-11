@@ -4,6 +4,7 @@ coverage/
 apps/web/test-results/
 apps/web/playwright-report/
 artifacts/
+/var/
 *.tsbuildinfo
 .env
 .env.*
