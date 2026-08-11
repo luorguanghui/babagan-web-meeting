@@ -99,8 +99,12 @@ meter { height: .9rem; width: 100%; }
 .screen-stage:fullscreen { aspect-ratio: auto; border: 0; border-radius: 0; height: 100vh; width: 100vw; }
 .webrtc-stats-panel { background: rgba(8, 20, 25, .72); border: 1px solid rgba(196, 231, 236, .15); border-radius: 10px; bottom: .55rem; color: var(--meeting-text); font-size: .7rem; left: .55rem; max-width: calc(100% - 1.1rem); padding: .3rem .45rem; position: absolute; z-index: 3; }
 .webrtc-stats-panel[open] { background: rgba(8, 20, 25, .96); max-height: min(56vh, 28rem); overflow: auto; width: min(23rem, calc(100% - 1.1rem)); }
-.webrtc-stats-panel summary { color: var(--meeting-muted); cursor: pointer; font-weight: 650; list-style-position: inside; }
+.webrtc-stats-panel summary { align-items: center; color: var(--meeting-muted); cursor: pointer; display: flex; gap: .45rem; font-weight: 650; list-style-position: inside; }
 .webrtc-stats-panel[open] summary { color: var(--meeting-text); }
+.webrtc-transport-badge { background: rgba(132, 168, 176, .16); border: 1px solid rgba(196, 231, 236, .22); border-radius: 999px; color: #d5e6e9; font-size: .62rem; letter-spacing: .01em; margin-left: auto; padding: .08rem .42rem; white-space: nowrap; }
+.webrtc-transport-badge[data-mode="p2p"] { background: rgba(74, 200, 155, .18); border-color: rgba(105, 229, 183, .38); color: #a7f2d4; }
+.webrtc-transport-badge[data-mode="turn"] { background: rgba(82, 154, 221, .19); border-color: rgba(112, 180, 242, .4); color: #b8dcff; }
+.webrtc-transport-badge[data-mode="mixed"] { background: rgba(210, 159, 64, .2); border-color: rgba(238, 188, 91, .42); color: #ffe0a3; }
 .webrtc-stats-note { color: var(--meeting-muted); margin: .55rem 0; }
 .webrtc-stats-grid { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); margin-top: .55rem; }
 .webrtc-stats-grid h3 { font-size: .82rem; margin: 0 0 .3rem; }

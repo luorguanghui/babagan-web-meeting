@@ -8,6 +8,7 @@ import { HostMenu } from '../components/host-menu.js';
 import { MeetingControls } from '../components/meeting-controls.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
+import { LanguageProvider } from '../i18n/i18n.js';
 import { MeetingRoomPage, type MeetingRoomApi, type MeetingRoomPageProps } from '../pages/meeting-room-page.js';
 import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
 import type { Peer, P2pSignalingClient, P2pSignalingEvents } from './p2p-signaling.js';
@@ -1020,6 +1021,14 @@ describe('screen stage', () => {
     expect(videoTrack.detach).toHaveBeenCalledWith(video);
   });
 
+  it('shows the approved Chinese transport mode in WebRTC diagnostics', () => {
+    render(<LanguageProvider initialLocale="zh-CN">
+      <WebRtcStatsPanel requestedCodec="h264" mode="turn" />
+    </LanguageProvider>);
+
+    expect(screen.getByText('TURN 中继')).toBeVisible();
+  });
+
   it('reports the replacement source ready only after its probe renders a frame', () => {
     const first = displayStream({ audio: false }).stream;
     const second = displayStream({ audio: false }).stream;
@@ -1373,6 +1382,9 @@ describe('P2P-first screen sharing in the room', () => {
 
     await waitFor(() => expect(order).toEqual(['grant', 'capture', 'sfu', 'p2p']));
     expect(publishScreenShare).toHaveBeenCalledOnce();
+
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    expect(screen.getByText('TURN relay')).toBeVisible();
   });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
@@ -1569,6 +1581,9 @@ describe('P2P-first screen sharing in the room', () => {
     expect(setSubscribed).not.toHaveBeenCalledWith(false);
     act(() => document.querySelector('[data-stage-probe="true"]')?.dispatchEvent(new Event('playing')));
     await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
+    expect(screen.getByText('Direct P2P')).toBeVisible();
+    await waitFor(() => expect(screen.getByText('Receiver')).toBeInTheDocument());
+    expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
 
     act(() => {
       pc.iceConnectionState = 'failed';
@@ -1806,7 +1821,7 @@ interface FakeShareController {
 function fakeShareController(): FakeShareController {
   let fallback: ((identity: string) => void) | undefined;
   let allClosed: (() => void) | undefined;
-  let subscriber: ((states: ReadonlyMap<string, ViewerSessionState>) => void) | undefined;
+  const subscribers = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
   const start = vi.fn(async () => undefined);
   const stop = vi.fn(async () => undefined);
   const handleAnswer = vi.fn(async () => undefined);
@@ -1821,10 +1836,11 @@ function fakeShareController(): FakeShareController {
     handleMediaReady,
     handleViewerLeft,
     getViewerStates: () => new Map<string, ViewerSessionState>(),
+    getStatsReports: async () => [],
     subscribe: (listener) => {
-      subscriber = listener;
+      subscribers.add(listener);
       listener(new Map());
-      return () => { subscriber = undefined; };
+      return () => { subscribers.delete(listener); };
     }
   };
   return {
@@ -1838,7 +1854,10 @@ function fakeShareController(): FakeShareController {
     },
     triggerFallback: (identity) => fallback?.(identity),
     triggerAllViewersClosed: () => allClosed?.(),
-    triggerStates: (states) => subscriber?.(new Map(states))
+    triggerStates: (states) => {
+      const snapshot = new Map(states);
+      for (const subscriber of subscribers) subscriber(snapshot);
+    }
   };
 }
 

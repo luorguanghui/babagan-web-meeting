@@ -17,7 +17,12 @@ import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createP2pSignalingClient, type Peer, type P2pSignalingClient, type P2pSignalingEvents } from '../meeting/p2p-signaling.js';
-import { createP2pShareController, IceServersResponseSchema, type P2pShareController } from '../meeting/p2p-share-controller.js';
+import {
+  createP2pShareController,
+  IceServersResponseSchema,
+  type P2pShareController,
+  type ViewerSessionState
+} from '../meeting/p2p-share-controller.js';
 import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
 import {
@@ -30,6 +35,10 @@ import {
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
+import {
+  deriveSharerScreenTransportMode,
+  deriveViewerScreenTransportMode
+} from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 
@@ -157,6 +166,8 @@ export function MeetingRoomPage({
   const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
   const viewerRosterRef = useRef<Peer[]>([]);
   const p2pShareRef = useRef<P2pShareController | undefined>(undefined);
+  const p2pShareUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const [shareViewerStates, setShareViewerStates] = useState<ReadonlyMap<string, ViewerSessionState>>(() => new Map());
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
@@ -182,12 +193,20 @@ export function MeetingRoomPage({
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
   }): P2pShareController => {
-    if (shareControllerFactory) return shareControllerFactory(deps);
-    const signaling = signalingRef.current;
-    if (!signaling) throw new Error('P2P signaling is not connected.');
-    const controller = createP2pShareController({ slug, signaling, ...deps });
-    controller.subscribe((states) => { p2pStats.observeShareStates(states); });
-    return controller;
+    let share: P2pShareController;
+    if (shareControllerFactory) {
+      share = shareControllerFactory(deps);
+    } else {
+      const signaling = signalingRef.current;
+      if (!signaling) throw new Error('P2P signaling is not connected.');
+      share = createP2pShareController({ slug, signaling, ...deps });
+    }
+    p2pShareUnsubscribeRef.current?.();
+    p2pShareUnsubscribeRef.current = share.subscribe((states) => {
+      setShareViewerStates(new Map(states));
+      p2pStats.observeShareStates(states);
+    });
+    return share;
   }, [p2pStats, shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
@@ -224,6 +243,9 @@ export function MeetingRoomPage({
       release: async (stream) => {
         const hybrid = hybridShareRef.current;
         hybridShareRef.current = undefined;
+        p2pShareUnsubscribeRef.current?.();
+        p2pShareUnsubscribeRef.current = undefined;
+        setShareViewerStates(new Map());
         p2pShareRef.current = undefined;
         if (hybrid) await hybrid.release(stream);
       }
@@ -380,12 +402,14 @@ export function MeetingRoomPage({
       pendingFallbackCompletionRef.current = undefined;
       viewerP2pRef.current?.close();
       viewerP2pRef.current = undefined;
+      p2pShareUnsubscribeRef.current?.();
+      p2pShareUnsubscribeRef.current = undefined;
       signaling.close();
     };
   }, [controller, createSignalingClient, join.participantIdentity, p2pStats, slug]);
 
   useEffect(() => {
-    if (viewerP2pState === 'p2p') return;
+    if (viewerP2pState === 'p2p' || viewerP2pState === 'turn') return;
     // A renegotiation may replace an established P2P session. Restore the
     // safety net while it negotiates so the stage never drops to an empty source.
     if (viewerP2pState === 'negotiating') {
@@ -458,7 +482,7 @@ export function MeetingRoomPage({
   // screen track (the hybrid controller switches sources with first-frame
   // retention, so no black screen while the swap is in flight).
   const livekitViewerTrack = state.remoteScreenShare?.track;
-  const p2pViewerStream = viewerP2pState === 'p2p'
+  const p2pViewerStream = viewerP2pState === 'p2p' || viewerP2pState === 'turn'
     ? viewerP2pRef.current?.getStream() ?? undefined
     : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
       ? fallbackP2pStream
@@ -468,12 +492,15 @@ export function MeetingRoomPage({
   const stageAudioTrack = stageStream ? undefined : state.remoteScreenShare?.audioTrack;
   const stageMuted = Boolean(screenState.stream) || (p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
+  const screenTransportMode = screenState.stream
+    ? deriveSharerScreenTransportMode(shareViewerStates)
+    : deriveViewerScreenTransportMode(viewerP2pState);
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
-    if (viewerP2pState === 'p2p' && p2pViewerStream) {
+    if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
       void controller.setRemoteScreenShareSubscribed(false).catch(() => undefined);
       return;
     }
@@ -486,15 +513,29 @@ export function MeetingRoomPage({
   }, [controller, livekitViewerTrack, p2pViewerStream, screenState.stream, viewerP2pState]);
 
   useEffect(() => {
-    if (!hasActiveScreenShare || !controller.getScreenShareStatsReports) {
+    if (!hasActiveScreenShare) {
       setScreenStats(undefined);
       return;
     }
     let cancelled = false;
     let previous: WebRtcStatsSnapshot | undefined;
+    const activeReports = async (): Promise<RTCStatsReport[]> => {
+      if (screenState.status === 'sharing') {
+        const reports = await p2pShareRef.current?.getStatsReports();
+        if (reports && reports.length > 0) return reports;
+      } else if (viewerP2pState === 'negotiating'
+        || viewerP2pState === 'p2p'
+        || viewerP2pState === 'turn') {
+        const report = await viewerP2pRef.current?.getStatsReport();
+        if (report) return [report];
+      }
+      return controller.getScreenShareStatsReports
+        ? controller.getScreenShareStatsReports()
+        : [];
+    };
     const sample = async () => {
       try {
-        const reports = await controller.getScreenShareStatsReports!();
+        const reports = await activeReports();
         if (cancelled) return;
         previous = summarizeWebRtcStats(reports, previous);
         setScreenStats(previous);
@@ -509,7 +550,7 @@ export function MeetingRoomPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [controller, hasActiveScreenShare]);
+  }, [controller, hasActiveScreenShare, screenState.status, viewerP2pState]);
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
     <header className="meeting-topbar meeting-room-header">
@@ -546,7 +587,11 @@ export function MeetingRoomPage({
             sharerName={sharerName}
             onSourceReady={handleStageSourceReady}
           >
-            {hasActiveScreenShare && <WebRtcStatsPanel snapshot={screenStats} requestedCodec={screenCodec} />}
+            {hasActiveScreenShare && <WebRtcStatsPanel
+              snapshot={screenStats}
+              requestedCodec={screenCodec}
+              mode={screenTransportMode}
+            />}
           </ScreenStage>
         </section>
         <MeetingControls

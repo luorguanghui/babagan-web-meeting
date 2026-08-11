@@ -1,15 +1,29 @@
 import type { ScreenShareCodec } from '@meeting/contracts';
 
-import { useI18n } from '../i18n/i18n.js';
+import { type MessageKey, useI18n } from '../i18n/i18n.js';
+import type { ScreenTransportMode } from '../meeting/screen-transport-mode.js';
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 
-export function WebRtcStatsPanel({ snapshot, requestedCodec }: {
+const modeKeys: Record<ScreenTransportMode, MessageKey> = {
+  p2p: 'screenTransport.p2p',
+  turn: 'screenTransport.turn',
+  sfu: 'screenTransport.sfu',
+  mixed: 'screenTransport.mixed',
+  negotiating: 'screenTransport.negotiating',
+  waiting: 'screenTransport.waiting'
+};
+
+export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu' }: {
   snapshot?: WebRtcStatsSnapshot;
   requestedCodec: ScreenShareCodec;
+  mode?: ScreenTransportMode;
 }) {
   const { t } = useI18n();
   return <details className="webrtc-stats-panel">
-    <summary>{t('stats.heading')}</summary>
+    <summary>
+      <span>{t('stats.heading')}</span>
+      <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(modeKeys[mode])}</span>
+    </summary>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
     {!snapshot?.sender && !snapshot?.receiver
       ? <p>{t('stats.collecting')}</p>
