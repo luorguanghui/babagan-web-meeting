@@ -8,6 +8,7 @@ import {
 
 import type { Peer } from './p2p-signaling.js';
 import {
+  computeResolutionScale,
   createP2pShareController,
   deserializeIceCandidate,
   serializeIceCandidate,
@@ -563,6 +564,82 @@ describe('p2p share controller', () => {
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
   });
 
+  it('divides the aggregate budget across concurrent viewers', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 8_000_000 }, viewers.slice(0, 2));
+
+    const [pcA, pcB] = FakeRTCPeerConnection.instances;
+    const senderA = pcA.senders.find((sender) => sender.track.kind === 'video')!;
+    const senderB = pcB.senders.find((sender) => sender.track.kind === 'video')!;
+    expect(senderA.setParameters).toHaveBeenCalledWith(expect.objectContaining({
+      encodings: [expect.objectContaining({ maxBitrate: 4_000_000 })]
+    }));
+    expect(senderB.setParameters).toHaveBeenCalledWith(expect.objectContaining({
+      encodings: [expect.objectContaining({ maxBitrate: 4_000_000 })]
+    }));
+  });
+
+  it('keeps the per-viewer share above the bitrate floor with many viewers', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 5_000_000 }, viewers.slice(0, 4));
+
+    for (const pc of FakeRTCPeerConnection.instances) {
+      const sender = pc.senders.find((s) => s.track.kind === 'video')!;
+      expect(sender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
+        encodings: [expect.objectContaining({ maxBitrate: expect.any(Number) })]
+      }));
+      const call = (sender.setParameters as ReturnType<typeof vi.fn>).mock.calls[0][0] as { encodings: Array<{ maxBitrate: number }> };
+      expect(call.encodings[0].maxBitrate).toBeGreaterThanOrEqual(1_000_000);
+    }
+  });
+
+  it('re-divides the budget to the remaining viewers when one leaves', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 8_000_000 }, viewers.slice(0, 2));
+    const senderA = FakeRTCPeerConnection.instances[0].senders.find((sender) => sender.track.kind === 'video')!;
+    const initialCalls = (senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    controller.handleViewerLeft('viewer-2');
+
+    expect((senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(initialCalls);
+    const latest = (senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as { encodings: Array<{ maxBitrate: number }> };
+    expect(latest.encodings[0].maxBitrate).toBe(8_000_000);
+  });
+
+  it('rebuilds a fallen-back viewer session with a fresh offer on handleRetry', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    FakeRTCPeerConnection.instances[0].setIceConnectionState('failed'); // livekit-fallback
+    expect(controller.getViewerStates().get('viewer-1')).toBe('livekit-fallback');
+    const oldPc = FakeRTCPeerConnection.instances[0];
+    const offersBefore = (signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    controller.handleRetry('viewer-1');
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances.length).toBeGreaterThan(1));
+    const newPc = FakeRTCPeerConnection.instances.at(-1)!;
+
+    expect(oldPc.closed).toBe(true);
+    expect(newPc.closed).toBe(false);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(offersBefore);
+    expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-1', expect.any(String));
+  });
+
+  it('re-drives every viewer with fresh sessions on retryAll', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
+    const oldPcs = [...FakeRTCPeerConnection.instances];
+    const offersBefore = (signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length;
+
+    await controller.retryAll(viewers.slice(0, 2));
+
+    expect(oldPcs.every((pc) => pc.closed)).toBe(true);
+    expect(FakeRTCPeerConnection.instances.length).toBe(oldPcs.length + 2);
+    expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBe(offersBefore + 2);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    expect(controller.getViewerStates().get('viewer-2')).toBe('negotiating');
+  });
+
   it('emits state snapshots on subscribe and on every transition', async () => {
     const { controller } = makeHarness();
     const seen: Array<ReadonlyMap<string, ViewerSessionState>> = [];
@@ -581,6 +658,31 @@ describe('p2p share controller', () => {
     unsubscribe();
     FakeRTCPeerConnection.instances[0].setIceConnectionState('failed');
     expect(seen.at(-1)?.get('viewer-1')).toBe('p2p'); // no further emissions after unsubscribe
+  });
+});
+
+describe('computeResolutionScale', () => {
+  it('scales oversized captures down to 1080p', () => {
+    expect(computeResolutionScale({ width: 2560, height: 1440 })).toBeCloseTo(4 / 3, 5);
+    expect(computeResolutionScale({ width: 3840, height: 2160 })).toBe(2);
+  });
+
+  it('normalizes display-scaled 1080p captures to 720p', () => {
+    expect(computeResolutionScale({ width: 1536, height: 864 })).toBeCloseTo(1536 / 1280, 5);
+  });
+
+  it('leaves native 1080p and 720p captures unscaled', () => {
+    expect(computeResolutionScale({ width: 1920, height: 1080 })).toBeUndefined();
+    expect(computeResolutionScale({ width: 1280, height: 720 })).toBeUndefined();
+  });
+
+  it('never scales up and tolerates missing dimensions', () => {
+    expect(computeResolutionScale({ width: 800, height: 600 })).toBeUndefined();
+    // 1366x768 is not exactly 16:9; the height ratio binds, so the scale is
+    // 768/720 and the output preserves the capture's own aspect.
+    expect(computeResolutionScale({ width: 1366, height: 768 })).toBeCloseTo(Math.min(1366 / 1280, 768 / 720), 5);
+    expect(computeResolutionScale({})).toBeUndefined();
+    expect(computeResolutionScale({ width: 1920 })).toBeUndefined();
   });
 });
 

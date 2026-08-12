@@ -276,6 +276,9 @@ export function MeetingRoomPage({
   useEffect(() => {
     let cancelled = false;
     let iceServers: RTCIceServer[] | undefined;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    /** Offers that arrived while the ICE credentials were still in flight. */
+    const pendingOffers: Array<{ from: string; sdp: string }> = [];
     const ensureController = (): P2pViewerController | undefined => {
       if (iceServers === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
@@ -296,8 +299,40 @@ export function MeetingRoomPage({
       }
       return viewerP2pRef.current;
     };
+    // The credentials fetch gates P2P acceptance: without ICE servers the
+    // viewer can never complete a peer connection and would silently drop
+    // offers. Fetch with a bounded retry instead of once at page load — a
+    // single transient failure must not permanently disable P2P for this
+    // viewer, which is exactly what made "when I share, the others cannot
+    // P2P" while their own shares worked (the sharer fetches credentials
+    // fresh at share time).
+    const fetchIceServersWithRetry = (): void => {
+      void apiRequest<{ iceServers: RTCIceServer[] }>(
+        `/meetings/${encodeURIComponent(slug)}/ice-servers`,
+        IceServersResponseSchema
+      ).then((response) => {
+        if (cancelled) return;
+        iceServers = response.iceServers;
+        ensureController();
+        const queued = pendingOffers.splice(0);
+        for (const offer of queued) void viewerP2pRef.current?.acceptOffer(offer.from, offer.sdp);
+      }).catch(() => {
+        if (cancelled) return;
+        retryTimer = setTimeout(fetchIceServersWithRetry, 2_000);
+      });
+    };
+    fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
-      onOffer: (from, sdp) => { void ensureController()?.acceptOffer(from, sdp); },
+      onOffer: (from, sdp) => {
+        const controller = ensureController();
+        if (controller !== undefined) {
+          void controller.acceptOffer(from, sdp);
+        } else {
+          // Credentials still in flight: remember the offer instead of
+          // dropping it, or this viewer stays on the SFU for the whole share.
+          pendingOffers.push({ from, sdp });
+        }
+      },
       // While we are the sharer, answers/ice/bye belong to the share session.
       onAnswer: (from, sdp) => { void p2pShareRef.current?.handleAnswer(from, sdp); },
       onIce: (from, candidate) => {
@@ -310,6 +345,12 @@ export function MeetingRoomPage({
       },
       onMediaReady: (from) => {
         p2pShareRef.current?.handleMediaReady(from);
+      },
+      onRetry: (from) => {
+        // While we are the sharer, a retry request belongs to the share
+        // session; as a viewer the request would be our own button's echo
+        // (which the server forwards only to the sharer anyway).
+        p2pShareRef.current?.handleRetry(from);
       },
       onBye: (from, reason) => {
         const share = p2pShareRef.current;
@@ -382,24 +423,13 @@ export function MeetingRoomPage({
       onError: () => undefined
     });
     signalingRef.current = signaling;
-    void apiRequest<{ iceServers: RTCIceServer[] }>(
-      `/meetings/${encodeURIComponent(slug)}/ice-servers`,
-      IceServersResponseSchema
-    ).then((response) => {
-      iceServers = response.iceServers;
-      if (cancelled) {
-        signaling.close();
-        return;
-      }
-      ensureController();
-      // connect() may reject while the client keeps reconnecting; P2P stays best-effort.
-      void signaling.connect().catch(() => undefined);
-    }).catch(() => {
-      // Without ICE credentials the viewer stays on the LiveKit track.
-      void signaling.connect().catch(() => undefined);
-    });
+    // Connect the signaling channel immediately, in parallel with the
+    // credentials fetch: being in the sharer's roster early matters more than
+    // waiting for the fetch, and offers are queued until credentials arrive.
+    void signaling.connect().catch(() => undefined);
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
       signalingRef.current = undefined;
       pendingFallbackCompletionRef.current?.();
       pendingFallbackCompletionRef.current = undefined;
@@ -621,6 +651,19 @@ export function MeetingRoomPage({
           }}
           onScreenQualityChange={setScreenQuality}
           screenViewerCount={viewerCount}
+          p2pRetryVisible={Boolean(
+            (screenState.status === 'sharing' && viewerCount > 0)
+            || (hasActiveScreenShare && (viewerP2pState === 'livekit' || viewerP2pState === 'negotiating'))
+          )}
+          onP2pRetry={() => {
+            // Sharer: re-drive every viewer with a fresh session. Viewer:
+            // ask the sharer to re-drive a fresh offer for us.
+            if (screenState.status === 'sharing') {
+              void p2pShareRef.current?.retryAll(viewerRosterRef.current);
+            } else {
+              viewerP2pRef.current?.requestRetry();
+            }
+          }}
           onScreenShareToggle={() => void toggleScreenShare()}
           onLeave={() => void leave()}
         />

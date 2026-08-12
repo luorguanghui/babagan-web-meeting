@@ -182,6 +182,19 @@ class BrowserScreenShareController implements ScreenShareController {
         await this.cancelStart(stream, grantAcquired);
         return;
       }
+      // Normalize the capture resolution: display scaling can make the browser
+      // capture at odd logical sizes (e.g. 1536x864 on a 125%-scaled 1080p
+      // screen), which would then transmit unchanged on both the direct P2P
+      // and the SFU path. The preset dimensions are ideal — the browser keeps
+      // the native size when the display cannot provide more — so the shared
+      // picture settles on a standard tier instead.
+      await (typeof videoTrack.applyConstraints === 'function'
+        ? videoTrack.applyConstraints({
+          width: { ideal: settings.width },
+          height: { ideal: settings.height },
+          frameRate: { ideal: settings.frameRate }
+        }).catch(() => undefined)
+        : undefined);
       videoTrack.contentHint = screenShareContentHint;
       this.activeStream = stream;
       const onEnded = () => {

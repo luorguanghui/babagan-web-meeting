@@ -17,6 +17,7 @@ export interface P2pViewerSignaling {
   sendAnswer(to: string, sdp: string): void;
   sendIce(to: string, candidate: string | null): void;
   sendMediaReady(to: string): void;
+  sendRetry(to: string): void;
   sendBye(to: string, reason?: string): void;
 }
 
@@ -157,6 +158,16 @@ export class P2pViewerController {
     return this.sharerIdentity;
   }
 
+  /**
+   * Asks the sharer (via the retry button) to re-drive a fresh offer for this
+   * viewer. The sharer rebuilds the session with a new PC and ICE, and this
+   * viewer's `acceptOffer` treats the fresh offer as a renegotiation.
+   */
+  requestRetry(): void {
+    if (this.closed || this.sharerIdentity === undefined) return;
+    this.signaling.sendRetry(this.sharerIdentity);
+  }
+
   subscribe(listener: (state: ViewerP2pState) => void): () => void {
     this.listeners.add(listener);
     listener(this.state);
@@ -243,9 +254,13 @@ export class P2pViewerController {
         session.lastProgressAt = this.now();
       }
 
+      // Media that actually decodes is the success signal; the path is only a
+      // classification. `getStats` may transiently lack the selected pair or
+      // its candidate stats (path 'unknown') even while RTP is flowing — that
+      // must not be mistaken for a failed negotiation, or the viewer falls
+      // back to the SFU at the 8s mark despite a working direct stream.
       const hasDecodedVideo = session.videoTrack !== undefined
         && !session.videoTrack.muted
-        && health.path !== 'unknown'
         && health.bytesReceived > 0
         && health.framesDecoded > 0;
       if (this.state === 'negotiating' && hasDecodedVideo) {

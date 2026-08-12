@@ -589,6 +589,29 @@ describe('controlled browser screen sharing', () => {
     }));
   });
 
+  it('normalizes the capture resolution to the preset dimensions after capture', async () => {
+    const { stream, video } = displayStream({ audio: false });
+    const applyConstraints = vi.fn(async () => undefined);
+    Object.assign(video, { applyConstraints });
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('h264', 8_000_000, 'standard');
+
+    // Display scaling can make the browser capture at odd logical sizes
+    // (e.g. 1536x864); the ideal constraints steer it back to a standard tier.
+    expect(applyConstraints).toHaveBeenCalledWith({
+      width: { ideal: 1920 },
+      height: { ideal: 1080 },
+      frameRate: { ideal: 60 }
+    });
+  });
+
   it.each([
     [5_000_000],
     [8_000_000],
@@ -1780,7 +1803,12 @@ function displayStream(options: { audio: boolean; displaySurface?: string }) {
 
 function eventTrack(kind: 'audio' | 'video') {
   const target = new EventTarget();
-  return Object.assign(target, { kind, stop: vi.fn(), clone: vi.fn(() => eventTrack(kind)) }) as unknown as MediaStreamTrack;
+  return Object.assign(target, {
+    kind,
+    stop: vi.fn(),
+    clone: vi.fn(() => eventTrack(kind)),
+    applyConstraints: vi.fn(async () => undefined)
+  }) as unknown as MediaStreamTrack;
 }
 
 function meetingController(change: Partial<MeetingRoomState> = {}): MeetingRoomController {
@@ -1872,6 +1900,8 @@ function fakeShareController(): FakeShareController {
   const handleIce = vi.fn(async () => undefined);
   const handleMediaReady = vi.fn();
   const handleViewerLeft = vi.fn();
+  const handleRetry = vi.fn();
+  const retryAll = vi.fn(async () => undefined);
   const controller: P2pShareController = {
     start,
     stop,
@@ -1879,6 +1909,8 @@ function fakeShareController(): FakeShareController {
     handleIce,
     handleMediaReady,
     handleViewerLeft,
+    handleRetry,
+    retryAll,
     getViewerStates: () => new Map<string, ViewerSessionState>(),
     getStatsReports: async () => [],
     subscribe: (listener) => {

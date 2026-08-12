@@ -56,6 +56,7 @@ function eventHandlers(): P2pSignalingEvents {
     onAnswer: vi.fn(),
     onIce: vi.fn(),
     onMediaReady: vi.fn(),
+    onRetry: vi.fn(),
     onBye: vi.fn(),
     onShareGone: vi.fn(),
     onError: vi.fn()
@@ -320,6 +321,7 @@ describe('p2p signaling client', () => {
     client.sendIce('sharer', 'candidate:1');
     client.sendIce('sharer', null);
     client.sendMediaReady('sharer');
+    client.sendRetry('sharer');
     client.sendBye('sharer');
     client.sendBye('sharer', 'leaving');
 
@@ -330,6 +332,7 @@ describe('p2p signaling client', () => {
       { type: 'ice', to: 'sharer', candidate: 'candidate:1' },
       { type: 'ice', to: 'sharer', candidate: null },
       { type: 'media-ready', to: 'sharer' },
+      { type: 'retry', to: 'sharer' },
       { type: 'bye', to: 'sharer' },
       { type: 'bye', to: 'sharer', reason: 'leaving' }
     ]);

@@ -50,6 +50,8 @@ class FakeRTCPeerConnection {
   statsBytes = 1_200;
   statsFrames = 3;
   autoProgress = true;
+  /** When true, getStats omits the transport/pair/candidate entries (path 'unknown'). */
+  statsOmitPair = false;
   readonly setRemoteDescription = vi.fn(async (description: RTCSessionDescriptionInit) => {
     if (this.failRemoteDescription) throw new Error('bad sdp');
     if (this.setRemoteDescriptionGate) await this.setRemoteDescriptionGate;
@@ -63,7 +65,14 @@ class FakeRTCPeerConnection {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
   readonly getStats = vi.fn(async () => {
-    const report = statsReport(this.statsCandidateType, this.statsBytes, this.statsFrames);
+    const report = this.statsOmitPair
+      ? new Map<string, RTCStats>([
+        ['video', {
+          id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video',
+          bytesReceived: this.statsBytes, framesDecoded: this.statsFrames
+        } as RTCStats]
+      ]) as unknown as RTCStatsReport
+      : statsReport(this.statsCandidateType, this.statsBytes, this.statsFrames);
     if (this.autoProgress) {
       this.statsBytes += 1_000;
       this.statsFrames += 1;
@@ -131,7 +140,7 @@ function makeHarness(options: {
 } = {}) {
   let healthCheck: (() => Promise<void>) | undefined;
   const signaling: P2pViewerSignaling = {
-    sendAnswer: vi.fn(), sendIce: vi.fn(), sendMediaReady: vi.fn(), sendBye: vi.fn()
+    sendAnswer: vi.fn(), sendIce: vi.fn(), sendMediaReady: vi.fn(), sendRetry: vi.fn(), sendBye: vi.fn()
   };
   const onFallback = vi.fn();
   const controller = new P2pViewerController(signaling, iceServers, {
@@ -332,6 +341,41 @@ describe('p2p viewer controller', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(controller.getState()).toBe('p2p');
+  });
+
+  it('treats decoded media with an unclassifiable path as p2p instead of falling back', async () => {
+    // getStats can transiently lack the selected pair or its candidate stats
+    // (path 'unknown') even while RTP is flowing. Media that decodes is the
+    // success signal; the missing classification must not force an SFU fallback.
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
+
+    // And a healthy stream stays up: no stall-timer fallback.
+    vi.advanceTimersByTime(60_000);
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('asks the sharer to re-drive a fresh offer on requestRetry', async () => {
+    const { controller, signaling } = makeHarness();
+    expect(controller.requestRetry()).toBeUndefined();
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
+
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    controller.requestRetry();
+    expect(signaling.sendRetry).toHaveBeenCalledWith('sharer-1');
+
+    controller.close();
+    controller.requestRetry();
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
   });
 
   it('keeps healthy relay media and reports the TURN transport state', async () => {

@@ -167,6 +167,14 @@ export class P2pSignalingSession {
         }
         this.forward(message);
         return;
+      case 'retry':
+        // A viewer asks the current sharer to re-drive a fresh offer for them.
+        if (this.getShareIdentity() !== message.to || this.identity === message.to) {
+          this.sendError('P2P_FORBIDDEN', 'Only a viewer may request a P2P retry from the screen sharer');
+          return;
+        }
+        this.forward(message);
+        return;
       case 'answer':
       case 'ice':
       case 'bye':

@@ -25,6 +25,8 @@ interface MeetingControlsProps {
   screenQuality?: ScreenShareQuality;
   /** Online viewer count driving the P2P bitrate suggestion. */
   screenViewerCount?: number;
+  /** Whether the manual P2P retry button is shown (sharer while sharing, viewer on fallback). */
+  p2pRetryVisible?: boolean;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
@@ -33,6 +35,8 @@ interface MeetingControlsProps {
   onScreenBitrateChange?: (bitrate: ScreenShareBitrate) => void;
   onScreenQualityChange?: (quality: ScreenShareQuality) => void;
   onScreenShareToggle?: () => void;
+  /** Re-drives fresh P2P offers (the manual retry button). */
+  onP2pRetry?: () => void;
   onLeave: () => void;
 }
 
@@ -59,6 +63,7 @@ export function MeetingControls(props: MeetingControlsProps) {
         disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
         onClick={props.onScreenShareToggle}
       >{props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</button>
+      {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}
       <button type="button" className="danger" onClick={props.onLeave} disabled={props.leaving}>{props.leaving ? t('controls.leaving') : t('controls.leave')}</button>
     </div>
     <details className="meeting-settings">

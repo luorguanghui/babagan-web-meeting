@@ -25,6 +25,7 @@ describe('P2P signaling contract types', () => {
       | { type: 'answer'; to: string; sdp: string }
       | { type: 'ice'; to: string; candidate: string | null } // null = end-of-candidates
       | { type: 'media-ready'; to: string }
+      | { type: 'retry'; to: string }
       | { type: 'bye'; to: string; reason?: string }
       | { type: 'ping' }
     >();
@@ -61,6 +62,7 @@ describe('P2P client message schema', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: 'candidate:1 1 udp 2130706431 192.0.2.1 54666 typ host' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: null })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'media-ready', to: 'sharer-1' })).toBe(true);
+    expect(Value.Check(P2pClientMessageSchema, { type: 'retry', to: 'sharer-1' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'bye', to: 'viewer-1' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'bye', to: 'viewer-1', reason: 'fallback' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ping' })).toBe(true);

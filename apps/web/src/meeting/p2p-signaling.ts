@@ -29,6 +29,8 @@ export interface P2pSignalingEvents {
   onAnswer(from: string, sdp: string): void;
   onIce(from: string, candidate: string | null): void;
   onMediaReady(from: string): void;
+  /** A viewer asked the sharer to re-drive a fresh offer for them. */
+  onRetry(from: string): void;
   onBye(from: string, reason?: string): void;
   onShareGone(): void;
   onError(code: string): void;
@@ -157,6 +159,10 @@ export class P2pSignalingClient {
     this.send({ type: 'media-ready', to });
   }
 
+  sendRetry(to: string): void {
+    this.send({ type: 'retry', to });
+  }
+
   sendBye(to: string, reason?: string): void {
     this.send(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
   }
@@ -257,6 +263,9 @@ export class P2pSignalingClient {
       }
       case 'media-ready':
         if (from !== undefined) this.events.onMediaReady(from);
+        break;
+      case 'retry':
+        if (from !== undefined) this.events.onRetry(from);
         break;
       case 'bye':
         if (from !== undefined) {

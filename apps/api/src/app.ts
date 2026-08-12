@@ -35,7 +35,15 @@ export interface AppDependencies {
 }
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const app = Fastify({ logger: dependencies.config.nodeEnv !== 'test' });
+  // Trust the X-Forwarded-For chain from the Caddy reverse proxy (Cloudflare →
+  // Caddy → API). Without this, `request.ip` is the proxy container for every
+  // client, so the per-IP API rate limits would be shared by the whole
+  // deployment — a burst from any meeting could 429 the ICE-credentials
+  // fetches of everyone else.
+  const app = Fastify({
+    logger: dependencies.config.nodeEnv !== 'test',
+    trustProxy: true
+  });
   await app.register(cookie, { secret: dependencies.config.cookieSecret });
   await app.register(cors, { origin: dependencies.config.publicBaseUrl.origin, credentials: true });
   await app.register(helmet);

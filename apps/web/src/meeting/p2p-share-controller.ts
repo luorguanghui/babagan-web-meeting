@@ -11,6 +11,9 @@ import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
+/** Lower bound for a single viewer's share of the aggregate P2P budget. */
+export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
+
 /**
  * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
  * Mirrors `ScreenSharePublishOptions` so both the SFU fallback and the direct
@@ -38,6 +41,10 @@ export interface P2pShareController {
   handleIce(from: string, candidate: string | null): Promise<void>;
   handleMediaReady(from: string): void;
   handleViewerLeft(identity: string): void;
+  /** A viewer asked (via the retry button) for a fresh offer: rebuild their session. */
+  handleRetry(from: string): void;
+  /** The sharer asked to re-drive every viewer: fresh sessions for the whole roster. */
+  retryAll(viewers: Peer[]): Promise<void>;
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
   getStatsReports(): Promise<RTCStatsReport[]>;
@@ -119,6 +126,10 @@ class P2pShareControllerImpl implements P2pShareController {
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
   private iceServers?: RTCIceServer[];
+  /** The captured share the sessions publish; kept for retry re-drives. */
+  private activeStream?: MediaStream;
+  /** The total (aggregate) P2P budget chosen by the sharer, before division. */
+  private activeOptions?: P2pShareOptions;
 
   constructor(private readonly deps: P2pShareControllerDependencies) {
     this.createPeerConnection = deps.createPeerConnection
@@ -127,14 +138,17 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   async start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[]): Promise<void> {
+    this.activeStream = stream;
+    this.activeOptions = options;
     const iceServers = await this.resolveIceServers();
+    const viewerOptions = this.divideOptions(options, viewers.length);
     const establishes: Promise<void>[] = [];
     for (const viewer of viewers) {
       const existing = this.sessions.get(viewer.identity);
       // A viewer that left and rejoined starts a fresh session; p2p/fallback sessions keep running.
       if (existing && existing.state !== 'closed') continue;
       if (existing) this.closeSession(existing);
-      const session = this.createSession(viewer.identity, stream, options, iceServers);
+      const session = this.createSession(viewer.identity, stream, viewerOptions, iceServers);
       establishes.push(this.establishSession(session));
     }
     this.emit();
@@ -146,6 +160,9 @@ class P2pShareControllerImpl implements P2pShareController {
         establishes.push(this.establishSession(session));
       }
     }
+    // The roster may have grown or shrunk since the previous drive: re-divide
+    // the aggregate budget across the sessions that are actually active.
+    this.rebalanceBitrates();
     await Promise.all(establishes);
   }
 
@@ -186,8 +203,49 @@ class P2pShareControllerImpl implements P2pShareController {
       this.clearTimers(session);
       this.closePc(session);
       this.transition(session, 'closed');
+      // Free the departed viewer's share of the aggregate budget for the rest.
+      this.rebalanceBitrates();
       if (this.allViewersClosed()) this.deps.onAllViewersClosed?.();
     }
+  }
+
+  handleRetry(from: string): void {
+    if (this.activeStream === undefined || this.activeOptions === undefined) return;
+    const existing = this.sessions.get(from);
+    if (existing) this.closeSession(existing);
+    // A fresh PC and offer: the viewer rebuilds its session on the new offer,
+    // so stale candidates from a failed attempt can never poison the retry.
+    void this.resolveIceServers().then((iceServers) => {
+      // The share may have stopped while the credentials were in flight.
+      if (this.activeStream === undefined || this.activeOptions === undefined) return;
+      const session = this.createSession(
+        from,
+        this.activeStream,
+        this.divideOptions(this.activeOptions, this.activeViewerCount()),
+        iceServers
+      );
+      void this.establishSession(session);
+    });
+  }
+
+  async retryAll(viewers: Peer[]): Promise<void> {
+    if (this.activeStream === undefined || this.activeOptions === undefined) return;
+    const iceServers = await this.resolveIceServers();
+    const options = this.divideOptions(this.activeOptions, viewers.length);
+    for (const session of this.sessions.values()) {
+      if (session.state !== 'closed') {
+        this.clearTimers(session);
+        this.closePc(session);
+      }
+    }
+    this.sessions.clear();
+    const establishes: Promise<void>[] = [];
+    for (const viewer of viewers) {
+      const session = this.createSession(viewer.identity, this.activeStream, options, iceServers);
+      establishes.push(this.establishSession(session));
+    }
+    this.emit();
+    await Promise.all(establishes);
   }
 
   async stop(): Promise<void> {
@@ -265,10 +323,20 @@ class P2pShareControllerImpl implements P2pShareController {
         try {
           // Single encoding, no simulcast: cap the video bitrate and frame
           // rate for this viewer, and apply the chosen degradation policy.
+          // `scaleResolutionDownBy` normalizes the transmitted resolution to
+          // 1080p (or 720p when the capture is smaller) regardless of the
+          // display-scaling resolution the browser captured at.
           const { options } = session;
+          const scale = computeResolutionScale(
+            session.videoSender.track?.getSettings?.() ?? {}
+          );
           await session.videoSender.setParameters({
             ...session.videoSender.getParameters(),
-            encodings: [{ maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }],
+            encodings: [{
+              maxBitrate: options.maxBitrate,
+              maxFramerate: options.frameRate,
+              ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
+            }],
             degradationPreference: options.degradationPreference
           });
         } catch {
@@ -412,6 +480,54 @@ class P2pShareControllerImpl implements P2pShareController {
     return this.sessions.size > 0 && [...this.sessions.values()].every((session) => session.state === 'closed');
   }
 
+  /**
+   * Divides the aggregate P2P budget across the viewers that will share it.
+   * Every viewer otherwise gets the full budget, so N parallel
+   * `RTCPeerConnection`s each run their own congestion controller against the
+   * same uplink: the first-established link grabs the bandwidth and the rest
+   * starve. Dividing up front keeps the aggregate at (or below) the chosen
+   * tier, so viewers contend for quality instead of bandwidth.
+   */
+  private divideOptions(options: P2pShareOptions, viewerCount: number): P2pShareOptions {
+    const viewers = Math.max(1, viewerCount);
+    return { ...options, maxBitrate: Math.max(P2P_VIEWER_BITRATE_FLOOR, Math.floor(options.maxBitrate / viewers)) };
+  }
+
+  /** Counts sessions that still consume P2P bandwidth (negotiating/p2p/turn). */
+  private activeViewerCount(): number {
+    let count = 0;
+    for (const session of this.sessions.values()) {
+      if (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn') count++;
+    }
+    return Math.max(1, count);
+  }
+
+  /** Re-applies the divided per-viewer bitrate to every active session. */
+  private rebalanceBitrates(): void {
+    if (this.activeOptions === undefined) return;
+    const options = this.divideOptions(this.activeOptions, this.activeViewerCount());
+    for (const session of this.sessions.values()) {
+      if (session.state === 'closed' || session.state === 'livekit-fallback') continue;
+      session.options = options;
+      if (session.videoSender) {
+        try {
+          const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
+          void session.videoSender.setParameters({
+            ...session.videoSender.getParameters(),
+            encodings: [{
+              maxBitrate: options.maxBitrate,
+              maxFramerate: options.frameRate,
+              ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
+            }],
+            degradationPreference: options.degradationPreference
+          }).catch(() => undefined);
+        } catch {
+          // Bitrate tuning is best-effort; a failure must not kill the session.
+        }
+      }
+    }
+  }
+
   private emit(): void {
     const snapshot = this.getViewerStates();
     for (const listener of this.listeners) listener(snapshot);
@@ -450,4 +566,26 @@ function defaultFetchIceServers(slug: string): () => Promise<RTCIceServer[]> {
 
 export function createP2pShareController(dependencies: P2pShareControllerDependencies): P2pShareController {
   return new P2pShareControllerImpl(dependencies);
+}
+
+/**
+ * Computes the `scaleResolutionDownBy` that normalizes a captured track to a
+ * standard tier: 1080p when the capture is at least 1920x1080, 720p when it is
+ * at least 1280x720, native otherwise (never upscale). Returns `undefined` when
+ * no scaling is needed or the track reports no dimensions. Display-scaled
+ * Windows captures (e.g. 1536x864 on a 125% 1080p screen) otherwise transmit
+ * their odd native resolution on both the P2P and the SFU path.
+ */
+export function computeResolutionScale(settings: { width?: number; height?: number }): number | undefined {
+  const width = settings.width;
+  const height = settings.height;
+  if (width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
+  const target = width >= 1920 && height >= 1080
+    ? { width: 1920, height: 1080 }
+    : width >= 1280 && height >= 720
+      ? { width: 1280, height: 720 }
+      : undefined;
+  if (target === undefined) return undefined;
+  const scale = Math.min(width / target.width, height / target.height);
+  return scale > 1.0 ? scale : undefined;
 }

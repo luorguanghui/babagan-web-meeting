@@ -208,6 +208,19 @@ describe('P2pSignalingSession', () => {
     expect(adaSocket.messages().at(-1)).toEqual(errorMessage('P2P_FORBIDDEN'));
   });
 
+  it('forwards retry only from a viewer to the current sharer', () => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { session: adaSession, socket: adaSocket } = createSession(harness, 'ada', 'Ada');
+    const { session: bobSession } = createSession(harness, 'bob', 'Bob');
+
+    bobSession.handleMessage(JSON.stringify({ type: 'retry', to: 'ada' }));
+    expect(adaSocket.messages()).toContainEqual({ type: 'retry', to: 'ada', from: 'bob' });
+
+    adaSession.handleMessage(JSON.stringify({ type: 'retry', to: 'bob' }));
+    expect(adaSocket.messages().at(-1)).toEqual(errorMessage('P2P_FORBIDDEN'));
+  });
+
   it('forwards ice and bye from the sharer to any online peer', () => {
     const harness = createHarness();
     harness.shareIdentity = 'ada';
