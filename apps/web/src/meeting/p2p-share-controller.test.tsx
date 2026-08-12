@@ -376,6 +376,66 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).not.toHaveBeenCalled();
   });
 
+  it('negotiates at the selected base tier and raises the encoding only once direct P2P is confirmed', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoSender = pc.senders.find((sender) => sender.track.kind === 'video')!;
+
+    // Negotiation: the user-selected tier, no boost yet.
+    expect(videoSender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
+      encodings: [expect.objectContaining({ maxBitrate: bitrate })]
+    }));
+
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    await vi.advanceTimersByTimeAsync(0); // flush the async transport classification
+
+    // Direct path confirmed (srflx pair): encoding raised by 1.5x.
+    expect(videoSender.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({
+      encodings: [expect.objectContaining({ maxBitrate: Math.round(bitrate * 1.5) })]
+    }));
+  });
+
+  it('keeps the base tier when the session is relayed over TURN instead of boosting', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoSender = pc.senders.find((sender) => sender.track.kind === 'video')!;
+    pc.statsCandidateType = 'relay';
+
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    // Only the negotiation-time call happened; no boosted encoding was applied.
+    const calls = (videoSender.setParameters as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0][0]).toEqual(expect.objectContaining({
+      encodings: [expect.objectContaining({ maxBitrate: bitrate })]
+    }));
+  });
+
+  it('does not boost twice for the same session', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoSender = pc.senders.find((sender) => sender.track.kind === 'video')!;
+
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000); // health samples / stall checks
+    controller.handleMediaReady('viewer-1'); // duplicate confirmation
+
+    const boosted = (videoSender.setParameters as ReturnType<typeof vi.fn>).mock.calls.filter(
+      (call) => call[0].encodings?.[0]?.maxBitrate === Math.round(bitrate * 1.5)
+    );
+    expect(boosted).toHaveLength(1);
+  });
+
   it('reports TURN when the selected candidate pair uses a relay', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
@@ -562,48 +622,6 @@ describe('p2p share controller', () => {
     expect(FakeRTCPeerConnection.instances).toHaveLength(2);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(2);
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
-  });
-
-  it('divides the aggregate budget across concurrent viewers', async () => {
-    const { controller } = makeHarness();
-    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 8_000_000 }, viewers.slice(0, 2));
-
-    const [pcA, pcB] = FakeRTCPeerConnection.instances;
-    const senderA = pcA.senders.find((sender) => sender.track.kind === 'video')!;
-    const senderB = pcB.senders.find((sender) => sender.track.kind === 'video')!;
-    expect(senderA.setParameters).toHaveBeenCalledWith(expect.objectContaining({
-      encodings: [expect.objectContaining({ maxBitrate: 4_000_000 })]
-    }));
-    expect(senderB.setParameters).toHaveBeenCalledWith(expect.objectContaining({
-      encodings: [expect.objectContaining({ maxBitrate: 4_000_000 })]
-    }));
-  });
-
-  it('keeps the per-viewer share above the bitrate floor with many viewers', async () => {
-    const { controller } = makeHarness();
-    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 5_000_000 }, viewers.slice(0, 4));
-
-    for (const pc of FakeRTCPeerConnection.instances) {
-      const sender = pc.senders.find((s) => s.track.kind === 'video')!;
-      expect(sender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
-        encodings: [expect.objectContaining({ maxBitrate: expect.any(Number) })]
-      }));
-      const call = (sender.setParameters as ReturnType<typeof vi.fn>).mock.calls[0][0] as { encodings: Array<{ maxBitrate: number }> };
-      expect(call.encodings[0].maxBitrate).toBeGreaterThanOrEqual(1_000_000);
-    }
-  });
-
-  it('re-divides the budget to the remaining viewers when one leaves', async () => {
-    const { controller } = makeHarness();
-    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 8_000_000 }, viewers.slice(0, 2));
-    const senderA = FakeRTCPeerConnection.instances[0].senders.find((sender) => sender.track.kind === 'video')!;
-    const initialCalls = (senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.length;
-
-    controller.handleViewerLeft('viewer-2');
-
-    expect((senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(initialCalls);
-    const latest = (senderA.setParameters as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0] as { encodings: Array<{ maxBitrate: number }> };
-    expect(latest.encodings[0].maxBitrate).toBe(8_000_000);
   });
 
   it('rebuilds a fallen-back viewer session with a fresh offer on handleRetry', async () => {

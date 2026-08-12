@@ -11,8 +11,15 @@ import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
-/** Lower bound for a single viewer's share of the aggregate P2P budget. */
-export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
+/**
+ * The direct-P2P bitrate boost applied only after a session is confirmed as
+ * direct (`media-ready` + a non-relay candidate pair). The user-selected tier
+ * applies during negotiation and on the TURN/SFU paths; once the share is
+ * provably peer-to-peer the encoding is raised by this factor, because direct
+ * media costs no server bandwidth. 1.5x maps the tiers 5/8/10 Mbps to
+ * 7.5/12/15 Mbps.
+ */
+export const P2P_DIRECT_BITRATE_MULTIPLIER = 1.5;
 
 /**
  * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
@@ -116,6 +123,8 @@ interface ViewerSession {
   offerSent: boolean;
   pcClosed: boolean;
   transportConnected: boolean;
+  /** The direct-path bitrate boost was applied to this session already. */
+  directBitrateApplied: boolean;
   negotiationTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
 }
@@ -141,14 +150,13 @@ class P2pShareControllerImpl implements P2pShareController {
     this.activeStream = stream;
     this.activeOptions = options;
     const iceServers = await this.resolveIceServers();
-    const viewerOptions = this.divideOptions(options, viewers.length);
     const establishes: Promise<void>[] = [];
     for (const viewer of viewers) {
       const existing = this.sessions.get(viewer.identity);
       // A viewer that left and rejoined starts a fresh session; p2p/fallback sessions keep running.
       if (existing && existing.state !== 'closed') continue;
       if (existing) this.closeSession(existing);
-      const session = this.createSession(viewer.identity, stream, viewerOptions, iceServers);
+      const session = this.createSession(viewer.identity, stream, options, iceServers);
       establishes.push(this.establishSession(session));
     }
     this.emit();
@@ -160,9 +168,6 @@ class P2pShareControllerImpl implements P2pShareController {
         establishes.push(this.establishSession(session));
       }
     }
-    // The roster may have grown or shrunk since the previous drive: re-divide
-    // the aggregate budget across the sessions that are actually active.
-    this.rebalanceBitrates();
     await Promise.all(establishes);
   }
 
@@ -203,8 +208,6 @@ class P2pShareControllerImpl implements P2pShareController {
       this.clearTimers(session);
       this.closePc(session);
       this.transition(session, 'closed');
-      // Free the departed viewer's share of the aggregate budget for the rest.
-      this.rebalanceBitrates();
       if (this.allViewersClosed()) this.deps.onAllViewersClosed?.();
     }
   }
@@ -218,12 +221,7 @@ class P2pShareControllerImpl implements P2pShareController {
     void this.resolveIceServers().then((iceServers) => {
       // The share may have stopped while the credentials were in flight.
       if (this.activeStream === undefined || this.activeOptions === undefined) return;
-      const session = this.createSession(
-        from,
-        this.activeStream,
-        this.divideOptions(this.activeOptions, this.activeViewerCount()),
-        iceServers
-      );
+      const session = this.createSession(from, this.activeStream, this.activeOptions, iceServers);
       void this.establishSession(session);
     });
   }
@@ -231,7 +229,6 @@ class P2pShareControllerImpl implements P2pShareController {
   async retryAll(viewers: Peer[]): Promise<void> {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
     const iceServers = await this.resolveIceServers();
-    const options = this.divideOptions(this.activeOptions, viewers.length);
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') {
         this.clearTimers(session);
@@ -241,7 +238,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.sessions.clear();
     const establishes: Promise<void>[] = [];
     for (const viewer of viewers) {
-      const session = this.createSession(viewer.identity, this.activeStream, options, iceServers);
+      const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceServers);
       establishes.push(this.establishSession(session));
     }
     this.emit();
@@ -296,7 +293,8 @@ class P2pShareControllerImpl implements P2pShareController {
       pendingOffer: false,
       offerSent: false,
       pcClosed: false,
-      transportConnected: false
+      transportConnected: false,
+      directBitrateApplied: false
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
@@ -410,10 +408,47 @@ class P2pShareControllerImpl implements P2pShareController {
     try {
       const health = inspectP2pMediaHealth(await session.pc.getStats());
       if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
-      if (health.path === 'relay' && session.state === 'p2p') this.transition(session, 'turn');
+      if (session.state === 'p2p') {
+        if (health.path === 'relay') {
+          // A TURN relay costs the same server bandwidth as the SFU: keep the
+          // negotiated base bitrate instead of the direct-path boost.
+          this.transition(session, 'turn');
+          return;
+        }
+        // Direct media confirmed: only now raise the encoding to the boosted
+        // P2P bitrate — the user-selected tier applies until the connection
+        // is proven direct, so failed or relayed sessions never waste the
+        // sharer's uplink (or the server's relay bandwidth) at full rate.
+        this.applyDirectBitrate(session);
+      }
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
       // The usable session remains active and later UI stats can classify it.
+    }
+  }
+
+  /**
+   * Applies the boosted direct-P2P bitrate to an established session. Best
+   * effort and idempotent: re-applying `setParameters` after a retry starts a
+   * fresh session, so the flag rides on the session object, not the controller.
+   */
+  private applyDirectBitrate(session: ViewerSession): void {
+    if (session.directBitrateApplied || session.videoSender === undefined) return;
+    session.directBitrateApplied = true;
+    try {
+      const { options } = session;
+      const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
+      void session.videoSender.setParameters({
+        ...session.videoSender.getParameters(),
+        encodings: [{
+          maxBitrate: Math.round(options.maxBitrate * P2P_DIRECT_BITRATE_MULTIPLIER),
+          maxFramerate: options.frameRate,
+          ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
+        }],
+        degradationPreference: options.degradationPreference
+      }).catch(() => undefined);
+    } catch {
+      // Bitrate tuning is best-effort; a failure must not kill the session.
     }
   }
 
@@ -478,54 +513,6 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private allViewersClosed(): boolean {
     return this.sessions.size > 0 && [...this.sessions.values()].every((session) => session.state === 'closed');
-  }
-
-  /**
-   * Divides the aggregate P2P budget across the viewers that will share it.
-   * Every viewer otherwise gets the full budget, so N parallel
-   * `RTCPeerConnection`s each run their own congestion controller against the
-   * same uplink: the first-established link grabs the bandwidth and the rest
-   * starve. Dividing up front keeps the aggregate at (or below) the chosen
-   * tier, so viewers contend for quality instead of bandwidth.
-   */
-  private divideOptions(options: P2pShareOptions, viewerCount: number): P2pShareOptions {
-    const viewers = Math.max(1, viewerCount);
-    return { ...options, maxBitrate: Math.max(P2P_VIEWER_BITRATE_FLOOR, Math.floor(options.maxBitrate / viewers)) };
-  }
-
-  /** Counts sessions that still consume P2P bandwidth (negotiating/p2p/turn). */
-  private activeViewerCount(): number {
-    let count = 0;
-    for (const session of this.sessions.values()) {
-      if (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn') count++;
-    }
-    return Math.max(1, count);
-  }
-
-  /** Re-applies the divided per-viewer bitrate to every active session. */
-  private rebalanceBitrates(): void {
-    if (this.activeOptions === undefined) return;
-    const options = this.divideOptions(this.activeOptions, this.activeViewerCount());
-    for (const session of this.sessions.values()) {
-      if (session.state === 'closed' || session.state === 'livekit-fallback') continue;
-      session.options = options;
-      if (session.videoSender) {
-        try {
-          const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
-          void session.videoSender.setParameters({
-            ...session.videoSender.getParameters(),
-            encodings: [{
-              maxBitrate: options.maxBitrate,
-              maxFramerate: options.frameRate,
-              ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
-            }],
-            degradationPreference: options.degradationPreference
-          }).catch(() => undefined);
-        } catch {
-          // Bitrate tuning is best-effort; a failure must not kill the session.
-        }
-      }
-    }
   }
 
   private emit(): void {
