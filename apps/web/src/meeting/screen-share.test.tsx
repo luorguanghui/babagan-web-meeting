@@ -29,6 +29,8 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  PageFakePc.instances = [];
+  PageFakePc.remoteDescriptionGate = undefined;
 });
 
 describe('controlled browser screen sharing', () => {
@@ -482,6 +484,7 @@ describe('controlled browser screen sharing', () => {
       screenShareBusy: false,
       screenCodec: 'h264' as const,
       screenBitrate: 8_000_000 as const,
+      screenViewerCount: 2,
       onMicrophoneToggle: () => undefined,
       onMicrophoneDeviceChange: () => undefined,
       onSpeakerDeviceChange: () => undefined,
@@ -498,13 +501,17 @@ describe('controlled browser screen sharing', () => {
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Unmute microphone' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Share screen' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Leave meeting' }));
-    expect(screen.getByText('Adaptive 1080p · 60 fps')).toBeVisible();
+    expect(screen.getByText('Adaptive screen share · 30–60 fps')).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Flow (720p30, resolution first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Standard (1080p30, resolution first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Motion (1080p60, resolution first)' })).toBeVisible();
 
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
     expect(selector).toHaveValue('8000000');
     expect(screen.getByRole('option', { name: '5 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '8 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '10 Mbps' })).toBeVisible();
+    expect(screen.getByText('Suggested total P2P upload budget: 8 Mbps, shared equally across 2 online viewers.')).toBeVisible();
 
     await userEvent.selectOptions(selector, '10000000');
     expect(onBitrateChange).toHaveBeenCalledWith(10_000_000);
@@ -545,7 +552,7 @@ describe('controlled browser screen sharing', () => {
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
   });
 
-  it('captures and publishes at the flow preset (frame-rate first, 720p60)', async () => {
+  it('captures and publishes at the flow preset (resolution first, 720p30)', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
     const publish = vi.fn(async () => undefined);
@@ -559,15 +566,15 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000, 'flow');
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1280, height: 720, frameRate: 60 }
+      video: { width: 1280, height: 720, frameRate: 30 }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
-      frameRate: 60,
-      degradationPreference: 'maintain-framerate'
+      frameRate: 30,
+      degradationPreference: 'maintain-resolution'
     }));
   });
 
-  it('defaults to the standard 1080p60 preset with frame-rate-first degradation', async () => {
+  it('defaults to the standard 1080p30 preset with resolution-first degradation', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
     const publish = vi.fn(async () => undefined);
@@ -581,11 +588,11 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000);
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1920, height: 1080, frameRate: 60 }
+      video: { width: 1920, height: 1080, frameRate: 30 }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
-      frameRate: 60,
-      degradationPreference: 'maintain-framerate'
+      frameRate: 30,
+      degradationPreference: 'maintain-resolution'
     }));
   });
 
@@ -608,7 +615,7 @@ describe('controlled browser screen sharing', () => {
     expect(applyConstraints).toHaveBeenCalledWith({
       width: { ideal: 1920 },
       height: { ideal: 1080 },
-      frameRate: { ideal: 60 }
+      frameRate: { ideal: 30 }
     });
   });
 
@@ -1303,7 +1310,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     setViewers([p2pViewers[0]]);
     hybrid.viewerRosterChanged(); // late joiner arrives mid-share
 
-    expect(fake.start).toHaveBeenCalledWith(stream, p2pPublishOptions(8_000_000), [p2pViewers[0]]);
+    expect(fake.start).toHaveBeenCalledWith(stream, p2pPublishOptions(8_000_000), [p2pViewers[0]], false);
     expect(sfuPublisher.release).not.toHaveBeenCalled();
 
     fake.triggerStates([['viewer-1', 'p2p']]);
@@ -1369,7 +1376,22 @@ describe('hybrid P2P-first screen share publisher', () => {
     setViewers(p2pViewers);
     hybrid.viewerRosterChanged();
 
-    expect(fake.start).toHaveBeenLastCalledWith(stream, p2pPublishOptions(8_000_000), p2pViewers);
+    expect(fake.start).toHaveBeenLastCalledWith(stream, p2pPublishOptions(8_000_000), p2pViewers, false);
+  });
+
+  it('requests fresh negotiating sessions when a reconnect welcome replaces the roster', async () => {
+    const { hybrid, fake } = hybridHarness(p2pViewers);
+    const { stream } = displayStream({ audio: true });
+    await hybrid.publish(stream, p2pPublishOptions(8_000_000));
+
+    hybrid.viewerRosterChanged(true);
+
+    expect(fake.start).toHaveBeenLastCalledWith(
+      stream,
+      p2pPublishOptions(8_000_000),
+      p2pViewers,
+      true
+    );
   });
 
   it('continues with the already-published SFU safety net when P2P start fails', async () => {
@@ -1467,7 +1489,7 @@ describe('P2P-first screen sharing in the room', () => {
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
     await waitFor(() => expect(selector).toHaveValue('5000000'));
-    expect(screen.getByText(/suggested 5 Mbps for 4 online viewers/)).toBeVisible();
+    expect(screen.getByText('Suggested total P2P upload budget: 5 Mbps, shared equally across 4 online viewers.')).toBeVisible();
   });
 
   it('keeps the cloned LiveKit screen published through fallback and P2P recovery', async () => {
@@ -1601,6 +1623,116 @@ describe('P2P-first screen sharing in the room', () => {
 
     expect(pc.closed).toBe(true);
     expect(PageFakePc.instances).toHaveLength(1);
+  });
+
+  it('replays viewer offers and ICE in arrival order after ICE configuration becomes ready', async () => {
+    let resolveIce!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return new Promise<Response>((resolve) => { resolveIce = resolve; });
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+
+    act(() => {
+      signaling.offer('sharer-1', 'offer-before-ice');
+      signaling.ice('sharer-1', JSON.stringify({ candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 }));
+      signaling.ice('sharer-1', null);
+    });
+    expect(PageFakePc.instances).toHaveLength(0);
+
+    await act(async () => {
+      resolveIce(new Response(JSON.stringify({ iceServers: [{ urls: ['stun:stun.example.test:3478'] }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' }
+      }));
+    });
+
+    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([
+      { type: 'offer', sdp: 'offer-before-ice' }
+    ]));
+    await waitFor(() => expect(PageFakePc.instances[0]?.addedIceCandidates).toEqual([
+      { candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 },
+      undefined
+    ]));
+  });
+
+  it('serializes later viewer offers and ICE so a new offer cannot overtake the current exchange', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: [{ urls: ['stun:stun.example.test:3478'] }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const firstOffer = deferred<void>();
+    PageFakePc.remoteDescriptionGate = firstOffer.promise;
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
+
+    act(() => {
+      signaling.offer('sharer-1', 'offer-1');
+      signaling.ice('sharer-1', JSON.stringify({ candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 }));
+      signaling.offer('sharer-1', 'offer-2');
+      signaling.ice('sharer-1', JSON.stringify({ candidate: 'candidate:2', sdpMid: '0', sdpMLineIndex: 0 }));
+    });
+
+    await waitFor(() => expect(PageFakePc.instances).toHaveLength(1));
+    await act(async () => { firstOffer.resolve(); });
+
+    await waitFor(() => expect(PageFakePc.instances).toHaveLength(2));
+    await waitFor(() => expect(PageFakePc.instances[0]?.addedIceCandidates).toEqual([
+      { candidate: 'candidate:1', sdpMid: '0', sdpMLineIndex: 0 }
+    ]));
+    await waitFor(() => expect(PageFakePc.instances[1]?.addedIceCandidates).toEqual([
+      { candidate: 'candidate:2', sdpMid: '0', sdpMLineIndex: 0 }
+    ]));
+  });
+
+  it('cancels queued viewer signaling when the page unmounts', async () => {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input).includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: [{ urls: ['stun:stun.example.test:3478'] }]
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const firstOffer = deferred<void>();
+    PageFakePc.remoteDescriptionGate = firstOffer.promise;
+    const signaling = fakeSignalingClient();
+    const rendered = renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
+
+    act(() => {
+      signaling.offer('sharer-1', 'offer-1');
+      signaling.offer('sharer-1', 'offer-2');
+    });
+    await waitFor(() => expect(PageFakePc.instances).toHaveLength(1));
+
+    rendered.unmount();
+    await act(async () => { firstOffer.resolve(); });
+
+    expect(PageFakePc.instances).toHaveLength(1);
+    expect(PageFakePc.instances[0]?.closed).toBe(true);
   });
 
   it('unsubscribes LiveKit only after P2P renders and retains P2P until LiveKit renders on fallback', async () => {
@@ -1967,9 +2099,11 @@ function hybridHarness(viewers: Peer[]) {
 
 class PageFakePc {
   static instances: PageFakePc[] = [];
+  static remoteDescriptionGate: Promise<void> | undefined;
   closed = false;
   iceConnectionState: RTCIceConnectionState = 'new';
   remoteDescriptions: RTCSessionDescriptionInit[] = [];
+  addedIceCandidates: Array<RTCIceCandidateInit | undefined> = [];
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
@@ -1979,7 +2113,12 @@ class PageFakePc {
   }
 
   async setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void> {
+    await PageFakePc.remoteDescriptionGate;
     this.remoteDescriptions.push(description);
+  }
+
+  get remoteDescription(): RTCSessionDescription | null {
+    return (this.remoteDescriptions.at(-1) ?? null) as RTCSessionDescription | null;
   }
 
   async createAnswer(): Promise<RTCSessionDescriptionInit> {
@@ -1988,7 +2127,9 @@ class PageFakePc {
 
   async setLocalDescription(): Promise<void> {}
 
-  async addIceCandidate(): Promise<void> {}
+  async addIceCandidate(candidate?: RTCIceCandidateInit | RTCIceCandidate): Promise<void> {
+    this.addedIceCandidates.push(candidate === undefined ? undefined : candidate as RTCIceCandidateInit);
+  }
 
   async getStats(): Promise<RTCStatsReport> {
     return new Map<string, RTCStats>([
@@ -2032,6 +2173,7 @@ function fakeSignalingClient() {
     peerJoined: (peer: Peer) => wiring.events?.onPeerJoined(peer),
     peerLeft: (identity: string) => wiring.events?.onPeerLeft({ identity }),
     offer: (from: string, sdp: string) => wiring.events?.onOffer(from, sdp),
+    ice: (from: string, candidate: string | null) => wiring.events?.onIce(from, candidate),
     bye: (from: string, reason?: string) => wiring.events?.onBye(from, reason),
     shareGone: () => wiring.events?.onShareGone()
   };

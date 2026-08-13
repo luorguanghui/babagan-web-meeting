@@ -11,15 +11,8 @@ import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
-/**
- * The direct-P2P bitrate boost applied only after a session is confirmed as
- * direct (`media-ready` + a non-relay candidate pair). The user-selected tier
- * applies during negotiation and on the TURN/SFU paths; once the share is
- * provably peer-to-peer the encoding is raised by this factor, because direct
- * media costs no server bandwidth. 1.5x maps the tiers 5/8/10 Mbps to
- * 7.5/12/15 Mbps.
- */
-export const P2P_DIRECT_BITRATE_MULTIPLIER = 1.5;
+/** Lower bound used only when the selected aggregate budget can afford it. */
+export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
 
 /**
  * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
@@ -43,10 +36,10 @@ export interface P2pShareOptions {
  * decides whether to publish a LiveKit screen track for those viewers.
  */
 export interface P2pShareController {
-  start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[]): Promise<void>;
-  handleAnswer(from: string, sdp: string): Promise<void>;
-  handleIce(from: string, candidate: string | null): Promise<void>;
-  handleMediaReady(from: string): void;
+  start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[], recoverNegotiating?: boolean): Promise<void>;
+  handleAnswer(from: string, sdp: string, generation?: string): Promise<void>;
+  handleIce(from: string, candidate: string | null, generation?: string): Promise<void>;
+  handleMediaReady(from: string, generation?: string): void;
   handleViewerLeft(identity: string): void;
   /** A viewer asked (via the retry button) for a fresh offer: rebuild their session. */
   handleRetry(from: string): void;
@@ -63,8 +56,8 @@ export interface P2pShareController {
  * it structurally, so tests can inject a fake without a WebSocket.
  */
 export interface P2pShareSignaling {
-  sendOffer(to: string, sdp: string): void;
-  sendIce(to: string, candidate: string | null): void;
+  sendOffer(to: string, sdp: string, generation?: string): void;
+  sendIce(to: string, candidate: string | null, generation?: string): void;
   sendBye(to: string, reason?: string): void;
 }
 
@@ -79,6 +72,8 @@ export interface P2pShareControllerDependencies {
   onViewerFallback?: (identity: string) => void;
   /** Fired when every tracked viewer has left (`closed`); the caller may then stop the whole share. */
   onAllViewersClosed?: () => void;
+  /** Injectable scheduler used by tests; production samples the selected ICE pair once per second. */
+  scheduleTransportChecks?: (check: () => Promise<void>, intervalMs: number) => () => void;
 }
 
 export const IceServersResponseSchema = Type.Object({
@@ -114,17 +109,20 @@ export function deserializeIceCandidate(raw: string): RTCIceCandidateInit {
 
 interface ViewerSession {
   identity: string;
+  generation: string;
   pc: RTCPeerConnection;
   videoSender?: RTCRtpSender;
   options: P2pShareOptions;
   state: ViewerSessionState;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
+  queuedLocalCandidates: Array<string | null>;
   pendingOffer: boolean;
   offerSent: boolean;
   pcClosed: boolean;
   transportConnected: boolean;
-  /** The direct-path bitrate boost was applied to this session already. */
-  directBitrateApplied: boolean;
+  senderParameterTail: Promise<void>;
+  transportSampleTail: Promise<void>;
+  stopTransportMonitor?: () => void;
   negotiationTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
 }
@@ -132,48 +130,58 @@ interface ViewerSession {
 class P2pShareControllerImpl implements P2pShareController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private readonly fetchIceServers: () => Promise<RTCIceServer[]>;
+  private readonly scheduleTransportChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
   private iceServers?: RTCIceServer[];
   /** The captured share the sessions publish; kept for retry re-drives. */
   private activeStream?: MediaStream;
-  /** The total (aggregate) P2P budget chosen by the sharer, before division. */
+  /** The total aggregate P2P budget chosen by the sharer. */
   private activeOptions?: P2pShareOptions;
+  private nextGeneration = 0;
 
   constructor(private readonly deps: P2pShareControllerDependencies) {
     this.createPeerConnection = deps.createPeerConnection
       ?? ((servers) => new RTCPeerConnection({ iceServers: servers }));
     this.fetchIceServers = deps.fetchIceServers ?? defaultFetchIceServers(deps.slug);
+    this.scheduleTransportChecks = deps.scheduleTransportChecks ?? ((check, intervalMs) => {
+      const timer = setInterval(() => { void check(); }, intervalMs);
+      return () => clearInterval(timer);
+    });
   }
 
-  async start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[]): Promise<void> {
+  async start(
+    stream: MediaStream,
+    options: P2pShareOptions,
+    viewers: Peer[],
+    recoverNegotiating = false
+  ): Promise<void> {
     this.activeStream = stream;
     this.activeOptions = options;
-    const iceServers = await this.resolveIceServers();
-    const establishes: Promise<void>[] = [];
+    const iceServers = await this.resolveIceServers(recoverNegotiating);
+    const sessionsToEstablish: ViewerSession[] = [];
     for (const viewer of viewers) {
       const existing = this.sessions.get(viewer.identity);
       // A viewer that left and rejoined starts a fresh session; p2p/fallback sessions keep running.
-      if (existing && existing.state !== 'closed') continue;
+      if (existing && existing.state !== 'closed'
+        && !(recoverNegotiating && existing.state === 'negotiating')) continue;
       if (existing) this.closeSession(existing);
       const session = this.createSession(viewer.identity, stream, options, iceServers);
-      establishes.push(this.establishSession(session));
+      sessionsToEstablish.push(session);
     }
     this.emit();
-    // Re-drive: `send*` is silently dropped while signaling reconnects, so the
-    // caller re-calls start() with the roster restored by a fresh `welcome`.
-    // Re-issue the offer for sessions still negotiating (offer already sent once).
-    for (const session of this.sessions.values()) {
-      if (session.state === 'negotiating' && !session.pendingOffer && session.offerSent) {
-        establishes.push(this.establishSession(session));
-      }
-    }
+    await this.rebalanceBitrates();
+    const establishes = sessionsToEstablish.map((session) => this.establishSession(session));
+    // Existing negotiations are not re-offered here. The signaling client
+    // retains their offer/candidates across a temporary socket outage; making
+    // another offer on the same PC would mix two trickle-ICE transactions.
     await Promise.all(establishes);
   }
 
-  async handleAnswer(from: string, sdp: string): Promise<void> {
+  async handleAnswer(from: string, sdp: string, generation?: string): Promise<void> {
     const session = this.sessions.get(from);
     if (!session || session.state !== 'negotiating') return;
+    if (generation !== undefined && generation !== session.generation) return;
     try {
       await session.pc.setRemoteDescription({ type: 'answer', sdp });
       await this.flushCandidates(session);
@@ -182,9 +190,10 @@ class P2pShareControllerImpl implements P2pShareController {
     }
   }
 
-  async handleIce(from: string, candidate: string | null): Promise<void> {
+  async handleIce(from: string, candidate: string | null, generation?: string): Promise<void> {
     const session = this.sessions.get(from);
     if (!session || (session.state !== 'negotiating' && session.state !== 'p2p' && session.state !== 'turn')) return;
+    if (generation !== undefined && generation !== session.generation) return;
     const init = candidate === null ? undefined : deserializeIceCandidate(candidate);
     if (session.pc.remoteDescription === null) {
       session.queuedCandidates.push(init);
@@ -193,12 +202,13 @@ class P2pShareControllerImpl implements P2pShareController {
     }
   }
 
-  handleMediaReady(from: string): void {
+  handleMediaReady(from: string, generation?: string): void {
     const session = this.sessions.get(from);
     if (!session || session.state !== 'negotiating' || !session.transportConnected) return;
+    if (generation !== undefined && generation !== session.generation) return;
     this.clearTimers(session);
-    this.transition(session, 'p2p');
-    void this.updateTransportState(session);
+    this.armTransportMonitor(session);
+    void this.queueTransportStateUpdate(session);
   }
 
   handleViewerLeft(identity: string): void {
@@ -218,17 +228,18 @@ class P2pShareControllerImpl implements P2pShareController {
     if (existing) this.closeSession(existing);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
     // so stale candidates from a failed attempt can never poison the retry.
-    void this.resolveIceServers().then((iceServers) => {
+    void this.resolveIceServers(true).then(async (iceServers) => {
       // The share may have stopped while the credentials were in flight.
       if (this.activeStream === undefined || this.activeOptions === undefined) return;
       const session = this.createSession(from, this.activeStream, this.activeOptions, iceServers);
-      void this.establishSession(session);
+      await this.rebalanceBitrates();
+      await this.establishSession(session);
     });
   }
 
   async retryAll(viewers: Peer[]): Promise<void> {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
-    const iceServers = await this.resolveIceServers();
+    const iceServers = await this.resolveIceServers(true);
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') {
         this.clearTimers(session);
@@ -236,12 +247,14 @@ class P2pShareControllerImpl implements P2pShareController {
       }
     }
     this.sessions.clear();
-    const establishes: Promise<void>[] = [];
+    const sessionsToEstablish: ViewerSession[] = [];
     for (const viewer of viewers) {
       const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceServers);
-      establishes.push(this.establishSession(session));
+      sessionsToEstablish.push(session);
     }
     this.emit();
+    await this.rebalanceBitrates();
+    const establishes = sessionsToEstablish.map((session) => this.establishSession(session));
     await Promise.all(establishes);
   }
 
@@ -275,7 +288,8 @@ class P2pShareControllerImpl implements P2pShareController {
     return () => this.listeners.delete(listener);
   }
 
-  private async resolveIceServers(): Promise<RTCIceServer[]> {
+  private async resolveIceServers(forceRefresh = false): Promise<RTCIceServer[]> {
+    if (forceRefresh) this.iceServers = undefined;
     if (this.iceServers === undefined) {
       this.iceServers = await this.fetchIceServers();
     }
@@ -286,15 +300,18 @@ class P2pShareControllerImpl implements P2pShareController {
     const pc = this.createPeerConnection(iceServers);
     const session: ViewerSession = {
       identity,
+      generation: `share-${Date.now()}-${++this.nextGeneration}`,
       pc,
       options,
       state: 'negotiating',
       queuedCandidates: [],
+      queuedLocalCandidates: [],
       pendingOffer: false,
       offerSent: false,
       pcClosed: false,
       transportConnected: false,
-      directBitrateApplied: false
+      senderParameterTail: Promise.resolve(),
+      transportSampleTail: Promise.resolve()
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
@@ -318,35 +335,15 @@ class P2pShareControllerImpl implements P2pShareController {
     this.clearNegotiationTimer(session);
     try {
       if (session.videoSender) {
-        try {
-          // Single encoding, no simulcast: cap the video bitrate and frame
-          // rate for this viewer, and apply the chosen degradation policy.
-          // `scaleResolutionDownBy` normalizes the transmitted resolution to
-          // 1080p (or 720p when the capture is smaller) regardless of the
-          // display-scaling resolution the browser captured at.
-          const { options } = session;
-          const scale = computeResolutionScale(
-            session.videoSender.track?.getSettings?.() ?? {}
-          );
-          await session.videoSender.setParameters({
-            ...session.videoSender.getParameters(),
-            encodings: [{
-              maxBitrate: options.maxBitrate,
-              maxFramerate: options.frameRate,
-              ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
-            }],
-            degradationPreference: options.degradationPreference
-          });
-        } catch {
-          // Bitrate tuning is best-effort; a failure must not kill the session.
-        }
+        await this.applySenderParameters(session);
       }
       const offer = await session.pc.createOffer();
       await session.pc.setLocalDescription(offer);
       if (session.state === 'closed' || session.state === 'livekit-fallback') return; // left or fell back mid-establish
       if (offer.sdp === undefined) throw new Error('createOffer returned no SDP');
-      this.deps.signaling.sendOffer(session.identity, offer.sdp);
+      this.deps.signaling.sendOffer(session.identity, offer.sdp, session.generation);
       session.offerSent = true;
+      this.flushLocalCandidates(session);
       this.armNegotiationTimer(session);
     } catch {
       this.fallback(session);
@@ -357,11 +354,17 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private handleLocalCandidate(session: ViewerSession, event: RTCPeerConnectionIceEvent): void {
     if (session.state === 'closed' || session.state === 'livekit-fallback') return;
-    if (event.candidate) {
-      this.deps.signaling.sendIce(session.identity, serializeIceCandidate(event.candidate));
-    } else {
-      this.deps.signaling.sendIce(session.identity, null);
+    const candidate = event.candidate ? serializeIceCandidate(event.candidate) : null;
+    if (!session.offerSent) {
+      session.queuedLocalCandidates.push(candidate);
+      return;
     }
+    this.deps.signaling.sendIce(session.identity, candidate, session.generation);
+  }
+
+  private flushLocalCandidates(session: ViewerSession): void {
+    const queued = session.queuedLocalCandidates.splice(0);
+    for (const candidate of queued) this.deps.signaling.sendIce(session.identity, candidate, session.generation);
   }
 
   private handleIceConnectionState(session: ViewerSession): void {
@@ -408,18 +411,10 @@ class P2pShareControllerImpl implements P2pShareController {
     try {
       const health = inspectP2pMediaHealth(await session.pc.getStats());
       if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
-      if (session.state === 'p2p') {
-        if (health.path === 'relay') {
-          // A TURN relay costs the same server bandwidth as the SFU: keep the
-          // negotiated base bitrate instead of the direct-path boost.
-          this.transition(session, 'turn');
-          return;
-        }
-        // Direct media confirmed: only now raise the encoding to the boosted
-        // P2P bitrate — the user-selected tier applies until the connection
-        // is proven direct, so failed or relayed sessions never waste the
-        // sharer's uplink (or the server's relay bandwidth) at full rate.
-        this.applyDirectBitrate(session);
+      if ((session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn')
+        && health.path !== 'unknown') {
+        const classifiedState: ViewerSessionState = health.path === 'relay' ? 'turn' : 'p2p';
+        if (classifiedState !== session.state) this.transition(session, classifiedState);
       }
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
@@ -427,29 +422,60 @@ class P2pShareControllerImpl implements P2pShareController {
     }
   }
 
-  /**
-   * Applies the boosted direct-P2P bitrate to an established session. Best
-   * effort and idempotent: re-applying `setParameters` after a retry starts a
-   * fresh session, so the flag rides on the session object, not the controller.
-   */
-  private applyDirectBitrate(session: ViewerSession): void {
-    if (session.directBitrateApplied || session.videoSender === undefined) return;
-    session.directBitrateApplied = true;
-    try {
-      const { options } = session;
-      const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
-      void session.videoSender.setParameters({
-        ...session.videoSender.getParameters(),
-        encodings: [{
-          maxBitrate: Math.round(options.maxBitrate * P2P_DIRECT_BITRATE_MULTIPLIER),
-          maxFramerate: options.frameRate,
-          ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
-        }],
-        degradationPreference: options.degradationPreference
-      }).catch(() => undefined);
-    } catch {
-      // Bitrate tuning is best-effort; a failure must not kill the session.
-    }
+  /** Applies this active viewer's fair share without disturbing other sessions. */
+  private async applySenderParameters(session: ViewerSession): Promise<void> {
+    session.senderParameterTail = session.senderParameterTail.then(async () => {
+      if (session.videoSender === undefined || session.pcClosed) return;
+      try {
+        const { options } = session;
+        const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
+        await session.videoSender.setParameters({
+          ...session.videoSender.getParameters(),
+          encodings: [{
+            maxBitrate: options.maxBitrate,
+            maxFramerate: options.frameRate,
+            ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
+          }],
+          degradationPreference: options.degradationPreference
+        });
+      } catch {
+        // Bitrate tuning is best-effort; a failure must not kill the session or
+        // poison the tail, so a later rebalance can retry with fresh parameters.
+      }
+    });
+    await session.senderParameterTail;
+  }
+
+  private armTransportMonitor(session: ViewerSession): void {
+    session.stopTransportMonitor?.();
+    session.stopTransportMonitor = this.scheduleTransportChecks(
+      () => this.queueTransportStateUpdate(session),
+      1_000
+    );
+  }
+
+  private async queueTransportStateUpdate(session: ViewerSession): Promise<void> {
+    session.transportSampleTail = session.transportSampleTail
+      .then(() => this.updateTransportState(session))
+      .catch(() => undefined);
+    await session.transportSampleTail;
+  }
+
+  /** Re-divides the selected total budget across every live viewer session. */
+  private async rebalanceBitrates(): Promise<void> {
+    const selected = this.activeOptions;
+    if (selected === undefined) return;
+    const active = [...this.sessions.values()].filter((session) => !session.pcClosed
+      && (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn'));
+    if (active.length === 0) return;
+    const fairShare = Math.floor(selected.maxBitrate / active.length);
+    const maxBitrate = selected.maxBitrate >= P2P_VIEWER_BITRATE_FLOOR * active.length
+      ? Math.max(P2P_VIEWER_BITRATE_FLOOR, fairShare)
+      : fairShare;
+    await Promise.all(active.map(async (session) => {
+      session.options = { ...selected, maxBitrate };
+      await this.applySenderParameters(session);
+    }));
   }
 
   private async applyCandidate(session: ViewerSession, init: RTCIceCandidateInit | undefined): Promise<void> {
@@ -490,6 +516,8 @@ class P2pShareControllerImpl implements P2pShareController {
   private clearTimers(session: ViewerSession): void {
     this.clearNegotiationTimer(session);
     this.clearDisconnectTimer(session);
+    session.stopTransportMonitor?.();
+    session.stopTransportMonitor = undefined;
   }
 
   private clearDisconnectTimer(session: ViewerSession): void {
@@ -509,6 +537,7 @@ class P2pShareControllerImpl implements P2pShareController {
   private transition(session: ViewerSession, state: ViewerSessionState): void {
     session.state = state;
     this.emit();
+    void this.rebalanceBitrates();
   }
 
   private allViewersClosed(): boolean {
@@ -534,10 +563,9 @@ function applyCodecPreference(transceiver: RTCRtpTransceiver, codec: ScreenShare
     : undefined;
   if (!capabilities || capabilities.length === 0) return;
   const wanted = codec === 'h264' ? 'video/h264' : 'video/vp8';
-  const fallback = codec === 'h264' ? ['video/vp8', 'video/vp9'] : ['video/h264', 'video/vp9'];
   const preferred = capabilities
     .filter((codecCapability) => codecCapability.mimeType.toLowerCase() === wanted)
-    .concat(capabilities.filter((codecCapability) => fallback.includes(codecCapability.mimeType.toLowerCase())));
+    .concat(capabilities.filter((codecCapability) => codecCapability.mimeType.toLowerCase() !== wanted));
   if (preferred.length > 0) transceiver.setCodecPreferences(preferred);
 }
 

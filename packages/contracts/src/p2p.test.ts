@@ -21,10 +21,10 @@ describe('P2P signaling contract types', () => {
   it('exports the exact client-message discriminated union', () => {
     expectTypeOf<P2pClientMessage>().toEqualTypeOf<
       | { type: 'hello'; participantIdentity: string }
-      | { type: 'offer'; to: string; sdp: string }
-      | { type: 'answer'; to: string; sdp: string }
-      | { type: 'ice'; to: string; candidate: string | null } // null = end-of-candidates
-      | { type: 'media-ready'; to: string }
+      | { type: 'offer'; to: string; sdp: string; generation?: string }
+      | { type: 'answer'; to: string; sdp: string; generation?: string }
+      | { type: 'ice'; to: string; candidate: string | null; generation?: string } // null = end-of-candidates
+      | { type: 'media-ready'; to: string; generation?: string }
       | { type: 'retry'; to: string }
       | { type: 'bye'; to: string; reason?: string }
       | { type: 'ping' }

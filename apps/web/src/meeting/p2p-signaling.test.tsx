@@ -338,13 +338,86 @@ describe('p2p signaling client', () => {
     ]);
   });
 
-  it('drops outbound signaling while no socket is open', () => {
+  it('queues outbound signaling during reconnect and flushes it in order after welcome', async () => {
     const client = createClient();
+    const first = await connectClient(client);
 
-    client.sendOffer('sharer', 'sdp');
-    client.sendBye('sharer');
+    first.fail();
+    client.sendOffer('viewer-1', 'offer-sdp');
+    client.sendAnswer('sharer-1', 'answer-sdp');
+    client.sendIce('sharer-1', 'candidate:1');
+    client.sendBye('sharer-1', 'fallback');
 
-    expect(FakeWebSocket.instances).toHaveLength(0);
+    vi.advanceTimersByTime(1_000);
+    const second = lastSocket();
+    second.open();
+    expect(second.sent).toEqual([{ type: 'hello', participantIdentity: 'participant-1' }]);
+
+    second.message({ type: 'welcome', peers: [] });
+
+    expect(second.sent).toEqual([
+      { type: 'hello', participantIdentity: 'participant-1' },
+      { type: 'offer', to: 'viewer-1', sdp: 'offer-sdp' },
+      { type: 'answer', to: 'sharer-1', sdp: 'answer-sdp' },
+      { type: 'ice', to: 'sharer-1', candidate: 'candidate:1' },
+      { type: 'bye', to: 'sharer-1', reason: 'fallback' }
+    ]);
+  });
+
+  it('bounds the reconnect queue and retains the newest signaling messages', async () => {
+    const client = createClient();
+    const first = await connectClient(client);
+
+    first.fail();
+    for (let index = 0; index < 130; index += 1) {
+      client.sendIce('sharer-1', `candidate:${index}`);
+    }
+
+    vi.advanceTimersByTime(1_000);
+    const second = lastSocket();
+    second.open();
+    second.message({ type: 'welcome', peers: [] });
+
+    // Keep headroom under the server's 120-message/minute connection limit for
+    // hello, heartbeat and any messages produced immediately after reconnect.
+    expect(second.sent).toHaveLength(97); // hello plus the 96-message queue
+    expect(second.sent[1]).toEqual({ type: 'ice', to: 'sharer-1', candidate: 'candidate:34' });
+    expect(second.sent.at(-1)).toEqual({ type: 'ice', to: 'sharer-1', candidate: 'candidate:129' });
+  });
+
+  it('keeps the offer and end-of-candidates when an ICE burst fills the reconnect queue', async () => {
+    const client = createClient();
+    const first = await connectClient(client);
+    first.fail();
+
+    client.sendOffer('viewer-1', 'offer-sdp');
+    for (let index = 0; index < 130; index += 1) {
+      client.sendIce('viewer-1', `candidate:${index}`);
+    }
+    client.sendIce('viewer-1', null);
+
+    vi.advanceTimersByTime(1_000);
+    const second = lastSocket();
+    second.open();
+    second.message({ type: 'welcome', peers: [] });
+
+    expect(second.sent).toContainEqual({ type: 'offer', to: 'viewer-1', sdp: 'offer-sdp' });
+    expect(second.sent).toContainEqual({ type: 'ice', to: 'viewer-1', candidate: null });
+  });
+
+  it('discards queued signaling when the client closes before welcome', async () => {
+    const client = createClient();
+    const connected = client.connect();
+    const socket = lastSocket();
+
+    client.sendAnswer('sharer-1', 'answer-sdp');
+    client.sendIce('sharer-1', 'candidate:1');
+    client.close();
+    await expect(connected).rejects.toThrow('closed');
+    socket.open();
+    socket.message({ type: 'welcome', peers: [] });
+
+    expect(socket.sent).toEqual([]);
   });
 
   it('stops reconnecting once close() is called', async () => {

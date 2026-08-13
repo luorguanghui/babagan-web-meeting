@@ -15,6 +15,10 @@ export const P2P_RECONNECT_BACKOFF_MAX_MS = 30_000;
  * the counter.
  */
 export const P2P_MAX_CONSECUTIVE_RECONNECTS = 5;
+/** Maximum application signaling messages retained across a temporary socket outage. */
+const P2P_OUTBOUND_QUEUE_MAX_MESSAGES = 96;
+
+type QueuedP2pMessage = Extract<P2pClientMessage, { to: string }>;
 
 export interface Peer {
   identity: string;
@@ -25,10 +29,10 @@ export interface P2pSignalingEvents {
   onWelcome(peers: Peer[]): void;
   onPeerJoined(peer: Peer): void;
   onPeerLeft(peer: { identity: string }): void;
-  onOffer(from: string, sdp: string): void;
-  onAnswer(from: string, sdp: string): void;
-  onIce(from: string, candidate: string | null): void;
-  onMediaReady(from: string): void;
+  onOffer(from: string, sdp: string, generation?: string): void;
+  onAnswer(from: string, sdp: string, generation?: string): void;
+  onIce(from: string, candidate: string | null, generation?: string): void;
+  onMediaReady(from: string, generation?: string): void;
   /** A viewer asked the sharer to re-drive a fresh offer for them. */
   onRetry(from: string): void;
   onBye(from: string, reason?: string): void;
@@ -88,6 +92,8 @@ export class P2pSignalingClient {
   private readonly removeVisibilityListener: () => void;
 
   private socket?: P2pWebSocket;
+  private socketOpen = false;
+  private ready = false;
   private closed = false;
   private connectPromise?: Promise<void>;
   private resolveConnect?: () => void;
@@ -96,6 +102,7 @@ export class P2pSignalingClient {
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   /** Consecutive failed connections since the last `welcome`; reset on success. */
   private backoff = 0;
+  private readonly outboundQueue: QueuedP2pMessage[] = [];
 
   constructor(
     private readonly slug: string,
@@ -117,7 +124,7 @@ export class P2pSignalingClient {
     // A backgrounded tab throttles the 25 s heartbeat to ~60 s; pinging on
     // visibility changes keeps the server-side timer fresh when the tab
     // returns (and again right before it is throttled).
-    this.removeVisibilityListener = addVisibilityListener(() => this.send({ type: 'ping' }));
+    this.removeVisibilityListener = addVisibilityListener(() => this.sendEphemeral({ type: 'ping' }));
   }
 
   /**
@@ -143,34 +150,37 @@ export class P2pSignalingClient {
     return promise;
   }
 
-  sendOffer(to: string, sdp: string): void {
-    this.send({ type: 'offer', to, sdp });
+  sendOffer(to: string, sdp: string, generation?: string): void {
+    this.sendOrQueue(generation === undefined ? { type: 'offer', to, sdp } : { type: 'offer', to, sdp, generation });
   }
 
-  sendAnswer(to: string, sdp: string): void {
-    this.send({ type: 'answer', to, sdp });
+  sendAnswer(to: string, sdp: string, generation?: string): void {
+    this.sendOrQueue(generation === undefined ? { type: 'answer', to, sdp } : { type: 'answer', to, sdp, generation });
   }
 
-  sendIce(to: string, candidate: string | null): void {
-    this.send({ type: 'ice', to, candidate });
+  sendIce(to: string, candidate: string | null, generation?: string): void {
+    this.sendOrQueue(generation === undefined ? { type: 'ice', to, candidate } : { type: 'ice', to, candidate, generation });
   }
 
-  sendMediaReady(to: string): void {
-    this.send({ type: 'media-ready', to });
+  sendMediaReady(to: string, generation?: string): void {
+    this.sendOrQueue(generation === undefined ? { type: 'media-ready', to } : { type: 'media-ready', to, generation });
   }
 
   sendRetry(to: string): void {
-    this.send({ type: 'retry', to });
+    this.sendOrQueue({ type: 'retry', to });
   }
 
   sendBye(to: string, reason?: string): void {
-    this.send(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
+    this.sendOrQueue(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
   }
 
   /** Terminates the client: closes the socket and stops any reconnect attempt. */
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.ready = false;
+    this.socketOpen = false;
+    this.outboundQueue.length = 0;
     this.removeVisibilityListener();
     this.cancelReconnect();
     this.disarmHeartbeat();
@@ -187,7 +197,8 @@ export class P2pSignalingClient {
     this.socket = socket;
     socket.onopen = () => {
       if (!this.ownsSocket(socket)) return;
-      this.send({ type: 'hello', participantIdentity: this.identity });
+      this.socketOpen = true;
+      this.sendEphemeral({ type: 'hello', participantIdentity: this.identity });
       this.armHeartbeat();
     };
     socket.onmessage = (event) => {
@@ -200,6 +211,8 @@ export class P2pSignalingClient {
     socket.onclose = () => {
       if (!this.ownsSocket(socket)) return;
       this.socket = undefined;
+      this.socketOpen = false;
+      this.ready = false;
       this.disarmHeartbeat();
       this.rejectPendingConnect(new Error('P2P signaling connection failed before the server welcome'));
       if (this.closed) return;
@@ -226,6 +239,8 @@ export class P2pSignalingClient {
       case 'welcome': {
         const peers = message.peers;
         this.backoff = 0;
+        this.ready = true;
+        this.flushOutboundQueue();
         this.events.onWelcome(Array.isArray(peers) ? peers.filter(isPeer) : []);
         this.resolvePendingConnect();
         break;
@@ -249,20 +264,30 @@ export class P2pSignalingClient {
         if (typeof message.code === 'string') this.events.onError(message.code);
         break;
       case 'offer':
-        if (from !== undefined && typeof message.sdp === 'string') this.events.onOffer(from, message.sdp);
+        if (from !== undefined && typeof message.sdp === 'string') {
+          if (typeof message.generation === 'string') this.events.onOffer(from, message.sdp, message.generation);
+          else this.events.onOffer(from, message.sdp);
+        }
         break;
       case 'answer':
-        if (from !== undefined && typeof message.sdp === 'string') this.events.onAnswer(from, message.sdp);
+        if (from !== undefined && typeof message.sdp === 'string') {
+          if (typeof message.generation === 'string') this.events.onAnswer(from, message.sdp, message.generation);
+          else this.events.onAnswer(from, message.sdp);
+        }
         break;
       case 'ice': {
         const candidate = message.candidate;
         if (from !== undefined && (typeof candidate === 'string' || candidate === null)) {
-          this.events.onIce(from, candidate);
+          if (typeof message.generation === 'string') this.events.onIce(from, candidate, message.generation);
+          else this.events.onIce(from, candidate);
         }
         break;
       }
       case 'media-ready':
-        if (from !== undefined) this.events.onMediaReady(from);
+        if (from !== undefined) {
+          if (typeof message.generation === 'string') this.events.onMediaReady(from, message.generation);
+          else this.events.onMediaReady(from);
+        }
         break;
       case 'retry':
         if (from !== undefined) this.events.onRetry(from);
@@ -277,16 +302,52 @@ export class P2pSignalingClient {
     }
   }
 
-  private send(message: P2pClientMessage): void {
-    if (this.closed || !this.socket) return;
-    this.socket.send(JSON.stringify(message));
+  private sendOrQueue(message: QueuedP2pMessage): void {
+    if (this.closed) return;
+    if (this.ready && this.socket !== undefined) {
+      try {
+        this.socket.send(JSON.stringify(message));
+        return;
+      } catch {
+        this.ready = false;
+      }
+    }
+    if (this.outboundQueue.length >= P2P_OUTBOUND_QUEUE_MAX_MESSAGES) {
+      const removableIce = this.outboundQueue.findIndex((queued) =>
+        queued.type === 'ice' && queued.candidate !== null
+      );
+      if (removableIce >= 0) this.outboundQueue.splice(removableIce, 1);
+      else this.outboundQueue.shift();
+    }
+    this.outboundQueue.push(message);
+  }
+
+  private sendEphemeral(message: P2pClientMessage): void {
+    if (this.closed || !this.socketOpen || this.socket === undefined) return;
+    try {
+      this.socket.send(JSON.stringify(message));
+    } catch {
+      // The close event owns reconnect scheduling; heartbeat frames are not replayed.
+    }
+  }
+
+  private flushOutboundQueue(): void {
+    while (this.ready && this.socket !== undefined && this.outboundQueue.length > 0) {
+      const message = this.outboundQueue[0];
+      try {
+        this.socket.send(JSON.stringify(message));
+        this.outboundQueue.shift();
+      } catch {
+        this.ready = false;
+      }
+    }
   }
 
   private armHeartbeat(): void {
     if (this.heartbeatTimer !== undefined) clearInterval(this.heartbeatTimer);
     this.heartbeatTimer = setInterval(() => {
       if (this.closed) return;
-      this.send({ type: 'ping' });
+      this.sendEphemeral({ type: 'ping' });
     }, this.heartbeatIntervalMs);
   }
 

@@ -277,8 +277,12 @@ export function MeetingRoomPage({
     let cancelled = false;
     let iceServers: RTCIceServer[] | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
-    /** Offers that arrived while the ICE credentials were still in flight. */
-    const pendingOffers: Array<{ from: string; sdp: string }> = [];
+    type ViewerSignal =
+      | { type: 'offer'; from: string; sdp: string; generation?: string }
+      | { type: 'ice'; from: string; candidate: string | null; generation?: string };
+    /** Viewer signaling received while ICE credentials are in flight. */
+    const pendingViewerSignals: ViewerSignal[] = [];
+    let viewerSignalTail = Promise.resolve();
     const ensureController = (): P2pViewerController | undefined => {
       if (iceServers === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
@@ -299,6 +303,23 @@ export function MeetingRoomPage({
       }
       return viewerP2pRef.current;
     };
+    const dispatchViewerSignal = (signal: ViewerSignal): void => {
+      if (cancelled) return;
+      if (iceServers === undefined) {
+        pendingViewerSignals.push(signal);
+        return;
+      }
+      viewerSignalTail = viewerSignalTail.then(async () => {
+        if (cancelled) return;
+        const viewerController = ensureController();
+        if (viewerController === undefined) return;
+        if (signal.type === 'offer') {
+          await viewerController.acceptOffer(signal.from, signal.sdp, signal.generation);
+        } else {
+          await viewerController.handleIce(signal.from, signal.candidate, signal.generation);
+        }
+      }).catch(() => undefined);
+    };
     // The credentials fetch gates P2P acceptance: without ICE servers the
     // viewer can never complete a peer connection and would silently drop
     // offers. Fetch with a bounded retry instead of once at page load — a
@@ -314,8 +335,8 @@ export function MeetingRoomPage({
         if (cancelled) return;
         iceServers = response.iceServers;
         ensureController();
-        const queued = pendingOffers.splice(0);
-        for (const offer of queued) void viewerP2pRef.current?.acceptOffer(offer.from, offer.sdp);
+        const queued = pendingViewerSignals.splice(0);
+        for (const signal of queued) dispatchViewerSignal(signal);
       }).catch(() => {
         if (cancelled) return;
         retryTimer = setTimeout(fetchIceServersWithRetry, 2_000);
@@ -323,28 +344,21 @@ export function MeetingRoomPage({
     };
     fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
-      onOffer: (from, sdp) => {
-        const controller = ensureController();
-        if (controller !== undefined) {
-          void controller.acceptOffer(from, sdp);
-        } else {
-          // Credentials still in flight: remember the offer instead of
-          // dropping it, or this viewer stays on the SFU for the whole share.
-          pendingOffers.push({ from, sdp });
-        }
+      onOffer: (from, sdp, generation) => {
+        dispatchViewerSignal({ type: 'offer', from, sdp, generation });
       },
       // While we are the sharer, answers/ice/bye belong to the share session.
-      onAnswer: (from, sdp) => { void p2pShareRef.current?.handleAnswer(from, sdp); },
-      onIce: (from, candidate) => {
+      onAnswer: (from, sdp, generation) => { void p2pShareRef.current?.handleAnswer(from, sdp, generation); },
+      onIce: (from, candidate, generation) => {
         const share = p2pShareRef.current;
         if (share) {
-          void share.handleIce(from, candidate);
+          void share.handleIce(from, candidate, generation);
           return;
         }
-        void ensureController()?.handleIce(from, candidate);
+        dispatchViewerSignal({ type: 'ice', from, candidate, generation });
       },
-      onMediaReady: (from) => {
-        p2pShareRef.current?.handleMediaReady(from);
+      onMediaReady: (from, generation) => {
+        p2pShareRef.current?.handleMediaReady(from, generation);
       },
       onRetry: (from) => {
         // While we are the sharer, a retry request belongs to the share
@@ -396,7 +410,7 @@ export function MeetingRoomPage({
             }
           }
         }
-        hybridShareRef.current?.viewerRosterChanged();
+        hybridShareRef.current?.viewerRosterChanged(true);
       },
       onPeerJoined: (peer) => {
         const roster = viewerRosterRef.current;
@@ -429,6 +443,7 @@ export function MeetingRoomPage({
     void signaling.connect().catch(() => undefined);
     return () => {
       cancelled = true;
+      pendingViewerSignals.length = 0;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       signalingRef.current = undefined;
       pendingFallbackCompletionRef.current?.();

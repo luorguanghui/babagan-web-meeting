@@ -4,19 +4,24 @@ import {
   P2P_RTP_STALL_TIMEOUT_MS
 } from '@meeting/contracts';
 
-import { inspectP2pMediaHealth } from './p2p-media-health.js';
+import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
 import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
 export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
+
+const P2P_QUALITY_MIN_INTERVAL_PACKETS = 20;
+const P2P_QUALITY_LOSS_THRESHOLD = 0.15;
+const P2P_QUALITY_BAD_SAMPLE_LIMIT = 8;
+const P2P_EARLY_ICE_MAX_CANDIDATES = 32;
 
 /**
  * Minimal signaling surface the viewer controller needs. `P2pSignalingClient`
  * satisfies it structurally, so tests can inject a fake without a WebSocket.
  */
 export interface P2pViewerSignaling {
-  sendAnswer(to: string, sdp: string): void;
-  sendIce(to: string, candidate: string | null): void;
-  sendMediaReady(to: string): void;
+  sendAnswer(to: string, sdp: string, generation?: string): void;
+  sendIce(to: string, candidate: string | null, generation?: string): void;
+  sendMediaReady(to: string, generation?: string): void;
   sendRetry(to: string): void;
   sendBye(to: string, reason?: string): void;
 }
@@ -35,6 +40,7 @@ export interface P2pViewerControllerDependencies {
 
 interface ViewerPcSession {
   pc: RTCPeerConnection;
+  generation?: string;
   pcClosed: boolean;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
   mediaTimer?: ReturnType<typeof setTimeout>;
@@ -44,6 +50,12 @@ interface ViewerPcSession {
   lastBytesReceived: number;
   lastFramesDecoded: number;
   lastProgressAt: number;
+  lastPacketsReceived?: number;
+  lastPacketsLost?: number;
+  lastFreezeCount?: number;
+  poorQualitySamples: number;
+  mediaReadySent: boolean;
+  healthSampleTail: Promise<void>;
   fallbackPending: boolean;
 }
 
@@ -78,6 +90,7 @@ export class P2pViewerController {
   private sharerIdentity?: string;
   private session?: ViewerPcSession;
   private stream: MediaStream | null = null;
+  private earlyIce?: { from: string; generation?: string; candidates: Array<string | null> };
   private closed = false;
 
   constructor(
@@ -103,12 +116,19 @@ export class P2pViewerController {
    * double check). A new offer from the established sharer renegotiates: the
    * previous PC is closed and a fresh session is built on the new SDP.
    */
-  async acceptOffer(from: string, sdp: string): Promise<void> {
+  async acceptOffer(from: string, sdp: string, generation?: string): Promise<void> {
     if (this.closed) return;
     if (this.sharerIdentity === undefined) this.sharerIdentity = from;
     if (from !== this.sharerIdentity) return;
     this.teardownSession();
-    const session = this.createSession();
+    const session = this.createSession(generation);
+    if (this.earlyIce?.from === from
+      && (generation === undefined || this.earlyIce.generation === undefined || this.earlyIce.generation === generation)) {
+      session.queuedCandidates.push(...this.earlyIce.candidates.map((candidate) =>
+        candidate === null ? undefined : deserializeIceCandidate(candidate)
+      ));
+    }
+    this.earlyIce = undefined;
     this.session = session;
     this.transition('negotiating');
     try {
@@ -118,7 +138,8 @@ export class P2pViewerController {
       await session.pc.setLocalDescription(answer);
       if (!this.ownsSession(session)) return;
       if (answer.sdp === undefined) throw new Error('createAnswer returned no SDP');
-      this.signaling.sendAnswer(this.sharerIdentity, answer.sdp);
+      if (session.generation === undefined) this.signaling.sendAnswer(this.sharerIdentity, answer.sdp);
+      else this.signaling.sendAnswer(this.sharerIdentity, answer.sdp, session.generation);
       await this.flushCandidates(session);
       if (!this.ownsSession(session)) return;
       this.armMediaTimer(session);
@@ -128,10 +149,22 @@ export class P2pViewerController {
     }
   }
 
-  async handleIce(from: string, candidate: string | null): Promise<void> {
-    if (this.closed || this.sharerIdentity === undefined || from !== this.sharerIdentity) return;
+  async handleIce(from: string, candidate: string | null, generation?: string): Promise<void> {
+    if (this.closed) return;
+    if (this.sharerIdentity === undefined) {
+      if (this.earlyIce?.from !== from || this.earlyIce.generation !== generation) {
+        this.earlyIce = { from, generation, candidates: [] };
+      }
+      if (this.earlyIce.candidates.length >= P2P_EARLY_ICE_MAX_CANDIDATES) {
+        this.earlyIce.candidates.shift();
+      }
+      this.earlyIce.candidates.push(candidate);
+      return;
+    }
+    if (from !== this.sharerIdentity) return;
     const session = this.session;
     if (session === undefined || session.pcClosed) return;
+    if (generation !== undefined && session.generation !== undefined && generation !== session.generation) return;
     if (session.pc.remoteDescription === null) {
       session.queuedCandidates.push(candidate === null ? undefined : deserializeIceCandidate(candidate));
       return;
@@ -180,18 +213,23 @@ export class P2pViewerController {
     this.closed = true;
     this.teardownSession();
     this.sharerIdentity = undefined;
+    this.earlyIce = undefined;
     this.transition('idle');
   }
 
-  private createSession(): ViewerPcSession {
+  private createSession(generation?: string): ViewerPcSession {
     const pc = this.createPeerConnection(this.iceServers);
     const session: ViewerPcSession = {
       pc,
+      generation,
       pcClosed: false,
       queuedCandidates: [],
       lastBytesReceived: 0,
       lastFramesDecoded: 0,
       lastProgressAt: this.now(),
+      poorQualitySamples: 0,
+      mediaReadySent: false,
+      healthSampleTail: Promise.resolve(),
       fallbackPending: false
     };
     pc.ontrack = (event) => this.handleTrack(session, event);
@@ -237,8 +275,8 @@ export class P2pViewerController {
    */
   private watchVideoMedia(session: ViewerPcSession, track: MediaStreamTrack): void {
     session.videoTrack = track;
-    track.onunmute = () => { void this.sampleMediaHealth(session); };
-    if (!track.muted) void this.sampleMediaHealth(session);
+    track.onunmute = () => { void this.queueMediaHealthSample(session); };
+    if (!track.muted) void this.queueMediaHealthSample(session);
   }
 
   private async sampleMediaHealth(session: ViewerPcSession): Promise<void> {
@@ -265,14 +303,25 @@ export class P2pViewerController {
         && health.framesDecoded > 0;
       if (this.state === 'negotiating' && hasDecodedVideo) {
         this.clearMediaTimer(session);
-        // A relayed session is kept on the TURN path: coturn forwards UDP
-        // packets at kernel level with minimal overhead, which measured
-        // smoother than the SFU on the small 2-core host.
-        this.transition(health.path === 'relay' ? 'turn' : 'p2p');
-        if (this.sharerIdentity !== undefined) this.signaling.sendMediaReady(this.sharerIdentity);
+        if (!session.mediaReadySent && this.sharerIdentity !== undefined) {
+          session.mediaReadySent = true;
+          if (session.generation === undefined) this.signaling.sendMediaReady(this.sharerIdentity);
+          else this.signaling.sendMediaReady(this.sharerIdentity, session.generation);
+        }
+        if (health.path === 'relay') this.transition('turn');
+        else if (health.path === 'direct') this.transition('p2p');
+      } else if ((this.state === 'p2p' || this.state === 'turn') && health.path !== 'unknown') {
+        const classifiedState: ViewerP2pState = health.path === 'relay' ? 'turn' : 'p2p';
+        if (classifiedState !== this.state) this.transition(classifiedState);
+      }
+      if (this.observeQuality(session, health)
+        && (this.state === 'p2p' || this.state === 'turn')) {
+        this.fallback(session);
         return;
       }
-      if ((this.state === 'p2p' || this.state === 'turn')
+      const stallEligible = this.state === 'p2p' || this.state === 'turn'
+        || (this.state === 'negotiating' && session.mediaReadySent);
+      if (stallEligible
         && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
         this.fallback(session);
       }
@@ -285,19 +334,57 @@ export class P2pViewerController {
     this.clearHealthMonitor(session);
     session.stopHealthMonitor = this.scheduleHealthChecks(
       async () => {
-        const current = this.session;
-        if (current !== undefined) await this.sampleMediaHealth(current);
+        await this.queueMediaHealthSample(session);
       },
       this.healthSampleIntervalMs
     );
   }
 
+  private async queueMediaHealthSample(session: ViewerPcSession): Promise<void> {
+    session.healthSampleTail = session.healthSampleTail
+      .then(() => this.sampleMediaHealth(session))
+      .catch(() => undefined);
+    await session.healthSampleTail;
+  }
+
+  private observeQuality(session: ViewerPcSession, health: P2pMediaHealth): boolean {
+    const previousReceived = session.lastPacketsReceived;
+    const previousLost = session.lastPacketsLost;
+    const previousFreezes = session.lastFreezeCount;
+    session.lastPacketsReceived = health.packetsReceived;
+    session.lastPacketsLost = health.packetsLost;
+    session.lastFreezeCount = health.freezeCount;
+
+    if (previousReceived === undefined || previousLost === undefined || previousFreezes === undefined) {
+      session.poorQualitySamples = 0;
+      return false;
+    }
+
+    const received = health.packetsReceived - previousReceived;
+    const lost = health.packetsLost - previousLost;
+    const freezes = health.freezeCount - previousFreezes;
+    if (received < 0 || lost < 0 || freezes < 0) {
+      session.poorQualitySamples = 0;
+      return false;
+    }
+
+    const packetPopulation = received + lost;
+    const highLoss = packetPopulation >= P2P_QUALITY_MIN_INTERVAL_PACKETS
+      && lost / packetPopulation >= P2P_QUALITY_LOSS_THRESHOLD;
+    if (highLoss || freezes > 0) session.poorQualitySamples++;
+    else session.poorQualitySamples = 0;
+    return session.poorQualitySamples >= P2P_QUALITY_BAD_SAMPLE_LIMIT;
+  }
+
   private handleLocalCandidate(session: ViewerPcSession, event: RTCPeerConnectionIceEvent): void {
     if (!this.ownsSession(session) || this.sharerIdentity === undefined) return;
     if (event.candidate) {
-      this.signaling.sendIce(this.sharerIdentity, serializeIceCandidate(event.candidate));
+      const candidate = serializeIceCandidate(event.candidate);
+      if (session.generation === undefined) this.signaling.sendIce(this.sharerIdentity, candidate);
+      else this.signaling.sendIce(this.sharerIdentity, candidate, session.generation);
     } else {
-      this.signaling.sendIce(this.sharerIdentity, null);
+      if (session.generation === undefined) this.signaling.sendIce(this.sharerIdentity, null);
+      else this.signaling.sendIce(this.sharerIdentity, null, session.generation);
     }
   }
 

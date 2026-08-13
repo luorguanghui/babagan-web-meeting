@@ -17,15 +17,12 @@ export interface ScreenShareQualityPreset {
 
 /**
  * Screen-share quality presets applied to both the SFU fallback and the P2P
- * path. All presets capture at 60 fps; the difference is how the encoder
- * degrades under bandwidth pressure. `flow` and `standard` are
- * frame-rate-first (`maintain-framerate` drops resolution before frame rate,
- * keeping the stream smooth); `motion` keeps the picture crisp and drops
- * frames only when the network forces it.
+ * path. The default and flow presets preserve spatial resolution under
+ * pressure; 60 fps is reserved for the explicitly selected motion preset.
  */
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
-  flow: { width: 1280, height: 720, frameRate: 60, degradationPreference: 'maintain-framerate' },
-  standard: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' },
+  flow: { width: 1280, height: 720, frameRate: 30, degradationPreference: 'maintain-resolution' },
+  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
   motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
 };
 
@@ -393,13 +390,13 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
     }
   }
 
-  /** The roster changed (welcome/peer-joined): re-drive P2P with the fresh roster. */
-  viewerRosterChanged(): void {
+  /** The roster changed; a reconnect welcome also refreshes incomplete ICE generations. */
+  viewerRosterChanged(recoverNegotiating = false): void {
     if (this.activeStream === undefined) return;
     const viewers = this.deps.getViewers();
     if (viewers.length === 0) return;
     const controller = this.ensureController();
-    void controller.start(this.activeStream, this.activeOptions!, viewers).catch(() => undefined);
+    void controller.start(this.activeStream, this.activeOptions!, viewers, recoverNegotiating).catch(() => undefined);
   }
 
   /** A viewer left (`peer-left`): drop them from fallback tracking and close their session. */

@@ -6,7 +6,10 @@ function report(
   localCandidateType: RTCIceCandidateType,
   remoteCandidateType: RTCIceCandidateType = 'host',
   bytesReceived = 1_200,
-  framesDecoded = 3
+  framesDecoded = 3,
+  packetsReceived = 80,
+  packetsLost = 12,
+  freezeCount = 2
 ): RTCStatsReport {
   return new Map<string, RTCStats>([
     ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
@@ -18,7 +21,7 @@ function report(
     ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: remoteCandidateType } as RTCStats],
     ['video', {
       id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video',
-      bytesReceived, framesDecoded
+      bytesReceived, framesDecoded, packetsReceived, packetsLost, freezeCount
     } as RTCStats]
   ]) as unknown as RTCStatsReport;
 }
@@ -28,7 +31,10 @@ describe('inspectP2pMediaHealth', () => {
     expect(inspectP2pMediaHealth(report('srflx'))).toEqual({
       path: 'direct',
       bytesReceived: 1_200,
-      framesDecoded: 3
+      framesDecoded: 3,
+      packetsReceived: 80,
+      packetsLost: 12,
+      freezeCount: 2
     });
   });
 
@@ -43,7 +49,10 @@ describe('inspectP2pMediaHealth', () => {
     expect(inspectP2pMediaHealth(new Map() as unknown as RTCStatsReport)).toEqual({
       path: 'unknown',
       bytesReceived: 0,
-      framesDecoded: 0
+      framesDecoded: 0,
+      packetsReceived: 0,
+      packetsLost: 0,
+      freezeCount: 0
     });
   });
 });

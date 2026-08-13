@@ -49,6 +49,9 @@ class FakeRTCPeerConnection {
   statsCandidateType: RTCIceCandidateType = 'srflx';
   statsBytes = 1_200;
   statsFrames = 3;
+  statsPacketsReceived = 80;
+  statsPacketsLost = 0;
+  statsFreezeCount = 0;
   autoProgress = true;
   /** When true, getStats omits the transport/pair/candidate entries (path 'unknown'). */
   statsOmitPair = false;
@@ -69,10 +72,16 @@ class FakeRTCPeerConnection {
       ? new Map<string, RTCStats>([
         ['video', {
           id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video',
-          bytesReceived: this.statsBytes, framesDecoded: this.statsFrames
+          bytesReceived: this.statsBytes, framesDecoded: this.statsFrames,
+          packetsReceived: this.statsPacketsReceived, packetsLost: this.statsPacketsLost,
+          freezeCount: this.statsFreezeCount
         } as RTCStats]
       ]) as unknown as RTCStatsReport
-      : statsReport(this.statsCandidateType, this.statsBytes, this.statsFrames);
+      : statsReport(this.statsCandidateType, this.statsBytes, this.statsFrames, {
+        packetsReceived: this.statsPacketsReceived,
+        packetsLost: this.statsPacketsLost,
+        freezeCount: this.statsFreezeCount
+      });
     if (this.autoProgress) {
       this.statsBytes += 1_000;
       this.statsFrames += 1;
@@ -106,7 +115,12 @@ class FakeRTCPeerConnection {
   }
 }
 
-function statsReport(candidateType: RTCIceCandidateType, bytesReceived: number, framesDecoded: number): RTCStatsReport {
+function statsReport(
+  candidateType: RTCIceCandidateType,
+  bytesReceived: number,
+  framesDecoded: number,
+  counters: { packetsReceived: number; packetsLost: number; freezeCount: number }
+): RTCStatsReport {
   return new Map<string, RTCStats>([
     ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
     ['pair', {
@@ -116,7 +130,8 @@ function statsReport(candidateType: RTCIceCandidateType, bytesReceived: number, 
     ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
     ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats],
     ['video', {
-      id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video', bytesReceived, framesDecoded
+      id: 'video', type: 'inbound-rtp', timestamp: 1, kind: 'video', bytesReceived, framesDecoded,
+      ...counters
     } as RTCStats]
   ]) as unknown as RTCStatsReport;
 }
@@ -343,10 +358,11 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('p2p');
   });
 
-  it('treats decoded media with an unclassifiable path as p2p instead of falling back', async () => {
+  it('keeps the existing state when decoded media has an unclassifiable path', async () => {
     // getStats can transiently lack the selected pair or its candidate stats
     // (path 'unknown') even while RTP is flowing. Media that decodes is the
-    // success signal; the missing classification must not force an SFU fallback.
+    // success signal; the missing classification must neither guess P2P nor
+    // force an SFU fallback.
     const { controller, signaling } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -355,13 +371,40 @@ describe('p2p viewer controller', () => {
     videoTrack.unmute();
 
     await vi.advanceTimersByTimeAsync(1_000);
-    expect(controller.getState()).toBe('p2p');
+    expect(controller.getState()).toBe('negotiating');
     expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
 
-    // And a healthy stream stays up: no stall-timer fallback.
-    vi.advanceTimersByTime(60_000);
-    expect(controller.getState()).toBe('p2p');
+    // Decoded media cancels the no-media timer even while the selected pair is
+    // temporarily unavailable.
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 1);
+    expect(controller.getState()).toBe('negotiating');
     expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('retains a candidate that arrives immediately before its offer', async () => {
+    const { controller } = makeHarness();
+
+    await controller.handleIce('sharer-1', JSON.stringify({
+      candidate: 'candidate:early', sdpMid: '0', sdpMLineIndex: 0
+    }));
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+
+    const pc = FakeRTCPeerConnection.instances[0];
+    expect(pc.addIceCandidate).toHaveBeenCalledWith({
+      candidate: 'candidate:early', sdpMid: '0', sdpMLineIndex: 0
+    });
+  });
+
+  it('ignores candidates from an older offer generation after renegotiation', async () => {
+    const { controller } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-1', 'generation-1');
+    await controller.acceptOffer('sharer-1', 'offer-2', 'generation-2');
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+
+    await controller.handleIce('sharer-1', JSON.stringify({ candidate: 'old-candidate' }), 'generation-1');
+    await controller.handleIce('sharer-1', JSON.stringify({ candidate: 'new-candidate' }), 'generation-2');
+
+    expect(pc.addedIceCandidates).toEqual([{ candidate: 'new-candidate' }]);
   });
 
   it('asks the sharer to re-drive a fresh offer on requestRetry', async () => {
@@ -394,6 +437,29 @@ describe('p2p viewer controller', () => {
     expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
   });
 
+  it('tracks selected-pair migration from direct to relay and back to direct', async () => {
+    const { controller, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.getState()).toBe('p2p');
+
+    pc.statsCandidateType = 'relay';
+    await runHealthCheck();
+    expect(controller.getState()).toBe('turn');
+
+    pc.statsOmitPair = true;
+    await runHealthCheck();
+    expect(controller.getState()).toBe('turn');
+
+    pc.statsOmitPair = false;
+    pc.statsCandidateType = 'srflx';
+    await runHealthCheck();
+    expect(controller.getState()).toBe('p2p');
+  });
+
   it('exposes stats only while its peer connection session is active', async () => {
     const { controller } = makeHarness();
     expect(await controller.getStatsReport()).toBeUndefined();
@@ -423,6 +489,117 @@ describe('p2p viewer controller', () => {
     }
 
     expect(pc.getStats.mock.calls.length).toBeGreaterThanOrEqual(6);
+    expect(controller.getState()).toBe('livekit');
+  });
+
+  it('still detects a complete RTP stall after decoded media on an unknown path', async () => {
+    let now = 0;
+    const { controller, runHealthCheck } = makeHarness({ now: () => now });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState()).toBe('negotiating');
+
+    pc.autoProgress = false;
+    for (let elapsed = 0; elapsed < P2P_RTP_STALL_TIMEOUT_MS + 1_000; elapsed += 1_000) {
+      now += 1_000;
+      await runHealthCheck();
+    }
+
+    expect(controller.getState()).toBe('livekit');
+  });
+
+  it('falls back after eight consecutive populated intervals at fifteen percent loss', async () => {
+    const { controller, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsPacketsReceived = 100;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState()).toBe('p2p');
+
+    for (let sample = 1; sample <= 7; sample++) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await runHealthCheck();
+      expect(controller.getState()).toBe('p2p');
+    }
+
+    pc.statsPacketsReceived += 17;
+    pc.statsPacketsLost += 3;
+    await runHealthCheck();
+    expect(controller.getState()).toBe('livekit');
+  });
+
+  it('resets the poor-quality streak after one healthy interval', async () => {
+    const { controller, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsPacketsReceived = 100;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let sample = 0; sample < 7; sample++) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await runHealthCheck();
+    }
+    pc.statsPacketsReceived += 20;
+    await runHealthCheck();
+
+    for (let sample = 0; sample < 7; sample++) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await runHealthCheck();
+    }
+    expect(controller.getState()).toBe('p2p');
+
+    pc.statsPacketsReceived += 17;
+    pc.statsPacketsLost += 3;
+    await runHealthCheck();
+    expect(controller.getState()).toBe('livekit');
+  });
+
+  it('ignores high loss percentages when an interval has fewer than twenty packets', async () => {
+    const { controller, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let sample = 0; sample < 12; sample++) {
+      pc.statsPacketsReceived += 1;
+      pc.statsPacketsLost += 1;
+      await runHealthCheck();
+    }
+
+    expect(controller.getState()).toBe('p2p');
+  });
+
+  it('falls back after freezes grow for eight consecutive populated intervals', async () => {
+    const { controller, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let sample = 1; sample <= 7; sample++) {
+      pc.statsPacketsReceived += 20;
+      pc.statsFreezeCount += 1;
+      await runHealthCheck();
+      expect(controller.getState()).toBe('p2p');
+    }
+
+    pc.statsPacketsReceived += 20;
+    pc.statsFreezeCount += 1;
+    await runHealthCheck();
     expect(controller.getState()).toBe('livekit');
   });
 

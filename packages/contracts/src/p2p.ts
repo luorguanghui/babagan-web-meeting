@@ -12,6 +12,7 @@ export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000] as const;
 export type P2pScreenBitrate = typeof P2P_SCREEN_BITRATES[number];
 
 const IdentitySchema = Type.String({ minLength: 1, maxLength: 256 });
+const GenerationSchema = Type.String({ minLength: 1, maxLength: 128 });
 const SdpSchema = Type.String({ minLength: 1, maxLength: P2P_MESSAGE_MAX_BYTES });
 const CandidateSchema = Type.Union([
   Type.String({ minLength: 1, maxLength: P2P_MESSAGE_MAX_BYTES }),
@@ -26,21 +27,25 @@ export const P2pClientMessageSchema = Type.Union([
   Type.Object({
     type: Type.Literal('offer'),
     to: IdentitySchema,
-    sdp: SdpSchema
+    sdp: SdpSchema,
+    generation: Type.Optional(GenerationSchema)
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('answer'),
     to: IdentitySchema,
-    sdp: SdpSchema
+    sdp: SdpSchema,
+    generation: Type.Optional(GenerationSchema)
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('ice'),
     to: IdentitySchema,
-    candidate: CandidateSchema
+    candidate: CandidateSchema,
+    generation: Type.Optional(GenerationSchema)
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('media-ready'),
-    to: IdentitySchema
+    to: IdentitySchema,
+    generation: Type.Optional(GenerationSchema)
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('retry'),
