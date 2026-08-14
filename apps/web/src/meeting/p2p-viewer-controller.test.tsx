@@ -654,6 +654,39 @@ describe('p2p viewer controller', () => {
     expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
   });
 
+  it('extends the media deadline once while ICE is still checking before falling back', async () => {
+    const { controller, signaling, onFallback } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS - 1_000);
+    pc.setIceConnectionState('checking'); // progress re-arms the deadline
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS - 1_000); // 14s: a fixed 8s deadline would have fired
+    expect(controller.getState()).toBe('negotiating');
+
+    vi.advanceTimersByTime(1_000); // 15s: deadline fires while checking → one extension
+    expect(controller.getState()).toBe('negotiating');
+
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS); // 23s: extension elapsed → fallback
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).toHaveBeenCalledOnce();
+  });
+
+  it('uses freshly updated ICE servers for the next renegotiation', async () => {
+    const { controller } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-1');
+    expect(FakeRTCPeerConnection.instances[0].config).toEqual({ iceServers });
+
+    const fresh: RTCIceServer[] = [
+      { urls: ['turn:turn.example.test:3478'], username: '1785000000:sharer-1', credential: 'secret' }
+    ];
+    controller.updateIceServers(fresh);
+    await controller.acceptOffer('sharer-1', 'offer-2');
+
+    expect(FakeRTCPeerConnection.instances[1].config).toEqual({ iceServers: fresh });
+  });
+
   it('falls back when applying the remote offer fails', async () => {
     const { controller, signaling, onFallback } = makeHarness({
       onPcCreated: (pc) => { pc.failRemoteDescription = true; }

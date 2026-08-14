@@ -18,6 +18,7 @@ import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createP2pSignalingClient, type Peer, type P2pSignalingClient, type P2pSignalingEvents } from '../meeting/p2p-signaling.js';
+import { iceCredentialsExpireSoon } from '../meeting/ice-credentials.js';
 import {
   createP2pShareController,
   IceServersResponseSchema,
@@ -283,6 +284,18 @@ export function MeetingRoomPage({
     /** Viewer signaling received while ICE credentials are in flight. */
     const pendingViewerSignals: ViewerSignal[] = [];
     let viewerSignalTail = Promise.resolve();
+    let iceServersFetch: Promise<RTCIceServer[]> | undefined;
+    const fetchIceServersOnce = (): Promise<RTCIceServer[]> => {
+      if (iceServersFetch === undefined) {
+        iceServersFetch = apiRequest<{ iceServers: RTCIceServer[] }>(
+          `/meetings/${encodeURIComponent(slug)}/ice-servers`,
+          IceServersResponseSchema
+        ).then((response) => response.iceServers).finally(() => {
+          iceServersFetch = undefined;
+        });
+      }
+      return iceServersFetch;
+    };
     const ensureController = (): P2pViewerController | undefined => {
       if (iceServers === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
@@ -305,12 +318,33 @@ export function MeetingRoomPage({
     };
     const dispatchViewerSignal = (signal: ViewerSignal): void => {
       if (cancelled) return;
-      if (iceServers === undefined) {
-        pendingViewerSignals.push(signal);
-        return;
-      }
       viewerSignalTail = viewerSignalTail.then(async () => {
         if (cancelled) return;
+        if (signal.type === 'offer') {
+          // A fresh offer may arrive long after page load. Refresh ICE
+          // credentials when the cached TURN ones are about to expire:
+          // gathering with expired credentials silently yields no relay
+          // candidates, which strands asymmetric NAT pairs on the SFU even
+          // though the sharer's fresh session could relay. A refresh failure
+          // keeps the cached servers; the sharer's automatic re-drive covers
+          // a failed negotiation.
+          if (iceServers !== undefined && iceCredentialsExpireSoon(iceServers)) {
+            try {
+              const fresh = await fetchIceServersOnce();
+              if (!cancelled) {
+                iceServers = fresh;
+                viewerP2pRef.current?.updateIceServers(fresh);
+              }
+            } catch {
+              // Keep the cached (possibly stale) servers for this attempt.
+            }
+          }
+          if (cancelled) return;
+        }
+        if (iceServers === undefined) {
+          pendingViewerSignals.push(signal);
+          return;
+        }
         const viewerController = ensureController();
         if (viewerController === undefined) return;
         if (signal.type === 'offer') {
@@ -328,12 +362,10 @@ export function MeetingRoomPage({
     // P2P" while their own shares worked (the sharer fetches credentials
     // fresh at share time).
     const fetchIceServersWithRetry = (): void => {
-      void apiRequest<{ iceServers: RTCIceServer[] }>(
-        `/meetings/${encodeURIComponent(slug)}/ice-servers`,
-        IceServersResponseSchema
-      ).then((response) => {
+      void fetchIceServersOnce().then((servers) => {
         if (cancelled) return;
-        iceServers = response.iceServers;
+        iceServers = servers;
+        viewerP2pRef.current?.updateIceServers(servers);
         ensureController();
         const queued = pendingViewerSignals.splice(0);
         for (const signal of queued) dispatchViewerSignal(signal);
@@ -634,6 +666,7 @@ export function MeetingRoomPage({
             muted={stageMuted}
             sharerName={sharerName}
             onSourceReady={handleStageSourceReady}
+            audioDynamics={!screenState.stream}
           >
             {hasActiveScreenShare && <WebRtcStatsPanel
               snapshot={screenStats}

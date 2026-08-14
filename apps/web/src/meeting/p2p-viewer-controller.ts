@@ -57,6 +57,8 @@ interface ViewerPcSession {
   mediaReadySent: boolean;
   healthSampleTail: Promise<void>;
   fallbackPending: boolean;
+  /** One bounded media-timer extension while ICE is still making progress. */
+  mediaTimerExtended: boolean;
 }
 
 /**
@@ -95,7 +97,7 @@ export class P2pViewerController {
 
   constructor(
     private readonly signaling: P2pViewerSignaling,
-    private readonly iceServers: RTCIceServer[],
+    private iceServers: RTCIceServer[],
     dependencies: P2pViewerControllerDependencies = {}
   ) {
     this.createPeerConnection = dependencies.createPeerConnection
@@ -180,6 +182,15 @@ export class P2pViewerController {
     return this.state;
   }
 
+  /**
+   * Replaces the ICE servers used by the next session (the next offer builds a
+   * fresh PC). Called after the page refreshes soon-to-expire TURN
+   * credentials, so late shares still gather relay candidates.
+   */
+  updateIceServers(iceServers: RTCIceServer[]): void {
+    this.iceServers = iceServers;
+  }
+
   async getStatsReport(): Promise<RTCStatsReport | undefined> {
     const session = this.session;
     if (session === undefined || session.pcClosed || this.closed) return undefined;
@@ -230,7 +241,8 @@ export class P2pViewerController {
       poorQualitySamples: 0,
       mediaReadySent: false,
       healthSampleTail: Promise.resolve(),
-      fallbackPending: false
+      fallbackPending: false,
+      mediaTimerExtended: false
     };
     pc.ontrack = (event) => this.handleTrack(session, event);
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
@@ -414,7 +426,19 @@ export class P2pViewerController {
     if (this.state !== 'negotiating') return; // media already flowing
     session.mediaTimer = setTimeout(() => {
       session.mediaTimer = undefined;
-      if (this.ownsSession(session) && this.state === 'negotiating') this.fallback(session);
+      if (!this.ownsSession(session) || this.state !== 'negotiating') return;
+      const iceState = session.pc.iceConnectionState;
+      if (!session.mediaTimerExtended && iceState === 'checking') {
+        // ICE is still making progress (fresh relay allocation, asymmetric
+        // NAT re-check, or the sharer's automatic re-offer window): extend the
+        // deadline once instead of abandoning a still-viable negotiation. A
+        // stalled state ('new' with no checks) or a connected link with no
+        // media keeps the fail-fast behavior.
+        session.mediaTimerExtended = true;
+        this.armMediaTimer(session);
+        return;
+      }
+      this.fallback(session);
     }, P2P_ICE_NEGOTIATION_TIMEOUT_MS);
   }
 
@@ -423,6 +447,10 @@ export class P2pViewerController {
     const state = session.pc.iceConnectionState;
     if (state === 'connected' || state === 'completed') {
       this.clearDisconnectTimer(session);
+    } else if (state === 'checking') {
+      // Progress while negotiating re-arms the no-media deadline so a slow
+      // convergence is not killed by a timer measured from the answer alone.
+      if (this.state === 'negotiating' && !session.mediaReadySent) this.armMediaTimer(session);
     } else if (state === 'disconnected') {
       if (session.disconnectTimer === undefined) {
         session.disconnectTimer = setTimeout(() => {

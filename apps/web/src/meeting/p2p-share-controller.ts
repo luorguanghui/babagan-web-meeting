@@ -1,18 +1,37 @@
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
-  P2P_ICE_NEGOTIATION_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_MAX_MS,
+  P2P_ICE_NEGOTIATION_PROGRESS_TIMEOUT_MS,
+  P2P_TOTAL_UPLINK_BUDGET_BPS,
   type ScreenShareCodec
 } from '@meeting/contracts';
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
-import { inspectP2pMediaHealth } from './p2p-media-health.js';
+import { iceCredentialsExpireSoon } from './ice-credentials.js';
+import {
+  inspectP2pMediaHealth,
+  inspectSenderVideoStats,
+  type SenderVideoStats
+} from './p2p-media-health.js';
 import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
 /** Lower bound used only when the selected aggregate budget can afford it. */
 export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
+
+/**
+ * Sender-side pressure adaptation: when the encoder reports `bandwidth`
+ * limitation (with a collapsed frame rate) for this many consecutive samples,
+ * the session switches from the user's degradation preference to `balanced` so
+ * motion stays smooth and the picture avoids blocky quantization. It restores
+ * the user's preference after a longer run of unconstrained samples.
+ */
+export const P2P_SENDER_PRESSURE_SAMPLE_LIMIT = 3;
+export const P2P_SENDER_RECOVER_SAMPLE_LIMIT = 5;
+/** Frame-rate collapse ratio that counts as "motion is starving" under a bandwidth limit. */
+export const P2P_SENDER_FPS_PRESSURE_RATIO = 0.7;
 
 /**
  * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
@@ -74,6 +93,8 @@ export interface P2pShareControllerDependencies {
   onAllViewersClosed?: () => void;
   /** Injectable scheduler used by tests; production samples the selected ICE pair once per second. */
   scheduleTransportChecks?: (check: () => Promise<void>, intervalMs: number) => () => void;
+  /** Monotonic clock (ms); defaults to `Date.now`. Injectable for deadline tests. */
+  now?: () => number;
 }
 
 export const IceServersResponseSchema = Type.Object({
@@ -125,18 +146,27 @@ interface ViewerSession {
   stopTransportMonitor?: () => void;
   negotiationTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
+  /** First-offer timestamp of this negotiation; caps progress extensions and the auto retry. */
+  negotiationStartedAt: number;
+  /** One bounded automatic re-drive with fresh ICE credentials before falling back. */
+  autoRetried: boolean;
+  /** Sender is in pressure mode: encoding uses `balanced` instead of the user's preference. */
+  degradationRelaxed: boolean;
+  bandwidthLimitedSamples: number;
+  recoveredSamples: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private readonly fetchIceServers: () => Promise<RTCIceServer[]>;
   private readonly scheduleTransportChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
+  private readonly nowMs: () => number;
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
   private iceServers?: RTCIceServer[];
   /** The captured share the sessions publish; kept for retry re-drives. */
   private activeStream?: MediaStream;
-  /** The total aggregate P2P budget chosen by the sharer. */
+  /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
   private nextGeneration = 0;
 
@@ -148,6 +178,7 @@ class P2pShareControllerImpl implements P2pShareController {
       const timer = setInterval(() => { void check(); }, intervalMs);
       return () => clearInterval(timer);
     });
+    this.nowMs = deps.now ?? Date.now;
   }
 
   async start(
@@ -290,6 +321,12 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private async resolveIceServers(forceRefresh = false): Promise<RTCIceServer[]> {
     if (forceRefresh) this.iceServers = undefined;
+    else if (this.iceServers !== undefined
+      && iceCredentialsExpireSoon(this.iceServers, this.nowMs() / 1_000)) {
+      // The cached TURN credentials are about to expire: a session built on
+      // them would silently gather no relay candidates. Refresh before use.
+      this.iceServers = undefined;
+    }
     if (this.iceServers === undefined) {
       this.iceServers = await this.fetchIceServers();
     }
@@ -311,7 +348,12 @@ class P2pShareControllerImpl implements P2pShareController {
       pcClosed: false,
       transportConnected: false,
       senderParameterTail: Promise.resolve(),
-      transportSampleTail: Promise.resolve()
+      transportSampleTail: Promise.resolve(),
+      negotiationStartedAt: 0,
+      autoRetried: false,
+      degradationRelaxed: false,
+      bandwidthLimitedSamples: 0,
+      recoveredSamples: 0
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
@@ -386,17 +428,70 @@ class P2pShareControllerImpl implements P2pShareController {
     } else if (state === 'failed') {
       session.transportConnected = false;
       this.fallback(session);
+    } else if (state === 'checking') {
+      // A live candidate-pair check is real progress: a slow-but-viable path
+      // (fresh relay allocation, asymmetric NAT re-check) gets more time
+      // instead of being killed by the fixed first-offer deadline.
+      if (session.state === 'negotiating') this.armNegotiationTimer(session);
     } else if (state === 'closed') {
       this.clearTimers(session);
     }
   }
 
+  /**
+   * Arms the negotiation deadline. Every ICE progress event (`checking`)
+   * re-arms it for `P2P_ICE_NEGOTIATION_PROGRESS_TIMEOUT_MS` from now, but the
+   * deadline never moves past `P2P_ICE_NEGOTIATION_MAX_MS` after the first
+   * offer — a permanently stuck session still terminates.
+   */
   private armNegotiationTimer(session: ViewerSession): void {
     this.clearNegotiationTimer(session);
+    const now = this.nowMs();
+    if (session.negotiationStartedAt === 0) session.negotiationStartedAt = now;
+    const deadline = Math.min(
+      session.negotiationStartedAt + P2P_ICE_NEGOTIATION_MAX_MS,
+      now + P2P_ICE_NEGOTIATION_PROGRESS_TIMEOUT_MS
+    );
+    const delay = Math.max(0, deadline - now);
     session.negotiationTimer = setTimeout(() => {
       session.negotiationTimer = undefined;
-      if (session.state === 'negotiating') this.fallback(session);
-    }, P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+      if (session.state === 'negotiating') void this.handleNegotiationTimeout(session);
+    }, delay);
+  }
+
+  /**
+   * The negotiation outlived its deadline. Before permanently falling back,
+   * the session gets exactly one automatic re-drive with a fresh PC and fresh
+   * ICE credentials: expired TURN credentials or a transient first-attempt
+   * failure otherwise strand an asymmetric connection (A→B direct works while
+   * B→A does not) on the SFU forever.
+   */
+  private async handleNegotiationTimeout(session: ViewerSession): Promise<void> {
+    if (session.state !== 'negotiating') return;
+    if (session.autoRetried) {
+      this.fallback(session);
+      return;
+    }
+    session.autoRetried = true;
+    if (this.activeStream === undefined || this.activeOptions === undefined) {
+      this.fallback(session);
+      return;
+    }
+    const iceServers = await this.resolveIceServers(true).catch(() => undefined);
+    // The viewer left, the share stopped, or a retry already replaced this
+    // session while the credential refresh was in flight.
+    if (this.sessions.get(session.identity) !== session || session.state !== 'negotiating') return;
+    if (iceServers === undefined) {
+      this.fallback(session);
+      return;
+    }
+    // Replace the stalled session with a fresh PC, fresh credentials and a
+    // fresh offer generation; the viewer treats the offer as a renegotiation.
+    this.closeSession(session);
+    const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, iceServers);
+    replacement.autoRetried = true;
+    await this.rebalanceBitrates();
+    await this.establishSession(replacement);
   }
 
   private async flushCandidates(session: ViewerSession): Promise<void> {
@@ -409,16 +504,56 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private async updateTransportState(session: ViewerSession): Promise<void> {
     try {
-      const health = inspectP2pMediaHealth(await session.pc.getStats());
+      const report = await session.pc.getStats();
       if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
+      const health = inspectP2pMediaHealth(report);
       if ((session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn')
         && health.path !== 'unknown') {
         const classifiedState: ViewerSessionState = health.path === 'relay' ? 'turn' : 'p2p';
         if (classifiedState !== session.state) this.transition(session, classifiedState);
       }
+      await this.adaptEncodingPressure(session, inspectSenderVideoStats(report));
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
       // The usable session remains active and later UI stats can classify it.
+    }
+  }
+
+  /**
+   * Watches the sender's encoder limitation and switches this session between
+   * the user's degradation preference and `balanced`:
+   * - sustained `bandwidth` limitation with a collapsed frame rate (the exact
+   *   "stable 1080p but ~10 fps under motion" failure) relaxes to `balanced`,
+   *   which sheds resolution before quantization blows up into blocks/blur;
+   * - a longer run of unconstrained samples restores the user's preference.
+   */
+  private async adaptEncodingPressure(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
+    if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
+    if (session.state !== 'p2p' && session.state !== 'turn') return;
+    const bandwidthLimited = sender.qualityLimitationReason === 'bandwidth';
+    const fpsCollapsed = sender.framesPerSecond !== undefined
+      && session.options.frameRate > 0
+      && sender.framesPerSecond < session.options.frameRate * P2P_SENDER_FPS_PRESSURE_RATIO;
+    if (session.degradationRelaxed) {
+      if (bandwidthLimited) {
+        session.recoveredSamples = 0;
+      } else {
+        session.recoveredSamples += 1;
+        if (session.recoveredSamples >= P2P_SENDER_RECOVER_SAMPLE_LIMIT) {
+          session.degradationRelaxed = false;
+          await this.applySenderParameters(session);
+        }
+      }
+      return;
+    }
+    if (bandwidthLimited && (fpsCollapsed || sender.framesPerSecond === undefined)) {
+      session.bandwidthLimitedSamples += 1;
+      if (session.bandwidthLimitedSamples >= P2P_SENDER_PRESSURE_SAMPLE_LIMIT) {
+        session.degradationRelaxed = true;
+        await this.applySenderParameters(session);
+      }
+    } else {
+      session.bandwidthLimitedSamples = 0;
     }
   }
 
@@ -436,7 +571,9 @@ class P2pShareControllerImpl implements P2pShareController {
             maxFramerate: options.frameRate,
             ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
-          degradationPreference: options.degradationPreference
+          degradationPreference: session.degradationRelaxed
+            ? 'balanced'
+            : options.degradationPreference
         });
       } catch {
         // Bitrate tuning is best-effort; a failure must not kill the session or
@@ -461,17 +598,25 @@ class P2pShareControllerImpl implements P2pShareController {
     await session.transportSampleTail;
   }
 
-  /** Re-divides the selected total budget across every live viewer session. */
+  /**
+   * Allocates the per-viewer encoding cap. The selected tier applies to every
+   * live viewer session (direct or relay) — starving a session of bitrate is
+   * exactly what collapses frame rate under motion and fills the relayed
+   * picture with quantization blocks — while the aggregate of all caps never
+   * exceeds `P2P_TOTAL_UPLINK_BUDGET_BPS`, which protects the sharer's uplink
+   * and the voice path.
+   */
   private async rebalanceBitrates(): Promise<void> {
     const selected = this.activeOptions;
     if (selected === undefined) return;
     const active = [...this.sessions.values()].filter((session) => !session.pcClosed
       && (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn'));
     if (active.length === 0) return;
-    const fairShare = Math.floor(selected.maxBitrate / active.length);
+    const fairShare = Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / active.length);
+    const perViewer = Math.min(selected.maxBitrate, fairShare);
     const maxBitrate = selected.maxBitrate >= P2P_VIEWER_BITRATE_FLOOR * active.length
-      ? Math.max(P2P_VIEWER_BITRATE_FLOOR, fairShare)
-      : fairShare;
+      ? Math.max(P2P_VIEWER_BITRATE_FLOOR, perViewer)
+      : perViewer;
     await Promise.all(active.map(async (session) => {
       session.options = { ...selected, maxBitrate };
       await this.applySenderParameters(session);

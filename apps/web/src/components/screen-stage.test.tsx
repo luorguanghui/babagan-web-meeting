@@ -186,4 +186,72 @@ describe('screen stage dual-source rendering', () => {
 
     expect(video.muted).toBe(false);
   });
+
+  it('routes unmuted remote audio through the trim and limiter when audio dynamics are enabled', () => {
+    const stream = makeStream();
+    const audio = makeAudioContext();
+    const { container } = render(
+      <ScreenStage stream={stream} muted={false} audioDynamics createAudioContext={() => audio.context} />
+    );
+    const video = getVisibleVideo(container);
+
+    expect(audio.context.createMediaElementSource).toHaveBeenCalledWith(video);
+    expect(audio.gain.gain.value).toBe(0.5);
+    expect(audio.source.connect).toHaveBeenCalledWith(audio.gain);
+    expect(audio.gain.connect).toHaveBeenCalledWith(audio.compressor);
+    expect(audio.compressor.connect).toHaveBeenCalledWith(audio.context.destination);
+  });
+
+  it('resumes a suspended audio context when the element starts playing', () => {
+    const stream = makeStream();
+    const audio = makeAudioContext('suspended');
+    const { container } = render(
+      <ScreenStage stream={stream} muted={false} audioDynamics createAudioContext={() => audio.context} />
+    );
+    const video = getVisibleVideo(container);
+
+    fireEvent(video, new Event('playing'));
+
+    expect(audio.context.resume).toHaveBeenCalledOnce();
+  });
+
+  it('skips the audio graph for muted stages and when dynamics are disabled', () => {
+    const audio = makeAudioContext();
+    const { container, rerender } = render(
+      <ScreenStage stream={makeStream()} muted audioDynamics createAudioContext={() => audio.context} />
+    );
+    expect(audio.context.createMediaElementSource).not.toHaveBeenCalled();
+
+    rerender(<ScreenStage stream={makeStream()} createAudioContext={() => audio.context} />);
+    expect(audio.context.createMediaElementSource).not.toHaveBeenCalled();
+    expect(getVisibleVideo(container).muted).toBe(true); // local stream default
+  });
+
+  it('disposes the audio graph when the source swaps', () => {
+    const audio = makeAudioContext();
+    const { rerender } = render(
+      <ScreenStage stream={makeStream()} muted={false} audioDynamics createAudioContext={() => audio.context} />
+    );
+
+    rerender(<ScreenStage track={makeTrack()} muted={false} audioDynamics createAudioContext={() => audio.context} />);
+
+    expect(audio.context.close).toHaveBeenCalled();
+  });
 });
+
+function makeAudioContext(state: string = 'running') {
+  const makeNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+  const source = makeNode();
+  const gain = { ...makeNode(), gain: { value: 1 } };
+  const compressor = makeNode();
+  const context = {
+    state,
+    destination: makeNode(),
+    createMediaElementSource: vi.fn(() => source),
+    createGain: vi.fn(() => gain),
+    createDynamicsCompressor: vi.fn(() => compressor),
+    resume: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined)
+  };
+  return { context, source, gain, compressor };
+}

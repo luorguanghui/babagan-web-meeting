@@ -114,8 +114,9 @@ class FakeRTCPeerConnection {
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
-  readonly getStats = vi.fn(async () => statsReport(this.statsCandidateType));
+  readonly getStats = vi.fn(async () => statsReport(this.statsCandidateType, this.senderStats));
   statsPathKnown = true;
+  senderStats: { qualityLimitationReason?: string; framesPerSecond?: number } = {};
 
   constructor(config: RTCConfiguration) {
     this.config = config;
@@ -160,8 +161,11 @@ class FakeRTCPeerConnection {
   }
 }
 
-function statsReport(candidateType: RTCIceCandidateType): RTCStatsReport {
-  return new Map<string, RTCStats>([
+function statsReport(
+  candidateType: RTCIceCandidateType,
+  sender: { qualityLimitationReason?: string; framesPerSecond?: number } = {}
+): RTCStatsReport {
+  const entries: Array<[string, RTCStats]> = [
     ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
     ['pair', {
       id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
@@ -169,7 +173,15 @@ function statsReport(candidateType: RTCIceCandidateType): RTCStatsReport {
     } as RTCStats],
     ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
     ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats]
-  ]) as unknown as RTCStatsReport;
+  ];
+  if (sender.qualityLimitationReason !== undefined || sender.framesPerSecond !== undefined) {
+    entries.push(['outbound', {
+      id: 'outbound', type: 'outbound-rtp', timestamp: 1, kind: 'video',
+      ...(sender.qualityLimitationReason !== undefined ? { qualityLimitationReason: sender.qualityLimitationReason } : {}),
+      ...(sender.framesPerSecond !== undefined ? { framesPerSecond: sender.framesPerSecond } : {})
+    } as RTCStats]);
+  }
+  return new Map(entries) as unknown as RTCStatsReport;
 }
 
 function makeTrack(kind: 'video' | 'audio'): MediaStreamTrack {
@@ -400,20 +412,65 @@ describe('p2p share controller', () => {
     expect(pc.remoteDescriptions).toHaveLength(0);
   });
 
-  it('falls back after the 8s negotiation timeout when ICE never connects', async () => {
-    const { controller, onViewerFallback } = makeHarness();
+  it('re-drives the negotiation once with fresh ICE before falling back when ICE never connects', async () => {
+    const { controller, onViewerFallback, fetchIceServers } = makeHarness();
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
+    const firstPc = FakeRTCPeerConnection.instances[0];
 
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS - 1);
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
     expect(onViewerFallback).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(1);
+    vi.advanceTimersByTime(1); // first deadline → automatic re-drive
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(firstPc.closed).toBe(true);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS); // second deadline → fallback
+    await vi.advanceTimersByTimeAsync(0);
 
     expect(controller.getViewerStates().get('viewer-1')).toBe('livekit-fallback');
     expect(onViewerFallback).toHaveBeenCalledWith('viewer-1');
-    expect(pc.closed).toBe(true);
+    expect(FakeRTCPeerConnection.instances[1].closed).toBe(true);
+  });
+
+  it('extends the negotiation deadline while ICE keeps making progress, capped at the maximum', async () => {
+    const { controller, onViewerFallback, fetchIceServers } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    // Progress at 7s pushes the first deadline out to 15s.
+    vi.advanceTimersByTime(7_000);
+    pc.setIceConnectionState('checking');
+    vi.advanceTimersByTime(7_000); // 14s: a fixed 8s deadline would have fired at 8s
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+
+    vi.advanceTimersByTime(1_000); // 15s deadline → automatic re-drive
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not re-drive or fall back when the share stops while the refresh is in flight', async () => {
+    let resolveFetch!: (servers: RTCIceServer[]) => void;
+    const { controller, onViewerFallback, fetchIceServers } = makeHarness();
+    fetchIceServers.mockImplementationOnce(async () => iceServers);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveFetch = resolve; }));
+
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS); // auto-retry starts, parks on the fetch
+    await controller.stop();
+    resolveFetch(iceServers);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(controller.getViewerStates().size).toBe(0);
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
   });
 
   it('marks a viewer p2p only after connected transport and media-ready', async () => {
@@ -433,19 +490,21 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).not.toHaveBeenCalled();
   });
 
-  it('treats the selected bitrate as one aggregate budget shared equally by active viewers', async () => {
+  it('applies the selected tier per viewer while the total stays under the uplink budget', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 3));
 
+    // 3 viewers × 8 Mbps tier = 24 Mbps, capped to the 20 Mbps uplink budget:
+    // floor(20 Mbps / 3) = 6 666 666 bps per viewer.
     expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([
-      2_666_666,
-      2_666_666,
-      2_666_666
+      6_666_666,
+      6_666_666,
+      6_666_666
     ]);
     expect(FakeRTCPeerConnection.instances.reduce(
       (sum, pc) => sum + (senderMaxBitrate(pc) ?? 0),
       0
-    )).toBe(7_999_998);
+    )).toBe(19_999_998);
   });
 
   it('always signals the offer before candidates gathered during setLocalDescription', async () => {
@@ -461,16 +520,20 @@ describe('p2p share controller', () => {
       .toBeLessThan(vi.mocked(signaling.sendIce).mock.invocationCallOrder[0]);
   });
 
-  it('rebalances the aggregate budget when viewers join and leave', async () => {
+  it('rebalances per-viewer caps when viewers join and leave', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     expect(senderMaxBitrate(FakeRTCPeerConnection.instances[0])).toBe(8_000_000);
 
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
-    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([4_000_000, 4_000_000]);
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
 
-    controller.handleViewerLeft('viewer-2');
+    await controller.start(makeStream(), shareOptions, viewers.slice(0, 3));
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([6_666_666, 6_666_666, 6_666_666]);
+
+    controller.handleViewerLeft('viewer-3');
     await vi.waitFor(() => expect(senderMaxBitrate(FakeRTCPeerConnection.instances[0])).toBe(8_000_000));
+    expect(senderMaxBitrate(FakeRTCPeerConnection.instances[1])).toBe(8_000_000);
   });
 
   it('serializes rebalance writes per sender while a second viewer joins', async () => {
@@ -484,7 +547,7 @@ describe('p2p share controller', () => {
     const joinPromise = controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
     await vi.waitFor(() => expect(firstSender.activeParameterWrites).toBe(1));
     expect(firstSender.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({
-      encodings: [expect.objectContaining({ maxBitrate: 4_000_000 })]
+      encodings: [expect.objectContaining({ maxBitrate: 8_000_000 })]
     }));
 
     firstPc.setIceConnectionState('connected');
@@ -495,7 +558,7 @@ describe('p2p share controller', () => {
     releaseWrite();
     await joinPromise;
     await vi.advanceTimersByTimeAsync(0);
-    expect(senderMaxBitrate(firstPc)).toBe(4_000_000);
+    expect(senderMaxBitrate(firstPc)).toBe(8_000_000);
     expect(firstSender.concurrentParameterWrites).toBe(0);
   });
 
@@ -512,7 +575,7 @@ describe('p2p share controller', () => {
     expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
 
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
-    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([4_000_000, 4_000_000]);
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
   });
 
   it('does not increase a session allocation after direct or unknown path classification', async () => {
@@ -527,13 +590,13 @@ describe('p2p share controller', () => {
     }
     await vi.advanceTimersByTimeAsync(0);
 
-    expect([senderMaxBitrate(direct), senderMaxBitrate(unknown)]).toEqual([4_000_000, 4_000_000]);
+    expect([senderMaxBitrate(direct), senderMaxBitrate(unknown)]).toEqual([8_000_000, 8_000_000]);
   });
 
   it('reallocates a fallen-back viewer budget to the remaining active session', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 2));
-    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([4_000_000, 4_000_000]);
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
 
     FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
 
@@ -582,6 +645,66 @@ describe('p2p share controller', () => {
     expect(await controller.getStatsReports()).toHaveLength(1);
     await controller.stop();
     expect(await controller.getStatsReports()).toEqual([]);
+  });
+
+  it('switches a bandwidth-starved session to balanced degradation and restores it after recovery', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0); // session is p2p, monitor armed
+
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 12 };
+    await runTransportChecks();
+    await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+
+    await runTransportChecks(); // third consecutive starved sample → balanced
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('balanced');
+
+    pc.senderStats = { qualityLimitationReason: 'none', framesPerSecond: 30 };
+    for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('balanced');
+
+    await runTransportChecks(); // fifth unconstrained sample → restored
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+  });
+
+  it('keeps the degradation preference when a bandwidth limit does not collapse frame rate', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 28 };
+    await runTransportChecks();
+    await runTransportChecks();
+    await runTransportChecks();
+
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+  });
+
+  it('refreshes cached ICE credentials before use when their TURN expiry is near', async () => {
+    const { controller, fetchIceServers } = makeHarness();
+    const nearExpiryUsername = `${Math.floor(Date.now() / 1_000) + 5}:viewer-1`;
+    fetchIceServers.mockImplementationOnce(async () => [
+      { urls: ['turn:turn.example.test:3478'], username: nearExpiryUsername, credential: 'secret' }
+    ]);
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    expect(FakeRTCPeerConnection.instances[0].config).toEqual({
+      iceServers: [{ urls: ['turn:turn.example.test:3478'], username: nearExpiryUsername, credential: 'secret' }]
+    });
+
+    // A second share session reuses the controller cache; the credentials
+    // expire within the refresh margin, so they must be refetched instead of
+    // silently losing the relay candidates.
+    fetchIceServers.mockImplementationOnce(async () => iceServers);
+    await controller.start(makeStream(), shareOptions, [viewers[1]]);
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    expect(FakeRTCPeerConnection.instances[1].config).toEqual({ iceServers });
   });
 
   it('falls back after ICE stays disconnected for 5 seconds', async () => {
@@ -793,7 +916,7 @@ describe('p2p share controller', () => {
     expect(newPc.closed).toBe(false);
     expect(controller.getViewerStates().get('viewer-2')).toBe('negotiating');
     expect([senderMaxBitrate(FakeRTCPeerConnection.instances[0]), senderMaxBitrate(newPc)])
-      .toEqual([4_000_000, 4_000_000]);
+      .toEqual([8_000_000, 8_000_000]);
     expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(offersBefore);
     expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', expect.any(String), expect.any(String));
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
@@ -812,7 +935,7 @@ describe('p2p share controller', () => {
     expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBe(offersBefore + 2);
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
     expect(controller.getViewerStates().get('viewer-2')).toBe('negotiating');
-    expect(FakeRTCPeerConnection.instances.slice(-2).map(senderMaxBitrate)).toEqual([4_000_000, 4_000_000]);
+    expect(FakeRTCPeerConnection.instances.slice(-2).map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
   });
 

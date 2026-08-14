@@ -9,6 +9,12 @@ export interface P2pMediaHealth {
   freezeCount: number;
 }
 
+/** Sender-side encoder telemetry used for degradation adaptation. */
+export interface SenderVideoStats {
+  qualityLimitationReason?: string;
+  framesPerSecond?: number;
+}
+
 type StatsRecord = RTCStats & Record<string, unknown>;
 
 export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
@@ -59,4 +65,28 @@ export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
     ? 'relay'
     : 'direct';
   return { path, ...counters };
+}
+
+/**
+ * Reads the local video sender's encoder limitation from a stats report.
+ * `qualityLimitationReason` is `'none'` when unconstrained; `'bandwidth'` means
+ * the encoder starves against the link, which under `maintain-resolution`
+ * collapses frame rate and under a relayed path fills the picture with
+ * quantization blocks.
+ */
+export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStats {
+  const result: SenderVideoStats = {};
+  report.forEach((entry) => {
+    const stat = entry as StatsRecord;
+    if (stat.type !== 'outbound-rtp'
+      || stat.isRemote === true
+      || (stat.kind !== 'video' && stat.mediaType !== 'video')) return;
+    if (typeof stat.qualityLimitationReason === 'string') {
+      result.qualityLimitationReason = stat.qualityLimitationReason;
+    }
+    if (typeof stat.framesPerSecond === 'number') {
+      result.framesPerSecond = stat.framesPerSecond;
+    }
+  });
+  return result;
 }

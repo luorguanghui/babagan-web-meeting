@@ -511,7 +511,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('option', { name: '5 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '8 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '10 Mbps' })).toBeVisible();
-    expect(screen.getByText('Suggested total P2P upload budget: 8 Mbps, shared equally across 2 online viewers.')).toBeVisible();
+    expect(screen.getByText('Suggested P2P bitrate cap per viewer: 8 Mbps for 2 online viewers.')).toBeVisible();
 
     await userEvent.selectOptions(selector, '10000000');
     expect(onBitrateChange).toHaveBeenCalledWith(10_000_000);
@@ -1489,7 +1489,7 @@ describe('P2P-first screen sharing in the room', () => {
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
     await waitFor(() => expect(selector).toHaveValue('5000000'));
-    expect(screen.getByText('Suggested total P2P upload budget: 5 Mbps, shared equally across 4 online viewers.')).toBeVisible();
+    expect(screen.getByText('Suggested P2P bitrate cap per viewer: 5 Mbps for 4 online viewers.')).toBeVisible();
   });
 
   it('keeps the cloned LiveKit screen published through fallback and P2P recovery', async () => {

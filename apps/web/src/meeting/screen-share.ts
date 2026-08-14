@@ -38,9 +38,10 @@ export type ScreenShareBitrate = P2pScreenBitrate;
 /** Default P2P bitrate. */
 export const screenShareDefaultBitrate = 8_000_000;
 /**
- * Suggested P2P bitrate for the number of online viewers: 8 Mbps for up to
- * three viewers, 5 Mbps from four on. The suggestion is applied as the default
- * selection before sharing and can still be overridden manually.
+ * Suggested P2P bitrate cap per viewer for the number of online viewers: 8 Mbps
+ * for up to three viewers, 5 Mbps from four on. The suggestion is applied as
+ * the default selection before sharing and can still be overridden manually;
+ * the sharer's total uplink budget caps the aggregate regardless.
  */
 export function recommendP2pBitrate(viewerCount: number): ScreenShareBitrate {
   return viewerCount >= 4 ? 5_000_000 : 8_000_000;
