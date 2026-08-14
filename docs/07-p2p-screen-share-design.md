@@ -67,24 +67,29 @@ flowchart LR
 | 消息 | 方向 | 字段 | 作用 |
 |---|---|---|---|
 | `hello` | 客户端 → 服务端 | `participantIdentity` | 连接建立后声明身份（服务端已从 Cookie 验证，用于一致性校验） |
-| `welcome` | 服务端 → 客户端 | `peers: [{identity, nickname}]` | 房间内当前成员名单 |
+| `welcome` | 服务端 → 客户端 | `peers: [{identity, nickname}]` | 房间内当前成员名单（每次重连全量下发） |
 | `peer-joined` | 服务端 → 客户端 | `peer: {identity, nickname}` | 成员加入通知 |
 | `peer-left` | 服务端 → 客户端 | `peer: {identity}` | 成员离开通知 |
-| `offer` | 共享者 → 观看者 | `to, sdp` | 发起 P2P 协商（仅共享者有权发送） |
-| `answer` | 观看者 → 共享者 | `to, sdp` | 应答协商（仅能回给共享者） |
-| `ice` | 双方 | `to, candidate` | Trickle ICE 候选，逐条转发 |
-| `media-ready` | 观看者 → 共享者 | `to` | 观看者确认直连候选对、RTP 增长与视频解码后通知共享者 |
-| `bye` | 双方 | `to, reason` | 主动关闭与对端的 P2P 连接 |
-| `ping` / `pong` | 客户端 → 服务端 | — | 应用层心跳（25 秒间隔，30 秒无响应视为失联） |
+| `offer` | 共享者 → 观看者 | `to, sdp, generation?` | 发起 P2P 协商（仅共享者有权发送） |
+| `answer` | 观看者 → 共享者 | `to, sdp, generation?` | 应答协商（仅能回给共享者） |
+| `ice` | 双方 | `to, candidate, generation?` | Trickle ICE 候选，逐条转发（`candidate` 为 JSON 序列化的 `RTCIceCandidateInit` 或 `null`） |
+| `media-ready` | 观看者 → 共享者 | `to, generation?` | 观看者确认传输已连接且视频解码后通知共享者 |
+| `retry` | 观看者 → 共享者 | `to` | 观看者请求共享者为其重建会话并重发全新 offer |
+| `bye` | 双方 | `to, reason?` | 主动关闭与对端的 P2P 连接 |
+| `share-gone` | 服务端 → 全员 | `reason` | 共享锁释放（撤销/结束/共享者离开/被移除）通知，客户端关闭全部 P2P 连接 |
+| `ping` / `pong` | 客户端 → 服务端 / 反向 | — | 应用层心跳（客户端 25 秒间隔；服务端 120 秒无任何帧才判失联） |
 | `error` | 服务端 → 客户端 | `code, message` | 协议或权限错误 |
+
+转发的 `offer`/`answer`/`ice`/`bye` 由服务端注入 `from` 字段（`{...msg, from}`）。`generation` 字段用于区分同一次会话的重协商，陈旧候选/应答由客户端按 generation 丢弃。
 
 ### 4.3 服务端强制规则
 
 - 只有当前 `share_identity`（共享锁持有者）可以向他人发送 `offer`
-- 观看者只能向当前共享者发送 `answer`、`ice` 和 `media-ready`
+- 观看者只能向当前共享者发送 `answer`、`ice`、`media-ready` 和 `retry`；`bye` 只能发给当前共享者（或由共享者发出）
 - 消息目标必须是同一会议中当前在线的成员；非法目标直接丢弃并返回 `error`
-- 共享锁释放（撤销/结束/共享者离开）时，服务端向全员广播 `peer-left` 语义的 `share-gone` 通知（复用 `bye` + 原因字段），客户端据此清理 P2P 连接
-- 速率限制：每连接消息速率受限，SDP 总量受限，防止被用作反射放大
+- `offer`/`answer`/`ice`/`media-ready` 携带 `generation` 字段，服务端原样转发（并注入 `from`），用于区分同一次会话的重协商，陈旧消息由客户端按 generation 丢弃
+- 共享锁释放（撤销/结束/共享者离开/被移除）时，服务端向全员广播专用 `share-gone` 消息（含原因），客户端据此清理 P2P 连接
+- 速率限制：单连接 120 条/60 秒，消息大小上限 64 KiB，防止被用作反射放大
 
 ### 4.4 加入与退出时序
 
@@ -108,19 +113,20 @@ flowchart LR
 共享者端为每名观看者维护独立会话状态，互不影响：
 
 ```
-idle → p2p-negotiating → p2p-active → closed
+idle → negotiating → p2p | turn → closed
                  │
-                 └── 8 秒超时 / ICE failed / RTP 失联 → livekit-fallback
+                 └── 8 秒超时 / ICE failed / 5 秒失联 / 5 秒无 RTP → livekit-fallback
 ```
 
 | 状态 | 说明 |
 |---|---|
-| `p2p-negotiating` | 已发送 offer，等待 answer 与 ICE 收敛；超时 8 秒 |
-| `p2p-active` | 选中候选对不是 relay，视频 RTP 字节与解码帧均已增长，观看者已发送且共享者已收到 `media-ready`；仅 ICE `connected` 不算成功 |
+| `negotiating` | 已发送 offer，等待 answer 与 ICE 收敛；超时 8 秒 |
+| `p2p` | 已收到 `media-ready` 且 ICE 候选对为 host/srflx（直连），视频 RTP 字节与解码帧均已确认 |
+| `turn` | 已收到 `media-ready` 且 ICE 候选对为 relay（经 coturn TURN 中继），仍是 P2P 通道但媒体经 coturn 转发 |
 | `livekit-fallback` | 该观看者改用 LiveKit 屏幕轨道（现有 SFU 路径） |
 | `closed` | 共享停止、对端离开或撤销 |
 
-观看者端对称维护：`idle → p2p-negotiating → p2p-active → closed`，失败时通知共享者回退。
+观看者端对称维护，失败时通知共享者回退。共享者端每 1 秒采样候选对统计，把 `negotiating/p2p/turn` 中的会话归类为 `p2p`（非 relay）或 `turn`（relay）。
 
 ### 5.3 回退状态机（共享者发布侧）
 
@@ -144,9 +150,10 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 ### 6.1 ICE 服务器配置
 
-- **配置来源**：API 新增 `GET /api/v1/meetings/:slug/ice-servers`（参与者 Cookie 鉴权），返回启动时严格校验的 `P2P_STUN_URLS`。固定的 LiveKit Server v1.11.0 不提供可复用的通用 ICE 凭据接口；当前不伪造 TURN 凭据，STUN 直连失败即使用已发布的 LiveKit 安全网
+- **配置来源**：API 的 `GET /api/v1/meetings/:slug/ice-servers`（参与者 Cookie 鉴权）返回启动时严格校验的 `P2P_STUN_URLS` 与 `P2P_TURN_URLS`；TURN 项附带按参与者绑定的短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(P2P_TURN_SECRET, username)`，TTL 默认 600 秒）
+- TURN 由自托管 coturn 提供（`use-auth-secret`），监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP
 - 客户端将返回的 `iceServers` 用于 P2P `RTCPeerConnection` 配置
-- 候选优先级由浏览器 ICE 处理：host（局域网/本机）> srflx（STUN 公网映射）> relay（TURN）
+- 候选优先级由浏览器 ICE 处理：host（局域网/本机）> srflx（STUN 公网映射）> relay（coturn TURN）
 
 ### 6.2 直连成功条件（共享者）
 
@@ -157,7 +164,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 | UDP 出网不被代理拦截 | 见 §6.4 注意事项 |
 | 稳定上行 | 一台设备测得约 100 Mbps；实际共享者必须满足“语音预留后可用上行 > 观看人数 × 所选 P2P 档位”，否则应降低档位或依赖 LiveKit 安全网 |
 
-观看者只需能出 UDP 且 NAT 可穿透；无需公网 IP。**CGNAT 观看者（无 IPv6）直连失败时自动回退，体验不劣于现状。**
+观看者只需能出 UDP 且 NAT 可穿透；无需公网 IP。**CGNAT 观看者（无 IPv6）无法直连时优先经 coturn TURN 中继（`turn` 模式），若 TURN 亦不可用才回退 LiveKit。**
 
 ### 6.3 动态 IP
 
@@ -184,9 +191,8 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 | 观看者数 | 建议默认档位 | 共享者上行占用 |
 |---|---|---|
-| 1–2 | 8 Mbps | 8–16 Mbps |
-| 3 | 8 Mbps | 24 Mbps |
-| 4 | 5 Mbps | 20 Mbps |
+| 1–3 | 8 Mbps | 8–24 Mbps |
+| ≥4 | 5 Mbps | ≥20 Mbps |
 
 ### 7.3 自适应
 
@@ -249,7 +255,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 | API | 新增 WS 信令端点、ICE 配置端点、相关配置项与速率限制 |
 | Web | 新增 P2P 信令客户端、P2P 会话控制器（含状态机与回退）、码率档位联动 UI |
 | Web（观看端） | 双源渲染（P2P 流 / LiveKit 轨道）切换 |
-| 部署 | 无新域名新端口；Caddy `/api` 反代已覆盖 WSS；监控与告警调整 |
+| 部署 | 信令无新域名；新增 coturn 容器与 3478/5349/49160–49200 端口；Caddy `/api` 反代已覆盖 WSS；监控与告警调整 |
 | 测试 | 新增 NAT 穿透矩阵、回退、音画同步用例（见 `05` 文档更新） |
 
 详细实现规格见 `03-implementation-specification.md` 更新；分阶段实施计划见 `docs/superpowers/plans/2026-08-11-p2p-hybrid-implementation.md`。

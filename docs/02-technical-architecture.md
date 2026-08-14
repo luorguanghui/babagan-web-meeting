@@ -51,7 +51,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 - 更新成员共享权限、移除成员和结束会议。
 - 执行过期与空房清理任务。
 - **P2P 信令端点（新增）**：`/api/v1/meetings/:slug/p2p` WebSocket，校验参与者 Cookie 与同源 Origin，维护房间在线名单，转发 SDP/ICE/`media-ready` 消息，强制"仅共享者发 offer"等权限规则（见 `07` 设计 §4）。
-- **ICE 配置端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经参与者会话鉴权后返回启动时校验的 `P2P_STUN_URLS`。
+- **ICE 配置端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经参与者会话鉴权后返回启动时校验的 `P2P_STUN_URLS` 与 `P2P_TURN_URLS`（后者附带参与者绑定的短期 TURN REST HMAC 凭据）。
 
 ### 2.3 SQLite
 
@@ -61,16 +61,22 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 
 - SFU 转发 Opus 麦克风音频；共享开始时先发布屏幕安全网并保持到共享结束，现代观看者可在 P2P 首帧后取消自己的屏幕订阅。
 - 管理房间、参与者、订阅、连接质量和重连。
-- 优先使用直接 UDP；提供 TURN/UDP 443 和 RTC/TCP 7881 回退。
-- API 从启动时校验的 `P2P_STUN_URLS` 提供 P2P STUN 配置；固定 LiveKit v1.11.0 不提供可供独立 P2P 使用的通用 ICE 凭据接口。
+- 优先使用直接 UDP；提供 TURN/UDP 443 和 RTC/TCP 7881 回退，服务自身媒体（语音与回退屏幕）。
 - 不启用 Egress、Ingress、录制、转码、Agent 或 SIP 服务。
 
 ### 2.5 Caddy
 
 - 为 `meet.babagan.cloud` 和 `rtc.babagan.cloud` 终止 TLS。
-- 将 `/api/*` 转发至 Fastify，其余 `meet` 请求提供静态网页。
+- 将 `/api/*`、`/health/*` 转发至 Fastify，`/rtc*` 转发至 LiveKit 7880，其余 `meet` 请求转发至 `web` 容器（Caddy :8080 提供静态产物）。
 - 将 `rtc` 的 HTTPS/WSS 请求转发至 LiveKit 7880。
+- 为 `turn.babagan.cloud` 申请公众信任证书并把证书卷只读提供给 coturn。
 - 自动申请和续期公众信任证书。
+
+### 2.6 coturn（P2P TURN 中继）
+
+- 独立 TURN 服务器，为 P2P 屏幕共享提供 relay 候选，供直连失败的观看者仍经 P2P 通道收发屏幕媒体。
+- 监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP；禁用 DTLS、管理 CLI，并拒绝 loopback/RFC1918/链路本地/组播对端。
+- 使用 TURN REST 鉴权（`use-auth-secret`），共享密钥与 API 的 `P2P_TURN_SECRET` 一致；API 为已认证参与者签发 600 秒短期凭据。
 
 ## 3. 网络与 DNS
 
@@ -78,12 +84,15 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 |---|---|---|---|
 | `meet.babagan.cloud:443` | HTTPS/WSS | Cloudflare → Caddy | 网页、API 与 P2P 信令（`/api/*` 反代覆盖 WSS 升级） |
 | `rtc.babagan.cloud:443` | HTTPS/WSS | 客户端 → Caddy → LiveKit | LiveKit 信令 |
-| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | LiveKit 媒体路径的 UDP 中继；不作为独立 P2P 凭据接口 |
+| `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | LiveKit 内置 TURN，服务语音与回退屏幕的媒体路径 |
+| `turn.babagan.cloud:3478` | TURN/UDP+TCP | 客户端 → coturn | P2P 屏幕共享的 TURN 中继（relay 候选） |
+| `turn.babagan.cloud:5349` | TURN/TLS（TCP） | 客户端 → coturn | P2P TURN 的 TLS 入口 |
+| `turn.babagan.cloud:49160–49200` | TURN relay UDP | 客户端 → coturn | P2P 屏幕中继端口池 |
 | 公网 IP `50000–60000` | WebRTC UDP | 客户端 → LiveKit | 直接媒体（麦克风；回退时的屏幕） |
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
 
-P2P 屏幕共享**不新增任何云端端口**：信令复用 `meet` 的 WSS 路径，STUN 使用 `P2P_STUN_URLS`。成功直连的媒体在共享者与观看者网络之间流动；无法直连时观看者继续使用已发布的 LiveKit 屏幕安全网。
+P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS`（STUN）与 coturn 的 `P2P_TURN_URLS`（TURN，短期凭据）。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经 coturn relay 中继（仍是 P2P 通道），该观看者仍失败才继续使用始终发布的 LiveKit 屏幕安全网。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 
@@ -146,14 +155,14 @@ stateDiagram-v2
 | 决策 | 选择 | 原因 |
 |---|---|---|
 | 媒体拓扑（音频） | SFU | 5 人音频经云端仅约 1 Mbps，保留 LiveKit 成熟能力 |
-| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + 常驻 SFU 安全网** | 直连成功者绕开云端带宽波动；旧客户端与失败者始终可使用 LiveKit。共享者实际可用上行决定可行档位 |
+| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + coturn TURN 中继 + 常驻 SFU 安全网** | 直连（host/srflx）成功者绕开云端带宽；relay 候选经 coturn 中继；旧客户端与最终失败者始终可使用 LiveKit。共享者实际可用上行决定可行档位 |
 | 媒体平台 | LiveKit | 屏幕音频、权限、重连与兼容兜底成熟；P2P STUN 独立由 API 配置 |
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
-| TURN | UDP 443 | 与 Caddy TCP 443 不冲突，适合现有单公网 IP |
+| TURN | LiveKit 内置 UDP 443 + 独立 coturn 3478/5349 | LiveKit 的 TURN/UDP 443 服务语音与回退屏幕；coturn 为 P2P 屏幕共享提供可带短期凭据的 TURN 中继 |
 | Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
-| P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 不新增域名与端口；参与者 Cookie + 同源 Origin 鉴权；服务器零媒体可见性 |
+| P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 信令不新增域名；参与者 Cookie + 同源 Origin 鉴权；服务器不接触媒体内容 |
 
 ## 8. 已知限制
 

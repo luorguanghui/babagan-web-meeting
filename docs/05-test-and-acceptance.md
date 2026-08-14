@@ -30,7 +30,7 @@
 - 验证 Cookie、Origin、CORS、速率限制和错误响应不泄密。
 - 验证进程重启后的会议恢复和过期清理。
 - P2P 信令：无 Cookie 拒绝升级；有 Cookie 可加入房间名单并收到进退广播；仅共享者可发 `offer`，观看者只能应答共享者；非法目标与越权消息被拒绝；消息限速与 64 KiB 上限；共享锁释放后全员收到失效通知。
-- ICE 凭据端点：参与者 Cookie 可获取 STUN/TURN 凭据；无 Cookie 拒绝；缓存生效（TTL 内不重复调用 LiveKit）；LiveKit 不可用时的降级行为。
+- ICE 凭据端点：参与者 Cookie 可获取 STUN 与带短期 HMAC 凭据的 coturn TURN；无 Cookie 拒绝；凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；响应设置 `Cache-Control: no-store`。
 
 ### 2.3 浏览器 E2E
 
@@ -89,7 +89,7 @@
 |---|---|---|
 | 公网 IPv4 | 公网 IPv4 | P2P 直连成功 |
 | 公网 IPv4 | 运营商 NAT（可穿透） | P2P 直连成功（srflx） |
-| 公网 IPv4 | CGNAT 且无 IPv6 | 回退 LiveKit，体验不劣于现状 |
+| 公网 IPv4 | CGNAT 且无 IPv6 | 经 coturn TURN 中继（`turn` 模式）；若 TURN 亦不可用则回退 LiveKit |
 | 双方同一局域网 | 局域网 | 直连成功（host 候选） |
 | 任意 | 启用 TUN 代理（如 Mihomo） | 确认规则配置后直连；未配置时记录失败并提示（不验收为缺陷） |
 

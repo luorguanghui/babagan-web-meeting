@@ -57,7 +57,7 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 - `api`：仅加入内部网络，挂载 SQLite 数据卷和只读 secret。
 - `livekit`：主机网络模式或等效低开销网络；发布 RTC/TURN 端口。
 - `coturn`：主机网络模式；固定 `4.17.2-r0` 摘要；只读挂载 Caddy 证书卷；仅使用 3478、5349 和 49160–49200，不占用 LiveKit UDP 443。
-- `web`：构建产物由 Caddy 直接提供，不常驻单独 Node 开发服务器。
+- `web`：构建产物由独立 Caddy 容器在 :8080（backend 网络）提供，边缘 `caddy` 反代到 `web:8080`；不常驻 Node 开发服务器。
 
 生产环境禁止使用浮动镜像标签。镜像以版本号和不可变摘要固定，升级前记录当前摘要。
 
@@ -65,9 +65,9 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 
 ### 5.1 Caddy
 
-- `meet.babagan.cloud`：`/api/*` 反代 API，其他路径提供 SPA，并设置安全响应头。
+- `meet.babagan.cloud`：`/api/*`、`/health/*` 反代 API，`/rtc*` 反代 LiveKit 7880，其余路径反代 `web:8080`（SPA），并设置安全响应头。
 - `rtc.babagan.cloud`：反代 LiveKit 7880，保留 WebSocket Upgrade 和真实协议头。
-- `turn.babagan.cloud`：保持 DNS only；Caddy 为该主机名申请公众信任的证书并把证书卷只读提供给 coturn。
+- `turn.babagan.cloud`：保持 DNS only；Caddy 为该主机名申请公众信任的证书并把证书卷只读提供给 coturn（站点块仅响应 `/health` 与 404）。
 - 禁用服务器侧 UDP 443 的 HTTP/3，给 TURN/UDP 使用。
 - 启用压缩仅针对静态文本资源，不对媒体流做处理。
 
@@ -86,7 +86,7 @@ Cloudflare SSL/TLS 设置为 Full (strict)。`meet` 的浏览器侧证书由 Clo
 - 数据库迁移在服务就绪前完成，失败则不接收流量。
 - 健康检查必须区分存活和就绪。
 - 严格限制请求体大小、并发、超时和密码尝试频率。
-- `P2P_TURN_SECRET` 与 coturn 的 `TURN_SHARED_SECRET` 必须完全相同、至少 32 字符且权限为 600；浏览器只接收参与者绑定的短期凭据，响应设置 `Cache-Control: no-store`。
+- `P2P_TURN_SECRET` 与 coturn 的 `TURN_SHARED_SECRET` 必须完全相同、至少 32 字符且权限为 600；`P2P_TURN_URLS` 指向 coturn 的 3478/5349，`P2P_TURN_TTL_SECONDS` 默认 600；浏览器只接收参与者绑定的短期凭据，响应设置 `Cache-Control: no-store`。
 
 ### 5.4 coturn
 

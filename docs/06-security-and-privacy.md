@@ -19,10 +19,10 @@
 | 越权屏幕共享 | 服务端共享锁、LiveKit 发布来源限制、权限更新审计 |
 | P2P 信令越权（P2P 新增） | WS 握手校验参与者 Cookie 与同源 Origin；服务端强制"仅共享者发 offer、应答与 media-ready 仅能回共享者"；非法目标拒绝 |
 | P2P 信令放大/滥用（P2P 新增） | 消息 64 KiB 上限、单连接速率限制、在线表仅限本会议成员 |
-| SDP/ICE 泄露（P2P 新增） | 日志禁用 SDP 全文、ICE 候选与配置；信令经 WSS 加密；当前只下发非敏感 STUN URL |
+| SDP/ICE 泄露（P2P 新增） | 日志禁用 SDP 全文、ICE 候选与配置；信令经 WSS 加密；仅下发 STUN URL 与参与者绑定的短期 TURN 凭据（TTL 600 秒） |
 | XSS/CSRF | React 安全渲染、CSP、Origin 检查、SameSite Cookie |
 | SQL 注入 | 参数化语句、Schema 校验、数据库最小权限 |
-| 媒体窃听 | HTTPS/WSS、ICE、DTLS-SRTP、证书严格校验；P2P 直连媒体不经服务器（零可见性） |
+| 媒体窃听 | HTTPS/WSS、ICE、DTLS-SRTP、证书严格校验；P2P 直连媒体不经服务器；经 coturn TURN 中继时 coturn 只转发加密 SRTP 包、不解密、不落盘 |
 | 对端 IP 暴露（P2P 新增） | WebRTC 直连固有特征，UI 与文档说明；不使用媒体外流量，DTLS 指纹防劫持 |
 | 资源耗尽 | 单房间/5 人、请求大小限制、连接和密码限速 |
 | 容器/主机入侵 | 最小镜像、非 root、只读文件系统、补丁、端口白名单 |
@@ -75,14 +75,14 @@ API 只接受 `https://meet.babagan.cloud` 的浏览器来源。修改请求验�
 - Cloudflare 到源站使用 Full (strict)。
 - `rtc` 直接连接必须使用公众信任的有效证书。
 - 禁止 TLS 1.0/1.1，启用现代 TLS；证书自动续期并监控。
-- WebRTC 媒体使用 DTLS-SRTP。P2P 直连屏幕媒体（视频 + 音频）在浏览器之间直接加密传输，**云端服务器对直连媒体零可见性**；LiveKit 路径（麦克风音频与回退屏幕）中，LiveKit 节点是信任边界，必须限制主机管理员权限。
+- WebRTC 媒体使用 DTLS-SRTP。P2P 屏幕媒体（视频 + 音频）在浏览器之间加密传输：直连（host/srflx）不经服务器；经 coturn TURN 中继时 coturn 只转发加密 SRTP 包、无法解密且不落盘。LiveKit 路径（麦克风音频与回退屏幕）中，LiveKit 节点是信任边界，必须限制主机管理员权限。
 - P2P 信令（SDP/ICE）经 WSS 传输；客户端以 DTLS 指纹与源校验拒绝未经信令协商的连接，防止第三方伪冒对端。
 
 ## 6. 数据最小化与保留
 
 | 数据 | 是否保存 | 保留 |
 |---|---|---|
-| 音频/屏幕媒体 | 否 | 不落盘；P2P 直连时云端服务器不接触屏幕媒体 |
+| 音频/屏幕媒体 | 否 | 不落盘；P2P 直连不经云端，经 coturn TURN 中继时仅转发加密 SRTP、不落盘 |
 | P2P 信令（SDP/ICE） | 否 | 仅内存转发，不落日志 |
 | 真实姓名、手机号、邮箱 | 否 | 不收集 |
 | 昵称 | 仅在线状态/短期审计所需 | 会议结束后删除或匿名化 |

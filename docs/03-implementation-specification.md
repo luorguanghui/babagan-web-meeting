@@ -9,8 +9,10 @@ apps/
 packages/
   contracts/            # API schema、错误码和共享类型
 infra/
-  caddy/Caddyfile
-  livekit/livekit.yaml
+  caddy/Caddyfile        # 边缘反代（meet/rtc/turn）
+  livekit/livekit.yaml   # LiveKit 配置
+  coturn/turnserver.conf # coturn（P2P TURN 中继）
+  web/Caddyfile          # web 静态产物服务（:8080）
   docker-compose.yml
 scripts/
   backup.sh
@@ -24,22 +26,23 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 
 | 环境变量 | 作用 | 安全要求 |
 |---|---|---|
-| `NODE_ENV` | `production`/`test` | 生产固定为 `production` |
-| `PUBLIC_BASE_URL` | `https://meet.babagan.cloud` | 固定允许来源 |
+| `NODE_ENV` | `production`/`test`/`development` | 生产固定为 `production` |
+| `PUBLIC_BASE_URL` | `https://meet.babagan.cloud` | 生产必须为 `https:`，作为固定允许来源 |
 | `LIVEKIT_URL` | `wss://rtc.babagan.cloud` | 返回给客户端 |
-| `LIVEKIT_INTERNAL_URL` | Docker 内部地址 | 不暴露客户端 |
+| `LIVEKIT_INTERNAL_URL` | Docker 内部地址（如 `ws://host.docker.internal:7880`） | 不暴露客户端 |
 | `LIVEKIT_API_KEY` | LiveKit Server API Key | Docker secret 或权限 600 文件 |
 | `LIVEKIT_API_SECRET` | LiveKit Server API Secret | Docker secret 或权限 600 文件 |
 | `ADMIN_PASSWORD_HASH` | 主持人管理密码的 Argon2id 哈希 | 不保存明文 |
 | `COOKIE_SECRET` | Cookie 签名密钥 | 至少 32 个随机字节 |
 | `DATABASE_PATH` | SQLite 文件路径 | 持久卷、仅 API 可写 |
-| `MEETING_TTL_SECONDS` | `86400` | 与 PRD 保持一致 |
-| `EMPTY_GRACE_SECONDS` | `600` | 与 PRD 保持一致 |
-| `RECONNECT_GRACE_SECONDS` | `30` | 与 PRD 保持一致 |
-| `MAX_PARTICIPANTS` | `5` | 服务端强制，不信任客户端 |
-| `P2P_STUN_URLS` | 逗号分隔的 `stun:`/`stuns:` URL | 启动时严格校验；当前 LiveKit v1.11.0 不提供可复用的通用 ICE 凭据接口，因此 P2P 只使用显式 STUN，失败即回退已发布的 LiveKit 屏幕轨道 |
+| `P2P_STUN_URLS` | 逗号分隔的 `stun:`/`stuns:` URL | 启动时严格校验协议 |
+| `P2P_TURN_URLS` | 逗号分隔的 `turn:`/`turns:` URL（3478/udp、3478/tcp、5349/tls） | 启动时严格校验协议；指向自托管 coturn |
+| `P2P_TURN_SECRET` | 与 coturn `TURN_SHARED_SECRET` 完全相同的 TURN REST 密钥 | 至少 32 字节、权限 600 |
+| `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
 
-启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联和 5 秒 RTP 停流阈值是 contracts 包中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
+以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
+
+启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为 contracts/服务端中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
 
 ## 3. 数据模型
 
@@ -112,8 +115,11 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | 方法 | 路径 | 权限 | 作用 |
 |---|---|---|---|
 | POST | `/meetings` | 管理密码 | 原子创建会议并建立会议主持人会话 |
+| GET | `/meetings/current` | 公开 | 返回当前非终态会议摘要（无则 `meeting: null`） |
 | GET | `/meetings/:slug` | 公开 | 返回名称、状态、是否需要密码和是否满员 |
+| GET | `/meetings/:slug/host-session` | 主持人 | 校验主持人会话是否有效（204） |
 | POST | `/meetings/:slug/end` | 主持人 | 结束会议并移除所有成员 |
+| POST | `/meetings/:slug/admin-end` | 管理密码 | 用管理密码结束会议（无需主持人会话） |
 | POST | `/meetings/:slug/kick` | 主持人 | 按身份移除成员 |
 | PUT | `/meetings/:slug/share-grant` | 主持人 | 原子授予唯一共享权限 |
 | DELETE | `/meetings/:slug/share-grant` | 主持人 | 撤销或释放共享权限 |
@@ -124,20 +130,24 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 |---|---|---|---|
 | POST | `/meetings/:slug/join` | 会议密码 | 校验容量并签发 LiveKit Token |
 | POST | `/meetings/:slug/token` | 参与者会话 | 为完整重连签发新的 5 分钟 Token |
-| POST | `/meetings/:slug/leave` | 参与者 Token | 提前释放参与状态 |
+| POST | `/meetings/:slug/leave` | 参与者会话 | 提前释放参与状态 |
+| DELETE | `/meetings/:slug/share` | 参与者会话 | 共享者主动释放自己的共享权限 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
-| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回由 `P2P_STUN_URLS` 配置的 P2P STUN 列表 |
-| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready` 转发（协议见 `07` 设计 §4） |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN 列表与带短期凭据的 coturn TURN 列表 |
+| POST | `/meetings/:slug/p2p-stats` | 参与者会话（离会容忍） | 记录匿名 P2P 质量统计（无媒体/SDP/IP/身份） |
+| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready`/`retry` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`；当前响应只含配置的 STUN URL，客户端在建立 P2P 控制器前获取。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`：第一项为配置的 STUN URL，第二项为 coturn TURN URL 并附带 TURN REST HMAC 短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(secret, username)`），响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取。
 
 ### 4.3 P2P 信令端点行为
 
 - 握手必须携带有效参与者安全 Cookie，且 `Origin` 必须与 `PUBLIC_BASE_URL` 完全一致；缺失、无效或跨站来源均拒绝升级。
-- 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。
-- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice` 只能发送给当前共享者；观看者在确认直连视频已解码后可向当前共享者发送 `media-ready`；目标必须是同会议在线成员。
-- 共享锁释放（撤销/结束/共享者离开）时向全员发送共享失效通知，客户端关闭全部 P2P 连接。
-- 消息上限 64 KiB；单连接速率限制与 SDP 总量限制；SDP、ICE 候选与凭据不写入日志。
+- 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。客户端发送 `hello` 声明身份，服务端校验其与 Cookie 会话一致。
+- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice`/`bye` 只能发给当前共享者（或由共享者发出）；观看者确认直连视频已解码后向共享者发送 `media-ready`；观看者可用 `retry` 请求共享者为其重建会话并重发 offer；目标必须是同会议在线成员。
+- `offer`/`answer`/`ice`/`media-ready` 携带可选 `generation` 字段，用于区分同一次会话的重协商，避免陈旧候选污染重试。
+- 共享锁释放（撤销/结束/共享者离开/被移除）时服务端广播 `share-gone`，客户端据此关闭全部 P2P 连接。
+- 消息上限 64 KiB；单连接限速 120 条/60 秒；SDP、ICE 候选与凭据不写入日志。
+- 心跳：客户端每 25 秒发送 `ping`，服务端以 `pong` 应答；服务端 120 秒未收到任何帧判定失联并关闭（后台标签页计时器节流下仍足够宽松）。
 - 服务重启时在线表清空，客户端重连后以 `welcome` 全量恢复；LiveKit 参与者仍在时不影响其语音。
 
 ### 4.4 LiveKit Webhook
@@ -199,12 +209,12 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 **码率**：
 
 - P2P 直连档位：5 / 8 / 10 Mbps，默认 8 Mbps（受共享者上行约束：N 人 × 档位 < 可用上行）。
-- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变。
-- 共享开始时按在线观看者数给出建议档位并默认选中，可手动调整。
+- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变；常驻 SFU 安全网固定以 10 Mbps 发布。
+- 共享开始时按在线观看者数给出建议档位并默认选中（≥4 名观看者建议 5 Mbps，否则 8 Mbps），可手动调整。
 
 **编码与自适应**：
 
-- 标准模式：1920×1080 目标、30fps；高动态模式：1920×1080 目标、60fps。
+- 三档质量预设：`flow` 1280×720@30fps（弱网优先）、`standard` 1920×1080@30fps（默认）、`motion` 1920×1080@60fps（高动态）；三者均采用 `maintain-resolution`（保分辨率、降帧率），文字可读性优先。
 - 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
 - `degradationPreference: maintain-resolution`（保分辨率、降帧率），文字可读性优先。
 - 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
