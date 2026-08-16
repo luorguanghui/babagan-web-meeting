@@ -9,6 +9,9 @@ usage() {
 [[ $# -eq 2 ]] || usage
 public_base=${1%/}
 rtc_url=$2
+script_directory=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=http-headers.sh
+source "$script_directory/http-headers.sh"
 [[ "$public_base" =~ ^https:// ]] || { echo 'The public URL must use HTTPS.' >&2; exit 64; }
 [[ "$rtc_url" =~ ^wss:// ]] || { echo 'The RTC URL must use WSS.' >&2; exit 64; }
 [[ -n ${SMOKE_LIVEKIT_TOKEN:-} ]] || { echo 'SMOKE_LIVEKIT_TOKEN is required to verify an authenticated WebSocket upgrade.' >&2; exit 64; }
@@ -47,6 +50,7 @@ if [[ "$core_only" == 0 ]]; then
     -H "Cookie: $SMOKE_PARTICIPANT_COOKIE" \
     "$public_base/api/v1/meetings/$SMOKE_MEETING_SLUG/ice-servers") \
     || fail 'authenticated ICE configuration request failed'
+  ice_response="$(normalize_http_response "$ice_response")"
   grep -Fq "\"$expected_stun\"" <<<"$ice_response" \
     || fail 'authenticated ICE response does not contain the configured STUN URL'
   grep -Fq "\"$expected_turn\"" <<<"$ice_response" \
@@ -55,7 +59,7 @@ if [[ "$core_only" == 0 ]]; then
     || fail 'authenticated ICE response does not contain an expiring TURN username'
   grep -Eq '"credential":"[A-Za-z0-9+/]+=*"' <<<"$ice_response" \
     || fail 'authenticated ICE response does not contain a TURN credential'
-  grep -Eiq '^cache-control: no-store\r?$' <<<"$ice_response" \
+  grep -Eiq '^cache-control:[[:space:]]*no-store[[:space:]]*$' <<<"$ice_response" \
     || fail 'authenticated ICE response is missing Cache-Control: no-store'
 
   cross_site_status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
@@ -70,7 +74,6 @@ if [[ "$core_only" == 0 ]]; then
   [[ "$cross_site_status" == 403 ]] || fail "cross-site P2P WebSocket Origin returned HTTP $cross_site_status instead of 403"
 fi
 
-script_directory=$(cd "$(dirname "$0")" && pwd -P)
 if command -v node >/dev/null; then
   websocket_probe() {
     node "$script_directory/verify-websocket.mjs" "$rtc_url"
