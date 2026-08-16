@@ -1,5 +1,6 @@
 import type { ParticipantSummary } from '@meeting/contracts';
 import { useEffect, useState } from 'react';
+import { ApiRequestError } from '../api/client.js';
 import { useI18n } from '../i18n/i18n.js';
 
 interface HostMenuProps {
@@ -28,6 +29,7 @@ export function HostMenu({
   const { t } = useI18n();
   const [authorized, setAuthorized] = useState(false);
   const [error, setError] = useState<string>();
+  const [ending, setEnding] = useState(false);
   const [sharingIdentity, setSharingIdentity] = useState<string | undefined>(
     () => participants.find((participant) => participant.isSharing)?.identity
   );
@@ -53,6 +55,24 @@ export function HostMenu({
   }
   async function grant(identity: string) { if (await act(() => onGrantShare(identity))) setSharingIdentity(identity); }
   async function revoke() { if (await act(onRevokeShare)) setSharingIdentity(undefined); }
+  async function endMeeting(): Promise<void> {
+    setError(undefined);
+    setEnding(true);
+    let ended = false;
+    try {
+      await onEndMeeting();
+      ended = true;
+    } catch (reason) {
+      // The meeting already ended (an earlier click or another host finished
+      // it): that is success for this button, not an error.
+      ended = reason instanceof ApiRequestError
+        && reason.details?.error.code === 'MEETING_EXPIRED';
+      if (!ended) setError(t('host.failed'));
+    } finally {
+      setEnding(false);
+    }
+    if (ended) onEnded?.();
+  }
 
   return <section className="host-menu" aria-labelledby="host-controls-heading">
     <h2 id="host-controls-heading">{t('host.heading')}</h2>
@@ -66,9 +86,9 @@ export function HostMenu({
         <button type="button" className="danger" onClick={() => void act(() => onKick(participant.identity))}>{t('host.kick', { name: participant.name })}</button>
       </li>)}
     </ul>
-    <button type="button" className="danger" onClick={() => {
+    <button type="button" className="danger" disabled={ending} onClick={() => {
       const confirmed = confirmEnd ? confirmEnd() : window.confirm(t('host.confirmEnd'));
-      if (confirmed) void act(onEndMeeting).then((ended) => { if (ended) onEnded?.(); });
-    }}>{t('host.end')}</button>
+      if (confirmed) void endMeeting();
+    }}>{ending ? t('host.ending') : t('host.end')}</button>
   </section>;
 }

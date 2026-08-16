@@ -9,6 +9,7 @@ import { MeetingControls } from '../components/meeting-controls.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { LanguageProvider } from '../i18n/i18n.js';
+import { ApiRequestError } from '../api/client.js';
 import { MeetingRoomPage, type MeetingRoomApi, type MeetingRoomPageProps } from '../pages/meeting-room-page.js';
 import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
 import type { Peer, P2pSignalingClient, P2pSignalingEvents } from './p2p-signaling.js';
@@ -1227,6 +1228,49 @@ describe('host controls', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'End meeting' }));
 
     expect(ended).toHaveBeenCalledOnce();
+  });
+
+  it('disables the end button and shows progress while the end request runs', async () => {
+    let resolveEnd!: () => void;
+    const end = vi.fn(() => new Promise<void>((resolve) => { resolveEnd = resolve; }));
+    render(<HostMenu
+      participants={[]}
+      authorizeHost={vi.fn().mockResolvedValue(undefined)}
+      onGrantShare={vi.fn()}
+      onRevokeShare={vi.fn()}
+      onKick={vi.fn()}
+      onEndMeeting={end}
+      confirmEnd={() => true}
+    />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'End meeting' }));
+
+    const progress = await screen.findByRole('button', { name: 'Ending meeting…' });
+    expect(progress).toBeDisabled();
+
+    resolveEnd();
+    expect(await screen.findByRole('button', { name: 'End meeting' })).toBeEnabled();
+  });
+
+  it('treats an already-ended meeting as success and notifies the room', async () => {
+    const ended = vi.fn();
+    render(<HostMenu
+      participants={[]}
+      authorizeHost={vi.fn().mockResolvedValue(undefined)}
+      onGrantShare={vi.fn()}
+      onRevokeShare={vi.fn()}
+      onKick={vi.fn()}
+      onEndMeeting={vi.fn().mockRejectedValue(new ApiRequestError('ended elsewhere', 410, {
+        error: { code: 'MEETING_EXPIRED', message: 'The meeting has expired.', correlationId: 'corr-1' }
+      }))}
+      confirmEnd={() => true}
+      onEnded={ended}
+    />);
+
+    await userEvent.click(await screen.findByRole('button', { name: 'End meeting' }));
+
+    await waitFor(() => expect(ended).toHaveBeenCalledOnce());
+    expect(screen.queryByText('The host action could not be completed.')).not.toBeInTheDocument();
   });
 });
 

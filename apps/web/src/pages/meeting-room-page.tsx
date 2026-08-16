@@ -112,20 +112,38 @@ const defaultMeetingApi: MeetingRoomApi = {
     'POST',
     { participantIdentity: identity }
   ),
-  end: (slug) => noContent(`/meetings/${encodeURIComponent(slug)}/end`, 'POST'),
+  end: (slug) => noContent(
+    `/meetings/${encodeURIComponent(slug)}/end`,
+    'POST',
+    undefined,
+    requestTimeoutSignal()
+  ),
   adminEnd: (slug, adminPassword) => apiNoContent(
     `/meetings/${encodeURIComponent(slug)}/admin-end`,
-    { method: 'POST', body: JSON.stringify({ adminPassword }) }
+    { method: 'POST', body: JSON.stringify({ adminPassword }), signal: requestTimeoutSignal() }
   )
 };
 
-async function noContent(path: string, method: string, body?: object): Promise<void> {
-  const response = await fetch(`/api/v1${path}`, {
+/** Host actions must surface a clear error instead of hanging forever on a slow server. */
+const HOST_ACTION_TIMEOUT_MS = 15_000;
+
+function requestTimeoutSignal(): AbortSignal | undefined {
+  return typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+    ? AbortSignal.timeout(HOST_ACTION_TIMEOUT_MS)
+    : undefined;
+}
+
+async function noContent(
+  path: string,
+  method: string,
+  body?: object,
+  signal?: AbortSignal
+): Promise<void> {
+  await apiNoContent(path, {
     method,
-    credentials: 'include',
-    ...(body ? { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {})
+    ...(signal ? { signal } : {}),
+    ...(body ? { body: JSON.stringify(body) } : {})
   });
-  if (!response.ok) throw new Error('The meeting action could not be completed.');
 }
 
 export function MeetingRoomPage({

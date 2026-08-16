@@ -243,14 +243,17 @@ describe('MeetingService', () => {
     expect([first.participantIdentity, second.participantIdentity]).toHaveLength(2);
   });
 
-  it('retries terminal media cleanup after an end failure and a process restart', async () => {
+  it('ends the meeting even when the media close fails and retries the close during cleanup', async () => {
     const meeting = await service.createMeeting({ name: 'Daily' });
     media.closeFailuresRemaining = 1;
 
-    await expect(service.endMeeting(meeting.slug))
-      .rejects.toMatchObject({ code: 'MEDIA_SERVICE_UNAVAILABLE' });
+    // The database transition is committed; a transient LiveKit failure must
+    // not fail the host's end request, so the meeting never appears to keep
+    // running after a successful end.
+    await service.endMeeting(meeting.slug);
     await expect(service.joinMeeting(meeting.slug, { nickname: 'Ada' }))
       .rejects.toMatchObject({ code: 'MEETING_EXPIRED' });
+    expect(media.closedMeetings).toEqual([]); // the first close attempt failed
 
     const restarted = new MeetingService({
       repository: repo, media, passwords: new FakePasswordHasher(), clock, ids, config

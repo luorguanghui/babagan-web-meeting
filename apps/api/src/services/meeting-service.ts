@@ -218,6 +218,11 @@ export class MeetingService {
       if (isTerminal(current)) return;
 
       this.end(current, 'ended');
+      // The meeting is terminal in the database from this point on. The media
+      // close is best-effort here: a slow or failing LiveKit call must never
+      // fail the end request — the host would otherwise see an error while
+      // the participants keep talking in the still-open LiveKit room. The
+      // cleanup loop retries the close every cycle until it succeeds.
       await this.closeTerminalMedia(this.requireMeeting(slug));
     });
   }
@@ -238,8 +243,7 @@ export class MeetingService {
       await this.mutex.runExclusive(terminal.id, async () => {
         const current = this.dependencies.repository.findBySlug(terminal.slug);
         if (!current || !isTerminal(current) || current.mediaClosedAt !== null) return;
-        await this.closeTerminalMedia(current);
-        cleaned.push(current.slug);
+        if (await this.closeTerminalMedia(current)) cleaned.push(current.slug);
       });
     }
 
@@ -277,6 +281,8 @@ export class MeetingService {
 
     if (transition.status === 'ended' || transition.status === 'expired') {
       this.end(meeting, transition.status, transition.emptySince);
+      // Best-effort like `endMeeting`: the lifecycle transition is already
+      // committed, and the cleanup loop retries the media close later.
       await this.closeTerminalMedia(this.requireMeeting(meeting.slug));
       return this.requireMeeting(meeting.slug);
     }
@@ -297,14 +303,22 @@ export class MeetingService {
     });
   }
 
-  private async closeTerminalMedia(meeting: MeetingRecord): Promise<void> {
-    if (meeting.mediaClosedAt !== null) return;
+  /**
+   * Closes the LiveKit room for a terminal meeting. Returns true when the
+   * close succeeded (or was already recorded); a failure returns false and
+   * the cleanup loop retries on its next cycle. Never throws: the database
+   * transition is already committed when this runs, so a media failure must
+   * not fail the request that ended the meeting.
+   */
+  private async closeTerminalMedia(meeting: MeetingRecord): Promise<boolean> {
+    if (meeting.mediaClosedAt !== null) return true;
     try {
       await this.dependencies.media.closeMeeting(meeting.id);
     } catch {
-      throw domainError('MEDIA_SERVICE_UNAVAILABLE');
+      return false;
     }
     this.dependencies.repository.markMeetingMediaClosed(meeting.id, this.dependencies.clock.now());
+    return true;
   }
 
   private async occupiedIdentities(meeting: MeetingRecord): Promise<Set<string>> {

@@ -108,6 +108,13 @@ const voiceConstraints: AudioCaptureOptions = {
 const screenSharePlayoutDelaySeconds = 0.5;
 const screenShareFallback = new VideoPreset(1280, 720, 3_500_000, 30, 'medium');
 const e2eFakeLiveKitPublication = import.meta.env.VITE_E2E_FAKE_LIVEKIT === 'true';
+/**
+ * Safety net for participant-state display: LiveKit state events can be
+ * missed (tracks arriving before subscription, reconnect windows, dynacast
+ * pauses), so the local snapshot refreshes on this interval to converge the
+ * mic/share indicators.
+ */
+const PARTICIPANT_REFRESH_INTERVAL_MS = 5_000;
 
 class RoomController implements MeetingRoomController {
   private room?: LiveKitRoomAdapter;
@@ -125,6 +132,7 @@ class RoomController implements MeetingRoomController {
   private publishedScreenTracks: MediaStreamTrack[] = [];
   private localScreenStatsSources: Array<{ getRTCStatsReport?(): Promise<RTCStatsReport | undefined> }> = [];
   private readonly remoteScreenAudioTracks = new Map<string, LiveKitTrackAdapter>();
+  private participantRefreshTimer?: ReturnType<typeof setInterval>;
 
   constructor(
     private readonly createRoom: LiveKitRoomFactory,
@@ -152,6 +160,7 @@ class RoomController implements MeetingRoomController {
       await room.connect(join.livekitUrl, join.token, { autoSubscribe: true });
       if (!this.ownsRoom(room, generation)) return;
       this.refreshParticipants();
+      this.startParticipantRefresh();
       this.update({ connection: 'connected' });
     } catch (reason) {
       if (!this.ownsRoom(room, generation)) return;
@@ -293,8 +302,16 @@ class RoomController implements MeetingRoomController {
     this.listen(room, RoomEvent.ParticipantConnected, refresh);
     this.listen(room, RoomEvent.ParticipantDisconnected, refresh);
     this.listen(room, RoomEvent.ParticipantNameChanged, refresh);
+    // Mic/share state arrives through several events: a track can be
+    // published (muted or not) before it is subscribed, and dynacast can
+    // pause/resume subscriptions without a mute transition, so every track
+    // lifecycle signal refreshes the snapshot instead of only mute events.
+    this.listen(room, RoomEvent.TrackPublished, refresh);
+    this.listen(room, RoomEvent.TrackUnpublished, refresh);
     this.listen(room, RoomEvent.TrackMuted, refresh);
     this.listen(room, RoomEvent.TrackUnmuted, refresh);
+    this.listen(room, RoomEvent.TrackSubscriptionStatusChanged, refresh);
+    this.listen(room, RoomEvent.TrackSubscriptionPermissionChanged, refresh);
     this.listen(room, RoomEvent.LocalTrackPublished, refresh);
     this.listen(room, RoomEvent.LocalTrackUnpublished, refresh);
     this.listen(room, RoomEvent.ParticipantPermissionsChanged, refresh);
@@ -374,6 +391,7 @@ class RoomController implements MeetingRoomController {
     this.roomGeneration++;
     for (const [event, listener] of this.roomListeners) room.off(event, listener);
     this.roomListeners.clear();
+    this.stopParticipantRefresh();
     this.audioPlayback.clear();
     this.publishedScreenTracks = [];
     this.localScreenStatsSources = [];
@@ -386,6 +404,21 @@ class RoomController implements MeetingRoomController {
       screenShareAuthorized: false,
       remoteScreenShare: undefined
     });
+  }
+
+  private startParticipantRefresh(): void {
+    this.stopParticipantRefresh();
+    this.participantRefreshTimer = setInterval(
+      () => this.refreshParticipants(),
+      PARTICIPANT_REFRESH_INTERVAL_MS
+    );
+  }
+
+  private stopParticipantRefresh(): void {
+    if (this.participantRefreshTimer !== undefined) {
+      clearInterval(this.participantRefreshTimer);
+      this.participantRefreshTimer = undefined;
+    }
   }
 
   private ownsRoom(room: LiveKitRoomAdapter, generation: number): boolean {

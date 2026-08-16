@@ -155,6 +155,31 @@ describe('room controller', () => {
     expect(room.switchActiveDevice).not.toHaveBeenCalled();
   });
 
+  it('refreshes participant states periodically so missed mute events converge', async () => {
+    vi.useFakeTimers();
+    try {
+      const room = roomAdapter();
+      const controller = createRoomController(() => room);
+      const states: MeetingRoomState[] = [];
+      controller.subscribe((state) => states.push(state));
+      await controller.connect(join);
+      expect(states.at(-1)?.microphoneEnabled).toBe(false);
+
+      // A state change with no event (or an event lost to a reconnect window)
+      // must still converge through the periodic snapshot refresh.
+      room.localParticipant.isMicrophoneEnabled = true;
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(states.at(-1)?.microphoneEnabled).toBe(true);
+
+      await controller.disconnect();
+      const snapshotCount = states.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(states.length).toBe(snapshotCount); // refresh timer was cleared
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('disconnects the SDK room and clears the participant roster', async () => {
     const room = roomAdapter();
     const controller = createRoomController(() => room);

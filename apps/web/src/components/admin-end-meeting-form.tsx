@@ -23,6 +23,15 @@ export function AdminEndMeetingForm(props: {
       setAdminPassword('');
       props.onEnded?.();
     } catch (reason) {
+      // The meeting already ended (an earlier click or the host ended it):
+      // that is success for this form, not an error.
+      const alreadyEnded = reason instanceof ApiRequestError
+        && reason.details?.error.code === 'MEETING_EXPIRED';
+      if (alreadyEnded) {
+        setAdminPassword('');
+        props.onEnded?.();
+        return;
+      }
       setError(reason instanceof ApiRequestError
         ? apiErrorText(reason, t, 'adminEnd.failed')
         : t('adminEnd.failed'));
