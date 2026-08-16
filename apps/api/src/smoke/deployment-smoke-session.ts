@@ -4,6 +4,8 @@ import fastifyCookie from '@fastify/cookie';
 import type Database from 'better-sqlite3';
 
 export interface DeploymentSmokeSession {
+  meetingId: string;
+  identity: string;
   slug: string;
   cookieHeader: string;
 }
@@ -36,6 +38,8 @@ export function createDeploymentSmokeSession(
 
   const signedToken = fastifyCookie.sign(rawToken, cookieSecret);
   return {
+    meetingId,
+    identity,
     slug,
     cookieHeader: `wm_participant=${encodeURIComponent(signedToken)}`
   };

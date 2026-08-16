@@ -43,12 +43,17 @@ probe_output="$(docker run --rm --network none --env-file "$env_file" \
   || { echo 'deployment smoke session did not return one slug' >&2; exit 1; }
 [[ "$(grep -c '^SMOKE_PARTICIPANT_COOKIE=' <<<"$probe_output")" == 1 ]] \
   || { echo 'deployment smoke session did not return one cookie' >&2; exit 1; }
+[[ "$(grep -c '^SMOKE_LIVEKIT_TOKEN=' <<<"$probe_output")" == 1 ]] \
+  || { echo 'deployment smoke session did not return one LiveKit token' >&2; exit 1; }
 smoke_slug="$(sed -n 's/^SMOKE_MEETING_SLUG=//p' <<<"$probe_output")"
 smoke_cookie="$(sed -n 's/^SMOKE_PARTICIPANT_COOKIE=//p' <<<"$probe_output")"
+smoke_livekit_token="$(sed -n 's/^SMOKE_LIVEKIT_TOKEN=//p' <<<"$probe_output")"
 [[ "$smoke_slug" =~ ^[A-Za-z0-9_-]+$ && ${#smoke_slug} -ge 22 && ${#smoke_slug} -le 256 ]] \
   || { echo 'deployment smoke session returned an invalid slug' >&2; exit 1; }
 [[ "$smoke_cookie" =~ ^wm_participant=[A-Za-z0-9._~%+-]+$ ]] \
   || { echo 'deployment smoke session returned an invalid cookie' >&2; exit 1; }
+[[ "$smoke_livekit_token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] \
+  || { echo 'deployment smoke session returned an invalid LiveKit token' >&2; exit 1; }
 unset probe_output
 
 cleanup_probe() {
@@ -67,6 +72,7 @@ trap cleanup_on_exit EXIT
 
 SMOKE_MEETING_SLUG="$smoke_slug" \
 SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
+SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
 P2P_STUN_URLS="$p2p_stun_urls" \
 P2P_TURN_URLS="$p2p_turn_urls" \
 SMOKE_NODE_IMAGE="$api_image" \
@@ -75,4 +81,5 @@ SMOKE_NODE_IMAGE="$api_image" \
 cleanup_probe
 trap - EXIT
 unset smoke_cookie
+unset smoke_livekit_token
 echo 'Authenticated deployment smoke session cleaned up'

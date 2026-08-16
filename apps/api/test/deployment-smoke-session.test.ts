@@ -23,6 +23,8 @@ describe('deployment smoke session', () => {
 
     const probe = createDeploymentSmokeSession(db, secret, 1_800_000_000_000);
 
+    expect(probe.meetingId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(probe.identity).toMatch(/^smoke-[0-9a-f-]{36}$/);
     expect(probe.slug).toMatch(/^[A-Za-z0-9_-]{22,256}$/);
     expect(probe.cookieHeader).toMatch(/^wm_participant=/);
     const signed = decodeURIComponent(probe.cookieHeader.slice('wm_participant='.length));

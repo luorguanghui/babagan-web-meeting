@@ -14,6 +14,7 @@ case "$*" in
   *'deployment-smoke-session-cli.js create'*)
     printf '%s\n' 'SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx'
     printf '%s\n' 'SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value'
+    printf '%s\n' 'SMOKE_LIVEKIT_TOKEN=fresh.header.signature'
     ;;
   *'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx'*) ;;
   *) exit 90 ;;
@@ -29,6 +30,7 @@ cat >"$temp_dir/scripts/smoke-test.sh" <<'EOF'
   printf 'stun=%s\n' "$P2P_STUN_URLS"
   printf 'turn=%s\n' "$P2P_TURN_URLS"
   printf 'image=%s\n' "$SMOKE_NODE_IMAGE"
+  printf 'livekit_token=%s\n' "$SMOKE_LIVEKIT_TOKEN"
   printf 'args=%s|%s\n' "$1" "$2"
 } >>"$MOCK_SMOKE_LOG"
 [[ ${SMOKE_SHOULD_FAIL:-0} != 1 ]]
@@ -46,6 +48,7 @@ printf '%s\n' 'services: {}' >"$temp_dir/docker-compose.yml"
 
 run_smoke() {
   PATH="$temp_dir/bin:$PATH" \
+    SMOKE_LIVEKIT_TOKEN=stale-livekit-token \
     MOCK_DOCKER_LOG="$temp_dir/docker.log" \
     MOCK_SMOKE_LOG="$temp_dir/smoke.log" \
     bash "$temp_dir/scripts/deployment-smoke.sh" \
@@ -63,6 +66,8 @@ grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.cloudflare.com:3478' "$temp_dir/smoke.log"
 grep -Fqx 'turn=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' "$temp_dir/smoke.log"
 grep -Fqx 'image=meeting-api:test' "$temp_dir/smoke.log"
+grep -Fqx 'livekit_token=fresh.header.signature' "$temp_dir/smoke.log" \
+  || { echo 'deployment smoke reused a stale static LiveKit token' >&2; exit 1; }
 
 : >"$temp_dir/docker.log"
 : >"$temp_dir/smoke.log"
