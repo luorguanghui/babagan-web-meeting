@@ -21,7 +21,8 @@ TURN_SERVER_BIN="$temp_dir/turnserver" TURN_CERT_PATH="$temp_dir/cert.pem" TURN_
   TURN_SHARED_SECRET=0123456789abcdef0123456789abcdef TURN_EXTERNAL_IP=203.0.113.10 \
   TURN_RELAY_IP=10.0.0.8 TURN_TEST_LOG="$temp_dir/args" sh "$script"
 
-grep -Fx -- '--config=/etc/coturn/turnserver.conf' "$temp_dir/args"
+grep -Fx -- '-c' "$temp_dir/args"
+grep -Fx -- '/etc/coturn/turnserver.conf' "$temp_dir/args"
 grep -Fx -- '--static-auth-secret=0123456789abcdef0123456789abcdef' "$temp_dir/args"
 grep -Fx -- '--external-ip=203.0.113.10/10.0.0.8' "$temp_dir/args"
 grep -Fx -- "--cert=$temp_dir/cert.pem" "$temp_dir/args"

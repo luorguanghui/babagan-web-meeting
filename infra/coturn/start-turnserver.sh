@@ -25,7 +25,7 @@ while [ ! -s "$cert_path" ] || [ ! -s "$pkey_path" ]; do
 done
 
 exec "$turnserver_bin" \
-  --config=/etc/coturn/turnserver.conf \
+  -c /etc/coturn/turnserver.conf \
   "--static-auth-secret=$secret" \
   "--external-ip=$external_ip/$relay_ip" \
   "--relay-ip=$relay_ip" \
