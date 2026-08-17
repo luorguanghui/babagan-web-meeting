@@ -26,6 +26,8 @@
 10. [测试驱动实施计划](docs/superpowers/plans/2026-08-07-web-meeting-implementation.md)
 11. [P2P 混合模式实施计划](docs/superpowers/plans/2026-08-11-p2p-hybrid-implementation.md)
 
+部署操作从 [部署与运维](docs/04-deployment-and-operations.md) 开始：其中分别说明已有服务器更新和 Debian 12 空白服务器首次部署；[部署证据记录](docs/runbooks/deployment-record.md) 与 [回滚记录](docs/runbooks/rollback-record.md) 用于保存目标服务器证据和受保护恢复记录。
+
 ## 核心技术决策
 
 - React + TypeScript 构建网页界面。
