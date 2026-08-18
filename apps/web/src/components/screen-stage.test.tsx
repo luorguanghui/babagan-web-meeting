@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { ScreenStage } from './screen-stage.js';
@@ -31,6 +31,18 @@ function makeTrack(): FakeTrackLike {
   return { stream, attach, detach };
 }
 
+function makeVisibilityGatedTrack(): FakeTrackLike {
+  const track = makeTrack();
+  track.attach.mockImplementation((element) => {
+    (element as unknown as { srcObject: unknown }).srcObject = track.stream;
+    queueMicrotask(() => {
+      if (!element.hidden) fireEvent(element, new Event('playing'));
+    });
+    return element;
+  });
+  return track;
+}
+
 /** Audio tracks join the element's existing stream; they must not replace srcObject. */
 function makeAudioTrack() {
   return {
@@ -51,6 +63,7 @@ function getProbe(): HTMLVideoElement | null {
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
 });
 
 describe('screen stage dual-source rendering', () => {
@@ -80,7 +93,7 @@ describe('screen stage dual-source rendering', () => {
 
     rerender(<ScreenStage track={track} />);
 
-    // The old stream stays on the visible video; the track is staged on a hidden probe.
+    // The old stream stays on the visible video; the track is staged on a transparent probe.
     expect(video.srcObject).toBe(stream);
     const probe = getProbe();
     expect(probe).not.toBeNull();
@@ -95,6 +108,19 @@ describe('screen stage dual-source rendering', () => {
     expect(track.attach).toHaveBeenLastCalledWith(video);
     expect(video.srcObject).toBe(track.stream);
     expect(track.detach).toHaveBeenCalledWith(probe);
+    expect(getProbe()).toBeNull();
+  });
+
+  it('lets a visibility-gated LiveKit track render while preserving the previous stream', async () => {
+    const stream = makeStream();
+    const track = makeVisibilityGatedTrack();
+    const { container, rerender } = render(<ScreenStage stream={stream} />);
+    const video = getVisibleVideo(container);
+
+    rerender(<ScreenStage track={track} />);
+
+    expect(video.srcObject).toBe(stream);
+    await waitFor(() => expect(video.srcObject).toBe(track.stream));
     expect(getProbe()).toBeNull();
   });
 
@@ -177,6 +203,25 @@ describe('screen stage dual-source rendering', () => {
     expect(video.srcObject).toBe(stream);
     expect(track.attach).toHaveBeenCalledTimes(1);
     expect(track.attach).not.toHaveBeenCalledWith(video);
+  });
+
+  it('forces a stalled LiveKit handover onto the visible stage after ten seconds', () => {
+    vi.useFakeTimers();
+    const stream = makeStream();
+    const track = makeTrack();
+    const onSourceReady = vi.fn();
+    const { container, rerender } = render(<ScreenStage stream={stream} onSourceReady={onSourceReady} />);
+    const video = getVisibleVideo(container);
+
+    rerender(<ScreenStage track={track} onSourceReady={onSourceReady} />);
+    act(() => { vi.advanceTimersByTime(9_999); });
+    expect(video.srcObject).toBe(stream);
+    expect(onSourceReady).not.toHaveBeenCalled();
+
+    act(() => { vi.advanceTimersByTime(1); });
+    expect(video.srcObject).toBe(track.stream);
+    expect(getProbe()).toBeNull();
+    expect(onSourceReady).toHaveBeenCalledOnce();
   });
 
   it('respects an explicit muted prop for remote P2P audio', () => {

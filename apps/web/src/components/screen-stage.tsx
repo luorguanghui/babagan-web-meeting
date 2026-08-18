@@ -13,6 +13,8 @@ type StageSource =
   | { kind: 'track'; track: StageTrack; audioTrack?: StageTrack }
   | null;
 
+const LIVEKIT_HANDOVER_TIMEOUT_MS = 10_000;
+
 function sameSource(a: StageSource, b: StageSource): boolean {
   if (a === b) return true;
   if (a === null || b === null) return false;
@@ -66,7 +68,7 @@ export function ScreenStage({
   /** Forces the element's muted state; defaults to muting local streams without remote audio. */
   muted?: boolean;
   sharerName?: string;
-  /** Called after the selected source has rendered its first browser media event. */
+  /** Called after the selected source renders its first media event or a bounded LiveKit handover is forced. */
   onSourceReady?: () => void;
   /** Routes the stage audio through a trim + limiter (remote shared audio only). */
   audioDynamics?: boolean;
@@ -133,9 +135,9 @@ export function ScreenStage({
     if (element === null) return; // no visible element to swap (empty stage)
 
     // Dual-source switch with first-frame retention: stage the new source on a
-    // hidden probe element and keep the old source visible until the new one
-    // actually renders a frame (loadedmetadata/playing), avoiding a black
-    // screen longer than the browser's switch latency on P2P <-> LiveKit hops.
+    // probe (transparent and renderable for LiveKit, hidden for direct streams)
+    // and keep the old source visible until the new one actually renders a
+    // frame, avoiding a black screen during P2P <-> LiveKit hops.
     let probe: HTMLVideoElement | undefined;
     const releaseProbe = () => {
       if (probe === undefined) return;
@@ -147,8 +149,13 @@ export function ScreenStage({
       probe.remove();
       probe = undefined;
     };
+    let handoverTimer: ReturnType<typeof setTimeout> | undefined;
     const commit = () => {
       if (probe === undefined) return;
+      if (handoverTimer !== undefined) {
+        clearTimeout(handoverTimer);
+        handoverTimer = undefined;
+      }
       releaseProbe();
       applySource(element, desired);
       const previous = committedRef.current;
@@ -164,14 +171,40 @@ export function ScreenStage({
     probe.autoplay = true;
     probe.playsInline = true;
     probe.setAttribute('data-stage-probe', 'true');
-    probe.hidden = true;
+    if (desired.kind === 'track') {
+      // LiveKit adaptiveStream only sends video while at least one attached
+      // element is visible. A `hidden` probe therefore deadlocks a TURN/P2P →
+      // SFU handover: the first frame is required to commit the switch, while
+      // adaptiveStream withholds that frame because the probe is invisible.
+      // Keep the probe in the viewport and transparent instead. It remains
+      // non-interactive and inaccessible, but LiveKit can request the stream.
+      probe.setAttribute('aria-hidden', 'true');
+      probe.tabIndex = -1;
+      probe.style.position = 'fixed';
+      probe.style.left = '0';
+      probe.style.top = '0';
+      probe.style.width = `${Math.max(element.clientWidth, 1)}px`;
+      probe.style.height = `${Math.max(element.clientHeight, 1)}px`;
+      probe.style.opacity = '0';
+      probe.style.pointerEvents = 'none';
+    } else {
+      probe.hidden = true;
+    }
     document.body.append(probe);
     applySource(probe, desired);
     const firstFrame = () => commit();
     probe.addEventListener('loadedmetadata', firstFrame, { once: true });
     probe.addEventListener('playing', firstFrame, { once: true });
+    if (desired.kind === 'track') {
+      // A missing media event must not retain a dead TURN/P2P frame forever.
+      // Forcing the LiveKit track onto the visible element also gives
+      // adaptiveStream an unquestionably visible attachment from which it can
+      // recover after a missed visibility/subscription transition.
+      handoverTimer = setTimeout(commit, LIVEKIT_HANDOVER_TIMEOUT_MS);
+    }
 
     return () => {
+      if (handoverTimer !== undefined) clearTimeout(handoverTimer);
       probe?.removeEventListener('loadedmetadata', firstFrame);
       probe?.removeEventListener('playing', firstFrame);
       releaseProbe();
