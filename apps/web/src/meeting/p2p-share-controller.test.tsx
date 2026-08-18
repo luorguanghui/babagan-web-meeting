@@ -81,6 +81,7 @@ class FakeRTCPeerConnection {
   readonly id = pcCounter++;
   readonly config: RTCConfiguration;
   readonly addedTracks: MediaStreamTrack[] = [];
+  readonly addedTrackStreams: Array<MediaStream[] | undefined> = [];
   readonly transceivers: FakeRtpTransceiver[] = [];
   readonly senders: FakeRtpSender[] = [];
   readonly remoteDescriptions: RTCSessionDescriptionInit[] = [];
@@ -127,8 +128,9 @@ class FakeRTCPeerConnection {
     return (this.remoteDescriptions[this.remoteDescriptions.length - 1] ?? null) as RTCSessionDescription | null;
   }
 
-  addTrack(track: MediaStreamTrack): RTCRtpSender {
+  addTrack(track: MediaStreamTrack, ...streams: MediaStream[]): RTCRtpSender {
     this.addedTracks.push(track);
+    this.addedTrackStreams.push(streams.length > 0 ? streams : undefined);
     const sender = new FakeRtpSender(track);
     this.senders.push(sender);
     return sender as unknown as RTCRtpSender;
@@ -262,14 +264,17 @@ afterEach(() => {
 describe('p2p share controller', () => {
   it('creates one PC per viewer with video and audio on the same connection and sends offers', async () => {
     const { controller, signaling, fetchIceServers } = makeHarness();
+    const stream = makeStream();
 
-    await controller.start(makeStream(), shareOptions, viewers);
+    await controller.start(stream, shareOptions, viewers);
 
     expect(fetchIceServers).toHaveBeenCalledOnce();
     expect(FakeRTCPeerConnection.instances).toHaveLength(4);
     for (const pc of FakeRTCPeerConnection.instances) {
       expect(pc.config).toEqual({ iceServers });
       expect(pc.addedTracks.map((track) => track.kind)).toEqual(['video', 'audio']);
+      expect(pc.transceivers[0]?.options).toEqual(expect.objectContaining({ streams: [stream] }));
+      expect(pc.addedTrackStreams).toEqual([[stream]]);
       expect(pc.createOffer).toHaveBeenCalledOnce();
       expect(pc.localDescriptions[0]).toEqual({ type: 'offer', sdp: `offer-${pc.id}` });
     }

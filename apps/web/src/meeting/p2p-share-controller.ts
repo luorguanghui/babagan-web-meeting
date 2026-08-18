@@ -359,12 +359,12 @@ class P2pShareControllerImpl implements P2pShareController {
       // A transceiver (not `addTrack`) so we can set codec preferences before
       // the offer is created; the bitrate/frame-rate cap is applied later via
       // `setParameters` so a failure there stays best-effort.
-      const transceiver = pc.addTransceiver(track, { direction: 'sendonly' });
+      const transceiver = pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
       applyCodecPreference(transceiver, options.codec);
       session.videoSender = transceiver.sender;
     }
     for (const track of stream.getAudioTracks().slice(0, 1)) {
-      pc.addTrack(track);
+      pc.addTrack(track, stream);
     }
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
     pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
