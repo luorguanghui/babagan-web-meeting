@@ -27,8 +27,10 @@ export interface P2pViewerSignaling {
 }
 
 export interface P2pViewerControllerDependencies {
-  /** PC factory; defaults to `window.RTCPeerConnection` with the given ICE servers. */
-  createPeerConnection?: (iceServers: RTCIceServer[]) => RTCPeerConnection;
+  /** PC factory; defaults to `window.RTCPeerConnection` with the given ICE servers and policy. */
+  createPeerConnection?: (iceServers: RTCIceServer[], iceTransportPolicy?: RTCIceTransportPolicy) => RTCPeerConnection;
+  /** ICE policy for the next peer connection. `relay` forces TURN. */
+  iceTransportPolicy?: RTCIceTransportPolicy;
   /** Fired once when the viewer moves to `livekit` (the caller subscribes the LiveKit screen track). */
   onFallback?: () => void;
   /** Requests the LiveKit handover; invoke `complete` only after its first frame is rendered. */
@@ -82,6 +84,7 @@ interface ViewerPcSession {
  */
 export class P2pViewerController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
+  private iceTransportPolicy: RTCIceTransportPolicy;
   private readonly onFallback?: () => void;
   private readonly onFallbackRequested?: (complete: () => void) => void;
   private readonly healthSampleIntervalMs: number;
@@ -100,8 +103,10 @@ export class P2pViewerController {
     private iceServers: RTCIceServer[],
     dependencies: P2pViewerControllerDependencies = {}
   ) {
-    this.createPeerConnection = dependencies.createPeerConnection
-      ?? ((servers) => new RTCPeerConnection({ iceServers: servers }));
+    const createPeerConnection = dependencies.createPeerConnection
+      ?? ((servers, policy) => new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: policy }));
+    this.createPeerConnection = (servers) => createPeerConnection(servers, this.iceTransportPolicy);
+    this.iceTransportPolicy = dependencies.iceTransportPolicy ?? 'all';
     this.onFallback = dependencies.onFallback;
     this.onFallbackRequested = dependencies.onFallbackRequested;
     this.healthSampleIntervalMs = dependencies.healthSampleIntervalMs ?? 1_000;
@@ -189,6 +194,23 @@ export class P2pViewerController {
    */
   updateIceServers(iceServers: RTCIceServer[]): void {
     this.iceServers = iceServers;
+  }
+
+  /** Sets the policy used by the next peer connection. */
+  setIceTransportPolicy(policy: RTCIceTransportPolicy): void {
+    this.iceTransportPolicy = policy;
+  }
+
+  /** Requests an immediate handover to the LiveKit SFU path. */
+  requestSfu(): void {
+    if (this.closed) return;
+    const session = this.session;
+    if (session !== undefined
+      && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
+      this.fallback(session);
+      return;
+    }
+    this.transition('livekit');
   }
 
   async getStatsReport(): Promise<RTCStatsReport | undefined> {

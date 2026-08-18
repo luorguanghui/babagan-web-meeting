@@ -2,6 +2,7 @@ import type { ScreenShareCodec, ScreenShareQuality } from '@meeting/contracts';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
+import type { ViewerTransportPreference } from '../meeting/viewer-transport-preference.js';
 import {
   recommendP2pBitrate,
   screenShareBitrates,
@@ -27,6 +28,10 @@ interface MeetingControlsProps {
   screenViewerCount?: number;
   /** Whether the manual P2P retry button is shown (sharer while sharing, viewer on fallback). */
   p2pRetryVisible?: boolean;
+  /** Shows the receiver-only transport preference selector while a remote share is active. */
+  viewerTransportPreferenceVisible?: boolean;
+  viewerTransportPreference?: ViewerTransportPreference;
+  onViewerTransportPreferenceChange?: (preference: ViewerTransportPreference) => void;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
@@ -77,6 +82,15 @@ export function MeetingControls(props: MeetingControlsProps) {
           <option value="" disabled>{t('controls.selectSpeaker')}</option>
           {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
         </select></label>
+        {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <label>{t('controls.viewerTransport')}<select
+          aria-label={t('controls.viewerTransport')}
+          value={props.viewerTransportPreference ?? 'auto'}
+          onChange={(event) => props.onViewerTransportPreferenceChange?.(event.target.value as ViewerTransportPreference)}
+        >
+          <option value="auto">{t('controls.viewerTransportAuto')}</option>
+          <option value="turn">{t('controls.viewerTransportTurn')}</option>
+          <option value="sfu">{t('controls.viewerTransportSfu')}</option>
+        </select></label>}
         <label>{t('controls.screenQuality')}<select
           aria-label={t('controls.screenQuality')}
           value={props.screenQuality ?? screenShareDefaultQuality}

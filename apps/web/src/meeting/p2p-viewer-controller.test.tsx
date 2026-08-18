@@ -195,6 +195,35 @@ afterEach(() => {
 });
 
 describe('p2p viewer controller', () => {
+  it('creates relay-only peer connections when the viewer chooses TURN', async () => {
+    const signaling: P2pViewerSignaling = {
+      sendAnswer: vi.fn(), sendIce: vi.fn(), sendMediaReady: vi.fn(), sendRetry: vi.fn(), sendBye: vi.fn()
+    };
+    const createPeerConnection = vi.fn((servers: RTCIceServer[], policy?: RTCIceTransportPolicy) =>
+      new FakeRTCPeerConnection({ iceServers: servers, ...(policy ? { iceTransportPolicy: policy } : {}) }) as unknown as RTCPeerConnection);
+    const controller = new P2pViewerController(signaling, iceServers, {
+      createPeerConnection,
+      iceTransportPolicy: 'relay'
+    } as never);
+
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+
+    expect(createPeerConnection).toHaveBeenCalledWith(iceServers, 'relay');
+    expect(FakeRTCPeerConnection.instances[0].config).toEqual({ iceServers, iceTransportPolicy: 'relay' });
+  });
+
+  it('requests an immediate LiveKit handover when the viewer chooses SFU', async () => {
+    const onFallbackRequested = vi.fn();
+    const { controller, signaling } = makeHarness({ onFallbackRequested });
+
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    (controller as unknown as { requestSfu: () => void }).requestSfu();
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallbackRequested).toHaveBeenCalledOnce();
+  });
+
   it('answers the sharer offer: remote description, local answer, and a negotiating state', async () => {
     const { controller, signaling } = makeHarness();
 

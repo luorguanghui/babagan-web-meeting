@@ -44,6 +44,12 @@ import {
 } from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
+import {
+  readViewerTransportPreference,
+  saveViewerTransportPreference,
+  viewerTransportPreferenceToIcePolicy,
+  type ViewerTransportPreference
+} from '../meeting/viewer-transport-preference.js';
 
 export interface MeetingRoomPageProps {
   slug: string;
@@ -185,6 +191,11 @@ export function MeetingRoomPage({
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
   const [viewerCount, setViewerCount] = useState(0);
+  const [viewerTransportPreference, setViewerTransportPreference] = useState<ViewerTransportPreference>(() =>
+    readViewerTransportPreference()
+  );
+  const viewerTransportPreferenceRef = useRef(viewerTransportPreference);
+  const viewerSharerIdentityRef = useRef<string | undefined>(undefined);
   const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
   const viewerRosterRef = useRef<Peer[]>([]);
   const p2pShareRef = useRef<P2pShareController | undefined>(undefined);
@@ -318,6 +329,7 @@ export function MeetingRoomPage({
       if (iceServers === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
         const viewerController = new P2pViewerController(signaling, iceServers, {
+          iceTransportPolicy: viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
           onFallbackRequested: (complete) => {
             pendingFallbackCompletionRef.current = complete;
             setFallbackP2pStream(viewerP2pRef.current?.getStream() ?? undefined);
@@ -338,7 +350,9 @@ export function MeetingRoomPage({
       if (cancelled) return;
       viewerSignalTail = viewerSignalTail.then(async () => {
         if (cancelled) return;
+        if (signal.type === 'offer' && viewerTransportPreferenceRef.current === 'sfu') return;
         if (signal.type === 'offer') {
+          viewerSharerIdentityRef.current = signal.from;
           // A fresh offer may arrive long after page load. Refresh ICE
           // credentials when the cached TURN ones are about to expire:
           // gathering with expired credentials silently yields no relay
@@ -429,6 +443,7 @@ export function MeetingRoomPage({
         void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
       },
       onShareGone: () => {
+        viewerSharerIdentityRef.current = undefined;
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
         pendingFallbackCompletionRef.current = undefined;
@@ -452,6 +467,7 @@ export function MeetingRoomPage({
           if (!peers.some((peer) => peer.identity === gone.identity)) {
             hybridShareRef.current?.viewerLeft(gone.identity);
             if (viewerP2pRef.current?.getSharerIdentity() === gone.identity) {
+              viewerSharerIdentityRef.current = undefined;
               viewerP2pRef.current?.close();
               viewerP2pRef.current = undefined;
               pendingFallbackCompletionRef.current = undefined;
@@ -477,6 +493,7 @@ export function MeetingRoomPage({
         // The P2P sharer left: the session is dead — tear it down so the
         // LiveKit screen track takes over instead of freezing on a dead stream.
         if (viewerP2pRef.current?.getSharerIdentity() === identity) {
+          viewerSharerIdentityRef.current = undefined;
           viewerP2pRef.current?.close();
           viewerP2pRef.current = undefined;
           pendingFallbackCompletionRef.current = undefined;
@@ -496,6 +513,7 @@ export function MeetingRoomPage({
       pendingViewerSignals.length = 0;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       signalingRef.current = undefined;
+      viewerSharerIdentityRef.current = undefined;
       pendingFallbackCompletionRef.current?.();
       pendingFallbackCompletionRef.current = undefined;
       viewerP2pRef.current?.close();
@@ -569,6 +587,29 @@ export function MeetingRoomPage({
       setNotice(t('room.shareFailed'));
     }
   }
+
+  const handleViewerTransportPreferenceChange = useCallback((preference: ViewerTransportPreference) => {
+    viewerTransportPreferenceRef.current = preference;
+    setViewerTransportPreference(preference);
+    try {
+      saveViewerTransportPreference(window.localStorage, preference);
+    } catch {
+      // Keep the in-session selection when browser storage is unavailable.
+    }
+
+    const viewerController = viewerP2pRef.current;
+    if (preference === 'sfu') {
+      if (viewerController) viewerController.requestSfu();
+      else void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+      return;
+    }
+
+    viewerController?.setIceTransportPolicy(viewerTransportPreferenceToIcePolicy(preference));
+    if (viewerController) viewerController.requestRetry();
+    else if (viewerSharerIdentityRef.current) {
+      signalingRef.current?.sendRetry(viewerSharerIdentityRef.current);
+    }
+  }, [controller]);
 
   const hostParticipants: ParticipantSummary[] = state.participants.map((participant) => ({
     identity: participant.identity,
@@ -716,6 +757,9 @@ export function MeetingRoomPage({
             setScreenBitrate(bitrate);
           }}
           onScreenQualityChange={setScreenQuality}
+          viewerTransportPreferenceVisible={Boolean(!screenState.stream && hasActiveScreenShare)}
+          viewerTransportPreference={viewerTransportPreference}
+          onViewerTransportPreferenceChange={handleViewerTransportPreferenceChange}
           screenViewerCount={viewerCount}
           p2pRetryVisible={Boolean(
             (screenState.status === 'sharing' && viewerCount > 0)

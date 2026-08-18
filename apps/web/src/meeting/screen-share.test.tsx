@@ -473,6 +473,37 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByLabelText('Screen-share codec')).toBeDisabled();
   });
 
+  it('lets a remote viewer choose TURN or SFU transport', async () => {
+    const onTransportChange = vi.fn();
+    render(<MeetingControls
+      connection="connected"
+      microphoneEnabled={false}
+      audioPlaybackBlocked={false}
+      devices={[]}
+      leaving={false}
+      screenShareAuthorized
+      screenShareActive={false}
+      screenShareBusy={false}
+      viewerTransportPreference="auto"
+      viewerTransportPreferenceVisible
+      onViewerTransportPreferenceChange={onTransportChange}
+      onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined}
+      onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined}
+      onScreenShareToggle={() => undefined}
+      onLeave={() => undefined}
+    />);
+
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const selector = screen.getByLabelText('Viewer screen transport');
+    expect(screen.getByRole('option', { name: 'TURN relay' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'SFU relay' })).toBeVisible();
+    await userEvent.selectOptions(selector, 'turn');
+
+    expect(onTransportChange).toHaveBeenCalledWith('turn');
+  });
+
   it('groups the three primary actions separately from adaptive sharing settings', async () => {
     const onBitrateChange = vi.fn();
     const common = {
