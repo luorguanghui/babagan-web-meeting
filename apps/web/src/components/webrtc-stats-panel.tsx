@@ -1,0 +1,69 @@
+import type { ScreenShareCodec } from '@meeting/contracts';
+
+import { type MessageKey, useI18n } from '../i18n/i18n.js';
+import type { ScreenTransportMode } from '../meeting/screen-transport-mode.js';
+import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
+
+const modeKeys: Record<ScreenTransportMode, MessageKey> = {
+  p2p: 'screenTransport.p2p',
+  turn: 'screenTransport.turn',
+  sfu: 'screenTransport.sfu',
+  mixed: 'screenTransport.mixed',
+  negotiating: 'screenTransport.negotiating',
+  waiting: 'screenTransport.waiting'
+};
+
+export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu' }: {
+  snapshot?: WebRtcStatsSnapshot;
+  requestedCodec: ScreenShareCodec;
+  mode?: ScreenTransportMode;
+}) {
+  const { t } = useI18n();
+  return <details className="webrtc-stats-panel">
+    <summary>
+      <span>{t('stats.heading')}</span>
+      <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(modeKeys[mode])}</span>
+    </summary>
+    <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
+    {!snapshot?.sender && !snapshot?.receiver
+      ? <p>{t('stats.collecting')}</p>
+      : <div className="webrtc-stats-grid">
+        {snapshot.sender && <StatsSection title={t('stats.sender')} stats={snapshot.sender} />}
+        {snapshot.receiver && <StatsSection title={t('stats.receiver')} stats={snapshot.receiver} />}
+      </div>}
+  </details>;
+}
+
+function StatsSection({ title, stats }: { title: string; stats: WebRtcMediaStats }) {
+  const { t } = useI18n();
+  const rows: Array<[string, string | undefined]> = [
+    [t('stats.codec'), stats.codec],
+    [t('stats.resolution'), stats.width && stats.height ? `${stats.width}×${stats.height}` : undefined],
+    [t('stats.fps'), format(stats.framesPerSecond)],
+    [t('stats.bitrate'), unit(stats.bitrateMbps, 'Mbps')],
+    [t('stats.packetLoss'), format(stats.packetsLost)],
+    [t('stats.rtt'), unit(stats.roundTripTimeMs, 'ms')],
+    [t('stats.droppedFrames'), format(stats.framesDropped)],
+    [t('stats.freezes'), format(stats.freezeCount)],
+    [t('stats.encodeTime'), unit(stats.averageEncodeTimeMs, 'ms')],
+    [t('stats.jitter'), unit(stats.jitterMs, 'ms')],
+    [t('stats.jitterBuffer'), unit(stats.averageJitterBufferDelayMs, 'ms')],
+    [t('stats.bandwidth'), unit(stats.availableOutgoingBitrateMbps, 'Mbps')],
+    [t('stats.limitation'), stats.qualityLimitationReason],
+    ['NACK / PLI / FIR', `${stats.nackCount ?? 0} / ${stats.pliCount ?? 0} / ${stats.firCount ?? 0}`]
+  ];
+  return <section>
+    <h3>{title}</h3>
+    <dl>{rows.filter(([, value]) => value !== undefined).map(([label, value]) => <div key={label}>
+      <dt>{label}</dt><dd>{value}</dd>
+    </div>)}</dl>
+  </section>;
+}
+
+function format(value?: number): string | undefined {
+  return value === undefined ? undefined : String(value);
+}
+
+function unit(value: number | undefined, suffix: string): string | undefined {
+  return value === undefined ? undefined : `${value} ${suffix}`;
+}

@@ -9,8 +9,10 @@ apps/
 packages/
   contracts/            # API schema、错误码和共享类型
 infra/
-  caddy/Caddyfile
-  livekit/livekit.yaml
+  caddy/Caddyfile        # 边缘反代（meet/rtc/turn）
+  livekit/livekit.yaml   # LiveKit 配置
+  coturn/turnserver.conf # coturn（P2P TURN 中继）
+  web/Caddyfile          # web 静态产物服务（:8080）
   docker-compose.yml
 scripts/
   backup.sh
@@ -24,21 +26,23 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 
 | 环境变量 | 作用 | 安全要求 |
 |---|---|---|
-| `NODE_ENV` | `production`/`test` | 生产固定为 `production` |
-| `PUBLIC_BASE_URL` | `https://meet.babagan.cloud` | 固定允许来源 |
+| `NODE_ENV` | `production`/`test`/`development` | 生产固定为 `production` |
+| `PUBLIC_BASE_URL` | `https://meet.babagan.cloud` | 生产必须为 `https:`，作为固定允许来源 |
 | `LIVEKIT_URL` | `wss://rtc.babagan.cloud` | 返回给客户端 |
-| `LIVEKIT_INTERNAL_URL` | Docker 内部地址 | 不暴露客户端 |
+| `LIVEKIT_INTERNAL_URL` | Docker 内部地址（如 `ws://host.docker.internal:7880`） | 不暴露客户端 |
 | `LIVEKIT_API_KEY` | LiveKit Server API Key | Docker secret 或权限 600 文件 |
 | `LIVEKIT_API_SECRET` | LiveKit Server API Secret | Docker secret 或权限 600 文件 |
 | `ADMIN_PASSWORD_HASH` | 主持人管理密码的 Argon2id 哈希 | 不保存明文 |
 | `COOKIE_SECRET` | Cookie 签名密钥 | 至少 32 个随机字节 |
 | `DATABASE_PATH` | SQLite 文件路径 | 持久卷、仅 API 可写 |
-| `MEETING_TTL_SECONDS` | `86400` | 与 PRD 保持一致 |
-| `EMPTY_GRACE_SECONDS` | `600` | 与 PRD 保持一致 |
-| `RECONNECT_GRACE_SECONDS` | `30` | 与 PRD 保持一致 |
-| `MAX_PARTICIPANTS` | `5` | 服务端强制，不信任客户端 |
+| `P2P_STUN_URLS` | 逗号分隔的 `stun:`/`stuns:` URL | 启动时严格校验协议 |
+| `P2P_TURN_URLS` | 逗号分隔的 `turn:`/`turns:` URL（3478/udp、3478/tcp、5349/tls） | 启动时严格校验协议；指向自托管 coturn |
+| `P2P_TURN_SECRET` | 与 coturn `TURN_SHARED_SECRET` 完全相同的 TURN REST 密钥 | 至少 32 字节、权限 600 |
+| `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
 
-启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。
+以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
+
+启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为 contracts/服务端中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
 
 ## 3. 数据模型
 
@@ -111,8 +115,11 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | 方法 | 路径 | 权限 | 作用 |
 |---|---|---|---|
 | POST | `/meetings` | 管理密码 | 原子创建会议并建立会议主持人会话 |
+| GET | `/meetings/current` | 公开 | 返回当前非终态会议摘要（无则 `meeting: null`） |
 | GET | `/meetings/:slug` | 公开 | 返回名称、状态、是否需要密码和是否满员 |
+| GET | `/meetings/:slug/host-session` | 主持人 | 校验主持人会话是否有效（204） |
 | POST | `/meetings/:slug/end` | 主持人 | 结束会议并移除所有成员 |
+| POST | `/meetings/:slug/admin-end` | 管理密码 | 用管理密码结束会议（无需主持人会话） |
 | POST | `/meetings/:slug/kick` | 主持人 | 按身份移除成员 |
 | PUT | `/meetings/:slug/share-grant` | 主持人 | 原子授予唯一共享权限 |
 | DELETE | `/meetings/:slug/share-grant` | 主持人 | 撤销或释放共享权限 |
@@ -123,19 +130,34 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 |---|---|---|---|
 | POST | `/meetings/:slug/join` | 会议密码 | 校验容量并签发 LiveKit Token |
 | POST | `/meetings/:slug/token` | 参与者会话 | 为完整重连签发新的 5 分钟 Token |
-| POST | `/meetings/:slug/leave` | 参与者 Token | 提前释放参与状态 |
+| POST | `/meetings/:slug/leave` | 参与者会话 | 提前释放参与状态 |
+| DELETE | `/meetings/:slug/share` | 参与者会话 | 共享者主动释放自己的共享权限 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN 列表与带短期凭据的 coturn TURN 列表 |
+| POST | `/meetings/:slug/p2p-stats` | 参与者会话（离会容忍） | 记录匿名 P2P 质量统计（无媒体/SDP/IP/身份） |
+| WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready`/`retry` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`：第一项为配置的 STUN URL，第二项为 coturn TURN URL 并附带 TURN REST HMAC 短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(secret, username)`），响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取。
 
-### 4.3 LiveKit Webhook
+### 4.3 P2P 信令端点行为
+
+- 握手必须携带有效参与者安全 Cookie，且 `Origin` 必须与 `PUBLIC_BASE_URL` 完全一致；缺失、无效或跨站来源均拒绝升级。
+- 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。客户端发送 `hello` 声明身份，服务端校验其与 Cookie 会话一致。
+- 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice`/`bye` 只能发给当前共享者（或由共享者发出）；观看者确认直连视频已解码后向共享者发送 `media-ready`；观看者可用 `retry` 请求共享者为其重建会话并重发 offer；目标必须是同会议在线成员。
+- `offer`/`answer`/`ice`/`media-ready` 携带可选 `generation` 字段，用于区分同一次会话的重协商，避免陈旧候选污染重试。
+- 共享锁释放（撤销/结束/共享者离开/被移除）时服务端广播 `share-gone`，客户端据此关闭全部 P2P 连接。
+- 消息上限 64 KiB；单连接限速 120 条/60 秒；SDP、ICE 候选与凭据不写入日志。
+- 心跳：客户端每 25 秒发送 `ping`，服务端以 `pong` 应答；服务端 120 秒未收到任何帧判定失联并关闭（后台标签页计时器节流下仍足够宽松）。
+- 服务重启时在线表清空，客户端重连后以 `welcome` 全量恢复；LiveKit 参与者仍在时不影响其语音。
+
+### 4.4 LiveKit Webhook
 
 `POST /internal/livekit/webhook` 只接收 LiveKit 使用 Server API Secret 签名的事件，并可限制为 Docker 内部来源。它处理参与者加入/离开、轨道发布/取消和房间结束事件，用于清理加入预留、释放共享锁和维护空房时间。签名无效或重复事件不得改变状态；处理逻辑按事件 ID 幂等。
 
-### 4.4 健康检查
+### 4.5 健康检查
 
 - `GET /health/live`：进程存活，不访问外部依赖。
-- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问。
+- `GET /health/ready`：SQLite 可读写且 LiveKit Server API 可访问；P2P STUN 配置已在进程启动时完成校验。
 
 ## 5. LiveKit 权限
 
@@ -147,7 +169,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 禁止创建其他房间或执行管理 API。
 - JWT 有效期固定为 5 分钟；完整重连通过未撤销的参与者安全会话刷新。
 
-共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。撤销时先更新服务端权限，再要求客户端停止轨道。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
+共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**P2P 混合模式始终先发布并保留 LiveKit 屏幕轨道作为兼容与恢复安全网**。确认 P2P 首帧已经渲染的现代观看者仅在本客户端取消订阅 LiveKit 屏幕；旧客户端继续通过 LiveKit 观看。撤销时先更新服务端权限，再要求客户端停止 LiveKit 轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
 
 ## 6. 前端状态与页面
 
@@ -165,8 +187,9 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 ### 6.3 会议室
 
 - 主区域使用 `object-fit: contain` 展示共享屏幕，不裁剪文字内容。
+- 观看者端屏幕源为双源渲染：P2P 直连流优先，LiveKit 轨道为回退；切换时不出现重复画面或黑屏超过 2 秒。
 - 成员列表显示昵称、麦克风状态、共享者和连接质量。
-- 控制栏只包含麦克风、设备、屏幕共享、离开/结束和连接状态。
+- 控制栏只包含麦克风、设备、屏幕共享（含码率档位选择与在线观看人数联动建议）、离开/结束和连接状态。
 - 主持人操作通过成员菜单提供，不占用普通成员界面。
 - 无共享时显示会议名称和等待状态。
 
@@ -178,17 +201,33 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 
 ### 7.2 屏幕
 
-- 标准模式：1920×1080 目标、30fps、4–8 Mbps 目标范围。
-- 高动态模式：1920×1080 目标、60fps、8–15 Mbps 目标范围。
-- 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定。
+**传输模式（P2P 优先，LiveKit 回退）**：
+
+- **P2P 直连模式**：共享者对每名观看者各建一条 `RTCPeerConnection`，同一条连接上发布屏幕视频与屏幕音频两条轨道（音画同步硬约束，禁止拆到两条连接）。观看者端若在 8 秒内未收到媒体，通知共享者回退。
+- **LiveKit 安全网模式**：共享者先发布 LiveKit 再启动 P2P，并保持发布至共享结束。观看者只有在直连候选对、视频字节与解码帧均确认后才发送 `media-ready` 并切到 P2P；连续检查 RTP，协商超时（8 秒）、ICE `failed` 或 5 秒无 RTP 进展时重新订阅 LiveKit。旧源保留到新源首帧后才关闭，双源可短暂并行用于无黑屏交接，但不会长期双重接收。
+
+**码率**：
+
+- P2P 直连档位：5 / 8 / 10 Mbps，默认 8 Mbps（受共享者上行约束：N 人 × 档位 < 可用上行）。
+- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变；常驻 SFU 安全网固定以 10 Mbps 发布。
+- 共享开始时按在线观看者数给出建议档位并默认选中（≥4 名观看者建议 5 Mbps，否则 8 Mbps），可手动调整。
+
+**编码与自适应**：
+
+- 三档质量预设：`flow` 1280×720@30fps（弱网优先）、`standard` 1920×1080@30fps（默认）、`motion` 1920×1080@60fps（高动态）；三者均采用 `maintain-resolution`（保分辨率、降帧率），文字可读性优先。
+- 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
+- `degradationPreference: maintain-resolution`（保分辨率、降帧率），文字可读性优先。
+- 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
-- 启用自适应流和动态订阅；页面不可见时降低非关键渲染负载。
+- 页面不可见时降低非关键渲染负载。
+
+**共享端流程**：授权 → 获取屏幕流（含音频）→ 先发布 LiveKit 安全网 → 获取显式 STUN 配置 → 对 P2P 信令在线的观看者发起协商 → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
 
 ## 8. 定时任务与恢复
 
 API 每 30 秒执行一次轻量清理：
 
-1. 将过期会议置为 `expired` 并关闭 LiveKit 房间。
+1. 将过期会议置为 `expired`，关闭 LiveKit 房间，并通知后关闭对应 P2P 信令房间的全部连接。
 2. 查询活动房间人数，维护 `active/grace` 状态。
 3. 清理超过 10 分钟的空房。
 4. 撤销终态会议的主持人会话和共享锁。
@@ -210,9 +249,11 @@ API 每 30 秒执行一次轻量清理：
 | `UNSUPPORTED_CLIENT` | 400 | 请使用 Windows 最新版 Chrome 或 Edge |
 | `RATE_LIMITED` | 429 | 尝试过于频繁，请稍后再试 |
 | `MEDIA_SERVICE_UNAVAILABLE` | 503 | 媒体服务暂时不可用，请重试 |
+| `P2P_FORBIDDEN` | 403 | 当前成员无权发起或应答 P2P 协商（信令层，仅日志，不直接展示） |
+| `P2P_PEER_NOT_FOUND` | 404 | P2P 消息目标不在线或不在本会议（信令层，仅日志） |
 
-内部错误返回关联 ID，不返回堆栈、SQL、密钥或内部地址。
+内部错误返回关联 ID，不返回堆栈、SQL、密钥或内部地址。P2P 信令错误在客户端表现为静默回退或状态提示，不打断会议流程。
 
 ## 10. 完成定义
 
-实现只有在以下条件全部满足时才算完成：功能需求逐项通过、API 契约有自动化测试、两种浏览器完成 E2E、5 人 1080p60 负载达标、两小时稳定性通过、部署和回滚在目标服务器演练成功、安全检查没有高危问题。
+实现只有在以下条件全部满足时才算完成：功能需求（含 FR-015/FR-016）逐项通过、API 契约（含 P2P 信令与 ICE 凭据）有自动化测试、两种浏览器完成 E2E、P2P 直连与回退在真实公网 NAT 场景验证通过、5 人 1080p60 负载达标、两小时稳定性通过、部署和回滚在目标服务器演练成功、安全检查没有高危问题。
