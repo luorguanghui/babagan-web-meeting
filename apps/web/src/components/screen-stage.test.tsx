@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { ScreenStage } from './screen-stage.js';
@@ -231,6 +231,25 @@ describe('screen stage dual-source rendering', () => {
     const video = getVisibleVideo(container);
 
     expect(video.muted).toBe(false);
+  });
+
+  it.each([
+    [1920, 1080, '1.7777777777777777', 'landscape'],
+    [1920, 1200, '1.6', 'landscape'],
+    [1024, 768, '1.3333333333333333', 'landscape'],
+    [1080, 1920, '0.5625', 'portrait']
+  ] as const)('uses source metadata %sx%s for the stage ratio', (width, height, ratio, orientation) => {
+    const { container } = render(<ScreenStage stream={makeStream()} muted={false} />);
+    const video = getVisibleVideo(container);
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: width });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: height });
+
+    fireEvent.loadedMetadata(video);
+
+    const stage = screen.getByRole('region', { name: 'Shared screen stage' });
+    expect(stage).toHaveStyle(`--stage-aspect-ratio: ${ratio}`);
+    expect(stage).toHaveAttribute('data-orientation', orientation);
+    expect(video).toHaveStyle({ objectFit: 'contain' });
   });
 
   it('uses native shared-audio volume for live changes without WebAudio', () => {

@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 
@@ -74,6 +74,12 @@ export function ScreenStage({
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const committedRef = useRef<StageSource>(null);
+  const [sourceAspectRatio, setSourceAspectRatio] = useState(16 / 9);
+  const updateAspectRatio = useCallback(() => {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !video.videoHeight) return;
+    setSourceAspectRatio(video.videoWidth / video.videoHeight);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -226,12 +232,21 @@ export function ScreenStage({
   </section>;
 
   const name = sharerName ?? t('screen.participant');
-  return <section ref={stageRef} className="screen-stage" aria-label={t('screen.stage')}>
+  const stageStyle = { '--stage-aspect-ratio': String(sourceAspectRatio) } as CSSProperties;
+  return <section
+    ref={stageRef}
+    className="screen-stage"
+    aria-label={t('screen.stage')}
+    data-orientation={sourceAspectRatio >= 1 ? 'landscape' : 'portrait'}
+    style={stageStyle}
+  >
     <video
       ref={videoRef}
       aria-label={t('screen.videoLabel', { name })}
       autoPlay
       muted={muted ?? (Boolean(stream) || !audioTrack)}
+      onLoadedMetadata={updateAspectRatio}
+      onResize={updateAspectRatio}
       playsInline
       style={{ objectFit: 'contain' }}
     />
