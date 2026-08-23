@@ -34,6 +34,15 @@ function clientNotice(t: Translate): ClientNotice {
   return undefined;
 }
 
+function isTerminalMeetingFailure(reason: unknown): boolean {
+  if (!(reason instanceof ApiRequestError)) return false;
+  const code = reason.details?.error.code;
+  return reason.status === 404
+    || reason.status === 410
+    || code === 'MEETING_NOT_FOUND'
+    || code === 'MEETING_EXPIRED';
+}
+
 export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
@@ -63,8 +72,13 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
         return;
       }
       setSummaryState({ kind: 'ready', summary });
-    } catch {
-      if (generation === summaryRequestGeneration.current) setSummaryState({ kind: 'unavailable' });
+    } catch (reason) {
+      if (generation !== summaryRequestGeneration.current) return;
+      if (isTerminalMeetingFailure(reason)) {
+        navigate('/create', { replace: true });
+        return;
+      }
+      setSummaryState({ kind: 'unavailable' });
     }
   }, [navigate, slug]);
 
@@ -101,8 +115,9 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   if (summaryState.kind !== 'ready') return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
     <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1>
     <p className={summaryState.kind === 'loading' ? 'message' : 'message error'} role={summaryState.kind === 'loading' ? 'status' : 'alert'}>
-      {summaryState.kind === 'loading' ? t('connection.refreshing') : t('join.failed')}
+      {summaryState.kind === 'loading' ? t('join.loading') : t('join.lookupFailed')}
     </p>
+    {summaryState.kind === 'unavailable' && <button type="button" className="secondary" onClick={() => void loadSummary()}>{t('join.retry')}</button>}
   </section></main>;
 
   return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">

@@ -194,6 +194,37 @@ describe('join lobby', () => {
     expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
   });
 
+  it.each([
+    ['MEETING_NOT_FOUND', 404],
+    ['MEETING_EXPIRED', 410]
+  ] as const)('redirects terminal lookup error %s to create', async (code, status) => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      error: { code, message: 'Terminal', correlationId: 'corr-terminal' }
+    }, status)));
+    renderAt(`/m/${slug}`);
+
+    expect(await screen.findByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+  });
+
+  it('keeps a transient lookup failure in the lobby and retries', async () => {
+    installBrowserFakes();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(success({
+        error: { code: 'MEDIA_SERVICE_UNAVAILABLE', message: 'Unavailable', correlationId: 'corr-503' }
+      }, 503))
+      .mockResolvedValueOnce(success({
+        name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderAt(`/m/${slug}`);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Meeting details could not be loaded');
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByLabelText('Nickname')).toBeVisible();
+  });
+
   it('marks and validates the password for a protected meeting', async () => {
     installBrowserFakes();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
