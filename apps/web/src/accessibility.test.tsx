@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom/vitest';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { cleanup, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
 import { App } from './app.js';
@@ -8,6 +8,11 @@ import { ApiRequestError } from './api/client.js';
 import { ConnectionBanner } from './components/connection-banner.js';
 import { MeetingErrorBoundary } from './components/error-boundary.js';
 import { MeetingControls } from './components/meeting-controls.js';
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe('meeting accessibility', () => {
   it('groups product identity and language in one application header', () => {

@@ -39,6 +39,15 @@ async function renderValidLobby() {
 }
 
 describe('meeting creation', () => {
+  it('places creation context and the form in separate task regions', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({ meeting: null })));
+    renderAt('/create');
+
+    expect(await screen.findByRole('complementary')).toHaveTextContent('short-lived room');
+    expect(screen.getByRole('form', { name: 'Create meeting' })).toBeVisible();
+  });
+
   it('follows a Chinese browser language and can switch back to English', async () => {
     installBrowserFakes();
     Object.defineProperty(window.navigator, 'languages', { configurable: true, value: ['zh-CN', 'en-US'] });
@@ -257,6 +266,14 @@ describe('join lobby', () => {
 
     expect(await screen.findByLabelText('Meeting password')).not.toBeRequired();
     expect(screen.getByText('optional')).toBeVisible();
+  });
+
+  it('keeps device check secondary to the labelled join form', async () => {
+    installBrowserFakes();
+    await renderValidLobby();
+
+    expect(screen.getByRole('form', { name: 'Join meeting' })).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Device check' })).toBeVisible();
   });
 
   it('blocks unsupported desktop browsers with guidance', async () => {

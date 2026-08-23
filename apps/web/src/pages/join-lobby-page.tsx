@@ -10,6 +10,7 @@ import { useNavigate } from 'react-router-dom';
 
 import { ApiRequestError, apiRequest } from '../api/client.js';
 import { DeviceCheck } from '../components/device-check.js';
+import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, type Translate, useI18n } from '../i18n/i18n.js';
 import { MeetingRoomPage } from './meeting-room-page.js';
 
@@ -119,23 +120,25 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     finally { setIsJoining(false); }
   }
 
-  if (summaryState.kind !== 'ready') return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
-    <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1>
+  if (summaryState.kind !== 'ready') return <TaskPageLayout eyebrow={t('join.eyebrow')} title={t('join.heading')} lede={t('join.lede')}>
     <p className={summaryState.kind === 'loading' ? 'message' : 'message error'} role={summaryState.kind === 'loading' ? 'status' : 'alert'}>
       {summaryState.kind === 'loading' ? t('join.loading') : t('join.lookupFailed')}
     </p>
     {summaryState.kind === 'unavailable' && <button type="button" className="secondary" onClick={() => void loadSummary()}>{t('join.retry')}</button>}
-  </section></main>;
+  </TaskPageLayout>;
 
-  return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
-    <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1><p className="lede">{t('join.lede')}</p>
+  return <TaskPageLayout
+    eyebrow={t('join.eyebrow')}
+    title={t('join.heading')}
+    lede={t('join.lede')}
+    context={<DeviceCheck onCleanupReady={registerCleanup} />}
+  >
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
-    <form onSubmit={join} noValidate>
+    <form aria-label={t('join.form')} onSubmit={join} noValidate>
       <label>{t('join.nickname')}<input aria-label={t('join.nickname')} value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={40} autoComplete="name" /></label>
       <label>{t('join.password')} <span className="optional">{passwordRequired ? t('join.required') : t('common.optional')}</span><input aria-label={t('join.password')} aria-required={passwordRequired} required={passwordRequired} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="current-password" /></label>
       {error && <p className="message error" role="alert">{error}</p>}
       <button type="submit" disabled={isJoining || notice?.kind === 'block'}>{isJoining ? t('join.submitting') : t('join.submit')}</button>
     </form>
-    <DeviceCheck onCleanupReady={registerCleanup} />
-  </section></main>;
+  </TaskPageLayout>;
 }
