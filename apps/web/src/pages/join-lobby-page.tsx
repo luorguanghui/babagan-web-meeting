@@ -108,7 +108,14 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     try {
       const response = await apiRequest<JoinMeetingResponse>(`/meetings/${slug}/join`, JoinMeetingResponseSchema, { method: 'POST', body: JSON.stringify(body) });
       setJoined(response); setMeetingPassword('');
-    } catch (reason) { setError(reason instanceof ApiRequestError ? apiErrorText(reason, t, 'join.failed') : t('join.failed')); }
+    } catch (reason) {
+      if (isTerminalMeetingFailure(reason)) {
+        previewCleanup?.();
+        navigate('/create', { replace: true });
+        return;
+      }
+      setError(reason instanceof ApiRequestError ? apiErrorText(reason, t, 'join.failed') : t('join.failed'));
+    }
     finally { setIsJoining(false); }
   }
 
