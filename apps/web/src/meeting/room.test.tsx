@@ -421,19 +421,7 @@ describe('meeting room UI', () => {
     expect(controller.callVolumes).toEqual([0.35]);
   });
 
-  it('routes the remote shared-audio slider into the active stage gain', async () => {
-    const makeNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
-    const gain = { ...makeNode(), gain: { value: 1 } };
-    const context = {
-      state: 'running',
-      destination: makeNode(),
-      createMediaElementSource: vi.fn(() => makeNode()),
-      createGain: vi.fn(() => gain),
-      createDynamicsCompressor: vi.fn(() => makeNode()),
-      resume: vi.fn(async () => undefined),
-      close: vi.fn(async () => undefined)
-    };
-    vi.stubGlobal('AudioContext', vi.fn(function () { return context; }));
+  it('routes the remote shared-audio slider into the active stage element volume', async () => {
     const attach = (element?: HTMLMediaElement) => element ?? document.createElement('video');
     const detach = (element?: HTMLMediaElement) => element ?? [];
     const controller = new FakeMeetingRoomController();
@@ -452,7 +440,8 @@ describe('meeting room UI', () => {
     const slider = await screen.findByRole('slider', { name: 'Shared audio volume' });
     fireEvent.change(slider, { target: { value: '40' } });
 
-    await waitFor(() => expect(gain.gain.value).toBe(0.2));
+    const video = screen.getByLabelText("Ben's shared screen") as HTMLVideoElement;
+    await waitFor(() => expect(video.volume).toBe(0.4));
   });
 
   it('notifies the leave API before disconnecting gracefully', async () => {

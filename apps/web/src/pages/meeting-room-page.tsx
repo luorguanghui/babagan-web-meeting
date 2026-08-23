@@ -727,7 +727,6 @@ export function MeetingRoomPage({
             muted={stageMuted}
             sharerName={sharerName}
             onSourceReady={handleStageSourceReady}
-            audioDynamics={!screenState.stream}
             sharedAudioVolume={sharedAudioVolume / 100}
           >
             {hasActiveScreenShare && <WebRtcStatsPanel

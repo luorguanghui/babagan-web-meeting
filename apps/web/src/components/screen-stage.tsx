@@ -1,11 +1,6 @@
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
-import {
-  createScreenAudioDynamics,
-  type AudioContextLike,
-  type ScreenAudioDynamics
-} from '../meeting/screen-audio-dynamics.js';
 
 type StageTrack = Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
 
@@ -59,9 +54,7 @@ export function ScreenStage({
   muted,
   sharerName,
   onSourceReady,
-  audioDynamics = false,
   sharedAudioVolume = 1,
-  createAudioContext = defaultCreateAudioContext,
   children
 }: {
   stream?: MediaStream;
@@ -72,12 +65,8 @@ export function ScreenStage({
   sharerName?: string;
   /** Called after the selected source renders its first media event or a bounded LiveKit handover is forced. */
   onSourceReady?: () => void;
-  /** Routes the stage audio through a trim + limiter (remote shared audio only). */
-  audioDynamics?: boolean;
-  /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (safe maximum). */
+  /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (original level). */
   sharedAudioVolume?: number;
-  /** AudioContext factory; injectable for tests (jsdom has no real AudioContext). */
-  createAudioContext?: () => AudioContextLike;
   children?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -85,17 +74,6 @@ export function ScreenStage({
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const committedRef = useRef<StageSource>(null);
-  const [audioElement, setAudioElement] = useState<HTMLVideoElement | null>(null);
-  const audioDynamicsRef = useRef<{
-    element: HTMLVideoElement;
-    dynamics: ScreenAudioDynamics;
-    resume: () => void;
-  } | undefined>(undefined);
-  const assignVideoRef = useCallback((element: HTMLVideoElement | null) => {
-    videoRef.current = element;
-    if (element !== null) videoElementRef.current = element;
-    setAudioElement(element);
-  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -238,44 +216,10 @@ export function ScreenStage({
     };
   }, []);
 
-  // Remote shared audio is routed through one graph per mounted media element.
-  // P2P/TURN <-> LiveKit handovers only replace the element's media source:
-  // recreating a MediaElementSource for the same element is rejected by
-  // Chrome/Edge even after the old AudioContext has been closed.
   useEffect(() => {
-    if (!audioDynamics || muted || audioElement === null || audioDynamicsRef.current !== undefined) return;
-    let context: AudioContextLike;
-    try {
-      context = createAudioContext();
-    } catch {
-      return;
-    }
-    const dynamics = createScreenAudioDynamics(audioElement, context);
-    if (dynamics === undefined) {
-      void context.close().catch(() => undefined);
-      return;
-    }
-    dynamics.setVolume(audioDynamics && !muted ? sharedAudioVolume : 0);
-    const resume = () => { void dynamics.resume().catch(() => undefined); };
-    audioDynamicsRef.current = { element: audioElement, dynamics, resume };
-    audioElement.addEventListener('playing', resume);
-    if (!audioElement.paused) resume();
-  }, [audioDynamics, audioElement, createAudioContext, muted]);
-
-  useEffect(() => {
-    if (audioElement === null) return;
-    return () => {
-      const active = audioDynamicsRef.current;
-      if (active?.element !== audioElement) return;
-      audioDynamicsRef.current = undefined;
-      active.element.removeEventListener('playing', active.resume);
-      void active.dynamics.dispose();
-    };
-  }, [audioElement]);
-
-  useEffect(() => {
-    audioDynamicsRef.current?.dynamics.setVolume(audioDynamics && !muted ? sharedAudioVolume : 0);
-  }, [audioDynamics, muted, sharedAudioVolume]);
+    const element = videoRef.current;
+    if (element !== null) element.volume = Math.min(1, Math.max(0, sharedAudioVolume));
+  }, [audioTrack, sharedAudioVolume, stream, track]);
 
   if (!stream && !track) return <section className="screen-stage screen-stage-empty" aria-label={t('screen.stage')}>
     <p>{t('screen.empty')}</p>
@@ -284,7 +228,7 @@ export function ScreenStage({
   const name = sharerName ?? t('screen.participant');
   return <section ref={stageRef} className="screen-stage" aria-label={t('screen.stage')}>
     <video
-      ref={assignVideoRef}
+      ref={videoRef}
       aria-label={t('screen.videoLabel', { name })}
       autoPlay
       muted={muted ?? (Boolean(stream) || !audioTrack)}
@@ -300,8 +244,4 @@ export function ScreenStage({
     >{t('screen.fullscreenAction')}</button>
     {children}
   </section>;
-}
-
-function defaultCreateAudioContext(): AudioContextLike {
-  return new AudioContext();
 }
