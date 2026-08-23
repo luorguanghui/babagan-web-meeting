@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -274,6 +274,28 @@ describe('room controller', () => {
 
     await waitFor(() => expect(states.at(-1)?.audioPlaybackBlocked).toBe(true));
   });
+
+  it('keeps the receiver call volume for microphone tracks after reconnecting', async () => {
+    const firstRoom = roomAdapter();
+    const reconnectedRoom = roomAdapter();
+    const rooms = [firstRoom, reconnectedRoom];
+    const controller = createRoomController(() => rooms.shift()!);
+    await controller.connect(join);
+    controller.setCallAudioVolume(0.4);
+    await controller.connect(join);
+    const element = document.createElement('audio');
+    vi.spyOn(element, 'play').mockResolvedValue(undefined);
+    const subscribed = vi.mocked(reconnectedRoom.on).mock.calls
+      .find(([event]) => event === 'trackSubscribed')?.[1];
+
+    subscribed?.(
+      { kind: 'audio', attach: () => element, detach: () => element },
+      { source: 'microphone' },
+      { identity: 'participant-2', name: 'Ben' }
+    );
+
+    await waitFor(() => expect(element.volume).toBe(0.4));
+  });
 });
 
 const participants: MeetingParticipant[] = [
@@ -294,6 +316,7 @@ class FakeMeetingRoomController implements MeetingRoomController {
   };
   readonly microphoneChanges: Array<{ enabled: boolean; deviceId?: string }> = [];
   readonly outputChanges: string[] = [];
+  readonly callVolumes: number[] = [];
   disconnectCount = 0;
   private listeners = new Set<(state: MeetingRoomState) => void>();
 
@@ -308,6 +331,7 @@ class FakeMeetingRoomController implements MeetingRoomController {
     this.emit();
   }
   async switchAudioOutput(deviceId: string) { this.outputChanges.push(deviceId); return 'changed' as const; }
+  setCallAudioVolume(volume: number) { this.callVolumes.push(volume); }
   async publishScreenShare() {}
   async releaseScreenShare() {}
   async setRemoteScreenShareSubscribed() {}
@@ -387,6 +411,50 @@ describe('meeting room UI', () => {
     expect(controller.outputChanges).toEqual(['speaker-2']);
   });
 
+  it('routes the call-audio slider to the aggregate remote microphone volume', async () => {
+    const { controller } = renderRoom();
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const slider = await screen.findByRole('slider', { name: 'Call audio volume' });
+
+    fireEvent.change(slider, { target: { value: '35' } });
+
+    expect(controller.callVolumes).toEqual([0.35]);
+  });
+
+  it('routes the remote shared-audio slider into the active stage gain', async () => {
+    const makeNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
+    const gain = { ...makeNode(), gain: { value: 1 } };
+    const context = {
+      state: 'running',
+      destination: makeNode(),
+      createMediaElementSource: vi.fn(() => makeNode()),
+      createGain: vi.fn(() => gain),
+      createDynamicsCompressor: vi.fn(() => makeNode()),
+      resume: vi.fn(async () => undefined),
+      close: vi.fn(async () => undefined)
+    };
+    vi.stubGlobal('AudioContext', vi.fn(function () { return context; }));
+    const attach = (element?: HTMLMediaElement) => element ?? document.createElement('video');
+    const detach = (element?: HTMLMediaElement) => element ?? [];
+    const controller = new FakeMeetingRoomController();
+    controller.state = {
+      ...controller.state,
+      remoteScreenShare: {
+        track: { kind: 'video', attach, detach },
+        audioTrack: { kind: 'audio', attach, detach },
+        sharerIdentity: 'participant-2',
+        sharerName: 'Ben'
+      }
+    };
+    renderRoom(controller);
+
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const slider = await screen.findByRole('slider', { name: 'Shared audio volume' });
+    fireEvent.change(slider, { target: { value: '40' } });
+
+    await waitFor(() => expect(gain.gain.value).toBe(0.2));
+  });
+
   it('notifies the leave API before disconnecting gracefully', async () => {
     const order: string[] = [];
     const controller = new FakeMeetingRoomController();
@@ -430,6 +498,43 @@ describe('meeting room UI', () => {
 });
 
 describe('remote audio playback', () => {
+  it('clamps call volume to the safe media-element range', async () => {
+    const element = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+    await playback.add(element);
+
+    playback.setVolume(1.5);
+    expect(element.volume).toBe(1);
+
+    playback.setVolume(-0.5);
+    expect(element.volume).toBe(0);
+  });
+
+  it('applies the selected call volume to current and future remote audio', async () => {
+    const current = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const future = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+
+    await playback.add(current);
+    (playback as AudioPlayback & { setVolume?: (volume: number) => void }).setVolume?.(0.35);
+    await playback.add(future);
+
+    expect(current.volume).toBe(0.35);
+    expect(future.volume).toBe(0.35);
+  });
+
   it('reports a rejected media play attempt and recovers from a later user gesture', async () => {
     const play = vi.fn()
       .mockRejectedValueOnce(new DOMException('Blocked', 'NotAllowedError'))

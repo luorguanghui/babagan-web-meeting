@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ComponentType } from 'react';
@@ -502,6 +502,62 @@ describe('controlled browser screen sharing', () => {
     await userEvent.selectOptions(selector, 'turn');
 
     expect(onTransportChange).toHaveBeenCalledWith('turn');
+  });
+
+  it('lets a receiver adjust the aggregate call-audio volume', async () => {
+    const onCallAudioVolumeChange = vi.fn();
+    render(<MeetingControls
+      connection="connected"
+      microphoneEnabled={false}
+      audioPlaybackBlocked={false}
+      devices={[]}
+      leaving={false}
+      callAudioVolume={100}
+      onCallAudioVolumeChange={onCallAudioVolumeChange}
+      onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined}
+      onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined}
+      onLeave={() => undefined}
+    />);
+
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const slider = screen.queryByRole('slider', { name: 'Call audio volume' });
+    expect(slider).toHaveValue('100');
+    if (!slider) return;
+
+    fireEvent.change(slider, { target: { value: '35' } });
+    expect(onCallAudioVolumeChange).toHaveBeenCalledWith(35);
+  });
+
+  it('shows shared-audio volume only while receiving a remote share', async () => {
+    const onSharedAudioVolumeChange = vi.fn();
+    const common = {
+      connection: 'connected' as const,
+      microphoneEnabled: false,
+      audioPlaybackBlocked: false,
+      devices: [],
+      leaving: false,
+      sharedAudioVolume: 100,
+      onSharedAudioVolumeChange,
+      onMicrophoneToggle: () => undefined,
+      onMicrophoneDeviceChange: () => undefined,
+      onSpeakerDeviceChange: () => undefined,
+      onResumeAudio: () => undefined,
+      onLeave: () => undefined
+    };
+    const rendered = render(<MeetingControls {...common} sharedAudioVolumeVisible={false} />);
+
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    expect(screen.queryByRole('slider', { name: 'Shared audio volume' })).not.toBeInTheDocument();
+
+    rendered.rerender(<MeetingControls {...common} sharedAudioVolumeVisible />);
+    const slider = screen.queryByRole('slider', { name: 'Shared audio volume' });
+    expect(slider).toHaveValue('100');
+    if (!slider) return;
+
+    fireEvent.change(slider, { target: { value: '45' } });
+    expect(onSharedAudioVolumeChange).toHaveBeenCalledWith(45);
   });
 
   it('groups the three primary actions separately from adaptive sharing settings', async () => {
@@ -2034,6 +2090,7 @@ function meetingController(change: Partial<MeetingRoomState> = {}): MeetingRoomC
     connect: vi.fn(async () => undefined),
     setMicrophoneEnabled: vi.fn(async () => undefined),
     switchAudioOutput: vi.fn(async () => 'changed' as const),
+    setCallAudioVolume: vi.fn(),
     publishScreenShare: vi.fn(async () => undefined),
     releaseScreenShare: vi.fn(async () => undefined),
     setRemoteScreenShareSubscribed: vi.fn(async () => undefined),

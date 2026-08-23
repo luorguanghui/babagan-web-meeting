@@ -5,6 +5,7 @@ export class AudioPlayback {
   private readonly listeners = new Set<(blocked: boolean) => void>();
   private blocked = false;
   private generation = 0;
+  private volume = 1;
 
   subscribe(listener: (blocked: boolean) => void): () => void {
     this.listeners.add(listener);
@@ -14,7 +15,13 @@ export class AudioPlayback {
 
   async add(element: HTMLMediaElement): Promise<void> {
     this.elements.add(element);
+    element.volume = this.volume;
     await this.tryPlay(element);
+  }
+
+  setVolume(volume: number): void {
+    this.volume = Math.min(1, Math.max(0, volume));
+    for (const element of this.elements) element.volume = this.volume;
   }
 
   remove(element: HTMLMediaElement): void {

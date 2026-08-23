@@ -178,6 +178,8 @@ export function MeetingRoomPage({
   ), [slug]);
   const { state, error: connectionError, reconnectState, reconnectRateLimited } = useMeetingRoom(join, controller, refresh);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [callAudioVolume, setCallAudioVolume] = useState(100);
+  const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -726,6 +728,7 @@ export function MeetingRoomPage({
             sharerName={sharerName}
             onSourceReady={handleStageSourceReady}
             audioDynamics={!screenState.stream}
+            sharedAudioVolume={sharedAudioVolume / 100}
           >
             {hasActiveScreenShare && <WebRtcStatsPanel
               snapshot={screenStats}
@@ -739,6 +742,9 @@ export function MeetingRoomPage({
           connection={state.connection}
           microphoneEnabled={state.microphoneEnabled}
           audioPlaybackBlocked={state.audioPlaybackBlocked}
+          callAudioVolume={callAudioVolume}
+          sharedAudioVolume={sharedAudioVolume}
+          sharedAudioVolumeVisible={Boolean(!screenState.stream && hasActiveScreenShare)}
           devices={devices}
           leaving={leaving}
           screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
@@ -751,6 +757,11 @@ export function MeetingRoomPage({
           onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
           onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
           onResumeAudio={() => void controller.resumeAudioPlayback()}
+          onCallAudioVolumeChange={(volume) => {
+            setCallAudioVolume(volume);
+            controller.setCallAudioVolume(volume / 100);
+          }}
+          onSharedAudioVolumeChange={setSharedAudioVolume}
           onScreenCodecChange={setScreenCodec}
           onScreenBitrateChange={(bitrate) => {
             screenBitrateTouchedRef.current = true;

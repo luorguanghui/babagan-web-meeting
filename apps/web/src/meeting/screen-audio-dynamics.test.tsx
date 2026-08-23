@@ -57,6 +57,28 @@ describe('screen audio dynamics', () => {
     expect(compressor.connect).toHaveBeenCalledWith(context.destination);
   });
 
+  it('scales the safe shared-audio trim by the receiver volume', () => {
+    const element = document.createElement('video');
+    const { context, gain } = makeContext();
+    const dynamics = createScreenAudioDynamics(element, context)!;
+
+    (dynamics as typeof dynamics & { setVolume?: (volume: number) => void }).setVolume?.(0.4);
+
+    expect(gain.gain.value).toBe(0.2);
+  });
+
+  it('clamps shared-audio volume within the safe gain range', () => {
+    const element = document.createElement('video');
+    const { context, gain } = makeContext();
+    const dynamics = createScreenAudioDynamics(element, context)!;
+
+    dynamics.setVolume(1.5);
+    expect(gain.gain.value).toBe(0.5);
+
+    dynamics.setVolume(-0.5);
+    expect(gain.gain.value).toBe(0);
+  });
+
   it('applies the exported limiter curve constants', () => {
     expect(SCREEN_AUDIO_LIMITER.threshold).toBe(-20);
     expect(SCREEN_AUDIO_LIMITER.ratio).toBeGreaterThanOrEqual(8);

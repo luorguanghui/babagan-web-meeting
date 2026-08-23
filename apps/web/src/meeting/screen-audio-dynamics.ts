@@ -45,6 +45,8 @@ export interface AudioContextLike {
 export interface ScreenAudioDynamics {
   /** Resumes the context (autoplay policy may start it suspended). */
   resume(): Promise<void>;
+  /** Applies the receiver's 0–1 volume within the existing safe trim. */
+  setVolume(volume: number): void;
   dispose(): Promise<void>;
 }
 
@@ -69,6 +71,9 @@ export function createScreenAudioDynamics(
     return {
       resume: async () => {
         if (context.state !== 'running') await context.resume();
+      },
+      setVolume: (volume) => {
+        gain.gain.value = SCREEN_AUDIO_GAIN_TRIM * Math.min(1, Math.max(0, volume));
       },
       dispose: async () => {
         try {

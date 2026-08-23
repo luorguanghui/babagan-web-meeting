@@ -43,6 +43,7 @@ export interface MeetingRoomController {
   connect(join: JoinMeetingResponse): Promise<void>;
   setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void>;
   switchAudioOutput(deviceId: string): Promise<'changed' | 'unsupported'>;
+  setCallAudioVolume(volume: number): void;
   publishScreenShare(stream: MediaStream, options: {
     maxBitrate: number;
     frameRate: number;
@@ -185,6 +186,10 @@ class RoomController implements MeetingRoomController {
     if (!this.supportsAudioOutput()) return 'unsupported';
     await this.room.switchActiveDevice('audiooutput', deviceId);
     return 'changed';
+  }
+
+  setCallAudioVolume(volume: number): void {
+    this.audioPlayback.setVolume(volume);
   }
 
   async publishScreenShare(

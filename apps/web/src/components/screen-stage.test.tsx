@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { ScreenStage } from './screen-stage.js';
@@ -247,6 +248,32 @@ describe('screen stage dual-source rendering', () => {
     expect(audio.compressor.connect).toHaveBeenCalledWith(audio.context.destination);
   });
 
+  it('updates shared-audio volume without rebuilding the media source', () => {
+    const stream = makeStream();
+    const audio = makeAudioContext();
+    const createAudioContext = () => audio.context;
+    const { rerender } = render(
+      <ScreenStage
+        stream={stream}
+        muted={false}
+        audioDynamics
+        sharedAudioVolume={1}
+        createAudioContext={createAudioContext}
+      />
+    );
+
+    rerender(<ScreenStage
+      stream={stream}
+      muted={false}
+      audioDynamics
+      sharedAudioVolume={0.4}
+      createAudioContext={createAudioContext}
+    />);
+
+    expect(audio.gain.gain.value).toBe(0.2);
+    expect(audio.context.createMediaElementSource).toHaveBeenCalledOnce();
+  });
+
   it('resumes a suspended audio context when the element starts playing', () => {
     const stream = makeStream();
     const audio = makeAudioContext('suspended');
@@ -272,15 +299,57 @@ describe('screen stage dual-source rendering', () => {
     expect(getVisibleVideo(container).muted).toBe(true); // local stream default
   });
 
-  it('disposes the audio graph when the source swaps', () => {
+  it('keeps one audio graph when the stage swaps from a P2P stream to a LiveKit track', () => {
     const audio = makeAudioContext();
+    audio.context.createMediaElementSource.mockImplementationOnce(() => audio.source);
+    audio.context.createMediaElementSource.mockImplementationOnce(() => {
+      throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
+    });
+    const createAudioContext = () => audio.context;
     const { rerender } = render(
-      <ScreenStage stream={makeStream()} muted={false} audioDynamics createAudioContext={() => audio.context} />
+      <ScreenStage
+        stream={makeStream()}
+        muted={false}
+        audioDynamics
+        sharedAudioVolume={0.4}
+        createAudioContext={createAudioContext}
+      />
     );
 
-    rerender(<ScreenStage track={makeTrack()} muted={false} audioDynamics createAudioContext={() => audio.context} />);
+    rerender(<ScreenStage
+      track={makeTrack()}
+      muted={false}
+      audioDynamics
+      sharedAudioVolume={0.4}
+      createAudioContext={createAudioContext}
+    />);
 
-    expect(audio.context.close).toHaveBeenCalled();
+    expect(audio.context.createMediaElementSource).toHaveBeenCalledOnce();
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(audio.gain.gain.value).toBe(0.2);
+  });
+
+  it('keeps one audio graph through the StrictMode effect replay', () => {
+    const audio = makeAudioContext();
+    audio.context.createMediaElementSource.mockImplementationOnce(() => audio.source);
+    audio.context.createMediaElementSource.mockImplementationOnce(() => {
+      throw new DOMException('HTMLMediaElement already connected', 'InvalidStateError');
+    });
+    const createAudioContext = () => audio.context;
+
+    render(<StrictMode>
+      <ScreenStage
+        stream={makeStream()}
+        muted={false}
+        audioDynamics
+        sharedAudioVolume={0.4}
+        createAudioContext={createAudioContext}
+      />
+    </StrictMode>);
+
+    expect(audio.context.createMediaElementSource).toHaveBeenCalledOnce();
+    expect(audio.context.close).not.toHaveBeenCalled();
+    expect(audio.gain.gain.value).toBe(0.2);
   });
 });
 

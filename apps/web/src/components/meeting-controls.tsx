@@ -16,6 +16,9 @@ interface MeetingControlsProps {
   connection: MeetingConnectionState;
   microphoneEnabled: boolean;
   audioPlaybackBlocked: boolean;
+  callAudioVolume?: number;
+  sharedAudioVolume?: number;
+  sharedAudioVolumeVisible?: boolean;
   devices: MediaDeviceInfo[];
   leaving: boolean;
   screenShareAuthorized?: boolean;
@@ -36,6 +39,8 @@ interface MeetingControlsProps {
   onMicrophoneDeviceChange: (deviceId: string) => void;
   onSpeakerDeviceChange: (deviceId: string) => void;
   onResumeAudio: () => void;
+  onCallAudioVolumeChange?: (volume: number) => void;
+  onSharedAudioVolumeChange?: (volume: number) => void;
   onScreenCodecChange?: (codec: ScreenShareCodec) => void;
   onScreenBitrateChange?: (bitrate: ScreenShareBitrate) => void;
   onScreenQualityChange?: (quality: ScreenShareQuality) => void;
@@ -74,6 +79,36 @@ export function MeetingControls(props: MeetingControlsProps) {
     <details className="meeting-settings">
       <summary>{t('controls.settings')}</summary>
       <div className="meeting-settings-grid">
+        <label className="meeting-volume-control">
+          <span className="meeting-volume-heading">
+            <span>{t('controls.callAudioVolume')}</span>
+            <output>{props.callAudioVolume ?? 100}%</output>
+          </span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={props.callAudioVolume ?? 100}
+            aria-label={t('controls.callAudioVolume')}
+            onChange={(event) => props.onCallAudioVolumeChange?.(Number(event.target.value))}
+          />
+        </label>
+        {props.sharedAudioVolumeVisible && <label className="meeting-volume-control">
+          <span className="meeting-volume-heading">
+            <span>{t('controls.sharedAudioVolume')}</span>
+            <output>{props.sharedAudioVolume ?? 100}%</output>
+          </span>
+          <input
+            type="range"
+            min="0"
+            max="100"
+            step="5"
+            value={props.sharedAudioVolume ?? 100}
+            aria-label={t('controls.sharedAudioVolume')}
+            onChange={(event) => props.onSharedAudioVolumeChange?.(Number(event.target.value))}
+          />
+        </label>}
         <label>{t('controls.microphoneDevice')}<select aria-label={t('controls.microphoneDevice')} defaultValue="" onChange={(event) => props.onMicrophoneDeviceChange(event.target.value)}>
           <option value="" disabled>{t('controls.selectMicrophone')}</option>
           {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.microphone')}</option>)}

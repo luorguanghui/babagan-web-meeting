@@ -129,6 +129,9 @@ meter { height: .9rem; width: 100%; }
 .meeting-management > summary::marker { color: var(--meeting-accent); }
 .meeting-settings-grid { display: grid; gap: .7rem; grid-template-columns: repeat(4, minmax(0, 1fr)); padding: .3rem 0 .15rem; }
 .meeting-controls label { color: var(--meeting-muted); font-size: .75rem; gap: .35rem; min-width: 0; }
+.meeting-volume-heading { align-items: center; display: flex; gap: .5rem; justify-content: space-between; }
+.meeting-volume-heading output { background: transparent; color: var(--meeting-text); font-variant-numeric: tabular-nums; padding: 0; }
+.meeting-volume-control input[type='range'] { accent-color: var(--meeting-accent); cursor: pointer; min-height: 2.75rem; padding: 0; width: 100%; }
 .meeting-controls-hint { display: block; font-size: .7rem; line-height: 1.35; }
 .meeting-controls select,
 .meeting-side-rail select,
