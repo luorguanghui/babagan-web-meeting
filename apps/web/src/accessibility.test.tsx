@@ -1,13 +1,23 @@
 import '@testing-library/jest-dom/vitest';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
+import { App } from './app.js';
 import { ApiRequestError } from './api/client.js';
 import { ConnectionBanner } from './components/connection-banner.js';
 import { MeetingErrorBoundary } from './components/error-boundary.js';
 import { MeetingControls } from './components/meeting-controls.js';
 
 describe('meeting accessibility', () => {
+  it('groups product identity and language in one application header', () => {
+    render(<MemoryRouter initialEntries={['/create']}><App /></MemoryRouter>);
+
+    const banner = screen.getByRole('banner');
+    expect(banner).toHaveTextContent('Babagan');
+    expect(screen.getByLabelText('Language')).toBeVisible();
+  });
+
   it('announces the connection state with text rather than color alone', () => {
     render(<ConnectionBanner state={{ kind: 'reconnecting', since: 1 }} online={false} />);
     expect(screen.getByRole('status')).toHaveTextContent('You are offline');
