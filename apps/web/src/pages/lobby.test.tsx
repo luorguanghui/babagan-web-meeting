@@ -174,6 +174,26 @@ describe('API client', () => {
 });
 
 describe('join lobby', () => {
+  it('does not expose the join form before the meeting summary is validated', () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    renderAt(`/m/${slug}`);
+
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Join muted' })).not.toBeInTheDocument();
+  });
+
+  it.each(['ended', 'expired'] as const)('redirects a %s meeting summary to create', async (status) => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Old meeting', status, requiresPassword: false, isFull: false
+    })));
+    renderAt(`/meetings/${slug}`);
+
+    expect(await screen.findByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+  });
+
   it('marks and validates the password for a protected meeting', async () => {
     installBrowserFakes();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({

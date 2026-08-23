@@ -5,7 +5,7 @@ import {
   type JoinMeetingResponse,
   type MeetingSummary
 } from '@meeting/contracts';
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ApiRequestError, apiRequest } from '../api/client.js';
@@ -15,6 +15,10 @@ import { MeetingRoomPage } from './meeting-room-page.js';
 
 interface JoinLobbyPageProps { slug: string; }
 type ClientNotice = { kind: 'block'; message: string } | { kind: 'notice'; message: string } | undefined;
+type LobbySummaryState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; summary: MeetingSummary }
+  | { kind: 'unavailable' };
 
 function clientNotice(t: Translate): ClientNotice {
   const userAgent = navigator.userAgent;
@@ -39,22 +43,35 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const [joined, setJoined] = useState<JoinMeetingResponse>();
   const [isJoining, setIsJoining] = useState(false);
   const [previewCleanup, setPreviewCleanup] = useState<(() => void) | null>(null);
-  const [summary, setSummary] = useState<MeetingSummary>();
+  const [summaryState, setSummaryState] = useState<LobbySummaryState>({ kind: 'loading' });
+  const summaryRequestGeneration = useRef(0);
   const notice = clientNotice(t);
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
-  const passwordRequired = summary?.requiresPassword === true;
+  const passwordRequired = summaryState.kind === 'ready' && summaryState.summary.requiresPassword;
+
+  const loadSummary = useCallback(async () => {
+    const generation = ++summaryRequestGeneration.current;
+    setSummaryState({ kind: 'loading' });
+    try {
+      const summary = await apiRequest<MeetingSummary>(
+        `/meetings/${encodeURIComponent(slug)}`,
+        MeetingSummarySchema
+      );
+      if (generation !== summaryRequestGeneration.current) return;
+      if (summary.status === 'ended' || summary.status === 'expired') {
+        navigate('/create', { replace: true });
+        return;
+      }
+      setSummaryState({ kind: 'ready', summary });
+    } catch {
+      if (generation === summaryRequestGeneration.current) setSummaryState({ kind: 'unavailable' });
+    }
+  }, [navigate, slug]);
 
   useEffect(() => {
-    let active = true;
-    void apiRequest<MeetingSummary>(
-      `/meetings/${encodeURIComponent(slug)}`,
-      MeetingSummarySchema
-    ).then(
-      (value) => { if (active) setSummary(value); },
-      () => { if (active) setSummary(undefined); }
-    );
-    return () => { active = false; };
-  }, [slug, t]);
+    void loadSummary();
+    return () => { summaryRequestGeneration.current++; };
+  }, [loadSummary]);
 
   if (joined) return <MeetingRoomPage
     slug={slug}
@@ -80,6 +97,14 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     } catch (reason) { setError(reason instanceof ApiRequestError ? apiErrorText(reason, t, 'join.failed') : t('join.failed')); }
     finally { setIsJoining(false); }
   }
+
+  if (summaryState.kind !== 'ready') return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
+    <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1>
+    <p className={summaryState.kind === 'loading' ? 'message' : 'message error'} role={summaryState.kind === 'loading' ? 'status' : 'alert'}>
+      {summaryState.kind === 'loading' ? t('connection.refreshing') : t('join.failed')}
+    </p>
+  </section></main>;
+
   return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
     <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1><p className="lede">{t('join.lede')}</p>
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
