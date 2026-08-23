@@ -13,6 +13,8 @@ import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
 import { MeetingControls } from '../components/meeting-controls.js';
+import { MeetingDrawer, type MeetingPanel } from '../components/meeting-drawer.js';
+import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
@@ -180,6 +182,9 @@ export function MeetingRoomPage({
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [callAudioVolume, setCallAudioVolume] = useState(100);
   const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
+  const [meetingPanel, setMeetingPanel] = useState<MeetingPanel>(null);
+  const participantButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -694,13 +699,18 @@ export function MeetingRoomPage({
   }, [controller, hasActiveScreenShare, screenState.status, viewerP2pState]);
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
-    <header className="meeting-topbar meeting-room-header">
-      <div className="meeting-room-title">
-        <p className="eyebrow">{t('room.eyebrow')}</p>
-        <h1>{t('room.heading', { name: join.participantName })}</h1>
-      </div>
-      <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
-    </header>
+    <MeetingTopBar
+      title={t('room.heading', { name: join.participantName })}
+      connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}
+      participantCount={state.participants.length}
+      navigationLabel={t('controls.navigation')}
+      participantLabel={t('participants.label')}
+      settingsLabel={t('controls.settingsShort')}
+      onParticipants={() => setMeetingPanel('participants')}
+      onSettings={() => setMeetingPanel('settings')}
+      participantButtonRef={participantButtonRef}
+      settingsButtonRef={settingsButtonRef}
+    />
     <section className="meeting-notices" aria-live="polite">
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
       {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
@@ -788,31 +798,42 @@ export function MeetingRoomPage({
           onLeave={() => void leave()}
         />
       </div>
-      <aside className="meeting-side-rail" aria-label={t('room.sidePanel')}>
-        <ParticipantList participants={state.participants} />
-        <details className="meeting-management">
-          <summary>{t('room.management')}</summary>
-          <HostMenu
-            participants={hostParticipants}
-            authorizeHost={authorizeHost}
-            onAuthorizationChange={authorizationChanged}
-            onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
-            onRevokeShare={() => meetingApi.revokeShare(slug)}
-            onKick={(identity) => meetingApi.kick(slug, identity)}
-            onEndMeeting={() => meetingApi.end(slug)}
+    </div>
+    {meetingPanel === 'participants' && <MeetingDrawer
+      title={t('participants.label')}
+      closeLabel={t('controls.closePanel')}
+      onClose={() => setMeetingPanel(null)}
+      returnFocusRef={participantButtonRef}
+    >
+      <ParticipantList participants={state.participants} />
+      <details className="meeting-management">
+        <summary>{t('room.management')}</summary>
+        <HostMenu
+          participants={hostParticipants}
+          authorizeHost={authorizeHost}
+          onAuthorizationChange={authorizationChanged}
+          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
+          onRevokeShare={() => meetingApi.revokeShare(slug)}
+          onKick={(identity) => meetingApi.kick(slug, identity)}
+          onEndMeeting={() => meetingApi.end(slug)}
+          onEnded={() => onTerminal?.('ended')}
+        />
+        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
+          <h2>{t('adminEnd.heading')}</h2>
+          <AdminEndMeetingForm
+            compact
+            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
             onEnded={() => onTerminal?.('ended')}
           />
-          {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
-            <h2>{t('adminEnd.heading')}</h2>
-            <AdminEndMeetingForm
-              compact
-              onEnd={(password) => meetingApi.adminEnd!(slug, password)}
-              onEnded={() => onTerminal?.('ended')}
-            />
-          </section>}
-        </details>
-      </aside>
-    </div>
+        </section>}
+      </details>
+    </MeetingDrawer>}
+    {meetingPanel === 'settings' && <MeetingDrawer
+      title={t('controls.settings')}
+      closeLabel={t('controls.closePanel')}
+      onClose={() => setMeetingPanel(null)}
+      returnFocusRef={settingsButtonRef}
+    ><p className="meeting-drawer-note">{t('controls.settings')}</p></MeetingDrawer>}
   </main>;
 }
 

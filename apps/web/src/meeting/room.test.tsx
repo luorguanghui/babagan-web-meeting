@@ -355,6 +355,18 @@ function renderRoom(controller = new FakeMeetingRoomController(), leaveMeeting =
 }
 
 describe('meeting room UI', () => {
+  it('opens the participant drawer and returns focus when Escape closes it', async () => {
+    renderRoom();
+    const trigger = await screen.findByRole('button', { name: 'Participants' });
+
+    await userEvent.click(trigger);
+    expect(screen.getByRole('dialog', { name: 'Participants' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
   it('uses a compact top bar and a dedicated stage shell', async () => {
     renderRoom();
 
