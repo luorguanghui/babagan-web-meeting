@@ -86,7 +86,10 @@ async function main(): Promise<void> {
     ADMIN_PASSWORD_HASH: adminPasswordHash,
     COOKIE_SECRET: 'local-e2e-cookie-secret-0123456789abcdef',
     DATABASE_PATH: databasePath,
-    P2P_STUN_URLS: 'stun:stun.example.test:3478'
+    P2P_STUN_URLS: 'stun:stun.example.test:3478',
+    P2P_TURN_URLS: 'turn:turn.example.test:3478',
+    P2P_TURN_SECRET: 'local-e2e-turn-secret-0123456789abcdef',
+    P2P_TURN_TTL_SECONDS: '600'
   });
 
   const database = createDatabase(config.databasePath);
