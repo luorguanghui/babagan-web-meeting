@@ -23,10 +23,15 @@ export function MeetingDrawer({
   const headingId = useId();
   const drawerRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const onCloseRef = useRef(onClose);
+  const returnFocusRefRef = useRef(returnFocusRef);
+  onCloseRef.current = onClose;
+  returnFocusRefRef.current = returnFocusRef;
   const close = useCallback(() => {
-    onClose();
-    returnFocusRef?.current?.focus();
-  }, [onClose, returnFocusRef]);
+    const focusTarget = returnFocusRefRef.current?.current;
+    onCloseRef.current();
+    queueMicrotask(() => focusTarget?.focus());
+  }, []);
   useEffect(() => {
     const drawer = drawerRef.current;
     const room = drawer?.closest('.meeting-room');

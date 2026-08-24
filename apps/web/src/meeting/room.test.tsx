@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -369,6 +369,17 @@ describe('meeting room UI', () => {
 
     expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  it('keeps focus inside a drawer when live meeting state rerenders the page', async () => {
+    const { controller } = renderRoom();
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const slider = screen.getByRole('slider', { name: 'Call audio volume' });
+    slider.focus();
+
+    await act(() => controller.setMicrophoneEnabled(true));
+
+    expect(slider).toHaveFocus();
   });
 
   it('keeps primary actions in a toolbar and opens low-frequency controls from More', async () => {

@@ -226,8 +226,12 @@ meter { height: .9rem; width: 100%; }
 @media (min-width: 64rem) {
   .meeting-workspace { grid-template-columns: minmax(0, 1fr); }
   .meeting-side-rail { align-content: start; max-height: calc(100vh - 6.5rem); overflow: auto; position: sticky; top: .75rem; }
-  .meeting-stage-shell { height: calc(100dvh - 13rem); min-height: 24rem; }
-  .screen-stage { height: 100%; margin-inline: auto; width: auto; }
+  .meeting-stage-shell { container-type: size; height: calc(100dvh - 13rem); min-height: 24rem; }
+  .screen-stage {
+    height: min(100cqh, calc(100cqw / var(--stage-aspect-ratio, 1.7777777778)));
+    margin-inline: auto;
+    width: min(100cqw, calc(100cqh * var(--stage-aspect-ratio, 1.7777777778)));
+  }
 }
 @media (max-width: 63.999rem) {
   .meeting-workspace { grid-template-columns: minmax(0, 1fr); }
