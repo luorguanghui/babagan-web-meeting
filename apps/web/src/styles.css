@@ -129,6 +129,8 @@ meter { height: .9rem; width: 100%; }
 .webrtc-stats-panel[open] { background: rgba(8, 20, 25, .96); max-height: min(56vh, 28rem); overflow: auto; width: min(23rem, calc(100% - 1.1rem)); }
 .webrtc-stats-panel summary { align-items: center; color: var(--meeting-muted); cursor: pointer; display: flex; gap: .45rem; font-weight: 650; list-style-position: inside; }
 .webrtc-stats-panel[open] summary { color: var(--meeting-text); }
+.webrtc-stats-panel-embedded { background: transparent; border: 0; font-size: .8rem; inset: auto; max-width: none; padding: 1rem; position: static; }
+.webrtc-stats-heading { align-items: center; display: flex; font-size: .9rem; gap: .5rem; justify-content: space-between; margin: 0 0 .9rem; }
 .webrtc-transport-badge { background: rgba(132, 168, 176, .16); border: 1px solid rgba(196, 231, 236, .22); border-radius: 999px; color: #d5e6e9; font-size: .62rem; letter-spacing: .01em; margin-left: auto; padding: .08rem .42rem; white-space: nowrap; }
 .webrtc-transport-badge[data-mode="p2p"] { background: rgba(74, 200, 155, .18); border-color: rgba(105, 229, 183, .38); color: #a7f2d4; }
 .webrtc-transport-badge[data-mode="turn"] { background: rgba(82, 154, 221, .19); border-color: rgba(112, 180, 242, .4); color: #b8dcff; }
@@ -149,7 +151,10 @@ meter { height: .9rem; width: 100%; }
 .meeting-status-dot { background: var(--meeting-accent); border-radius: 50%; box-shadow: 0 0 0 3px rgba(47, 169, 186, .12); height: .45rem; width: .45rem; }
 .meeting-adaptive-quality { white-space: nowrap; }
 .meeting-primary-actions { display: grid; gap: .5rem; grid-template-columns: repeat(3, minmax(7rem, auto)); }
-.meeting-primary-actions button { min-width: 0; padding: .65rem .85rem; }
+.meeting-primary-toolbar { min-width: 0; }
+.meeting-primary-actions { grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); }
+.meeting-primary-actions button { align-items: center; display: inline-flex; gap: .45rem; justify-content: center; min-width: 0; padding: .65rem .85rem; }
+.meeting-drawer .meeting-settings-grid { grid-template-columns: minmax(0, 1fr); padding: 1rem; }
 .meeting-settings { border-top: 1px solid var(--meeting-border); grid-column: 1 / -1; padding-top: .15rem; }
 .meeting-settings summary,
 .meeting-management > summary { align-items: center; color: var(--meeting-muted); cursor: pointer; display: flex; font-size: .82rem; font-weight: 700; min-height: 2.75rem; padding: .45rem .15rem; }
@@ -249,6 +254,9 @@ meter { height: .9rem; width: 100%; }
   .meeting-control-status { justify-content: space-between; }
   .meeting-primary-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .meeting-primary-actions button { font-size: .78rem; min-height: 2.75rem; padding: .55rem .25rem; }
+  .meeting-primary-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .meeting-primary-actions button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meeting-leave-action { display: none !important; }
   .meeting-settings { grid-column: 1; }
   .meeting-settings-grid { grid-template-columns: minmax(0, 1fr); }
   .meeting-side-rail { border-radius: 10px; }

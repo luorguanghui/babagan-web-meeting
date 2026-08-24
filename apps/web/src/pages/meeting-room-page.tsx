@@ -12,8 +12,9 @@ import { apiNoContent, apiRequest } from '../api/client.js';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
-import { MeetingControls } from '../components/meeting-controls.js';
+import { MeetingControls, MeetingSettings, type MeetingControlsProps } from '../components/meeting-controls.js';
 import { MeetingDrawer, type MeetingPanel } from '../components/meeting-drawer.js';
+import { MeetingMenu, type MeetingMenuAction } from '../components/meeting-menu.js';
 import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
@@ -219,6 +220,15 @@ export function MeetingRoomPage({
     setHostAuthorized(authorized);
     setHostAuthorization(authorized ? 'authorized' : 'unauthorized');
   }, []);
+  useEffect(() => {
+    let active = true;
+    setHostAuthorization('unknown');
+    void authorizeHost().then(
+      () => { if (active) authorizationChanged(true); },
+      () => { if (active) authorizationChanged(false); }
+    );
+    return () => { active = false; };
+  }, [authorizationChanged, authorizeHost]);
   const chooseUnrestrictedSystemAudio = useCallback((context: { displaySurface: string }) => new Promise<UnrestrictedSystemAudioChoice>((resolve) => {
     systemAudioDecisionResolver.current = resolve;
     setSystemAudioDecision(context);
@@ -698,6 +708,59 @@ export function MeetingRoomPage({
     };
   }, [controller, hasActiveScreenShare, screenState.status, viewerP2pState]);
 
+  const meetingControlsProps: MeetingControlsProps = {
+    connection: state.connection,
+    microphoneEnabled: state.microphoneEnabled,
+    audioPlaybackBlocked: state.audioPlaybackBlocked,
+    callAudioVolume,
+    sharedAudioVolume,
+    sharedAudioVolumeVisible: Boolean(!screenState.stream && hasActiveScreenShare),
+    devices,
+    leaving,
+    screenShareAuthorized: hostAuthorized || Boolean(state.screenShareAuthorized),
+    screenShareActive: screenState.status === 'sharing',
+    screenShareBusy: screenState.status === 'starting',
+    screenCodec,
+    screenBitrate,
+    screenQuality,
+    onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
+    onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
+    onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
+    onResumeAudio: () => void controller.resumeAudioPlayback(),
+    onCallAudioVolumeChange: (volume) => {
+      setCallAudioVolume(volume);
+      controller.setCallAudioVolume(volume / 100);
+    },
+    onSharedAudioVolumeChange: setSharedAudioVolume,
+    onScreenCodecChange: setScreenCodec,
+    onScreenBitrateChange: (bitrate) => {
+      screenBitrateTouchedRef.current = true;
+      setScreenBitrate(bitrate);
+    },
+    onScreenQualityChange: setScreenQuality,
+    viewerTransportPreferenceVisible: Boolean(!screenState.stream && hasActiveScreenShare),
+    viewerTransportPreference,
+    onViewerTransportPreferenceChange: handleViewerTransportPreferenceChange,
+    screenViewerCount: viewerCount,
+    p2pRetryVisible: Boolean(
+      (screenState.status === 'sharing' && viewerCount > 0)
+      || (hasActiveScreenShare && (viewerP2pState === 'livekit' || viewerP2pState === 'negotiating'))
+    ),
+    onP2pRetry: () => {
+      if (screenState.status === 'sharing') void p2pShareRef.current?.retryAll(viewerRosterRef.current);
+      else viewerP2pRef.current?.requestRetry();
+    },
+    onScreenShareToggle: () => void toggleScreenShare(),
+    onLeave: () => void leave()
+  };
+
+  const handleMeetingMenuAction = (action: MeetingMenuAction) => {
+    if (action === 'participants') setMeetingPanel('participants');
+    else if (action === 'audio-devices' || action === 'screen-settings') setMeetingPanel('settings');
+    else if (action === 'webrtc-stats') setMeetingPanel('stats');
+    else void leave();
+  };
+
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
     <MeetingTopBar
       title={t('room.heading', { name: join.participantName })}
@@ -739,63 +802,14 @@ export function MeetingRoomPage({
             onSourceReady={handleStageSourceReady}
             sharedAudioVolume={sharedAudioVolume / 100}
           >
-            {hasActiveScreenShare && <WebRtcStatsPanel
-              snapshot={screenStats}
-              requestedCodec={screenCodec}
-              mode={screenTransportMode}
-            />}
           </ScreenStage>
         </section>
         <MeetingControls
+          {...meetingControlsProps}
           className="meeting-control-dock"
-          connection={state.connection}
-          microphoneEnabled={state.microphoneEnabled}
-          audioPlaybackBlocked={state.audioPlaybackBlocked}
-          callAudioVolume={callAudioVolume}
-          sharedAudioVolume={sharedAudioVolume}
-          sharedAudioVolumeVisible={Boolean(!screenState.stream && hasActiveScreenShare)}
-          devices={devices}
-          leaving={leaving}
-          screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
-          screenShareActive={screenState.status === 'sharing'}
-          screenShareBusy={screenState.status === 'starting'}
-          screenCodec={screenCodec}
-          screenBitrate={screenBitrate}
-          screenQuality={screenQuality}
-          onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
-          onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
-          onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
-          onResumeAudio={() => void controller.resumeAudioPlayback()}
-          onCallAudioVolumeChange={(volume) => {
-            setCallAudioVolume(volume);
-            controller.setCallAudioVolume(volume / 100);
-          }}
-          onSharedAudioVolumeChange={setSharedAudioVolume}
-          onScreenCodecChange={setScreenCodec}
-          onScreenBitrateChange={(bitrate) => {
-            screenBitrateTouchedRef.current = true;
-            setScreenBitrate(bitrate);
-          }}
-          onScreenQualityChange={setScreenQuality}
-          viewerTransportPreferenceVisible={Boolean(!screenState.stream && hasActiveScreenShare)}
-          viewerTransportPreference={viewerTransportPreference}
-          onViewerTransportPreferenceChange={handleViewerTransportPreferenceChange}
-          screenViewerCount={viewerCount}
-          p2pRetryVisible={Boolean(
-            (screenState.status === 'sharing' && viewerCount > 0)
-            || (hasActiveScreenShare && (viewerP2pState === 'livekit' || viewerP2pState === 'negotiating'))
-          )}
-          onP2pRetry={() => {
-            // Sharer: re-drive every viewer with a fresh session. Viewer:
-            // ask the sharer to re-drive a fresh offer for us.
-            if (screenState.status === 'sharing') {
-              void p2pShareRef.current?.retryAll(viewerRosterRef.current);
-            } else {
-              viewerP2pRef.current?.requestRetry();
-            }
-          }}
-          onScreenShareToggle={() => void toggleScreenShare()}
-          onLeave={() => void leave()}
+          includeSettings={false}
+          onOpenSharedVolume={() => setMeetingPanel('settings')}
+          onMore={() => setMeetingPanel('more')}
         />
       </div>
     </div>
@@ -811,7 +825,7 @@ export function MeetingRoomPage({
         <HostMenu
           participants={hostParticipants}
           authorizeHost={authorizeHost}
-          onAuthorizationChange={authorizationChanged}
+          authorized={hostAuthorized}
           onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
           onRevokeShare={() => meetingApi.revokeShare(slug)}
           onKick={(identity) => meetingApi.kick(slug, identity)}
@@ -833,7 +847,28 @@ export function MeetingRoomPage({
       closeLabel={t('controls.closePanel')}
       onClose={() => setMeetingPanel(null)}
       returnFocusRef={settingsButtonRef}
-    ><p className="meeting-drawer-note">{t('controls.settings')}</p></MeetingDrawer>}
+    ><MeetingSettings {...meetingControlsProps} /></MeetingDrawer>}
+    {meetingPanel === 'more' && <MeetingDrawer
+      title={t('controls.more')}
+      closeLabel={t('controls.closePanel')}
+      onClose={() => setMeetingPanel(null)}
+    ><MeetingMenu items={[
+      { action: 'participants', label: t('participants.label') },
+      { action: 'audio-devices', label: t('controls.audioDevices') },
+      { action: 'screen-settings', label: t('controls.screenSettings') },
+      { action: 'webrtc-stats', label: t('controls.webrtcData') },
+      { action: 'leave', label: t('controls.leave') }
+    ]} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
+    {meetingPanel === 'stats' && <MeetingDrawer
+      title={t('controls.webrtcData')}
+      closeLabel={t('controls.closePanel')}
+      onClose={() => setMeetingPanel(null)}
+    ><WebRtcStatsPanel
+      embedded
+      snapshot={screenStats}
+      requestedCodec={screenCodec}
+      mode={screenTransportMode}
+    /></MeetingDrawer>}
   </main>;
 }
 

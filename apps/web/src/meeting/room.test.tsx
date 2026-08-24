@@ -367,11 +367,30 @@ describe('meeting room UI', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it('keeps primary actions in a toolbar and opens low-frequency controls from More', async () => {
+    renderRoom();
+    const toolbar = await screen.findByRole('toolbar', { name: 'Primary meeting controls' });
+
+    expect(within(toolbar).getByRole('button', { name: 'Unmute microphone' })).toBeVisible();
+    expect(within(toolbar).getByRole('button', { name: 'Share screen' })).toBeVisible();
+    expect(within(toolbar).getByRole('button', { name: 'More' })).toBeVisible();
+    expect(screen.queryByLabelText('Screen-share codec')).not.toBeInTheDocument();
+
+    await userEvent.click(within(toolbar).getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    expect(screen.getByRole('dialog', { name: 'WebRTC data' })).toBeVisible();
+    expect(screen.getByText('Collecting statistics…')).toBeVisible();
+  });
+
   it('uses a compact top bar and a dedicated stage shell', async () => {
     renderRoom();
 
     expect(await screen.findByRole('banner')).toHaveClass('meeting-topbar');
     expect(document.querySelector('.meeting-stage-shell')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     expect(document.querySelector('.meeting-management')).toBeInTheDocument();
   });
 
@@ -386,7 +405,7 @@ describe('meeting room UI', () => {
       listDevices={async () => devices}
     />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await screen.findByRole('option', { name: 'USB microphone' });
 
     expect(controllerFactory).toHaveBeenCalledOnce();
@@ -396,6 +415,7 @@ describe('meeting room UI', () => {
     renderRoom();
 
     expect(screen.getByRole('main')).not.toHaveClass('meeting-room-sharing');
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     const roster = await screen.findByRole('list', { name: 'Participants' });
     expect(within(roster).getAllByRole('listitem')).toHaveLength(5);
     expect(within(roster).getByRole('listitem', { name: 'Ada, you, microphone muted' })).toBeVisible();
@@ -409,13 +429,14 @@ describe('meeting room UI', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Unmute microphone' }));
 
     expect(await screen.findByRole('button', { name: 'Mute microphone' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     expect(screen.getByRole('listitem', { name: 'Ada, you, microphone on' })).toBeVisible();
   });
 
   it('switches microphone and speaker devices without changing the microphone state', async () => {
     const { controller } = renderRoom();
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await userEvent.selectOptions(await screen.findByLabelText('Microphone device'), 'microphone-2');
     await userEvent.selectOptions(screen.getByLabelText('Speaker device'), 'speaker-2');
 
@@ -425,7 +446,7 @@ describe('meeting room UI', () => {
 
   it('routes the call-audio slider to the aggregate remote microphone volume', async () => {
     const { controller } = renderRoom();
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     const slider = await screen.findByRole('slider', { name: 'Call audio volume' });
 
     fireEvent.change(slider, { target: { value: '35' } });
@@ -448,7 +469,7 @@ describe('meeting room UI', () => {
     };
     renderRoom(controller);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     const slider = await screen.findByRole('slider', { name: 'Shared audio volume' });
     fireEvent.change(slider, { target: { value: '40' } });
 

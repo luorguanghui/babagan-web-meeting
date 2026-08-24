@@ -176,16 +176,17 @@ describe('controlled browser screen sharing', () => {
 
     const main = screen.getByRole('main');
     const stage = await screen.findByLabelText('Shared screen stage');
-    const sideRail = screen.getByLabelText('Meeting side panel');
     const controls = screen.getByLabelText('Meeting controls');
 
     expect(main).toHaveClass('meeting-room-sharing');
     expect(stage.parentElement).toHaveClass('meeting-stage-shell');
     expect(stage.parentElement?.parentElement).toHaveClass('meeting-stage-column');
     expect(stage.parentElement?.parentElement?.parentElement).toHaveClass('meeting-workspace');
-    expect(sideRail).toContainElement(screen.getByRole('heading', { name: 'Participants (1)' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
+    const participantDrawer = screen.getByRole('dialog', { name: 'Participants' });
+    expect(participantDrawer).toContainElement(screen.getByRole('list', { name: 'Participants' }));
     await userEvent.click(screen.getByText('Meeting management'));
-    expect(sideRail).toContainElement(await screen.findByRole('heading', { name: 'Host controls' }));
+    expect(participantDrawer).toContainElement(await screen.findByRole('heading', { name: 'Host controls' }));
     expect(controls).toHaveClass('meeting-control-dock');
   });
 
@@ -203,6 +204,7 @@ describe('controlled browser screen sharing', () => {
       listDevices={async () => []}
     />);
 
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     await userEvent.click(screen.getByText('Meeting management'));
     const input = await screen.findByLabelText('Admin password to end meeting');
     await userEvent.type(input, 'admin-secret');
@@ -223,6 +225,7 @@ describe('controlled browser screen sharing', () => {
       listDevices={async () => []}
     />);
 
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     await userEvent.click(screen.getByText('Meeting management'));
     expect(await screen.findByRole('heading', { name: 'Host controls' })).toBeVisible();
     expect(screen.queryByLabelText('Admin password to end meeting')).not.toBeInTheDocument();
@@ -1604,6 +1607,8 @@ describe('P2P-first screen sharing in the room', () => {
     expect(publishScreenShare).toHaveBeenCalledOnce();
 
     act(() => share.triggerStates([['viewer-1', 'turn']]));
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('TURN relay')).toBeVisible();
   });
 
@@ -1616,7 +1621,7 @@ describe('P2P-first screen sharing in the room', () => {
     });
     act(() => signaling.welcome(fourViewers));
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
     await waitFor(() => expect(selector).toHaveValue('5000000'));
@@ -1911,6 +1916,8 @@ describe('P2P-first screen sharing in the room', () => {
     expect(setSubscribed).not.toHaveBeenCalledWith(false);
     act(() => document.querySelector('[data-stage-probe="true"]')?.dispatchEvent(new Event('playing')));
     await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('Direct P2P')).toBeVisible();
     await waitFor(() => expect(screen.getByText('Receiver')).toBeInTheDocument());
     expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();

@@ -13,17 +13,18 @@ const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   waiting: 'screenTransport.waiting'
 };
 
-export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu' }: {
+export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', embedded = false }: {
   snapshot?: WebRtcStatsSnapshot;
   requestedCodec: ScreenShareCodec;
   mode?: ScreenTransportMode;
+  embedded?: boolean;
 }) {
   const { t } = useI18n();
-  return <details className="webrtc-stats-panel">
-    <summary>
+  const heading = <>
       <span>{t('stats.heading')}</span>
       <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(modeKeys[mode])}</span>
-    </summary>
+    </>;
+  const content = <>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
     {!snapshot?.sender && !snapshot?.receiver
       ? <p>{t('stats.collecting')}</p>
@@ -31,6 +32,14 @@ export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu' }: {
         {snapshot.sender && <StatsSection title={t('stats.sender')} stats={snapshot.sender} />}
         {snapshot.receiver && <StatsSection title={t('stats.receiver')} stats={snapshot.receiver} />}
       </div>}
+  </>;
+  if (embedded) return <section className="webrtc-stats-panel webrtc-stats-panel-embedded">
+    <h3 className="webrtc-stats-heading">{heading}</h3>
+    {content}
+  </section>;
+  return <details className="webrtc-stats-panel">
+    <summary>{heading}</summary>
+    {content}
   </details>;
 }
 
