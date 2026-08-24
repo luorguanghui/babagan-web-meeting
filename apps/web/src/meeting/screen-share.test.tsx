@@ -625,6 +625,25 @@ describe('controlled browser screen sharing', () => {
     expect(onSharedAudioVolumeChange).toHaveBeenCalledWith(45);
   });
 
+  it('marks the mobile dock as wrapped when a P2P retry action is visible', () => {
+    render(<MeetingControls
+      connection="connected"
+      microphoneEnabled={false}
+      audioPlaybackBlocked={false}
+      devices={[]}
+      leaving={false}
+      p2pRetryVisible
+      onP2pRetry={() => undefined}
+      onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined}
+      onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined}
+      onLeave={() => undefined}
+    />);
+
+    expect(screen.getByLabelText('Meeting controls')).toHaveAttribute('data-mobile-wrapped', 'true');
+  });
+
   it('groups the three primary actions separately from adaptive sharing settings', async () => {
     const onBitrateChange = vi.fn();
     const common = {

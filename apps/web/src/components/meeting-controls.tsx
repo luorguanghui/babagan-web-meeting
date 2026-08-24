@@ -85,7 +85,8 @@ export function MeetingControls(props: MeetingControlsProps) {
     volumeTriggerRef.current = trigger;
     setVolumePanel((current) => current === panel ? null : panel);
   };
-  return <footer className={['meeting-controls', props.className].filter(Boolean).join(' ')} aria-label={t('controls.label')}>
+  const mobileDockWrapped = Boolean(props.sharedAudioVolumeVisible || (props.p2pRetryVisible && props.onP2pRetry));
+  return <footer className={['meeting-controls', props.className].filter(Boolean).join(' ')} aria-label={t('controls.label')} data-mobile-wrapped={mobileDockWrapped ? 'true' : 'false'}>
     <div className="meeting-control-status">
       <p role="status"><span className="meeting-status-dot" aria-hidden="true" />{t('controls.connection', { state: props.connection })}</p>
       <p className="meeting-adaptive-quality">{t('controls.adaptiveQuality')}</p>
