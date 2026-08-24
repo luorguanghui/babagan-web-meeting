@@ -151,6 +151,7 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
 function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
   onFallbackRequested?: (complete: () => void) => void;
+  iceTransportPolicy?: RTCIceTransportPolicy;
   now?: () => number;
 } = {}) {
   let healthCheck: (() => Promise<void>) | undefined;
@@ -164,6 +165,7 @@ function makeHarness(options: {
       options.onPcCreated?.(pc);
       return pc as unknown as RTCPeerConnection;
     },
+    iceTransportPolicy: options.iceTransportPolicy,
     onFallback,
     onFallbackRequested: options.onFallbackRequested,
     healthSampleIntervalMs: 1_000,
@@ -408,6 +410,36 @@ describe('p2p viewer controller', () => {
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 1);
     expect(controller.getState()).toBe('negotiating');
     expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('marks decoded media as TURN when relay policy hides the selected pair', async () => {
+    const { controller, signaling } = makeHarness({ iceTransportPolicy: 'relay' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    pc.setIceConnectionState('connected');
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing session tied to its creation-time relay policy', async () => {
+    const { controller } = makeHarness({ iceTransportPolicy: 'relay' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    controller.setIceTransportPolicy('all');
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getState()).toBe('turn');
   });
 
   it('retains a candidate that arrives immediately before its offer', async () => {

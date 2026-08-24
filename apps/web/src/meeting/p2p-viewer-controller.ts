@@ -42,6 +42,7 @@ export interface P2pViewerControllerDependencies {
 
 interface ViewerPcSession {
   pc: RTCPeerConnection;
+  iceTransportPolicy: RTCIceTransportPolicy;
   generation?: string;
   pcClosed: boolean;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
@@ -254,6 +255,7 @@ export class P2pViewerController {
     const pc = this.createPeerConnection(this.iceServers);
     const session: ViewerPcSession = {
       pc,
+      iceTransportPolicy: this.iceTransportPolicy,
       generation,
       pcClosed: false,
       queuedCandidates: [],
@@ -342,7 +344,11 @@ export class P2pViewerController {
           if (session.generation === undefined) this.signaling.sendMediaReady(this.sharerIdentity);
           else this.signaling.sendMediaReady(this.sharerIdentity, session.generation);
         }
-        if (health.path === 'relay') this.transition('turn');
+        // A relay-only peer connection can prove its path from the policy
+        // once real video has decoded, even when mobile WebRTC stats omit the
+        // selected candidate-pair metadata.
+        if (health.path === 'relay'
+          || (health.path === 'unknown' && session.iceTransportPolicy === 'relay')) this.transition('turn');
         else if (health.path === 'direct') this.transition('p2p');
       } else if ((this.state === 'p2p' || this.state === 'turn') && health.path !== 'unknown') {
         const classifiedState: ViewerP2pState = health.path === 'relay' ? 'turn' : 'p2p';
