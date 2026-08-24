@@ -288,7 +288,7 @@ meter { height: .9rem; width: 100%; }
   .meeting-primary-actions button { font-size: .7rem; gap: .18rem; min-height: 2.75rem; padding: .55rem .1rem; }
   .meeting-action-volume .lucide-chevron-up,
   .meeting-action-volume .lucide-chevron-down { display: none; }
-  .meeting-primary-actions { grid-template-columns: repeat(auto-fit, minmax(4.5rem, 1fr)); }
+  .meeting-primary-actions { grid-template-columns: repeat(4, minmax(0, 1fr)); }
   .meeting-volume-popover { bottom: calc(5.25rem + env(safe-area-inset-bottom)); width: min(22rem, calc(100vw - 1rem)); }
   .meeting-primary-actions button span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .meeting-leave-action { display: none !important; }
@@ -299,6 +299,11 @@ meter { height: .9rem; width: 100%; }
   .host-menu,
   .participant-admin-end { padding: .85rem; }
   .webrtc-stats-panel { bottom: .35rem; left: .35rem; max-width: calc(100% - .7rem); }
+}
+
+@media (max-width: 44.999rem) {
+  .meeting-room:has(.meeting-action-shared-volume) .meeting-drawer { bottom: calc(7.4rem + env(safe-area-inset-bottom)); }
+  .meeting-room:has(.meeting-action-shared-volume) .meeting-volume-popover { bottom: calc(8rem + env(safe-area-inset-bottom)); }
 }
 
 @keyframes meeting-drawer-sheet-in { from { opacity: 0; transform: translateY(1rem); } to { opacity: 1; transform: translateY(0); } }

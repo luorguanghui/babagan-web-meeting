@@ -56,6 +56,7 @@ export function MeetingControls(props: MeetingControlsProps) {
   const [volumePanel, setVolumePanel] = useState<'call' | 'shared' | null>(null);
   const volumePanelId = useId();
   const volumeActionsRef = useRef<HTMLDivElement>(null);
+  const volumeTriggerRef = useRef<HTMLButtonElement>(null);
   const MicrophoneIcon = props.microphoneEnabled ? MicOff : Mic;
   useEffect(() => {
     if (volumePanel === 'shared' && !props.sharedAudioVolumeVisible) setVolumePanel(null);
@@ -63,7 +64,12 @@ export function MeetingControls(props: MeetingControlsProps) {
   useEffect(() => {
     if (volumePanel === null) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setVolumePanel(null);
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        const trigger = volumeTriggerRef.current;
+        setVolumePanel(null);
+        queueMicrotask(() => trigger?.focus());
+      }
     };
     const closeOnOutsidePointer = (event: PointerEvent) => {
       if (event.target instanceof Node && !volumeActionsRef.current?.contains(event.target)) setVolumePanel(null);
@@ -75,7 +81,8 @@ export function MeetingControls(props: MeetingControlsProps) {
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
     };
   }, [volumePanel]);
-  const openVolumePanel = (panel: 'call' | 'shared') => {
+  const openVolumePanel = (panel: 'call' | 'shared', trigger: HTMLButtonElement) => {
+    volumeTriggerRef.current = trigger;
     setVolumePanel((current) => current === panel ? null : panel);
   };
   return <footer className={['meeting-controls', props.className].filter(Boolean).join(' ')} aria-label={t('controls.label')}>
@@ -108,7 +115,7 @@ export function MeetingControls(props: MeetingControlsProps) {
               className="meeting-action meeting-action-volume"
               aria-controls={volumePanelId}
               aria-expanded={volumePanel !== null}
-              onClick={() => openVolumePanel('call')}
+              onClick={(event) => openVolumePanel('call', event.currentTarget)}
               aria-label={t('controls.callAudioVolume')}
             ><Volume2 aria-hidden="true" size={19} /><span>{t('controls.callAudioShort')}</span>{volumePanel === 'call' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>
             {props.sharedAudioVolumeVisible && <button
@@ -116,7 +123,7 @@ export function MeetingControls(props: MeetingControlsProps) {
               className="meeting-action meeting-action-volume meeting-action-shared-volume"
               aria-controls={volumePanelId}
               aria-expanded={volumePanel !== null}
-              onClick={() => openVolumePanel('shared')}
+              onClick={(event) => openVolumePanel('shared', event.currentTarget)}
               aria-label={t('controls.sharedAudioVolume')}
             ><Volume2 aria-hidden="true" size={19} /><span>{t('controls.sharedAudioShort')}</span>{volumePanel === 'shared' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>}
           </div>

@@ -589,9 +589,11 @@ describe('controlled browser screen sharing', () => {
     expect(slider).toHaveValue('72');
     fireEvent.change(slider, { target: { value: '35' } });
     expect(onCallAudioVolumeChange).toHaveBeenCalledWith(35);
+    slider.focus();
 
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Call audio volume' })).toHaveFocus();
   });
 
   it('shows a shared-volume shortcut and slider only for a remote share', async () => {
