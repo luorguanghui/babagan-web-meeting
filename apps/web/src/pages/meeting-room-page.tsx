@@ -7,6 +7,7 @@ import {
   type ScreenShareQuality
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MonitorUp } from 'lucide-react';
 
 import { apiNoContent, apiRequest } from '../api/client.js';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
@@ -43,7 +44,8 @@ import {
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
 import {
   deriveSharerScreenTransportMode,
-  deriveViewerScreenTransportMode
+  deriveViewerScreenTransportMode,
+  type ScreenTransportMode
 } from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
@@ -56,6 +58,7 @@ import {
 
 export interface MeetingRoomPageProps {
   slug: string;
+  meetingName?: string;
   join: JoinMeetingResponse;
   controller?: MeetingRoomController;
   controllerFactory?: () => MeetingRoomController;
@@ -89,6 +92,10 @@ export interface MeetingRoomApi {
 }
 
 type HostAuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
+const transportModeKeys: Record<ScreenTransportMode, MessageKey> = {
+  p2p: 'screenTransport.p2p', turn: 'screenTransport.turn', sfu: 'screenTransport.sfu', mixed: 'screenTransport.mixed',
+  negotiating: 'screenTransport.negotiating', waiting: 'screenTransport.waiting'
+};
 
 async function defaultLeaveMeeting(slug: string): Promise<void> {
   const response = await fetch(`/api/v1/meetings/${encodeURIComponent(slug)}/leave`, { method: 'POST', credentials: 'include' });
@@ -157,6 +164,7 @@ async function noContent(
 
 export function MeetingRoomPage({
   slug,
+  meetingName,
   join,
   controller: providedController,
   controllerFactory = createRoomController,
@@ -184,8 +192,10 @@ export function MeetingRoomPage({
   const [callAudioVolume, setCallAudioVolume] = useState(100);
   const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
   const [meetingPanel, setMeetingPanel] = useState<MeetingPanel>(null);
+  const [meetingPanelParent, setMeetingPanelParent] = useState<'more' | null>(null);
   const participantButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -755,22 +765,25 @@ export function MeetingRoomPage({
   };
 
   const handleMeetingMenuAction = (action: MeetingMenuAction) => {
-    if (action === 'participants') setMeetingPanel('participants');
-    else if (action === 'audio-devices' || action === 'screen-settings') setMeetingPanel('settings');
-    else if (action === 'webrtc-stats') setMeetingPanel('stats');
+    if (action === 'participants') { setMeetingPanelParent('more'); setMeetingPanel('participants'); }
+    else if (action === 'audio-devices' || action === 'screen-settings') { setMeetingPanelParent('more'); setMeetingPanel('settings'); }
+    else if (action === 'webrtc-stats') { setMeetingPanelParent('more'); setMeetingPanel('stats'); }
     else void leave();
   };
+  const closeMeetingPanel = () => { setMeetingPanel(null); setMeetingPanelParent(null); };
+  const backToMore = () => { setMeetingPanelParent(null); setMeetingPanel('more'); };
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
     <MeetingTopBar
-      title={t('room.heading', { name: join.participantName })}
+      title={meetingName || t('room.heading', { name: join.participantName })}
       connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}
+      transportLabel={hasActiveScreenShare ? t(transportModeKeys[screenTransportMode]) : t('connection.connected')}
       participantCount={state.participants.length}
       navigationLabel={t('controls.navigation')}
       participantLabel={t('participants.label')}
       settingsLabel={t('controls.settingsShort')}
-      onParticipants={() => setMeetingPanel('participants')}
-      onSettings={() => setMeetingPanel('settings')}
+      onParticipants={() => { setMeetingPanelParent(null); setMeetingPanel('participants'); }}
+      onSettings={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
       participantButtonRef={participantButtonRef}
       settingsButtonRef={settingsButtonRef}
     />
@@ -792,6 +805,9 @@ export function MeetingRoomPage({
     </section>
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
+        {hasActiveScreenShare && <p className="meeting-sharing-label">
+          <MonitorUp aria-hidden="true" size={18} />{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}
+        </p>}
         <section className="meeting-stage-shell">
           <ScreenStage
             stream={stageStream}
@@ -808,16 +824,19 @@ export function MeetingRoomPage({
           {...meetingControlsProps}
           className="meeting-control-dock"
           includeSettings={false}
-          onOpenSharedVolume={() => setMeetingPanel('settings')}
-          onMore={() => setMeetingPanel('more')}
+          onOpenSharedVolume={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
+          onMore={() => { setMeetingPanelParent(null); setMeetingPanel('more'); }}
+          moreButtonRef={moreButtonRef}
         />
       </div>
     </div>
     {meetingPanel === 'participants' && <MeetingDrawer
       title={t('participants.label')}
       closeLabel={t('controls.closePanel')}
-      onClose={() => setMeetingPanel(null)}
-      returnFocusRef={participantButtonRef}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : participantButtonRef}
     >
       <ParticipantList participants={state.participants} />
       <details className="meeting-management">
@@ -845,26 +864,33 @@ export function MeetingRoomPage({
     {meetingPanel === 'settings' && <MeetingDrawer
       title={t('controls.settings')}
       closeLabel={t('controls.closePanel')}
-      onClose={() => setMeetingPanel(null)}
-      returnFocusRef={settingsButtonRef}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
     ><MeetingSettings {...meetingControlsProps} /></MeetingDrawer>}
     {meetingPanel === 'more' && <MeetingDrawer
       title={t('controls.more')}
       closeLabel={t('controls.closePanel')}
-      onClose={() => setMeetingPanel(null)}
+      onClose={closeMeetingPanel}
+      returnFocusRef={moreButtonRef}
     ><MeetingMenu items={[
       { action: 'participants', label: t('participants.label') },
       { action: 'audio-devices', label: t('controls.audioDevices') },
       { action: 'screen-settings', label: t('controls.screenSettings') },
       { action: 'webrtc-stats', label: t('controls.webrtcData') },
       { action: 'leave', label: t('controls.leave') }
-    ]} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
+    ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
     {meetingPanel === 'stats' && <MeetingDrawer
       title={t('controls.webrtcData')}
       closeLabel={t('controls.closePanel')}
-      onClose={() => setMeetingPanel(null)}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={moreButtonRef}
     ><WebRtcStatsPanel
       embedded
+      active={hasActiveScreenShare}
       snapshot={screenStats}
       requestedCodec={screenCodec}
       mode={screenTransportMode}

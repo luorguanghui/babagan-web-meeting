@@ -252,6 +252,20 @@ describe('screen stage dual-source rendering', () => {
     expect(video).toHaveStyle({ objectFit: 'contain' });
   });
 
+  it('resets the preferred stage ratio after a share ends', () => {
+    const rendered = render(<ScreenStage stream={makeStream()} muted={false} />);
+    const video = getVisibleVideo(rendered.container);
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1080 });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1920 });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByRole('region', { name: 'Shared screen stage' })).toHaveAttribute('data-orientation', 'portrait');
+
+    rendered.rerender(<ScreenStage />);
+    rendered.rerender(<ScreenStage stream={makeStream()} muted={false} />);
+
+    expect(screen.getByRole('region', { name: 'Shared screen stage' })).toHaveStyle('--stage-aspect-ratio: 1.7777777777777777');
+  });
+
   it('uses native shared-audio volume for live changes without WebAudio', () => {
     const stream = makeStream();
     const audioContext = vi.fn(function () { return {}; });

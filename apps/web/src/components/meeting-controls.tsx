@@ -1,5 +1,6 @@
 import type { ScreenShareCodec, ScreenShareQuality } from '@meeting/contracts';
 import { Ellipsis, LogOut, Mic, MicOff, MonitorUp, Volume2 } from 'lucide-react';
+import type { RefObject } from 'react';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
@@ -46,6 +47,7 @@ export interface MeetingControlsProps {
   onP2pRetry?: () => void;
   onOpenSharedVolume?: () => void;
   onMore?: () => void;
+  moreButtonRef?: RefObject<HTMLButtonElement | null>;
   includeSettings?: boolean;
   onLeave: () => void;
 }
@@ -63,22 +65,24 @@ export function MeetingControls(props: MeetingControlsProps) {
     <p className="sr-only" role="status">{t('controls.screenStatus', { state: props.screenShareActive ? t('common.on') : t('common.off') })}</p>
     <div className="meeting-primary-toolbar" role="toolbar" aria-label={t('controls.primaryToolbar')}>
       <div className="meeting-primary-actions" role="group" aria-label={t('controls.primaryActions')}>
-        <button type="button" onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
+        <button type="button" className="meeting-action meeting-action-microphone" onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
           <MicrophoneIcon aria-hidden="true" size={19} />
           <span>{props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}</span>
         </button>
         <button
           type="button"
+          className="meeting-action meeting-action-share"
+          data-active={props.screenShareActive ? 'true' : 'false'}
           aria-label={props.screenShareActive ? t('controls.stopShare') : t('controls.share')}
           title={props.screenShareAuthorized ? undefined : t('controls.shareGrantRequired')}
           disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
           onClick={props.onScreenShareToggle}
         ><MonitorUp aria-hidden="true" size={19} /><span>{props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span></button>
-        {props.sharedAudioVolumeVisible && props.onOpenSharedVolume && <button type="button" onClick={props.onOpenSharedVolume}>
+        {props.sharedAudioVolumeVisible && props.onOpenSharedVolume && <button type="button" className="meeting-action meeting-action-volume" onClick={props.onOpenSharedVolume}>
           <Volume2 aria-hidden="true" size={19} /><span>{t('controls.sharedAudioVolume')}</span>
         </button>}
         {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}
-        {props.onMore && <button type="button" onClick={props.onMore}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
+        {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" onClick={props.onMore}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
         <button type="button" className="danger meeting-leave-action" onClick={props.onLeave} disabled={props.leaving}>
           <LogOut aria-hidden="true" size={19} /><span>{props.leaving ? t('controls.leaving') : t('controls.leave')}</span>
         </button>

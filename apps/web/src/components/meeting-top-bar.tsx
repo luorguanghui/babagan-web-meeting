@@ -1,9 +1,10 @@
-import { Settings, Users } from 'lucide-react';
+import { ChartNoAxesColumnIncreasing, Settings, Users } from 'lucide-react';
 import type { ReactNode, RefObject } from 'react';
 
 export function MeetingTopBar({
   title,
   connection,
+  transportLabel,
   participantCount,
   navigationLabel,
   participantLabel,
@@ -15,6 +16,7 @@ export function MeetingTopBar({
 }: {
   title: string;
   connection: ReactNode;
+  transportLabel: string;
   participantCount: number;
   navigationLabel: string;
   participantLabel: string;
@@ -29,7 +31,10 @@ export function MeetingTopBar({
       <span className="meeting-title-mark" aria-hidden="true" />
       <h1>{title}</h1>
     </div>
-    <div className="meeting-topbar-status">{connection}</div>
+    <div className="meeting-topbar-status" aria-hidden="true">
+      <ChartNoAxesColumnIncreasing size={19} /><span>{transportLabel}</span>
+    </div>
+    <div className="sr-only">{connection}</div>
     <nav className="meeting-topbar-actions" aria-label={navigationLabel}>
       <button ref={participantButtonRef} type="button" className="meeting-topbar-action" onClick={onParticipants}>
         <Users aria-hidden="true" size={18} />

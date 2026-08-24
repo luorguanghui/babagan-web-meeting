@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CreateMeetingResponseSchema, RefreshParticipantTokenResponseSchema } from '@meeting/contracts';
@@ -192,6 +192,50 @@ describe('API client', () => {
 });
 
 describe('join lobby', () => {
+  it('hides a validated lobby immediately when navigating to another meeting slug', async () => {
+    installBrowserFakes();
+    const nextSlug = 'another-meeting-slug-long-enough';
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).endsWith(nextSlug)
+      ? new Promise<Response>(() => undefined)
+      : Promise.resolve(success({ name: 'Daily', status: 'created', requiresPassword: true, isFull: false })));
+    vi.stubGlobal('fetch', fetchMock);
+    function SwitchMeeting() {
+      const navigate = useNavigate();
+      return <button type="button" onClick={() => navigate(`/m/${nextSlug}`)}>Switch meeting</button>;
+    }
+    render(<MemoryRouter initialEntries={[`/m/${slug}`]}><SwitchMeeting /><App /></MemoryRouter>);
+    expect(await screen.findByLabelText('Nickname')).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Switch meeting' }));
+
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Join muted' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the mobile join form before a collapsed device check', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      media: '(max-width: 44.999rem)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+    })));
+    renderAt(`/m/${slug}`);
+
+    const form = await screen.findByRole('form', { name: 'Join meeting' });
+    const summary = screen.getByText('Device check', { selector: 'summary' });
+    const disclosure = summary.closest('details');
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(form.compareDocumentPosition(disclosure!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('does not expose the join form before the meeting summary is validated', () => {
     installBrowserFakes();
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
@@ -403,7 +447,7 @@ describe('join lobby', () => {
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
 
-    expect(await screen.findByRole('heading', { name: 'Ada, you are in' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Daily' })).toBeVisible();
     expect(fetchMock).toHaveBeenCalledWith(`/api/v1/meetings/${slug}/join`, expect.objectContaining({
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },

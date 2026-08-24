@@ -360,7 +360,11 @@ describe('meeting room UI', () => {
     const trigger = await screen.findByRole('button', { name: 'Participants' });
 
     await userEvent.click(trigger);
-    expect(screen.getByRole('dialog', { name: 'Participants' })).toBeVisible();
+    const drawer = screen.getByRole('dialog', { name: 'Participants' });
+    expect(drawer).toBeVisible();
+    expect(drawer).toHaveAttribute('aria-modal', 'true');
+    expect(document.querySelector('.meeting-workspace')).toHaveAttribute('inert');
+    expect(within(drawer).getByRole('button', { name: 'Close panel' })).toHaveFocus();
     await userEvent.keyboard('{Escape}');
 
     expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
@@ -380,9 +384,14 @@ describe('meeting room UI', () => {
     expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
     expect(screen.getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
 
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    expect(screen.getByRole('dialog', { name: 'Audio and sharing settings' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to More' }));
+    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
+
     await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByRole('dialog', { name: 'WebRTC data' })).toBeVisible();
-    expect(screen.getByText('Collecting statistics…')).toBeVisible();
+    expect(screen.getByText('No active screen-share data.')).toBeVisible();
   });
 
   it('uses a compact top bar and a dedicated stage shell', async () => {

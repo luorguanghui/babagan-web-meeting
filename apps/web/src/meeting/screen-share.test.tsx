@@ -1609,7 +1609,7 @@ describe('P2P-first screen sharing in the room', () => {
     act(() => share.triggerStates([['viewer-1', 'turn']]));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
     await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
-    expect(screen.getByText('TURN relay')).toBeVisible();
+    expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
   });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
@@ -1918,7 +1918,7 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
     await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
-    expect(screen.getByText('Direct P2P')).toBeVisible();
+    expect(screen.getByText('Direct P2P', { selector: '.webrtc-transport-badge' })).toBeVisible();
     await waitFor(() => expect(screen.getByText('Receiver')).toBeInTheDocument());
     expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
 

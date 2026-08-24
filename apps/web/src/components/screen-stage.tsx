@@ -108,6 +108,7 @@ export function ScreenStage({
     if (desired === null) {
       // The share ended: release immediately, no first-frame retention for "nothing".
       committedRef.current = null;
+      setSourceAspectRatio(16 / 9);
       if (element !== null && committed !== null) releaseSource(element, committed);
       return;
     }

@@ -12,12 +12,14 @@ const menuIcons = {
 
 export function MeetingMenu({
   items,
+  label,
   onAction
 }: {
   items: Array<{ action: MeetingMenuAction; label: string }>;
+  label: string;
   onAction: (action: MeetingMenuAction) => void;
 }) {
-  return <nav className="meeting-menu" aria-label="More meeting controls">
+  return <nav className="meeting-menu" aria-label={label}>
     {items.map(({ action, label }) => {
       const Icon = menuIcons[action];
       return <button

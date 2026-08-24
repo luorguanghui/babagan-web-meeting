@@ -13,11 +13,12 @@ const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   waiting: 'screenTransport.waiting'
 };
 
-export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', embedded = false }: {
+export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', embedded = false, active = true }: {
   snapshot?: WebRtcStatsSnapshot;
   requestedCodec: ScreenShareCodec;
   mode?: ScreenTransportMode;
   embedded?: boolean;
+  active?: boolean;
 }) {
   const { t } = useI18n();
   const heading = <>
@@ -27,7 +28,7 @@ export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', embed
   const content = <>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
     {!snapshot?.sender && !snapshot?.receiver
-      ? <p>{t('stats.collecting')}</p>
+      ? <p>{t(active ? 'stats.collecting' : 'stats.noData')}</p>
       : <div className="webrtc-stats-grid">
         {snapshot.sender && <StatsSection title={t('stats.sender')} stats={snapshot.sender} />}
         {snapshot.receiver && <StatsSection title={t('stats.receiver')} stats={snapshot.receiver} />}

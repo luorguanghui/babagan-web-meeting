@@ -18,8 +18,9 @@ interface JoinLobbyPageProps { slug: string; }
 type ClientNotice = { kind: 'block'; message: string } | { kind: 'notice'; message: string } | undefined;
 type LobbySummaryState =
   | { kind: 'loading' }
-  | { kind: 'ready'; summary: MeetingSummary }
+  | { kind: 'ready'; slug: string; summary: MeetingSummary }
   | { kind: 'unavailable' };
+type JoinedMeeting = { slug: string; meetingName: string; response: JoinMeetingResponse };
 
 function clientNotice(t: Translate): ClientNotice {
   const userAgent = navigator.userAgent;
@@ -50,14 +51,16 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const [nickname, setNickname] = useState('');
   const [meetingPassword, setMeetingPassword] = useState('');
   const [error, setError] = useState<string>();
-  const [joined, setJoined] = useState<JoinMeetingResponse>();
+  const [joined, setJoined] = useState<JoinedMeeting>();
   const [isJoining, setIsJoining] = useState(false);
   const [previewCleanup, setPreviewCleanup] = useState<(() => void) | null>(null);
   const [summaryState, setSummaryState] = useState<LobbySummaryState>({ kind: 'loading' });
+  const [deviceCheckOpen, setDeviceCheckOpen] = useState(() => !window.matchMedia?.('(max-width: 44.999rem)').matches);
   const summaryRequestGeneration = useRef(0);
   const notice = clientNotice(t);
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
-  const passwordRequired = summaryState.kind === 'ready' && summaryState.summary.requiresPassword;
+  const readySummary = summaryState.kind === 'ready' && summaryState.slug === slug ? summaryState.summary : undefined;
+  const passwordRequired = Boolean(readySummary?.requiresPassword);
 
   const loadSummary = useCallback(async () => {
     const generation = ++summaryRequestGeneration.current;
@@ -72,7 +75,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
         navigate('/create', { replace: true });
         return;
       }
-      setSummaryState({ kind: 'ready', summary });
+      setSummaryState({ kind: 'ready', slug, summary });
     } catch (reason) {
       if (generation !== summaryRequestGeneration.current) return;
       if (isTerminalMeetingFailure(reason)) {
@@ -88,9 +91,10 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     return () => { summaryRequestGeneration.current++; };
   }, [loadSummary]);
 
-  if (joined) return <MeetingRoomPage
+  if (joined?.slug === slug) return <MeetingRoomPage
     slug={slug}
-    join={joined}
+    meetingName={joined.meetingName}
+    join={joined.response}
     onLeft={() => setJoined(undefined)}
     onTerminal={(reason) => {
       setJoined(undefined);
@@ -108,7 +112,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     setIsJoining(true);
     try {
       const response = await apiRequest<JoinMeetingResponse>(`/meetings/${slug}/join`, JoinMeetingResponseSchema, { method: 'POST', body: JSON.stringify(body) });
-      setJoined(response); setMeetingPassword('');
+      setJoined({ slug, meetingName: readySummary?.name ?? '', response }); setMeetingPassword('');
     } catch (reason) {
       if (isTerminalMeetingFailure(reason)) {
         previewCleanup?.();
@@ -120,7 +124,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     finally { setIsJoining(false); }
   }
 
-  if (summaryState.kind !== 'ready') return <TaskPageLayout eyebrow={t('join.eyebrow')} title={t('join.heading')} lede={t('join.lede')}>
+  if (!readySummary) return <TaskPageLayout eyebrow={t('join.eyebrow')} title={t('join.heading')} lede={t('join.lede')}>
     <p className={summaryState.kind === 'loading' ? 'message' : 'message error'} role={summaryState.kind === 'loading' ? 'status' : 'alert'}>
       {summaryState.kind === 'loading' ? t('join.loading') : t('join.lookupFailed')}
     </p>
@@ -131,7 +135,6 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     eyebrow={t('join.eyebrow')}
     title={t('join.heading')}
     lede={t('join.lede')}
-    context={<DeviceCheck onCleanupReady={registerCleanup} />}
   >
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
     <form aria-label={t('join.form')} onSubmit={join} noValidate>
@@ -140,5 +143,13 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
       {error && <p className="message error" role="alert">{error}</p>}
       <button type="submit" disabled={isJoining || notice?.kind === 'block'}>{isJoining ? t('join.submitting') : t('join.submit')}</button>
     </form>
+    <details
+      className="device-check-disclosure"
+      open={deviceCheckOpen}
+      onToggle={(event) => setDeviceCheckOpen(event.currentTarget.open)}
+    >
+      <summary>{t('device.heading')}</summary>
+      <DeviceCheck onCleanupReady={registerCleanup} />
+    </details>
   </TaskPageLayout>;
 }
