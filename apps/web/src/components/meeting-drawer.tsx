@@ -65,8 +65,8 @@ export function MeetingDrawer({
       background.forEach((element) => element.removeAttribute('inert'));
     };
   }, [close]);
-  return <><div className="meeting-drawer-backdrop" aria-hidden="true" onClick={close} />
-  <aside ref={drawerRef} className="meeting-drawer" role="dialog" aria-modal="true" aria-labelledby={headingId}>
+  return <><div className="meeting-drawer-backdrop" data-state="open" aria-hidden="true" onClick={close} />
+  <aside ref={drawerRef} className="meeting-drawer" data-state="open" role="dialog" aria-modal="true" aria-labelledby={headingId}>
     <header className="meeting-drawer-header">
       {onBack && <button type="button" className="meeting-drawer-back" aria-label={backLabel} onClick={onBack}>
         <ArrowLeft aria-hidden="true" size={20} />

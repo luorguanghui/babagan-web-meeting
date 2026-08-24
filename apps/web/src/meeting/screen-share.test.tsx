@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ComponentType } from 'react';
@@ -559,6 +559,66 @@ describe('controlled browser screen sharing', () => {
     expect(slider).toHaveValue('100');
     if (!slider) return;
 
+    fireEvent.change(slider, { target: { value: '45' } });
+    expect(onSharedAudioVolumeChange).toHaveBeenCalledWith(45);
+  });
+
+  it('opens an inline call-volume control from the primary dock', async () => {
+    const onCallAudioVolumeChange = vi.fn();
+    render(<MeetingControls
+      connection="connected"
+      microphoneEnabled={false}
+      audioPlaybackBlocked={false}
+      devices={[]}
+      leaving={false}
+      callAudioVolume={72}
+      onCallAudioVolumeChange={onCallAudioVolumeChange}
+      onMicrophoneToggle={() => undefined}
+      onMicrophoneDeviceChange={() => undefined}
+      onSpeakerDeviceChange={() => undefined}
+      onResumeAudio={() => undefined}
+      onLeave={() => undefined}
+    />);
+
+    expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Call audio volume' }));
+
+    const menu = screen.getByRole('group', { name: 'Quick audio controls' });
+    expect(menu).toBeVisible();
+    const slider = within(menu).getByRole('slider', { name: 'Call audio volume' });
+    expect(slider).toHaveValue('72');
+    fireEvent.change(slider, { target: { value: '35' } });
+    expect(onCallAudioVolumeChange).toHaveBeenCalledWith(35);
+
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+  });
+
+  it('shows a shared-volume shortcut and slider only for a remote share', async () => {
+    const onSharedAudioVolumeChange = vi.fn();
+    const common = {
+      connection: 'connected' as const,
+      microphoneEnabled: false,
+      audioPlaybackBlocked: false,
+      devices: [],
+      leaving: false,
+      sharedAudioVolume: 64,
+      onSharedAudioVolumeChange,
+      onMicrophoneToggle: () => undefined,
+      onMicrophoneDeviceChange: () => undefined,
+      onSpeakerDeviceChange: () => undefined,
+      onResumeAudio: () => undefined,
+      onLeave: () => undefined
+    };
+    const rendered = render(<MeetingControls {...common} sharedAudioVolumeVisible={false} />);
+
+    expect(screen.queryByRole('button', { name: 'Shared audio volume' })).not.toBeInTheDocument();
+    rendered.rerender(<MeetingControls {...common} sharedAudioVolumeVisible />);
+    await userEvent.click(screen.getByRole('button', { name: 'Shared audio volume' }));
+
+    const menu = screen.getByRole('group', { name: 'Quick audio controls' });
+    const slider = within(menu).getByRole('slider', { name: 'Shared audio volume' });
+    expect(slider).toHaveValue('64');
     fireEvent.change(slider, { target: { value: '45' } });
     expect(onSharedAudioVolumeChange).toHaveBeenCalledWith(45);
   });

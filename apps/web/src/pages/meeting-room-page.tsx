@@ -824,7 +824,6 @@ export function MeetingRoomPage({
           {...meetingControlsProps}
           className="meeting-control-dock"
           includeSettings={false}
-          onOpenSharedVolume={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
           onMore={() => { setMeetingPanelParent(null); setMeetingPanel('more'); }}
           moreButtonRef={moreButtonRef}
         />
