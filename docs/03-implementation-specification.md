@@ -41,7 +41,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
 | `P2P_TURN_PROVIDER` | `coturn` 或 `cloudflare` | 默认 `coturn`；Cloudflare 失败时回退 coturn |
 | `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN Key ID | 仅服务端使用，不下发浏览器 |
-| `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN API Token | 仅服务端使用，权限 600 |
+| `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN Key API Token/Secret（创建 TURN app 时一次性返回；不是 User API Token） | 仅服务端使用，权限 600 |
 | `CLOUDFLARE_TURN_TTL_SECONDS` | Cloudflare 短期凭据有效期 | 默认 600，范围 60–86400 |
 | `CLOUDFLARE_TURN_CONNECT_IPS` | 可选的 Cloudflare API 出站连接 IP 列表 | 逗号分隔，仅在 DNS 返回地址不可达时配置；服务端保留 `rtc.live.cloudflare.com` 的 TLS SNI/Host |
 

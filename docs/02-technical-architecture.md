@@ -75,7 +75,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 ### 2.6 TURN provider（P2P TURN 中继）
 
 - 默认保留独立 coturn，为 P2P 屏幕共享提供 relay 候选，供直连失败的观看者仍经 P2P 通道收发屏幕媒体。
-- 可将 API 的 `P2P_TURN_PROVIDER` 切换为 `cloudflare`：API 服务端使用受保护的 Cloudflare TURN Key/API Token 生成短期凭据；Cloudflare 凭据获取失败时回退 coturn。
+- 可将 API 的 `P2P_TURN_PROVIDER` 切换为 `cloudflare`：API 服务端使用受保护的 Cloudflare TURN Key ID 与创建 app 时一次性返回的 TURN Key API Token/Secret 生成短期凭据；Cloudflare 凭据获取失败时回退 coturn。
 - 监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP；禁用 DTLS、管理 CLI，并拒绝 loopback/RFC1918/链路本地/组播对端。
 - coturn 使用 TURN REST 鉴权（`use-auth-secret`），共享密钥与 API 的 `P2P_TURN_SECRET` 一致；API 为已认证参与者签发 600 秒短期凭据。Cloudflare provider 使用 Cloudflare API 生成短期凭据，长期 Token 不下发浏览器。
 
