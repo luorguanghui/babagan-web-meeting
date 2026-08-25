@@ -3,12 +3,17 @@ import {
   P2P_ICE_NEGOTIATION_MAX_MS,
   P2P_ICE_NEGOTIATION_PROGRESS_TIMEOUT_MS,
   P2P_TOTAL_UPLINK_BUDGET_BPS,
+  type P2pTurnProvider,
   type ScreenShareCodec
 } from '@meeting/contracts';
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
-import { iceCredentialsExpireSoon } from './ice-credentials.js';
+import {
+  iceConfigurationExpiresSoon,
+  normalizeP2pIceServerConfiguration,
+  type P2pIceServerConfiguration
+} from './p2p-ice.js';
 import {
   inspectP2pMediaHealth,
   inspectSenderVideoStats,
@@ -66,6 +71,8 @@ export interface P2pShareController {
   retryAll(viewers: Peer[]): Promise<void>;
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
+  getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
+  refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
 }
@@ -86,7 +93,7 @@ export interface P2pShareControllerDependencies {
   /** PC factory; defaults to `window.RTCPeerConnection` with the fetched ICE servers. */
   createPeerConnection?: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   /** ICE credentials; defaults to `GET /api/v1/meetings/:slug/ice-servers`. */
-  fetchIceServers?: () => Promise<RTCIceServer[]>;
+  fetchIceServers?: () => Promise<RTCIceServer[] | P2pIceServerConfiguration>;
   /** Fired once per viewer that moves to `livekit-fallback` (the caller publishes the LiveKit screen track). */
   onViewerFallback?: (identity: string) => void;
   /** Fired when every tracked viewer has left (`closed`); the caller may then stop the whole share. */
@@ -102,7 +109,9 @@ export const IceServersResponseSchema = Type.Object({
     urls: Type.Array(Type.String()),
     username: Type.Optional(Type.String()),
     credential: Type.Optional(Type.String())
-  }))
+  })),
+  turnProvider: Type.Optional(Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')])),
+  turnCredentialsExpiresAt: Type.Optional(Type.Integer())
 });
 
 /**
@@ -132,6 +141,7 @@ interface ViewerSession {
   identity: string;
   generation: string;
   pc: RTCPeerConnection;
+  turnProvider: P2pTurnProvider;
   videoSender?: RTCRtpSender;
   options: P2pShareOptions;
   state: ViewerSessionState;
@@ -158,12 +168,13 @@ interface ViewerSession {
 
 class P2pShareControllerImpl implements P2pShareController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
-  private readonly fetchIceServers: () => Promise<RTCIceServer[]>;
+  private readonly fetchIceServers: () => Promise<RTCIceServer[] | P2pIceServerConfiguration>;
   private readonly scheduleTransportChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
   private readonly nowMs: () => number;
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
-  private iceServers?: RTCIceServer[];
+  private iceConfiguration?: P2pIceServerConfiguration;
+  private iceRefreshTimer?: ReturnType<typeof setTimeout>;
   /** The captured share the sessions publish; kept for retry re-drives. */
   private activeStream?: MediaStream;
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
@@ -189,7 +200,7 @@ class P2pShareControllerImpl implements P2pShareController {
   ): Promise<void> {
     this.activeStream = stream;
     this.activeOptions = options;
-    const iceServers = await this.resolveIceServers(recoverNegotiating);
+    const iceConfiguration = await this.resolveIceServers(recoverNegotiating);
     const sessionsToEstablish: ViewerSession[] = [];
     for (const viewer of viewers) {
       const existing = this.sessions.get(viewer.identity);
@@ -197,7 +208,7 @@ class P2pShareControllerImpl implements P2pShareController {
       if (existing && existing.state !== 'closed'
         && !(recoverNegotiating && existing.state === 'negotiating')) continue;
       if (existing) this.closeSession(existing);
-      const session = this.createSession(viewer.identity, stream, options, iceServers);
+      const session = this.createSession(viewer.identity, stream, options, iceConfiguration);
       sessionsToEstablish.push(session);
     }
     this.emit();
@@ -259,10 +270,10 @@ class P2pShareControllerImpl implements P2pShareController {
     if (existing) this.closeSession(existing);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
     // so stale candidates from a failed attempt can never poison the retry.
-    void this.resolveIceServers(true).then(async (iceServers) => {
+    void this.resolveIceServers(true).then(async (iceConfiguration) => {
       // The share may have stopped while the credentials were in flight.
       if (this.activeStream === undefined || this.activeOptions === undefined) return;
-      const session = this.createSession(from, this.activeStream, this.activeOptions, iceServers);
+      const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
       await this.rebalanceBitrates();
       await this.establishSession(session);
     });
@@ -270,7 +281,7 @@ class P2pShareControllerImpl implements P2pShareController {
 
   async retryAll(viewers: Peer[]): Promise<void> {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
-    const iceServers = await this.resolveIceServers(true);
+    const iceConfiguration = await this.resolveIceServers(true);
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') {
         this.clearTimers(session);
@@ -280,7 +291,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.sessions.clear();
     const sessionsToEstablish: ViewerSession[] = [];
     for (const viewer of viewers) {
-      const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceServers);
+      const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceConfiguration);
       sessionsToEstablish.push(session);
     }
     this.emit();
@@ -290,6 +301,10 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   async stop(): Promise<void> {
+    if (this.iceRefreshTimer !== undefined) clearTimeout(this.iceRefreshTimer);
+    this.iceRefreshTimer = undefined;
+    this.activeStream = undefined;
+    this.activeOptions = undefined;
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
       // Mark the session closed synchronously *before* `pc.close()`: a pending
@@ -308,6 +323,29 @@ class P2pShareControllerImpl implements P2pShareController {
     return snapshot;
   }
 
+  getViewerTurnProviders(): ReadonlyMap<string, P2pTurnProvider> {
+    const snapshot = new Map<string, P2pTurnProvider>();
+    for (const [identity, session] of this.sessions) {
+      if (session.state === 'turn') snapshot.set(identity, session.turnProvider);
+    }
+    return snapshot;
+  }
+
+  refreshIceServers(configuration: P2pIceServerConfiguration): void {
+    this.iceConfiguration = configuration;
+    for (const session of this.sessions.values()) {
+      if (session.pcClosed) continue;
+      if (session.state !== 'turn') session.turnProvider = configuration.turnProvider;
+      try {
+        session.pc.setConfiguration({ iceServers: configuration.iceServers });
+      } catch {
+        // A session may be closing while credentials refresh; its next retry
+        // will use the refreshed configuration.
+      }
+    }
+    this.armIceRefresh(configuration);
+  }
+
   async getStatsReports(): Promise<RTCStatsReport[]> {
     const active = [...this.sessions.values()].filter((session) => !session.pcClosed);
     return Promise.all(active.map((session) => session.pc.getStats()));
@@ -319,26 +357,57 @@ class P2pShareControllerImpl implements P2pShareController {
     return () => this.listeners.delete(listener);
   }
 
-  private async resolveIceServers(forceRefresh = false): Promise<RTCIceServer[]> {
-    if (forceRefresh) this.iceServers = undefined;
-    else if (this.iceServers !== undefined
-      && iceCredentialsExpireSoon(this.iceServers, this.nowMs() / 1_000)) {
+  private async resolveIceServers(forceRefresh = false): Promise<P2pIceServerConfiguration> {
+    if (forceRefresh) this.iceConfiguration = undefined;
+    else if (this.iceConfiguration !== undefined
+      && iceConfigurationExpiresSoon(this.iceConfiguration, this.nowMs() / 1_000)) {
       // The cached TURN credentials are about to expire: a session built on
       // them would silently gather no relay candidates. Refresh before use.
-      this.iceServers = undefined;
+      this.iceConfiguration = undefined;
     }
-    if (this.iceServers === undefined) {
-      this.iceServers = await this.fetchIceServers();
+    if (this.iceConfiguration === undefined) {
+      this.refreshIceServers(normalizeP2pIceServerConfiguration(await this.fetchIceServers()));
     }
-    return this.iceServers;
+    return this.iceConfiguration!;
   }
 
-  private createSession(identity: string, stream: MediaStream, options: P2pShareOptions, iceServers: RTCIceServer[]): ViewerSession {
-    const pc = this.createPeerConnection(iceServers);
+  private armIceRefresh(configuration: P2pIceServerConfiguration): void {
+    if (this.iceRefreshTimer !== undefined) clearTimeout(this.iceRefreshTimer);
+    this.iceRefreshTimer = undefined;
+    if (configuration.turnCredentialsExpiresAt === undefined) return;
+    const delay = Math.max(1_000, (configuration.turnCredentialsExpiresAt - this.nowMs() / 1_000 - 60) * 1_000);
+    this.iceRefreshTimer = setTimeout(() => {
+      this.iceRefreshTimer = undefined;
+      void this.refreshIceServersFromProvider();
+    }, delay);
+  }
+
+  private async refreshIceServersFromProvider(): Promise<void> {
+    if (this.activeStream === undefined || this.activeOptions === undefined) return;
+    try {
+      this.refreshIceServers(normalizeP2pIceServerConfiguration(await this.fetchIceServers()));
+    } catch {
+      // A transient provider outage must not tear down a healthy session. Try
+      // again shortly; existing coturn/Cloudflare allocations keep flowing.
+      this.iceRefreshTimer = setTimeout(() => {
+        this.iceRefreshTimer = undefined;
+        void this.refreshIceServersFromProvider();
+      }, 2_000);
+    }
+  }
+
+  private createSession(
+    identity: string,
+    stream: MediaStream,
+    options: P2pShareOptions,
+    iceConfiguration: P2pIceServerConfiguration
+  ): ViewerSession {
+    const pc = this.createPeerConnection(iceConfiguration.iceServers);
     const session: ViewerSession = {
       identity,
       generation: `share-${Date.now()}-${++this.nextGeneration}`,
       pc,
+      turnProvider: iceConfiguration.turnProvider,
       options,
       state: 'negotiating',
       queuedCandidates: [],
@@ -477,18 +546,18 @@ class P2pShareControllerImpl implements P2pShareController {
       this.fallback(session);
       return;
     }
-    const iceServers = await this.resolveIceServers(true).catch(() => undefined);
+    const iceConfiguration = await this.resolveIceServers(true).catch(() => undefined);
     // The viewer left, the share stopped, or a retry already replaced this
     // session while the credential refresh was in flight.
     if (this.sessions.get(session.identity) !== session || session.state !== 'negotiating') return;
-    if (iceServers === undefined) {
+    if (iceConfiguration === undefined) {
       this.fallback(session);
       return;
     }
     // Replace the stalled session with a fresh PC, fresh credentials and a
     // fresh offer generation; the viewer treats the offer as a renegotiation.
     this.closeSession(session);
-    const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, iceServers);
+    const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, iceConfiguration);
     replacement.autoRetried = true;
     await this.rebalanceBitrates();
     await this.establishSession(replacement);
@@ -714,13 +783,13 @@ function applyCodecPreference(transceiver: RTCRtpTransceiver, codec: ScreenShare
   if (preferred.length > 0) transceiver.setCodecPreferences(preferred);
 }
 
-function defaultFetchIceServers(slug: string): () => Promise<RTCIceServer[]> {
+function defaultFetchIceServers(slug: string): () => Promise<P2pIceServerConfiguration> {
   return async () => {
-    const response = await apiRequest<{ iceServers: RTCIceServer[] }>(
+    const response = await apiRequest<P2pIceServerConfiguration>(
       `/meetings/${encodeURIComponent(slug)}/ice-servers`,
       IceServersResponseSchema
     );
-    return response.iceServers;
+    return response;
   };
 }
 

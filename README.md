@@ -34,7 +34,7 @@
 - Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
 - 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，无法直连时经自托管 coturn TURN 中继，仍失败再回退 LiveKit SFU；云端不承载直连屏幕媒体。
-- P2P 屏幕共享使用独立 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），API 通过 `/ice-servers` 下发 STUN 与参与者绑定的短期 TURN 凭据（TURN REST HMAC）。
+- P2P 屏幕共享使用可切换的 TURN provider：API 默认保留 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），也支持服务端调用 Cloudflare Realtime TURN 生成短期凭据；`/ice-servers` 会返回实际 provider，Cloudflare 暂时不可用时回退 coturn。
 - LiveKit 内置 TURN/UDP 443 与 RTC/TCP 7881 作为语音与回退屏幕的媒体兜底。
 - Caddy 负责 HTTPS、证书续期和反向代理。
 - Docker Compose 统一部署和管理进程。

@@ -81,6 +81,32 @@ describe('loadConfig', () => {
     expect(config.p2pTurnTtlSeconds).toBe(600);
   });
 
+  it('loads Cloudflare TURN provider credentials without exposing them to the client config', () => {
+    const config = loadConfig(validEnv({
+      P2P_TURN_PROVIDER: 'cloudflare',
+      CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
+      CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
+      CLOUDFLARE_TURN_TTL_SECONDS: '600'
+    })) as ReturnType<typeof loadConfig> & {
+      p2pTurnProvider?: string;
+      cloudflareTurnKeyId?: string;
+      cloudflareTurnApiToken?: string;
+      cloudflareTurnTtlSeconds?: number;
+    };
+
+    expect(config.p2pTurnProvider).toBe('cloudflare');
+    expect(config.cloudflareTurnKeyId).toBe('turn-key-id');
+    expect(config.cloudflareTurnApiToken).toBe('turn-api-token');
+    expect(config.cloudflareTurnTtlSeconds).toBe(600);
+  });
+
+  it('ignores Cloudflare-only settings while coturn remains the active provider', () => {
+    expect(loadConfig(validEnv({ CLOUDFLARE_TURN_TTL_SECONDS: 'not-used' }))).toMatchObject({
+      p2pTurnProvider: 'coturn',
+      cloudflareTurnTtlSeconds: undefined
+    });
+  });
+
   it('rejects unsafe TURN configuration', () => {
     expect(() => loadConfig(validEnv({ P2P_TURN_URLS: 'stun:turn.example.test:3478' })))
       .toThrow('P2P_TURN_URLS must contain only turn: or turns: URLs');

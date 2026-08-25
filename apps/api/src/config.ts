@@ -1,3 +1,5 @@
+import type { P2pTurnProvider } from '@meeting/contracts';
+
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
   publicBaseUrl: URL;
@@ -12,6 +14,10 @@ export interface AppConfig {
   p2pTurnUrls: string[];
   p2pTurnSecret: string;
   p2pTurnTtlSeconds: number;
+  p2pTurnProvider?: P2pTurnProvider;
+  cloudflareTurnKeyId?: string;
+  cloudflareTurnApiToken?: string;
+  cloudflareTurnTtlSeconds?: number;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -76,6 +82,24 @@ function parseTurnTtlSeconds(env: Environment): number {
   return value;
 }
 
+function parseTurnProvider(env: Environment): P2pTurnProvider {
+  const value = env.P2P_TURN_PROVIDER?.trim() || 'coturn';
+  if (value !== 'coturn' && value !== 'cloudflare') {
+    throw new Error('P2P_TURN_PROVIDER must be coturn or cloudflare');
+  }
+  return value;
+}
+
+function parseCloudflareTurnTtlSeconds(env: Environment): number {
+  const raw = env.CLOUDFLARE_TURN_TTL_SECONDS?.trim() || '600';
+  const value = Number(raw);
+  if (!Number.isInteger(value)) throw new Error('CLOUDFLARE_TURN_TTL_SECONDS must be an integer');
+  if (value < 60 || value > 86_400) {
+    throw new Error('CLOUDFLARE_TURN_TTL_SECONDS must be between 60 and 86400');
+  }
+  return value;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -97,6 +121,17 @@ export function loadConfig(env: Environment): AppConfig {
     throw new Error('P2P_TURN_SECRET must be at least 32 bytes');
   }
 
+  const p2pTurnProvider = parseTurnProvider(env);
+  const cloudflareTurnKeyId = p2pTurnProvider === 'cloudflare'
+    ? requireValue(env, 'CLOUDFLARE_TURN_KEY_ID')
+    : undefined;
+  const cloudflareTurnApiToken = p2pTurnProvider === 'cloudflare'
+    ? requireValue(env, 'CLOUDFLARE_TURN_API_TOKEN')
+    : undefined;
+  const cloudflareTurnTtlSeconds = p2pTurnProvider === 'cloudflare'
+    ? parseCloudflareTurnTtlSeconds(env)
+    : undefined;
+
   return {
     nodeEnv,
     publicBaseUrl,
@@ -111,6 +146,10 @@ export function loadConfig(env: Environment): AppConfig {
     p2pTurnUrls: parseTurnUrls(env),
     p2pTurnSecret,
     p2pTurnTtlSeconds: parseTurnTtlSeconds(env),
+    p2pTurnProvider,
+    cloudflareTurnKeyId,
+    cloudflareTurnApiToken,
+    cloudflareTurnTtlSeconds,
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

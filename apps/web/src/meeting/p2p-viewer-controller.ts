@@ -1,7 +1,8 @@
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
-  P2P_RTP_STALL_TIMEOUT_MS
+  P2P_RTP_STALL_TIMEOUT_MS,
+  type P2pTurnProvider
 } from '@meeting/contracts';
 
 import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
@@ -31,6 +32,7 @@ export interface P2pViewerControllerDependencies {
   createPeerConnection?: (iceServers: RTCIceServer[], iceTransportPolicy?: RTCIceTransportPolicy) => RTCPeerConnection;
   /** ICE policy for the next peer connection. `relay` forces TURN. */
   iceTransportPolicy?: RTCIceTransportPolicy;
+  turnProvider?: P2pTurnProvider;
   /** Fired once when the viewer moves to `livekit` (the caller subscribes the LiveKit screen track). */
   onFallback?: () => void;
   /** Requests the LiveKit handover; invoke `complete` only after its first frame is rendered. */
@@ -43,6 +45,7 @@ export interface P2pViewerControllerDependencies {
 interface ViewerPcSession {
   pc: RTCPeerConnection;
   iceTransportPolicy: RTCIceTransportPolicy;
+  turnProvider: P2pTurnProvider;
   generation?: string;
   pcClosed: boolean;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
@@ -86,6 +89,7 @@ interface ViewerPcSession {
 export class P2pViewerController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private iceTransportPolicy: RTCIceTransportPolicy;
+  private turnProvider: P2pTurnProvider;
   private readonly onFallback?: () => void;
   private readonly onFallbackRequested?: (complete: () => void) => void;
   private readonly healthSampleIntervalMs: number;
@@ -108,6 +112,7 @@ export class P2pViewerController {
       ?? ((servers, policy) => new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: policy }));
     this.createPeerConnection = (servers) => createPeerConnection(servers, this.iceTransportPolicy);
     this.iceTransportPolicy = dependencies.iceTransportPolicy ?? 'all';
+    this.turnProvider = dependencies.turnProvider ?? 'coturn';
     this.onFallback = dependencies.onFallback;
     this.onFallbackRequested = dependencies.onFallbackRequested;
     this.healthSampleIntervalMs = dependencies.healthSampleIntervalMs ?? 1_000;
@@ -193,8 +198,25 @@ export class P2pViewerController {
    * fresh PC). Called after the page refreshes soon-to-expire TURN
    * credentials, so late shares still gather relay candidates.
    */
-  updateIceServers(iceServers: RTCIceServer[]): void {
+  updateIceServers(
+    iceServers: RTCIceServer[],
+    turnProvider: P2pTurnProvider = this.turnProvider
+  ): void {
     this.iceServers = iceServers;
+    this.turnProvider = turnProvider;
+    const session = this.session;
+    if (session !== undefined && !session.pcClosed) {
+      if (this.state !== 'turn') session.turnProvider = turnProvider;
+      try {
+        session.pc.setConfiguration({
+          iceServers,
+          iceTransportPolicy: session.iceTransportPolicy
+        });
+      } catch {
+        // The browser may reject a configuration update while closing; the
+        // next session still receives the refreshed credentials.
+      }
+    }
   }
 
   /** Sets the policy used by the next peer connection. */
@@ -223,6 +245,10 @@ export class P2pViewerController {
   /** Identity of the current P2P sharer, if a session was ever established. */
   getSharerIdentity(): string | undefined {
     return this.sharerIdentity;
+  }
+
+  getTurnProvider(): P2pTurnProvider | undefined {
+    return this.state === 'turn' ? this.session?.turnProvider : undefined;
   }
 
   /**
@@ -256,6 +282,7 @@ export class P2pViewerController {
     const session: ViewerPcSession = {
       pc,
       iceTransportPolicy: this.iceTransportPolicy,
+      turnProvider: this.turnProvider,
       generation,
       pcClosed: false,
       queuedCandidates: [],

@@ -115,6 +115,7 @@ class FakeRTCPeerConnection {
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
+  readonly setConfiguration = vi.fn();
   readonly getStats = vi.fn(async () => statsReport(this.statsCandidateType, this.senderStats));
   statsPathKnown = true;
   senderStats: { qualityLimitationReason?: string; framesPerSecond?: number } = {};
@@ -215,11 +216,23 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
   } as unknown as RTCPeerConnectionIceEvent;
 }
 
-function makeHarness(options: { onPcCreated?: (pc: FakeRTCPeerConnection) => void } = {}) {
+function makeHarness(options: {
+  onPcCreated?: (pc: FakeRTCPeerConnection) => void;
+  turnProvider?: 'coturn' | 'cloudflare';
+  turnCredentialsExpiresAt?: number;
+} = {}) {
   const signaling: P2pShareSignaling = { sendOffer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
   const onViewerFallback = vi.fn();
   const onAllViewersClosed = vi.fn();
-  const fetchIceServers = vi.fn(async () => iceServers);
+  const fetchIceServers = vi.fn(async () => options.turnProvider === undefined
+    ? iceServers
+    : {
+      iceServers,
+      turnProvider: options.turnProvider,
+      ...(options.turnCredentialsExpiresAt === undefined
+        ? {}
+        : { turnCredentialsExpiresAt: options.turnCredentialsExpiresAt })
+    });
   const transportChecks = new Set<() => Promise<void>>();
   const controller = createP2pShareController({
     slug: 'meeting-slug',
@@ -617,6 +630,83 @@ describe('p2p share controller', () => {
 
     controller.handleMediaReady('viewer-1');
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+  });
+
+  it('reports the provider used by each TURN viewer', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
+  });
+
+  it('updates the provider when a direct viewer later migrates to relay', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+
+    const refreshIceServers = (controller as unknown as {
+      refreshIceServers(configuration: {
+        iceServers: RTCIceServer[];
+        turnProvider: 'coturn' | 'cloudflare';
+        turnCredentialsExpiresAt?: number;
+      }): void;
+    }).refreshIceServers;
+    refreshIceServers.call(controller, {
+      iceServers: [{ urls: ['turn:turn.example.test:3478'] }],
+      turnProvider: 'coturn'
+    });
+    pc.statsCandidateType = 'relay';
+    await runTransportChecks();
+
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
+  });
+
+  it('refreshes active viewer peer connections before Cloudflare credentials expire', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    const freshConfiguration = {
+      iceServers: [{
+        urls: ['turn:turn.cloudflare.com:3478?transport=udp'],
+        username: 'fresh-user',
+        credential: 'fresh-credential'
+      }],
+      turnProvider: 'coturn' as const,
+      turnCredentialsExpiresAt: Math.floor(Date.now() / 1_000) + 600
+    };
+
+    const refreshIceServers = (controller as unknown as {
+      refreshIceServers?: (configuration: typeof freshConfiguration) => void;
+    }).refreshIceServers;
+    expect(typeof refreshIceServers).toBe('function');
+    refreshIceServers?.call(controller, freshConfiguration);
+
+    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers: freshConfiguration.iceServers });
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
+  });
+
+  it('schedules an active-session credential refresh before expiry', async () => {
+    const expiresAt = Math.floor(Date.now() / 1_000) + 61;
+    const { controller } = makeHarness({ turnProvider: 'cloudflare', turnCredentialsExpiresAt: expiresAt });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers });
   });
 
   it('tracks selected-pair migration from direct to relay and back to direct', async () => {

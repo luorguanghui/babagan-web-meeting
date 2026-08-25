@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 
 import {
   deriveSharerScreenTransportMode,
-  deriveViewerScreenTransportMode
+  deriveSharerTurnProvider,
+  deriveViewerScreenTransportMode,
+  deriveViewerTurnProvider
 } from './screen-transport-mode.js';
 
 describe('screen transport mode', () => {
@@ -43,5 +45,18 @@ describe('screen transport mode', () => {
       ['viewer-1', 'p2p'],
       ['viewer-2', 'negotiating']
     ]))).toBe('mixed');
+  });
+
+  it('keeps the actual TURN provider visible for viewers and sharers', () => {
+    expect(deriveViewerTurnProvider('turn', 'cloudflare')).toBe('cloudflare');
+    expect(deriveViewerTurnProvider('p2p', 'cloudflare')).toBeUndefined();
+    expect(deriveSharerTurnProvider(
+      new Map([['viewer-1', 'turn'], ['viewer-2', 'turn']]),
+      new Map([['viewer-1', 'cloudflare'], ['viewer-2', 'cloudflare']])
+    )).toBe('cloudflare');
+    expect(deriveSharerTurnProvider(
+      new Map([['viewer-1', 'turn'], ['viewer-2', 'turn']]),
+      new Map([['viewer-1', 'cloudflare'], ['viewer-2', 'coturn']])
+    )).toBe('mixed');
   });
 });

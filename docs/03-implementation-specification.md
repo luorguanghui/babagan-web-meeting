@@ -39,6 +39,10 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `P2P_TURN_URLS` | 逗号分隔的 `turn:`/`turns:` URL（3478/udp、3478/tcp、5349/tls） | 启动时严格校验协议；指向自托管 coturn |
 | `P2P_TURN_SECRET` | 与 coturn `TURN_SHARED_SECRET` 完全相同的 TURN REST 密钥 | 至少 32 字节、权限 600 |
 | `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
+| `P2P_TURN_PROVIDER` | `coturn` 或 `cloudflare` | 默认 `coturn`；Cloudflare 失败时回退 coturn |
+| `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN Key ID | 仅服务端使用，不下发浏览器 |
+| `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN API Token | 仅服务端使用，权限 600 |
+| `CLOUDFLARE_TURN_TTL_SECONDS` | Cloudflare 短期凭据有效期 | 默认 600，范围 60–86400 |
 
 以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
 
@@ -137,7 +141,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | POST | `/meetings/:slug/p2p-stats` | 参与者会话（离会容忍） | 记录匿名 P2P 质量统计（无媒体/SDP/IP/身份） |
 | WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready`/`retry` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`：第一项为配置的 STUN URL，第二项为 coturn TURN URL 并附带 TURN REST HMAC 短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(secret, username)`），响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers, turnProvider, turnCredentialsExpiresAt }`；`turnProvider` 表示本次实际使用的 `coturn` 或 `cloudflare`，响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取，并在 TURN 标签中显示 provider。
 
 ### 4.3 P2P 信令端点行为
 

@@ -1,7 +1,7 @@
-import type { ScreenShareCodec } from '@meeting/contracts';
+import type { P2pTurnProvider, ScreenShareCodec } from '@meeting/contracts';
 
 import { type MessageKey, useI18n } from '../i18n/i18n.js';
-import type { ScreenTransportMode } from '../meeting/screen-transport-mode.js';
+import type { ScreenTransportMode, ScreenTurnProvider } from '../meeting/screen-transport-mode.js';
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
@@ -12,18 +12,27 @@ const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   negotiating: 'screenTransport.negotiating',
   waiting: 'screenTransport.waiting'
 };
+const turnProviderKeys: Record<ScreenTurnProvider, MessageKey> = {
+  cloudflare: 'screenTransport.turnCloudflare',
+  coturn: 'screenTransport.turnCoturn',
+  mixed: 'screenTransport.turnMixed'
+};
 
-export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', embedded = false, active = true }: {
+export function WebRtcStatsPanel({ snapshot, requestedCodec, mode = 'sfu', turnProvider, embedded = false, active = true }: {
   snapshot?: WebRtcStatsSnapshot;
   requestedCodec: ScreenShareCodec;
   mode?: ScreenTransportMode;
+  turnProvider?: P2pTurnProvider | 'mixed';
   embedded?: boolean;
   active?: boolean;
 }) {
   const { t } = useI18n();
+  const transportKey = mode === 'turn' && turnProvider !== undefined
+    ? turnProviderKeys[turnProvider]
+    : modeKeys[mode];
   const heading = <>
       <span>{t('stats.heading')}</span>
-      <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(modeKeys[mode])}</span>
+      <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(transportKey)}</span>
     </>;
   const content = <>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>

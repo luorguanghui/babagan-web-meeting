@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../../app.js';
 import type { AppConfig } from '../../config.js';
@@ -26,7 +26,10 @@ describe('ICE credentials endpoint', () => {
   let fixture: IceFixture;
 
   beforeEach(async () => { fixture = await createFixture(); });
-  afterEach(async () => { await fixture.close(); });
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await fixture.close();
+});
 
   it('rejects an unauthenticated request with the existing 401 behavior', async () => {
     const created = await fixture.createMeeting();
@@ -96,6 +99,87 @@ describe('ICE credentials endpoint', () => {
     expect((response.json() as { iceServers: unknown[] }).iceServers).toHaveLength(2);
     expect(fixture.media.fetchCalls).toBe(0);
   });
+
+  it('uses Cloudflare TURN credentials and reports the active provider', async () => {
+    const cloudflareFixture = await createFixture({
+      p2pTurnProvider: 'cloudflare',
+      cloudflareTurnKeyId: 'turn-key-id',
+      cloudflareTurnApiToken: 'turn-api-token',
+      cloudflareTurnTtlSeconds: 600
+    });
+    const fetchCloudflare = vi.fn(async () => new Response(JSON.stringify({
+      iceServers: [
+        { urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.cloudflare.com:53'] },
+        {
+          urls: [
+            'turn:turn.cloudflare.com:3478?transport=udp',
+            'turn:turn.cloudflare.com:53?transport=udp',
+            'turns:turn.cloudflare.com:443?transport=tcp'
+          ],
+          username: 'cloudflare-user',
+          credential: 'cloudflare-credential'
+        }
+      ]
+    }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchCloudflare);
+
+    try {
+      const created = await cloudflareFixture.createMeeting();
+      const joined = await cloudflareFixture.join(created.slug, 'Ada');
+      const response = await cloudflareFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json()).toMatchObject({
+        turnProvider: 'cloudflare',
+        iceServers: [
+          { urls: ['stun:stun.cloudflare.com:3478'] },
+          {
+            urls: [
+              'turn:turn.cloudflare.com:3478?transport=udp',
+              'turns:turn.cloudflare.com:443?transport=tcp'
+            ],
+            username: 'cloudflare-user',
+            credential: 'cloudflare-credential'
+          }
+        ]
+      });
+      expect(response.json().turnCredentialsExpiresAt).toEqual(expect.any(Number));
+      expect(fetchCloudflare).toHaveBeenCalledWith(
+        expect.stringContaining('/v1/turn/keys/turn-key-id/credentials/generate-ice-servers'),
+        expect.objectContaining({ method: 'POST', body: JSON.stringify({ ttl: 600 }) })
+      );
+    } finally {
+      await cloudflareFixture.close();
+    }
+  });
+
+  it('falls back to coturn when Cloudflare credential generation fails', async () => {
+    const cloudflareFixture = await createFixture({
+      p2pTurnProvider: 'cloudflare',
+      cloudflareTurnKeyId: 'turn-key-id',
+      cloudflareTurnApiToken: 'turn-api-token',
+      cloudflareTurnTtlSeconds: 600
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('Cloudflare unavailable'); }));
+
+    try {
+      const created = await cloudflareFixture.createMeeting();
+      const joined = await cloudflareFixture.join(created.slug, 'Ada');
+      const response = await cloudflareFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+
+      expect(response.statusCode, response.body).toBe(200);
+      expect(response.json().turnProvider).toBe('coturn');
+      expect(response.json().iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+    } finally {
+      await cloudflareFixture.close();
+    }
+  });
 });
 
 interface IceFixture {
@@ -108,7 +192,15 @@ interface IceFixture {
   close(): Promise<void>;
 }
 
-async function createFixture(): Promise<IceFixture> {
+type TestConfig = AppConfig & {
+  p2pTurnProvider?: 'coturn' | 'cloudflare';
+  cloudflareTurnKeyId?: string;
+  cloudflareTurnApiToken?: string;
+  cloudflareTurnTtlSeconds?: number;
+};
+
+async function createFixture(overrides: Partial<TestConfig> = {}): Promise<IceFixture> {
+  const fixtureConfig: TestConfig = { ...config, ...overrides };
   const directory = mkdtempSync(join(tmpdir(), 'meeting-ice-'));
   const db = createDatabase(join(directory, 'meetings.sqlite'));
   migrate(db);
@@ -126,19 +218,19 @@ async function createFixture(): Promise<IceFixture> {
       removeParticipant: (meetingId, identity) => media.removeParticipant(meetingId, identity),
       closeMeeting: (meetingId) => media.deleteRoom(meetingId)
     },
-    passwords, clock, ids, config, mutex
+    passwords, clock, ids, config: fixtureConfig, mutex
   });
-  const hosts = new HostApplicationService({ repository, meetings, media, passwords, clock, ids, config, mutex });
-  const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
+  const hosts = new HostApplicationService({ repository, meetings, media, passwords, clock, ids, config: fixtureConfig, mutex });
+  const participants = new ParticipantApplicationService({ repository, media, clock, ids, config: fixtureConfig });
   const app = await buildApp({
-    config, meetings, hosts, participants, media, webhooks: new StubWebhookHandler()
+    config: fixtureConfig, meetings, hosts, participants, media, webhooks: new StubWebhookHandler()
   });
 
   return {
     app, db, directory, media,
     async createMeeting() {
       const response = await app.inject({
-        method: 'POST', url: '/api/v1/meetings', headers: { origin: config.publicBaseUrl.origin },
+        method: 'POST', url: '/api/v1/meetings', headers: { origin: fixtureConfig.publicBaseUrl.origin },
         payload: { adminPassword: 'admin-secret', name: 'Daily', meetingPassword: 'join-secret' }
       });
       return { slug: response.json().slug as string };
@@ -146,7 +238,7 @@ async function createFixture(): Promise<IceFixture> {
     join(slug, nickname) {
       return app.inject({
         method: 'POST', url: `/api/v1/meetings/${slug}/join`,
-        headers: { origin: config.publicBaseUrl.origin },
+        headers: { origin: fixtureConfig.publicBaseUrl.origin },
         payload: { nickname, meetingPassword: 'join-secret' }
       });
     },

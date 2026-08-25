@@ -22,6 +22,9 @@ export const P2P_TOTAL_UPLINK_BUDGET_BPS = 20_000_000;
 
 export type P2pScreenBitrate = typeof P2P_SCREEN_BITRATES[number];
 
+export const P2P_TURN_PROVIDERS = ['coturn', 'cloudflare'] as const;
+export type P2pTurnProvider = typeof P2P_TURN_PROVIDERS[number];
+
 const IdentitySchema = Type.String({ minLength: 1, maxLength: 256 });
 const GenerationSchema = Type.String({ minLength: 1, maxLength: 128 });
 const SdpSchema = Type.String({ minLength: 1, maxLength: P2P_MESSAGE_MAX_BYTES });

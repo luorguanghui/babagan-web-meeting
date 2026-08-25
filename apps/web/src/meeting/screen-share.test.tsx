@@ -1275,6 +1275,17 @@ describe('screen stage', () => {
     expect(screen.getByText('TURN 中继')).toBeVisible();
   });
 
+  it('shows the actual Cloudflare TURN provider in WebRTC diagnostics', () => {
+    const StatsPanelWithProvider = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264'; mode: 'turn'; turnProvider: 'cloudflare';
+    }>;
+    render(<LanguageProvider initialLocale="zh-CN">
+      <StatsPanelWithProvider requestedCodec="h264" mode="turn" turnProvider="cloudflare" />
+    </LanguageProvider>);
+
+    expect(screen.getByText('TURN 中继 · Cloudflare')).toBeVisible();
+  });
+
   it('reports the replacement source ready only after its probe renders a frame', () => {
     const first = displayStream({ audio: false }).stream;
     const second = displayStream({ audio: false }).stream;

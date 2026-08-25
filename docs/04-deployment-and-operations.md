@@ -151,7 +151,7 @@ sudo chmod 600 infra/.env.production
 sudoedit infra/.env.production
 ~~~
 
-至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少 32 字符；镜像必须保持示例中的批准 digest。
+至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。将 `P2P_TURN_PROVIDER` 设为 `cloudflare` 时，还必须配置 `CLOUDFLARE_TURN_KEY_ID`、`CLOUDFLARE_TURN_API_TOKEN` 和 `CLOUDFLARE_TURN_TTL_SECONDS=600`；长期 Cloudflare Token 只放服务器 mode 600 的生产环境文件。LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少 32 字符；镜像必须保持示例中的批准 digest。
 
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
@@ -417,7 +417,7 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 ## 7. 日常运维和安全
 
 - Caddy 续期 turn 证书后，重复 3.4 节读取权限检查，重启 coturn 并验证 5349/TCP。
-- P2P_TURN_SECRET 与 TURN_SHARED_SECRET 必须相同且至少 32 字符；P2P_TURN_TTL_SECONDS 固定 600。
+- P2P_TURN_SECRET 与 TURN_SHARED_SECRET 必须相同且至少 32 字符；P2P_TURN_TTL_SECONDS 固定 600。Cloudflare provider 的长期 API Token 不得进入 Git、浏览器或日志；页面的 TURN 标签应显示本次实际 provider。
 - Cache-Control: no-store 是认证 ICE 响应的验收条件。
 - 7880 不对公网开放；7881/TCP、UDP 443、50000–60000 由安全组和 UFW 同步允许。
 - 旧 standalone babagan-coturn.service 不应与 Compose coturn 并存；确认使用容器版后执行 sudo systemctl disable --now babagan-coturn.service。

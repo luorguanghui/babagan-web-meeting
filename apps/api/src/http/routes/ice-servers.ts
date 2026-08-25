@@ -7,6 +7,7 @@ import type {
   ActiveParticipantSession,
   ParticipantApplicationService
 } from '../../services/participant-application-service.js';
+import { fetchCloudflareTurnIceServers } from '../../services/cloudflare-turn.js';
 import { createTurnCredentials } from '../../services/turn-credentials.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { generalApiRateLimit } from '../rate-limit.js';
@@ -17,7 +18,11 @@ const IceServerSchema = Type.Object({
   username: Type.Optional(Type.String()),
   credential: Type.Optional(Type.String())
 });
-const IceServersResponseSchema = Type.Object({ iceServers: Type.Array(IceServerSchema) });
+const IceServersResponseSchema = Type.Object({
+  iceServers: Type.Array(IceServerSchema),
+  turnProvider: Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')]),
+  turnCredentialsExpiresAt: Type.Integer()
+});
 
 export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
   participants: ParticipantApplicationService;
@@ -37,10 +42,27 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
     });
     reply.header('Cache-Control', 'no-store');
 
-    return { iceServers: [
-      { urls: dependencies.config.p2pStunUrls },
-      { urls: dependencies.config.p2pTurnUrls, ...turn }
-    ] };
+    const coturn = {
+      iceServers: [
+        { urls: dependencies.config.p2pStunUrls },
+        { urls: dependencies.config.p2pTurnUrls, ...turn }
+      ],
+      turnProvider: 'coturn' as const,
+      turnCredentialsExpiresAt: Number(turn.username.split(':', 1)[0])
+    };
+    if (dependencies.config.p2pTurnProvider !== 'cloudflare') return coturn;
+
+    try {
+      return await fetchCloudflareTurnIceServers({
+        keyId: dependencies.config.cloudflareTurnKeyId!,
+        apiToken: dependencies.config.cloudflareTurnApiToken!,
+        ttlSeconds: dependencies.config.cloudflareTurnTtlSeconds ?? 600
+      });
+    } catch {
+      // Keep the existing coturn path as an availability fallback while the
+      // managed provider is being rolled out or temporarily unavailable.
+      return coturn;
+    }
   });
 }
 

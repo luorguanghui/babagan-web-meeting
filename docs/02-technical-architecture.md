@@ -72,11 +72,12 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 - 为 `turn.babagan.cloud` 申请公众信任证书并把证书卷只读提供给 coturn。
 - 自动申请和续期公众信任证书。
 
-### 2.6 coturn（P2P TURN 中继）
+### 2.6 TURN provider（P2P TURN 中继）
 
-- 独立 TURN 服务器，为 P2P 屏幕共享提供 relay 候选，供直连失败的观看者仍经 P2P 通道收发屏幕媒体。
+- 默认保留独立 coturn，为 P2P 屏幕共享提供 relay 候选，供直连失败的观看者仍经 P2P 通道收发屏幕媒体。
+- 可将 API 的 `P2P_TURN_PROVIDER` 切换为 `cloudflare`：API 服务端使用受保护的 Cloudflare TURN Key/API Token 生成短期凭据；Cloudflare 凭据获取失败时回退 coturn。
 - 监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP；禁用 DTLS、管理 CLI，并拒绝 loopback/RFC1918/链路本地/组播对端。
-- 使用 TURN REST 鉴权（`use-auth-secret`），共享密钥与 API 的 `P2P_TURN_SECRET` 一致；API 为已认证参与者签发 600 秒短期凭据。
+- coturn 使用 TURN REST 鉴权（`use-auth-secret`），共享密钥与 API 的 `P2P_TURN_SECRET` 一致；API 为已认证参与者签发 600 秒短期凭据。Cloudflare provider 使用 Cloudflare API 生成短期凭据，长期 Token 不下发浏览器。
 
 ## 3. 网络与 DNS
 
@@ -92,7 +93,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
 
-P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS`（STUN）与 coturn 的 `P2P_TURN_URLS`（TURN，短期凭据）。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经 coturn relay 中继（仍是 P2P 通道），该观看者仍失败才继续使用始终发布的 LiveKit 屏幕安全网。
+P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS` 与当前 TURN provider 的短期凭据。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经当前 TURN relay 中继（仍是 P2P 通道），该观看者仍失败才继续使用始终发布的 LiveKit 屏幕安全网。页面会显示实际使用的 TURN provider。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 

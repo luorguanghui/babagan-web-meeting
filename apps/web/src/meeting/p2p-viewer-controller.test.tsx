@@ -67,6 +67,7 @@ class FakeRTCPeerConnection {
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
+  readonly setConfiguration = vi.fn();
   readonly getStats = vi.fn(async () => {
     const report = this.statsOmitPair
       ? new Map<string, RTCStats>([
@@ -152,6 +153,7 @@ function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
   onFallbackRequested?: (complete: () => void) => void;
   iceTransportPolicy?: RTCIceTransportPolicy;
+  turnProvider?: 'coturn' | 'cloudflare';
   now?: () => number;
 } = {}) {
   let healthCheck: (() => Promise<void>) | undefined;
@@ -166,6 +168,7 @@ function makeHarness(options: {
       return pc as unknown as RTCPeerConnection;
     },
     iceTransportPolicy: options.iceTransportPolicy,
+    turnProvider: options.turnProvider,
     onFallback,
     onFallbackRequested: options.onFallbackRequested,
     healthSampleIntervalMs: 1_000,
@@ -496,6 +499,69 @@ describe('p2p viewer controller', () => {
     // level, which measured smoother than the SFU on the small 2-core host.
     expect(controller.getState()).toBe('turn');
     expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
+  });
+
+  it('reports the provider used by a healthy relay session', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getTurnProvider()).toBe('cloudflare');
+  });
+
+  it('applies refreshed ICE credentials to the active peer connection', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const freshServers: RTCIceServer[] = [{
+      urls: ['turn:turn.example.test:3478?transport=udp'],
+      username: 'fresh-user',
+      credential: 'fresh-credential'
+    }];
+
+    controller.updateIceServers(freshServers, 'coturn');
+
+    expect(pc.setConfiguration).toHaveBeenCalledWith({
+      iceServers: freshServers,
+      iceTransportPolicy: 'all'
+    });
+    expect(controller.getTurnProvider()).toBeUndefined();
+  });
+
+  it('keeps the established provider label until a new relay session is negotiated', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    controller.updateIceServers([{ urls: ['turn:turn.example.test:3478'] }], 'coturn');
+
+    expect(controller.getTurnProvider()).toBe('cloudflare');
+  });
+
+  it('updates the provider when a direct session later migrates to relay', async () => {
+    const { controller, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.getState()).toBe('p2p');
+
+    controller.updateIceServers([{ urls: ['turn:turn.example.test:3478'] }], 'coturn');
+    pc.statsCandidateType = 'relay';
+    await runHealthCheck();
+
+    expect(controller.getState()).toBe('turn');
+    expect(controller.getTurnProvider()).toBe('coturn');
   });
 
   it('tracks selected-pair migration from direct to relay and back to direct', async () => {
