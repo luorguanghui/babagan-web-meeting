@@ -197,6 +197,7 @@ type TestConfig = AppConfig & {
   cloudflareTurnKeyId?: string;
   cloudflareTurnApiToken?: string;
   cloudflareTurnTtlSeconds?: number;
+  cloudflareTurnConnectIps?: string[];
 };
 
 async function createFixture(overrides: Partial<TestConfig> = {}): Promise<IceFixture> {

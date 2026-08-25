@@ -86,7 +86,8 @@ describe('loadConfig', () => {
       P2P_TURN_PROVIDER: 'cloudflare',
       CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
       CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
-      CLOUDFLARE_TURN_TTL_SECONDS: '600'
+      CLOUDFLARE_TURN_TTL_SECONDS: '600',
+      CLOUDFLARE_TURN_CONNECT_IPS: '172.64.150.1, 188.114.96.1'
     })) as ReturnType<typeof loadConfig> & {
       p2pTurnProvider?: string;
       cloudflareTurnKeyId?: string;
@@ -98,13 +99,24 @@ describe('loadConfig', () => {
     expect(config.cloudflareTurnKeyId).toBe('turn-key-id');
     expect(config.cloudflareTurnApiToken).toBe('turn-api-token');
     expect(config.cloudflareTurnTtlSeconds).toBe(600);
+    expect(config.cloudflareTurnConnectIps).toEqual(['172.64.150.1', '188.114.96.1']);
   });
 
   it('ignores Cloudflare-only settings while coturn remains the active provider', () => {
     expect(loadConfig(validEnv({ CLOUDFLARE_TURN_TTL_SECONDS: 'not-used' }))).toMatchObject({
       p2pTurnProvider: 'coturn',
-      cloudflareTurnTtlSeconds: undefined
+      cloudflareTurnTtlSeconds: undefined,
+      cloudflareTurnConnectIps: undefined
     });
+  });
+
+  it('rejects invalid Cloudflare TURN connect IPs', () => {
+    expect(() => loadConfig(validEnv({
+      P2P_TURN_PROVIDER: 'cloudflare',
+      CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
+      CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
+      CLOUDFLARE_TURN_CONNECT_IPS: 'not-an-ip'
+    }))).toThrow(/CLOUDFLARE_TURN_CONNECT_IPS/);
   });
 
   it('rejects unsafe TURN configuration', () => {

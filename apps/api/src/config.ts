@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 import type { P2pTurnProvider } from '@meeting/contracts';
 
 export interface AppConfig {
@@ -18,6 +20,7 @@ export interface AppConfig {
   cloudflareTurnKeyId?: string;
   cloudflareTurnApiToken?: string;
   cloudflareTurnTtlSeconds?: number;
+  cloudflareTurnConnectIps?: string[];
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -100,6 +103,16 @@ function parseCloudflareTurnTtlSeconds(env: Environment): number {
   return value;
 }
 
+function parseCloudflareTurnConnectIps(env: Environment): string[] | undefined {
+  const raw = env.CLOUDFLARE_TURN_CONNECT_IPS?.trim();
+  if (!raw) return undefined;
+  const values = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  if (values.length === 0 || values.some((value) => isIP(value) === 0)) {
+    throw new Error('CLOUDFLARE_TURN_CONNECT_IPS must contain only IP addresses');
+  }
+  return values;
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -131,6 +144,9 @@ export function loadConfig(env: Environment): AppConfig {
   const cloudflareTurnTtlSeconds = p2pTurnProvider === 'cloudflare'
     ? parseCloudflareTurnTtlSeconds(env)
     : undefined;
+  const cloudflareTurnConnectIps = p2pTurnProvider === 'cloudflare'
+    ? parseCloudflareTurnConnectIps(env)
+    : undefined;
 
   return {
     nodeEnv,
@@ -150,6 +166,7 @@ export function loadConfig(env: Environment): AppConfig {
     cloudflareTurnKeyId,
     cloudflareTurnApiToken,
     cloudflareTurnTtlSeconds,
+    cloudflareTurnConnectIps,
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

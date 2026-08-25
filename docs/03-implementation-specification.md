@@ -43,6 +43,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN Key ID | 仅服务端使用，不下发浏览器 |
 | `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN API Token | 仅服务端使用，权限 600 |
 | `CLOUDFLARE_TURN_TTL_SECONDS` | Cloudflare 短期凭据有效期 | 默认 600，范围 60–86400 |
+| `CLOUDFLARE_TURN_CONNECT_IPS` | 可选的 Cloudflare API 出站连接 IP 列表 | 逗号分隔，仅在 DNS 返回地址不可达时配置；服务端保留 `rtc.live.cloudflare.com` 的 TLS SNI/Host |
 
 以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
 
