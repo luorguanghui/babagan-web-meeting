@@ -27,6 +27,7 @@ cat >"$temp_dir/scripts/smoke-test.sh" <<'EOF'
 {
   printf 'slug=%s\n' "$SMOKE_MEETING_SLUG"
   printf 'cookie=%s\n' "$SMOKE_PARTICIPANT_COOKIE"
+  printf 'provider=%s\n' "$P2P_TURN_PROVIDER"
   printf 'stun=%s\n' "$P2P_STUN_URLS"
   printf 'turn=%s\n' "$P2P_TURN_URLS"
   printf 'image=%s\n' "$SMOKE_NODE_IMAGE"
@@ -38,6 +39,7 @@ EOF
 chmod 700 "$temp_dir/scripts/smoke-test.sh"
 
 printf '%s\n' \
+  'P2P_TURN_PROVIDER=cloudflare' \
   'P2P_STUN_URLS=stun:stun.cloudflare.com:3478' \
   'P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' \
   'P2P_TURN_SECRET=0123456789abcdef0123456789abcdef' \
@@ -63,6 +65,7 @@ grep -Fq -- '-e DATABASE_PATH=/data/meetings.sqlite' "$temp_dir/docker.log"
 grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log"
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
 grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
+grep -Fqx 'provider=cloudflare' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.cloudflare.com:3478' "$temp_dir/smoke.log"
 grep -Fqx 'turn=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' "$temp_dir/smoke.log"
 grep -Fqx 'image=meeting-api:test' "$temp_dir/smoke.log"

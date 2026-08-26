@@ -29,6 +29,9 @@ p2p_turn_urls="$(sed -n 's/^P2P_TURN_URLS=//p' "$env_file")"
 p2p_turn_secret="$(sed -n 's/^P2P_TURN_SECRET=//p' "$env_file")"
 turn_shared_secret="$(sed -n 's/^TURN_SHARED_SECRET=//p' "$env_file")"
 turn_ttl="$(sed -n 's/^P2P_TURN_TTL_SECONDS=//p' "$env_file")"
+turn_provider="$(sed -n 's/^P2P_TURN_PROVIDER=//p' "$env_file")"; turn_provider="${turn_provider:-coturn}"
+[[ "$turn_provider" == coturn || "$turn_provider" == cloudflare ]] \
+  || { echo 'production P2P_TURN_PROVIDER is invalid' >&2; exit 1; }
 [[ "$p2p_turn_urls" == turn:* || "$p2p_turn_urls" == turns:* ]] \
   || { echo 'production P2P_TURN_URLS is invalid' >&2; exit 1; }
 [[ ${#p2p_turn_secret} -ge 32 && "$p2p_turn_secret" == "$turn_shared_secret" ]] \
@@ -75,6 +78,7 @@ SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
 SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
 P2P_STUN_URLS="$p2p_stun_urls" \
 P2P_TURN_URLS="$p2p_turn_urls" \
+P2P_TURN_PROVIDER="$turn_provider" \
 SMOKE_NODE_IMAGE="$api_image" \
   "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
 
