@@ -151,6 +151,8 @@ interface ViewerSession {
   offerSent: boolean;
   pcClosed: boolean;
   transportConnected: boolean;
+  mediaReadyReceived: boolean;
+  mediaReadyConfirmed: boolean;
   senderParameterTail: Promise<void>;
   transportSampleTail: Promise<void>;
   stopTransportMonitor?: () => void;
@@ -180,6 +182,8 @@ class P2pShareControllerImpl implements P2pShareController {
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
   private nextGeneration = 0;
+  private nextRetryToken = 0;
+  private readonly pendingRetryTokens = new Map<string, number>();
 
   constructor(private readonly deps: P2pShareControllerDependencies) {
     this.createPeerConnection = deps.createPeerConnection
@@ -208,6 +212,7 @@ class P2pShareControllerImpl implements P2pShareController {
       if (existing && existing.state !== 'closed'
         && !(recoverNegotiating && existing.state === 'negotiating')) continue;
       if (existing) this.closeSession(existing);
+      this.pendingRetryTokens.delete(viewer.identity);
       const session = this.createSession(viewer.identity, stream, options, iceConfiguration);
       sessionsToEstablish.push(session);
     }
@@ -246,14 +251,22 @@ class P2pShareControllerImpl implements P2pShareController {
 
   handleMediaReady(from: string, generation?: string): void {
     const session = this.sessions.get(from);
-    if (!session || session.state !== 'negotiating' || !session.transportConnected) return;
+    if (!session || session.state !== 'negotiating') return;
     if (generation !== undefined && generation !== session.generation) return;
+    session.mediaReadyReceived = true;
+    this.confirmMediaReady(session);
+  }
+
+  private confirmMediaReady(session: ViewerSession): void {
+    if (!session.transportConnected || !session.mediaReadyReceived || session.mediaReadyConfirmed) return;
+    session.mediaReadyConfirmed = true;
     this.clearTimers(session);
     this.armTransportMonitor(session);
     void this.queueTransportStateUpdate(session);
   }
 
   handleViewerLeft(identity: string): void {
+    this.pendingRetryTokens.delete(identity);
     const session = this.sessions.get(identity);
     if (!session) return;
     if (session.state !== 'closed') {
@@ -268,19 +281,29 @@ class P2pShareControllerImpl implements P2pShareController {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
     const existing = this.sessions.get(from);
     if (existing) this.closeSession(existing);
+    const retryToken = ++this.nextRetryToken;
+    this.pendingRetryTokens.set(from, retryToken);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
     // so stale candidates from a failed attempt can never poison the retry.
-    void this.resolveIceServers(true).then(async (iceConfiguration) => {
-      // The share may have stopped while the credentials were in flight.
-      if (this.activeStream === undefined || this.activeOptions === undefined) return;
-      const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
-      await this.rebalanceBitrates();
-      await this.establishSession(session);
-    });
+    void this.retryViewer(from, retryToken);
+  }
+
+  private async retryViewer(from: string, retryToken: number): Promise<void> {
+    const iceConfiguration = await this.resolveIceServers(true).catch(() => undefined);
+    if (this.pendingRetryTokens.get(from) !== retryToken) return;
+    this.pendingRetryTokens.delete(from);
+    // The share may have stopped while the credentials were in flight.
+    if (iceConfiguration === undefined || this.activeStream === undefined || this.activeOptions === undefined) return;
+    const current = this.sessions.get(from);
+    if (current) this.closeSession(current);
+    const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
+    await this.rebalanceBitrates();
+    await this.establishSession(session);
   }
 
   async retryAll(viewers: Peer[]): Promise<void> {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
+    this.pendingRetryTokens.clear();
     const iceConfiguration = await this.resolveIceServers(true);
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') {
@@ -305,6 +328,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.iceRefreshTimer = undefined;
     this.activeStream = undefined;
     this.activeOptions = undefined;
+    this.pendingRetryTokens.clear();
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
       // Mark the session closed synchronously *before* `pc.close()`: a pending
@@ -416,6 +440,8 @@ class P2pShareControllerImpl implements P2pShareController {
       offerSent: false,
       pcClosed: false,
       transportConnected: false,
+      mediaReadyReceived: false,
+      mediaReadyConfirmed: false,
       senderParameterTail: Promise.resolve(),
       transportSampleTail: Promise.resolve(),
       negotiationStartedAt: 0,
@@ -484,6 +510,7 @@ class P2pShareControllerImpl implements P2pShareController {
     if (state === 'connected' || state === 'completed') {
       session.transportConnected = true;
       this.clearDisconnectTimer(session);
+      this.confirmMediaReady(session);
     } else if (state === 'disconnected') {
       session.transportConnected = false;
       if (session.disconnectTimer === undefined) {

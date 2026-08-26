@@ -11,7 +11,12 @@ import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { LanguageProvider } from '../i18n/i18n.js';
 import { ApiRequestError } from '../api/client.js';
 import { MeetingRoomPage, type MeetingRoomApi, type MeetingRoomPageProps } from '../pages/meeting-room-page.js';
-import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
+import {
+  createP2pShareController,
+  type P2pShareController,
+  type P2pShareSignaling,
+  type ViewerSessionState
+} from './p2p-share-controller.js';
 import type { Peer, P2pSignalingClient, P2pSignalingEvents } from './p2p-signaling.js';
 import {
   createRoomController,
@@ -1568,7 +1573,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     })));
   });
 
-  it('stops the P2P sessions when every viewer has left but keeps the SFU track for fallback viewers', async () => {
+  it('keeps the controller available when every viewer has fallen back and retains the SFU track', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness(p2pViewers);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1577,11 +1582,43 @@ describe('hybrid P2P-first screen share publisher', () => {
     hybrid.handleViewerBye('viewer-2', 'fallback');
     fake.triggerAllViewersClosed();
 
-    expect(fake.stop).toHaveBeenCalledOnce();
+    expect(fake.stop).not.toHaveBeenCalled();
     await waitFor(() => expect(sfuPublisher.publish).toHaveBeenCalledTimes(1)); // LiveKit stays for the fallback viewers
   });
 
-  it('stops P2P sessions but keeps the SFU track when all viewers leave', async () => {
+  it('keeps the P2P controller retryable after every viewer falls back to the SFU', async () => {
+    const signaling: P2pShareSignaling = {
+      sendOffer: vi.fn(),
+      sendIce: vi.fn(),
+      sendBye: vi.fn()
+    };
+    const sfuPublisher = {
+      publish: vi.fn(async () => undefined),
+      release: vi.fn(async () => undefined)
+    };
+    const viewer = p2pViewers[0];
+    const hybrid = new HybridScreenSharePublisher({
+      sfuPublisher,
+      getViewers: () => [viewer],
+      createShareController: (hooks) => createP2pShareController({
+        slug: 'meeting-slug',
+        signaling,
+        fetchIceServers: async () => [{ urls: ['stun:stun.example.test:3478'] }],
+        createPeerConnection: () => new HybridShareFakePc() as unknown as RTCPeerConnection,
+        ...hooks
+      })
+    });
+    const { stream } = displayStream({ audio: true });
+    await hybrid.publish(stream, p2pPublishOptions(8_000_000));
+    expect(signaling.sendOffer).toHaveBeenCalledOnce();
+
+    hybrid.handleViewerBye(viewer.identity, 'fallback');
+    hybrid.getShareController()?.handleRetry(viewer.identity);
+
+    await waitFor(() => expect(signaling.sendOffer).toHaveBeenCalledTimes(2));
+  });
+
+  it('keeps the controller available until share release when all viewers leave', async () => {
     const { hybrid, sfuPublisher, fake } = hybridHarness([p2pViewers[0]]);
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
@@ -1589,7 +1626,7 @@ describe('hybrid P2P-first screen share publisher', () => {
     hybrid.viewerLeft('viewer-1');
     fake.triggerAllViewersClosed();
 
-    expect(fake.stop).toHaveBeenCalledOnce();
+    expect(fake.stop).not.toHaveBeenCalled();
     expect(sfuPublisher.publish).toHaveBeenCalledOnce();
     expect(sfuPublisher.release).not.toHaveBeenCalled();
   });
@@ -2326,6 +2363,43 @@ function hybridHarness(viewers: Peer[]) {
     createShareController,
     setViewers: (next: Peer[]) => { roster = next; }
   };
+}
+
+class HybridShareFakePc {
+  iceConnectionState: RTCIceConnectionState = 'new';
+  onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
+  oniceconnectionstatechange: (() => void) | null = null;
+  readonly sender = {
+    track: undefined as MediaStreamTrack | undefined,
+    getParameters: () => ({ encodings: [{}] }) as RTCRtpSendParameters,
+    setParameters: async () => undefined
+  };
+
+  addTransceiver(track: MediaStreamTrack): RTCRtpTransceiver {
+    this.sender.track = track;
+    return {
+      sender: this.sender,
+      setCodecPreferences: () => undefined
+    } as unknown as RTCRtpTransceiver;
+  }
+
+  addTrack(): RTCRtpSender {
+    return this.sender as unknown as RTCRtpSender;
+  }
+
+  async createOffer(): Promise<RTCSessionDescriptionInit> {
+    return { type: 'offer', sdp: 'offer-sdp' };
+  }
+
+  async setLocalDescription(): Promise<void> {}
+
+  async getStats(): Promise<RTCStatsReport> {
+    return new Map() as unknown as RTCStatsReport;
+  }
+
+  close(): void {
+    this.iceConnectionState = 'closed';
+  }
 }
 
 class PageFakePc {

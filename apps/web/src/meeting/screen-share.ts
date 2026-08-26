@@ -415,11 +415,10 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
     if (this.shareController === undefined) {
       const controller = this.deps.createShareController({
         onViewerFallback: () => undefined,
-        onAllViewersClosed: () => {
-          // Every tracked viewer is gone: clear the P2P sessions; the share
-          // itself stays active and re-drives if a viewer joins again.
-          if (this.activeStream !== undefined) void this.shareController?.stop();
-        }
+        // Closed viewer sessions keep the active stream/options on the
+        // controller so a viewer can request a fresh TURN/P2P offer after an
+        // SFU fallback. Full controller shutdown belongs to share release.
+        onAllViewersClosed: () => undefined
       });
       this.shareController = controller;
       this.unsubscribeController = controller.subscribe(() => undefined);

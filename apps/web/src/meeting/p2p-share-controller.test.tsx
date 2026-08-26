@@ -508,6 +508,18 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).not.toHaveBeenCalled();
   });
 
+  it('honors media-ready that arrives before the connected ICE state event', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    controller.handleMediaReady('viewer-1');
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+
+    pc.setIceConnectionState('connected');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+  });
+
   it('applies the selected tier per viewer while the total stays under the uplink budget', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 3));
@@ -1015,6 +1027,27 @@ describe('p2p share controller', () => {
     expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(offersBefore);
     expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', expect.any(String), expect.any(String));
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps only the newest retry when credential refreshes overlap', async () => {
+    const { controller, signaling, fetchIceServers } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    let resolveFirstRetry!: (servers: RTCIceServer[]) => void;
+    let resolveSecondRetry!: (servers: RTCIceServer[]) => void;
+    fetchIceServers
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstRetry = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondRetry = resolve; }));
+
+    controller.handleRetry('viewer-1');
+    controller.handleRetry('viewer-1');
+    resolveFirstRetry(iceServers);
+    resolveSecondRetry(iceServers);
+    await vi.waitFor(() => expect(fetchIceServers).toHaveBeenCalledTimes(3));
+
+    await vi.waitFor(() => expect(signaling.sendOffer).toHaveBeenCalledTimes(2));
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    expect(FakeRTCPeerConnection.instances[0].closed).toBe(true);
+    expect(FakeRTCPeerConnection.instances[1].closed).toBe(false);
   });
 
   it('re-drives every viewer with fresh credentials and sessions on retryAll', async () => {
