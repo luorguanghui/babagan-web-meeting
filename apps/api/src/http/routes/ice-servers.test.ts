@@ -68,6 +68,12 @@ afterEach(async () => {
     const expiry = Number(body.iceServers[1].username?.split(':', 1)[0]);
     expect(expiry).toBeGreaterThanOrEqual(Math.floor(Date.now() / 1_000) + 599);
     expect(expiry).toBeLessThanOrEqual(Math.floor(Date.now() / 1_000) + 601);
+    expect(body).toMatchObject({
+      turnProvider: 'coturn',
+      availableTurnProviders: ['coturn']
+    });
+    expect(body).not.toHaveProperty('cloudflareTurnApiToken');
+    expect(body).not.toHaveProperty('cloudflareTurnKeyId');
     expect(response.headers['cache-control']).toBe('no-store');
     expect(fixture.media.fetchCalls).toBe(0);
   });
@@ -176,6 +182,66 @@ afterEach(async () => {
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json().turnProvider).toBe('coturn');
       expect(response.json().iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+    } finally {
+      await cloudflareFixture.close();
+    }
+  });
+
+  it('selects Cloudflare when the authenticated request asks for it', async () => {
+    const cloudflareFixture = await createFixture({
+      p2pTurnProvider: 'coturn',
+      cloudflareTurnKeyId: 'turn-key-id',
+      cloudflareTurnApiToken: 'turn-api-token',
+      cloudflareTurnTtlSeconds: 600
+    });
+    const fetchCloudflare = vi.fn(async () => new Response(JSON.stringify({
+      iceServers: [{
+        urls: ['turn:turn.cloudflare.com:3478?transport=udp'],
+        username: 'opaque-user',
+        credential: 'opaque-credential'
+      }]
+    }), { status: 201 }));
+    vi.stubGlobal('fetch', fetchCloudflare);
+
+    try {
+      const created = await cloudflareFixture.createMeeting();
+      const joined = await cloudflareFixture.join(created.slug, 'Ada');
+      const response = await cloudflareFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers?turnProvider=cloudflare`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        turnProvider: 'cloudflare',
+        availableTurnProviders: ['coturn', 'cloudflare']
+      });
+      expect(fetchCloudflare).toHaveBeenCalledOnce();
+    } finally {
+      await cloudflareFixture.close();
+    }
+  });
+
+  it('falls back to coturn when an explicit Cloudflare request fails', async () => {
+    const cloudflareFixture = await createFixture({
+      cloudflareTurnKeyId: 'turn-key-id',
+      cloudflareTurnApiToken: 'turn-api-token'
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 503 })));
+
+    try {
+      const created = await cloudflareFixture.createMeeting();
+      const joined = await cloudflareFixture.join(created.slug, 'Ada');
+      const response = await cloudflareFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers?turnProvider=cloudflare`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({
+        turnProvider: 'coturn',
+        availableTurnProviders: ['coturn', 'cloudflare']
+      });
     } finally {
       await cloudflareFixture.close();
     }

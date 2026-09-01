@@ -110,6 +110,10 @@ export const IceServersResponseSchema = Type.Object({
     username: Type.Optional(Type.String()),
     credential: Type.Optional(Type.String())
   })),
+  availableTurnProviders: Type.Optional(Type.Array(Type.Union([
+    Type.Literal('coturn'),
+    Type.Literal('cloudflare')
+  ]))),
   turnProvider: Type.Optional(Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')])),
   turnCredentialsExpiresAt: Type.Optional(Type.Integer())
 });
