@@ -261,3 +261,96 @@ apps/api typecheck: Done
 ## Concerns
 
 - No new functional concerns inside Task 4 scope after the fix; Task 5 selector UI and translations remain intentionally untouched.
+
+---
+
+## Fix Round 2: provider fetch stranded by later auto retry
+
+## Scope
+
+Fixed only the new Task 4 review finding:
+
+- a slow provider-specific viewer ICE fetch could lose the request-token race to a later `auto` retry and leave the queued provider-carrying offer blocked indefinitely
+
+## RED
+
+### Targeted regression
+
+Command:
+
+```bash
+pnpm vitest run apps/web/src/meeting/screen-share.test.tsx -t "retries a provider-specific offer when its ICE fetch loses to a later auto retry"
+```
+
+Observed failure:
+
+```text
+FAIL  retries a provider-specific offer when its ICE fetch loses to a later auto retry
+expected fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare')).toHaveLength(2)
+received 1
+```
+
+This reproduced the race where the first `cloudflare` fetch resolved after a later `auto` retry had already claimed the latest request token, so the offer was re-queued without any follow-up `cloudflare` retry.
+
+## GREEN
+
+### 1. Targeted regression
+
+Command:
+
+```bash
+pnpm vitest run apps/web/src/meeting/screen-share.test.tsx -t "retries a provider-specific offer when its ICE fetch loses to a later auto retry"
+```
+
+Result:
+
+```text
+Test Files  1 passed (1)
+Tests  1 passed | 90 skipped (91)
+```
+
+### 2. Focused WebRTC/page suite
+
+Command:
+
+```bash
+pnpm vitest run apps/web/src/meeting/p2p-share-controller.test.tsx apps/web/src/meeting/p2p-viewer-controller.test.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/meeting/p2p-ice.test.tsx
+```
+
+Result:
+
+```text
+Test Files  4 passed (4)
+Tests  194 passed (194)
+```
+
+### 3. Typecheck
+
+Command:
+
+```bash
+pnpm typecheck
+```
+
+Result:
+
+```text
+packages/contracts typecheck: Done
+apps/web typecheck: Done
+apps/api typecheck: Done
+```
+
+## Changed Files
+
+- `apps/web/src/pages/meeting-room-page.tsx`
+- `apps/web/src/meeting/screen-share.test.tsx`
+
+## Self-Review
+
+- The viewer now re-schedules the requested provider when a provider-carrying offer's fetch becomes stale behind a newer request token and the active ICE configuration still does not satisfy that provider.
+- The retry remains provider-specific, so `auto` can no longer strand a queued `cloudflare` offer indefinitely or overwrite the eventual explicit-provider recovery path.
+- Prior Task 4 behavior remains preserved: legacy offers, initial `auto` queueing, viewer Auto/TURN/SFU policy, credential refresh/retry, and LiveKit fallback stayed green in the focused suite.
+
+## Concerns
+
+- No additional concerns inside Task 4 scope after this fix round.

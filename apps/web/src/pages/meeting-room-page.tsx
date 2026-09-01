@@ -499,6 +499,7 @@ export function MeetingRoomPage({
                 || !configurationMatchesRequest(iceConfiguration, requestedProvider))) {
                 blockedViewerSignalProvider = requestedProvider;
                 pendingViewerSignals.push(signal);
+                scheduleIceServersRetry(requestedProvider);
                 return;
               }
             } catch {

@@ -2122,6 +2122,98 @@ describe('P2P-first screen sharing in the room', () => {
     }
   });
 
+  it('retries a provider-specific offer when its ICE fetch loses to a later auto retry', async () => {
+    const staleCloudflareIceResponse = deferred<Response>();
+    const fetchCalls: string[] = [];
+    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
+    const cloudflareIceServers = [{
+      urls: ['turn:turn.cloudflare.com:3478'],
+      username: 'cloudflare-user',
+      credential: 'cloudflare-secret'
+    }];
+    let autoAttempts = 0;
+    let cloudflareAttempts = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
+        cloudflareAttempts += 1;
+        if (cloudflareAttempts === 1) return staleCloudflareIceResponse.promise;
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: cloudflareIceServers,
+          turnProvider: 'cloudflare'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.includes('/ice-servers')) {
+        autoAttempts += 1;
+        if (autoAttempts === 1) return Promise.reject(new Error('auto unavailable'));
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: coturnIceServers,
+          turnProvider: 'coturn'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    vi.useFakeTimers();
+    try {
+      renderP2pRoom({
+        meetingApi: authorizedMeetingApi(),
+        createSignalingClient: signaling.factory,
+        shareControllerFactory: fakeShareControllerFactory
+      });
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers') && !call.includes('turnProvider=')).length).toBe(1);
+
+      act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(1);
+      expect(PageFakePc.instances).toHaveLength(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers') && !call.includes('turnProvider=')).length).toBe(2);
+      expect(PageFakePc.instances).toHaveLength(0);
+
+      await act(async () => {
+        staleCloudflareIceResponse.resolve(new Response(JSON.stringify({
+          iceServers: cloudflareIceServers,
+          turnProvider: 'cloudflare'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(PageFakePc.instances).toHaveLength(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(2);
+      expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]);
+      expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
+      expect(signaling.client.sendAnswer).toHaveBeenCalledWith('sharer-1', 'answer-sdp');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('requests the persisted TURN provider when starting a share', async () => {
     window.localStorage.setItem('babagan.screen-turn-provider', 'cloudflare');
     const fetchCalls: string[] = [];
