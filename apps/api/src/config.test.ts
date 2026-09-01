@@ -102,6 +102,32 @@ describe('loadConfig', () => {
     expect(config.cloudflareTurnConnectIps).toEqual(['172.64.150.1', '188.114.96.1']);
   });
 
+  it('keeps optional Cloudflare credentials when coturn is the auto default', () => {
+    const config = loadConfig(validEnv({
+      P2P_TURN_PROVIDER: 'coturn',
+      CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
+      CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
+      CLOUDFLARE_TURN_TTL_SECONDS: '600'
+    }));
+
+    expect(config.p2pTurnProvider).toBe('coturn');
+    expect(config.cloudflareTurnKeyId).toBe('turn-key-id');
+    expect(config.cloudflareTurnApiToken).toBe('turn-api-token');
+    expect(config.cloudflareTurnTtlSeconds).toBe(600);
+  });
+
+  it.each([
+    ['CLOUDFLARE_TURN_KEY_ID', { CLOUDFLARE_TURN_API_TOKEN: 'token' }],
+    ['CLOUDFLARE_TURN_API_TOKEN', { CLOUDFLARE_TURN_KEY_ID: 'key' }]
+  ] as const)('rejects a partial Cloudflare credential pair when %s is missing', (_, overrides) => {
+    expect(() => loadConfig(validEnv(overrides))).toThrow(/Cloudflare TURN.*pair|both/i);
+  });
+
+  it('requires Cloudflare credentials when Cloudflare is the auto default', () => {
+    expect(() => loadConfig(validEnv({ P2P_TURN_PROVIDER: 'cloudflare' })))
+      .toThrow(/CLOUDFLARE_TURN_KEY_ID/);
+  });
+
   it('ignores Cloudflare-only settings while coturn remains the active provider', () => {
     expect(loadConfig(validEnv({ CLOUDFLARE_TURN_TTL_SECONDS: 'not-used' }))).toMatchObject({
       p2pTurnProvider: 'coturn',

@@ -113,6 +113,23 @@ function parseCloudflareTurnConnectIps(env: Environment): string[] | undefined {
   return values;
 }
 
+function parseCloudflareTurnCredentials(env: Environment): {
+  keyId?: string;
+  apiToken?: string;
+} {
+  const keyId = env.CLOUDFLARE_TURN_KEY_ID?.trim();
+  const apiToken = env.CLOUDFLARE_TURN_API_TOKEN?.trim();
+
+  if ((keyId && !apiToken) || (!keyId && apiToken)) {
+    throw new Error('CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN must both be set or both be empty');
+  }
+
+  return {
+    keyId,
+    apiToken
+  };
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -135,18 +152,16 @@ export function loadConfig(env: Environment): AppConfig {
   }
 
   const p2pTurnProvider = parseTurnProvider(env);
-  const cloudflareTurnKeyId = p2pTurnProvider === 'cloudflare'
-    ? requireValue(env, 'CLOUDFLARE_TURN_KEY_ID')
-    : undefined;
-  const cloudflareTurnApiToken = p2pTurnProvider === 'cloudflare'
-    ? requireValue(env, 'CLOUDFLARE_TURN_API_TOKEN')
-    : undefined;
-  const cloudflareTurnTtlSeconds = p2pTurnProvider === 'cloudflare'
-    ? parseCloudflareTurnTtlSeconds(env)
-    : undefined;
-  const cloudflareTurnConnectIps = p2pTurnProvider === 'cloudflare'
-    ? parseCloudflareTurnConnectIps(env)
-    : undefined;
+  const cloudflareCredentials = parseCloudflareTurnCredentials(env);
+  const cloudflareEnabled = p2pTurnProvider === 'cloudflare' || cloudflareCredentials.keyId !== undefined;
+  if (p2pTurnProvider === 'cloudflare' && !cloudflareCredentials.keyId) {
+    throw new Error('CLOUDFLARE_TURN_KEY_ID is required when P2P_TURN_PROVIDER is cloudflare');
+  }
+
+  const cloudflareTurnKeyId = cloudflareEnabled ? cloudflareCredentials.keyId : undefined;
+  const cloudflareTurnApiToken = cloudflareEnabled ? cloudflareCredentials.apiToken : undefined;
+  const cloudflareTurnTtlSeconds = cloudflareEnabled ? parseCloudflareTurnTtlSeconds(env) : undefined;
+  const cloudflareTurnConnectIps = cloudflareEnabled ? parseCloudflareTurnConnectIps(env) : undefined;
 
   return {
     nodeEnv,
