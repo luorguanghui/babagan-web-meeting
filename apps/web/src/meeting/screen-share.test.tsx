@@ -2008,6 +2008,120 @@ describe('P2P-first screen sharing in the room', () => {
     expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
   });
 
+  it('does not let a late auto ICE response overwrite a newer provider-specific viewer config', async () => {
+    const autoIceResponse = deferred<Response>();
+    const fetchCalls: string[] = [];
+    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
+    const cloudflareIceServers = [{
+      urls: ['turn:turn.cloudflare.com:3478'],
+      username: 'cloudflare-user',
+      credential: 'cloudflare-secret'
+    }];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: cloudflareIceServers,
+          turnProvider: 'cloudflare'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.includes('/ice-servers')) return autoIceResponse.promise;
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
+
+    act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
+
+    await waitFor(() => expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true));
+    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
+    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
+
+    await act(async () => {
+      autoIceResponse.resolve(new Response(JSON.stringify({
+        iceServers: coturnIceServers,
+        turnProvider: 'coturn'
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      await Promise.resolve();
+    });
+
+    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
+    expect(PageFakePc.instances[0]?.configurationHistory).toEqual([
+      { iceServers: cloudflareIceServers, iceTransportPolicy: 'all' }
+    ]);
+  });
+
+  it('waits for the requested provider configuration before accepting an offer after a refresh failure', async () => {
+    const fetchCalls: string[] = [];
+    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
+    const cloudflareIceServers = [{
+      urls: ['turn:turn.cloudflare.com:3478'],
+      username: 'cloudflare-user',
+      credential: 'cloudflare-secret'
+    }];
+    let cloudflareAttempts = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
+        cloudflareAttempts += 1;
+        if (cloudflareAttempts === 1) return Promise.reject(new Error('cloudflare unavailable'));
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: cloudflareIceServers,
+          turnProvider: 'cloudflare'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: coturnIceServers,
+          turnProvider: 'coturn'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
+
+    vi.useFakeTimers();
+    try {
+      act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(1);
+      expect(PageFakePc.instances).toHaveLength(0);
+      expect(signaling.client.sendAnswer).not.toHaveBeenCalled();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(2);
+      expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]);
+      expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
+      expect(signaling.client.sendAnswer).toHaveBeenCalledWith('sharer-1', 'answer-sdp');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('requests the persisted TURN provider when starting a share', async () => {
     window.localStorage.setItem('babagan.screen-turn-provider', 'cloudflare');
     const fetchCalls: string[] = [];
@@ -2491,7 +2605,8 @@ class HybridShareFakePc {
 class PageFakePc {
   static instances: PageFakePc[] = [];
   static remoteDescriptionGate: Promise<void> | undefined;
-  readonly config: RTCConfiguration;
+  config: RTCConfiguration;
+  readonly configurationHistory: RTCConfiguration[] = [];
   closed = false;
   iceConnectionState: RTCIceConnectionState = 'new';
   remoteDescriptions: RTCSessionDescriptionInit[] = [];
@@ -2502,6 +2617,7 @@ class PageFakePc {
 
   constructor(config: RTCConfiguration = {}) {
     this.config = config;
+    this.configurationHistory.push(config);
     PageFakePc.instances.push(this);
   }
 
@@ -2522,6 +2638,11 @@ class PageFakePc {
 
   async addIceCandidate(candidate?: RTCIceCandidateInit | RTCIceCandidate): Promise<void> {
     this.addedIceCandidates.push(candidate === undefined ? undefined : candidate as RTCIceCandidateInit);
+  }
+
+  setConfiguration(configuration: RTCConfiguration): void {
+    this.config = configuration;
+    this.configurationHistory.push(configuration);
   }
 
   async getStats(): Promise<RTCStatsReport> {

@@ -381,6 +381,8 @@ export function MeetingRoomPage({
     const pendingViewerSignals: ViewerSignal[] = [];
     let viewerSignalTail = Promise.resolve();
     const iceServersFetches = new Map<RequestedIceTurnProvider, Promise<P2pIceServerConfiguration>>();
+    let latestViewerIceRequestToken = 0;
+    let blockedViewerSignalProvider: RequestedIceTurnProvider | undefined;
     const fetchIceServersOnce = (requestedProvider: RequestedIceTurnProvider = 'auto'): Promise<P2pIceServerConfiguration> => {
       const inFlight = iceServersFetches.get(requestedProvider);
       if (inFlight) return inFlight;
@@ -390,17 +392,44 @@ export function MeetingRoomPage({
       iceServersFetches.set(requestedProvider, fetchPromise);
       return fetchPromise;
     };
+    const configurationMatchesRequest = (
+      configuration: P2pIceServerConfiguration,
+      requestedProvider: RequestedIceTurnProvider
+    ): boolean => requestedProvider === 'auto' || configuration.turnProvider === requestedProvider;
+    const applyIceConfiguration = (configuration: P2pIceServerConfiguration): void => {
+      iceConfiguration = configuration;
+      viewerP2pRef.current?.updateIceServers(configuration.iceServers, configuration.turnProvider);
+      scheduleIceRefresh(configuration);
+    };
+    const fetchAndApplyIceServers = async (
+      requestedProvider: RequestedIceTurnProvider = 'auto'
+    ): Promise<boolean> => {
+      const requestToken = ++latestViewerIceRequestToken;
+      const fresh = await fetchIceServersOnce(requestedProvider);
+      if (!configurationMatchesRequest(fresh, requestedProvider)) {
+        throw new Error(`Requested ${requestedProvider} ICE configuration but received ${fresh.turnProvider}.`);
+      }
+      if (cancelled || requestToken !== latestViewerIceRequestToken) return false;
+      applyIceConfiguration(fresh);
+      return true;
+    };
+    const queuePendingViewerSignals = (): void => {
+      const queued = pendingViewerSignals.splice(0);
+      for (const pending of queued) dispatchViewerSignal(pending);
+    };
+    const scheduleIceServersRetry = (requestedProvider: RequestedIceTurnProvider = 'auto'): void => {
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        fetchIceServersWithRetry(requestedProvider);
+      }, 2_000);
+    };
     const refreshViewerIceServers = (requestedProvider: RequestedIceTurnProvider = iceConfiguration?.turnProvider ?? 'auto'): void => {
-      void fetchIceServersOnce(requestedProvider).then((fresh) => {
-        if (cancelled) return;
-        iceConfiguration = fresh;
-        viewerP2pRef.current?.updateIceServers(fresh.iceServers, fresh.turnProvider);
-        scheduleIceRefresh(fresh);
-      }).catch(() => {
+      void fetchAndApplyIceServers(requestedProvider).catch(() => {
         if (cancelled) return;
         iceRefreshTimer = setTimeout(() => {
           iceRefreshTimer = undefined;
-          refreshViewerIceServers();
+          refreshViewerIceServers(requestedProvider);
         }, 2_000);
       });
     };
@@ -443,6 +472,10 @@ export function MeetingRoomPage({
       if (cancelled) return;
       viewerSignalTail = viewerSignalTail.then(async () => {
         if (cancelled) return;
+        if (blockedViewerSignalProvider !== undefined && signal.type === 'ice') {
+          pendingViewerSignals.push(signal);
+          return;
+        }
         if (signal.type === 'offer' && viewerTransportPreferenceRef.current === 'sfu') return;
         if (signal.type === 'offer') {
           viewerSharerIdentityRef.current = signal.from;
@@ -458,21 +491,30 @@ export function MeetingRoomPage({
           // credentials when the cached TURN ones are about to expire:
           // gathering with expired credentials silently yields no relay
           // candidates, which strands asymmetric NAT pairs on the SFU even
-          // though the sharer's fresh session could relay. A refresh failure
-          // keeps the cached servers; the sharer's automatic re-drive covers
-          // a failed negotiation.
+          // though the sharer's fresh session could relay.
           if (shouldRefreshIceServers) {
             try {
-              const fresh = await fetchIceServersOnce(requestedProvider);
-              if (!cancelled) {
-                iceConfiguration = fresh;
-                viewerP2pRef.current?.updateIceServers(fresh.iceServers, fresh.turnProvider);
-                scheduleIceRefresh(fresh);
+              const applied = await fetchAndApplyIceServers(requestedProvider);
+              if (!applied && (iceConfiguration === undefined
+                || !configurationMatchesRequest(iceConfiguration, requestedProvider))) {
+                blockedViewerSignalProvider = requestedProvider;
+                pendingViewerSignals.push(signal);
+                return;
               }
             } catch {
-              // Keep the cached (possibly stale) servers for this attempt.
+              blockedViewerSignalProvider = requestedProvider;
+              pendingViewerSignals.push(signal);
+              scheduleIceServersRetry(requestedProvider);
+              return;
             }
           }
+          if (iceConfiguration === undefined || !configurationMatchesRequest(iceConfiguration, requestedProvider)) {
+            blockedViewerSignalProvider = requestedProvider;
+            pendingViewerSignals.push(signal);
+            if (signal.turnProvider !== undefined) scheduleIceServersRetry(requestedProvider);
+            return;
+          }
+          blockedViewerSignalProvider = undefined;
           if (cancelled) return;
         }
         if (iceConfiguration === undefined) {
@@ -495,18 +537,20 @@ export function MeetingRoomPage({
     // viewer, which is exactly what made "when I share, the others cannot
     // P2P" while their own shares worked (the sharer fetches credentials
     // fresh at share time).
-    const fetchIceServersWithRetry = (): void => {
-      void fetchIceServersOnce().then((configuration) => {
-        if (cancelled) return;
-        iceConfiguration = configuration;
-        viewerP2pRef.current?.updateIceServers(configuration.iceServers, configuration.turnProvider);
-        scheduleIceRefresh(configuration);
+    const fetchIceServersWithRetry = (requestedProvider: RequestedIceTurnProvider = 'auto'): void => {
+      void fetchAndApplyIceServers(requestedProvider).then((applied) => {
+        if (cancelled || !applied) return;
+        const activeIceConfiguration = iceConfiguration;
+        if (blockedViewerSignalProvider !== undefined
+          && (activeIceConfiguration === undefined
+            || !configurationMatchesRequest(activeIceConfiguration, blockedViewerSignalProvider))) return;
+        blockedViewerSignalProvider = undefined;
         ensureController();
-        const queued = pendingViewerSignals.splice(0);
-        for (const signal of queued) dispatchViewerSignal(signal);
+        queuePendingViewerSignals();
       }).catch(() => {
         if (cancelled) return;
-        retryTimer = setTimeout(fetchIceServersWithRetry, 2_000);
+        if (requestedProvider === 'auto' && blockedViewerSignalProvider !== undefined) return;
+        scheduleIceServersRetry(requestedProvider);
       });
     };
     fetchIceServersWithRetry();
