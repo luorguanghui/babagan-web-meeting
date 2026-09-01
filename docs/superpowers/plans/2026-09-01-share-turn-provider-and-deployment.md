@@ -300,7 +300,7 @@ Update the P2P share harness with a Cloudflare ICE response and assert that the 
 ~~~ts
 it('sends the actual TURN provider with a sharer offer', async () => {
   const sendOffer = vi.fn();
-  const controller = new P2pShareController({
+  const controller = createP2pShareController({
     slug: 'meeting-slug',
     signaling: { sendOffer, sendIce: vi.fn(), sendBye: vi.fn() },
     fetchIceServers: async () => ({
