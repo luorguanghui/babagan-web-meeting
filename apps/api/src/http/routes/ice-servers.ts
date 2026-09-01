@@ -66,7 +66,10 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
       turnProvider: 'coturn' as const,
       turnCredentialsExpiresAt: Number(turn.username.split(':', 1)[0])
     };
-    if (resolveRequestedTurnProvider(request.query, dependencies.config) !== 'cloudflare') return coturn;
+    if (
+      resolveRequestedTurnProvider(request.query, dependencies.config) !== 'cloudflare'
+      || !availableTurnProviders.includes('cloudflare')
+    ) return coturn;
 
     try {
       return await fetchCloudflareTurnIceServers({

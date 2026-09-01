@@ -246,6 +246,25 @@ afterEach(async () => {
       await cloudflareFixture.close();
     }
   });
+
+  it('does not call Cloudflare when an explicit request has no Cloudflare credentials', async () => {
+    const fetchCloudflare = vi.fn();
+    vi.stubGlobal('fetch', fetchCloudflare);
+    const created = await fixture.createMeeting();
+    const joined = await fixture.join(created.slug, 'Ada');
+
+    const response = await fixture.app.inject({
+      url: `/api/v1/meetings/${created.slug}/ice-servers?turnProvider=cloudflare`,
+      headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      turnProvider: 'coturn',
+      availableTurnProviders: ['coturn']
+    });
+    expect(fetchCloudflare).not.toHaveBeenCalled();
+  });
 });
 
 interface IceFixture {
