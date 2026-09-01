@@ -1,3 +1,4 @@
+import { P2P_TURN_PROVIDERS, type P2pTurnProvider } from '@meeting/contracts';
 import type { P2pClientMessage } from '@meeting/contracts';
 
 /** Interval at which the client pings the server to keep the connection alive. */
@@ -29,7 +30,7 @@ export interface P2pSignalingEvents {
   onWelcome(peers: Peer[]): void;
   onPeerJoined(peer: Peer): void;
   onPeerLeft(peer: { identity: string }): void;
-  onOffer(from: string, sdp: string, generation?: string): void;
+  onOffer(from: string, sdp: string, generation?: string, turnProvider?: P2pTurnProvider): void;
   onAnswer(from: string, sdp: string, generation?: string): void;
   onIce(from: string, candidate: string | null, generation?: string): void;
   onMediaReady(from: string, generation?: string): void;
@@ -150,8 +151,8 @@ export class P2pSignalingClient {
     return promise;
   }
 
-  sendOffer(to: string, sdp: string, generation?: string): void {
-    this.sendOrQueue(generation === undefined ? { type: 'offer', to, sdp } : { type: 'offer', to, sdp, generation });
+  sendOffer(to: string, sdp: string, generation?: string, turnProvider?: P2pTurnProvider): void {
+    this.sendOrQueue(buildOfferMessage(to, sdp, generation, turnProvider));
   }
 
   sendAnswer(to: string, sdp: string, generation?: string): void {
@@ -265,8 +266,15 @@ export class P2pSignalingClient {
         break;
       case 'offer':
         if (from !== undefined && typeof message.sdp === 'string') {
-          if (typeof message.generation === 'string') this.events.onOffer(from, message.sdp, message.generation);
-          else this.events.onOffer(from, message.sdp);
+          const turnProvider = isP2pTurnProvider(message.turnProvider) ? message.turnProvider : undefined;
+          if (typeof message.generation === 'string') {
+            if (turnProvider === undefined) this.events.onOffer(from, message.sdp, message.generation);
+            else this.events.onOffer(from, message.sdp, message.generation, turnProvider);
+          } else if (turnProvider === undefined) {
+            this.events.onOffer(from, message.sdp);
+          } else {
+            this.events.onOffer(from, message.sdp, undefined, turnProvider);
+          }
         }
         break;
       case 'answer':
@@ -415,4 +423,20 @@ export function createP2pSignalingClient(
   dependencies?: P2pSignalingDependencies
 ): P2pSignalingClient {
   return new P2pSignalingClient(slug, identity, events, dependencies);
+}
+
+function buildOfferMessage(
+  to: string,
+  sdp: string,
+  generation?: string,
+  turnProvider?: P2pTurnProvider
+): P2pClientMessage {
+  const base = generation === undefined
+    ? { type: 'offer', to, sdp } as const
+    : { type: 'offer', to, sdp, generation } as const;
+  return turnProvider === undefined ? base : { ...base, turnProvider };
+}
+
+function isP2pTurnProvider(value: unknown): value is P2pTurnProvider {
+  return typeof value === 'string' && (P2P_TURN_PROVIDERS as readonly string[]).includes(value);
 }

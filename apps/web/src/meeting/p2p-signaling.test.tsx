@@ -138,7 +138,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(createClient(handlers));
     const sdp = 'v=0\r\no=- 1 1 IN IP4 0.0.0.0';
 
-    socket.message({ type: 'offer', to: 'participant-1', sdp, from: 'sharer' });
+    socket.message({ type: 'offer', to: 'participant-1', sdp, turnProvider: 'cloudflare', from: 'sharer' });
     socket.message({ type: 'answer', to: 'participant-1', sdp, from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: 'candidate:1', from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: null, from: 'sharer' });
@@ -151,7 +151,7 @@ describe('p2p signaling client', () => {
     socket.message({ type: 'share-gone', reason: 'sharer left' });
     socket.message({ type: 'error', code: 'RATE_LIMITED', message: 'slow down' });
 
-    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp);
+    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp, undefined, 'cloudflare');
     expect(handlers.onAnswer).toHaveBeenCalledWith('sharer', sdp);
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', 'candidate:1');
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', null);
@@ -317,6 +317,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(client);
 
     client.sendOffer('sharer', 'offer-sdp');
+    client.sendOffer('viewer-1', 'offer-sdp-turn', undefined, 'cloudflare');
     client.sendAnswer('sharer', 'answer-sdp');
     client.sendIce('sharer', 'candidate:1');
     client.sendIce('sharer', null);
@@ -328,6 +329,7 @@ describe('p2p signaling client', () => {
     expect(socket.sent).toEqual([
       { type: 'hello', participantIdentity: 'participant-1' },
       { type: 'offer', to: 'sharer', sdp: 'offer-sdp' },
+      { type: 'offer', to: 'viewer-1', sdp: 'offer-sdp-turn', turnProvider: 'cloudflare' },
       { type: 'answer', to: 'sharer', sdp: 'answer-sdp' },
       { type: 'ice', to: 'sharer', candidate: 'candidate:1' },
       { type: 'ice', to: 'sharer', candidate: null },

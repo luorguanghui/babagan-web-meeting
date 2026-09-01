@@ -193,6 +193,8 @@ export class P2pSignalingSession {
   }
 
   private forward(message: P2pSignalMessage): void {
+    // Any optional offer.turnProvider arrives here already validated and is
+    // preserved by the object spread; forwarding logic itself stays unchanged.
     const envelope: ForwardedP2pMessage = { ...message, from: this.identity };
     // Forwarded signaling envelopes are not part of the P2pServerMessage
     // schema (the `from` field is server-injected); they are serialized as-is.

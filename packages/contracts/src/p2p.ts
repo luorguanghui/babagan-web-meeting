@@ -42,7 +42,11 @@ export const P2pClientMessageSchema = Type.Union([
     type: Type.Literal('offer'),
     to: IdentitySchema,
     sdp: SdpSchema,
-    generation: Type.Optional(GenerationSchema)
+    generation: Type.Optional(GenerationSchema),
+    turnProvider: Type.Optional(Type.Union([
+      Type.Literal('coturn'),
+      Type.Literal('cloudflare')
+    ]))
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('answer'),

@@ -21,7 +21,7 @@ describe('P2P signaling contract types', () => {
   it('exports the exact client-message discriminated union', () => {
     expectTypeOf<P2pClientMessage>().toEqualTypeOf<
       | { type: 'hello'; participantIdentity: string }
-      | { type: 'offer'; to: string; sdp: string; generation?: string }
+      | { type: 'offer'; to: string; sdp: string; generation?: string; turnProvider?: 'coturn' | 'cloudflare' }
       | { type: 'answer'; to: string; sdp: string; generation?: string }
       | { type: 'ice'; to: string; candidate: string | null; generation?: string } // null = end-of-candidates
       | { type: 'media-ready'; to: string; generation?: string }
@@ -58,6 +58,12 @@ describe('P2P client message schema', () => {
   it('accepts every documented client message', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'hello', participantIdentity: 'participant-1' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'offer', to: 'viewer-1', sdp: 'v=0 ...' })).toBe(true);
+    expect(Value.Check(P2pClientMessageSchema, {
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
+    })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: 'candidate:1 1 udp 2130706431 192.0.2.1 54666 typ host' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: null })).toBe(true);
@@ -70,6 +76,12 @@ describe('P2P client message schema', () => {
 
   it('rejects messages missing to, with unknown types, empty sdp, or extra properties', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'offer', sdp: 'v=0 ...' })).toBe(false);
+    expect(Value.Check(P2pClientMessageSchema, {
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'unknown'
+    })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'answer', sdp: 'v=0 ...' })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', candidate: null })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'bye' })).toBe(false);
@@ -88,6 +100,17 @@ describe('parseP2pClientMessage', () => {
     });
     expect(parseP2pClientMessage({ type: 'offer', to: 'viewer-1', sdp: 'v=0 ...' })).toEqual({
       type: 'offer', to: 'viewer-1', sdp: 'v=0 ...'
+    });
+    expect(parseP2pClientMessage({
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
+    })).toEqual({
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
     });
     expect(parseP2pClientMessage({ type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toEqual({
       type: 'answer', to: 'sharer-1', sdp: 'v=0 ...'
