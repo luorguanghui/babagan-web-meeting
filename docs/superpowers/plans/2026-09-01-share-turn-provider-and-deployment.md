@@ -278,6 +278,8 @@ git commit -m "feat: synchronize TURN provider in P2P offers"
 
 **Files:**
 
+- Create: apps/web/src/meeting/screen-turn-provider-preference.ts
+- Test: apps/web/src/meeting/screen-turn-provider-preference.test.tsx
 - Modify: apps/web/src/meeting/p2p-share-controller.ts
 - Test: apps/web/src/meeting/p2p-share-controller.test.tsx
 - Modify: apps/web/src/meeting/p2p-viewer-controller.ts
@@ -288,12 +290,29 @@ git commit -m "feat: synchronize TURN provider in P2P offers"
 
 **Interfaces:**
 
+- ScreenShareTurnProviderPreference = auto | coturn | cloudflare。
+- readScreenShareTurnProviderPreference(storage?: Storage): ScreenShareTurnProviderPreference。
+- saveScreenShareTurnProviderPreference(storage: Storage, preference): void。
 - P2pShareController keeps fetchIceServers: () => Promise<RTCIceServer[] | P2pIceServerConfiguration>.
 - The page supplies a provider-aware fetcher for the sharer; it reads the current ScreenShareTurnProviderPreference ref and requests turnProvider unless the preference is auto.
 - ViewerSignal carries turnProvider?: P2pTurnProvider.
 - A sharer offer always carries the actual session.turnProvider; a legacy offer without metadata remains coturn-compatible.
 
-- [ ] **Step 1: Write failing sharer tests**
+- [ ] **Step 1: Write failing preference and sharer tests**
+
+Add the storage behavior test first:
+
+~~~ts
+it('defaults to auto and ignores unsupported persisted values', () => {
+  localStorage.setItem('babagan.screen-turn-provider', 'invalid');
+  expect(readScreenShareTurnProviderPreference(localStorage)).toBe('auto');
+});
+
+it.each(['auto', 'coturn', 'cloudflare'] as const)('persists %s', (preference) => {
+  saveScreenShareTurnProviderPreference(localStorage, preference);
+  expect(readScreenShareTurnProviderPreference(localStorage)).toBe(preference);
+});
+~~~
 
 Update the P2P share harness with a Cloudflare ICE response and assert that the created peer connection uses it and the offer includes the provider:
 
@@ -321,17 +340,17 @@ it('sends the actual TURN provider with a sharer offer', async () => {
 });
 ~~~
 
-- [ ] **Step 2: Run the sharer tests and verify red**
+- [ ] **Step 2: Run the preference and sharer tests and verify red**
 
 ~~~bash
-pnpm vitest run apps/web/src/meeting/p2p-share-controller.test.tsx
+pnpm vitest run apps/web/src/meeting/screen-turn-provider-preference.test.tsx apps/web/src/meeting/p2p-share-controller.test.tsx
 ~~~
 
-Expected: the offer spy receives only the legacy three arguments and the test fails.
+Expected: the preference module is missing and the offer spy receives only the legacy three arguments.
 
-- [ ] **Step 3: Implement provider-aware offer creation**
+- [ ] **Step 3: Implement the preference module and provider-aware offer creation**
 
-Pass session.turnProvider to sendOffer in establishSession. Keep refreshIceServers, retry, timeout re-drive, and provider reporting intact so a provider fallback is reflected in the next offer.
+Create screen-turn-provider-preference.ts with the key babagan.screen-turn-provider, accept only the three union values, catch storage errors, and return auto on missing or invalid input. Then pass session.turnProvider to sendOffer in establishSession. Keep refreshIceServers, retry, timeout re-drive, and provider reporting intact so a provider fallback is reflected in the next offer.
 
 - [ ] **Step 4: Write failing viewer synchronization test**
 
@@ -363,6 +382,7 @@ Expected: all existing and new tests pass, including Cloudflare labels and cotur
 
 ~~~bash
 git add apps/web/src/meeting/p2p-share-controller.ts apps/web/src/meeting/p2p-share-controller.test.tsx apps/web/src/meeting/p2p-viewer-controller.ts apps/web/src/meeting/p2p-viewer-controller.test.tsx apps/web/src/pages/meeting-room-page.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/meeting/p2p-ice.ts
+git add apps/web/src/meeting/screen-turn-provider-preference.ts apps/web/src/meeting/screen-turn-provider-preference.test.tsx
 git commit -m "feat: align P2P peers on the selected TURN provider"
 ~~~
 
@@ -370,8 +390,6 @@ git commit -m "feat: align P2P peers on the selected TURN provider"
 
 **Files:**
 
-- Create: apps/web/src/meeting/screen-turn-provider-preference.ts
-- Test: apps/web/src/meeting/screen-turn-provider-preference.test.tsx
 - Modify: apps/web/src/components/meeting-controls.tsx
 - Test: apps/web/src/meeting/screen-share.test.tsx
 - Modify: apps/web/src/pages/meeting-room-page.tsx
@@ -380,42 +398,13 @@ git commit -m "feat: align P2P peers on the selected TURN provider"
 
 **Interfaces:**
 
-- ScreenShareTurnProviderPreference = auto | coturn | cloudflare。
-- readScreenShareTurnProviderPreference(storage?: Storage): ScreenShareTurnProviderPreference。
-- saveScreenShareTurnProviderPreference(storage: Storage, preference): void。
 - MeetingControlsProps gains screenShareTurnProvider, availableTurnProviders, screenShareTurnProviderVisible and onScreenShareTurnProviderChange.
 
-- [ ] **Step 1: Write failing preference tests**
-
-~~~ts
-it('defaults to auto and ignores unsupported persisted values', () => {
-  localStorage.setItem('babagan.screen-turn-provider', 'invalid');
-  expect(readScreenShareTurnProviderPreference(localStorage)).toBe('auto');
-});
-
-it.each(['auto', 'coturn', 'cloudflare'] as const)('persists %s', (preference) => {
-  saveScreenShareTurnProviderPreference(localStorage, preference);
-  expect(readScreenShareTurnProviderPreference(localStorage)).toBe(preference);
-});
-~~~
-
-- [ ] **Step 2: Run preference tests and verify red**
-
-~~~bash
-pnpm vitest run apps/web/src/meeting/screen-turn-provider-preference.test.tsx
-~~~
-
-Expected: the module is missing and Vitest reports the import/function failure.
-
-- [ ] **Step 3: Implement the small storage module**
-
-Use the key babagan.screen-turn-provider, accept only the three union values, catch storage errors, and return auto on missing or invalid input.
-
-- [ ] **Step 4: Add failing controls test**
+- [ ] **Step 1: Write failing controls test**
 
 Render MeetingControls with a visible provider selector and both available providers. Assert the three option labels exist, changing to cloudflare calls the callback, and rerendering with screenShareActive disables the selector. Render with only ['coturn'] and assert that the Cloudflare option is absent.
 
-- [ ] **Step 5: Run the controls test and verify red**
+- [ ] **Step 2: Run the controls test and verify red**
 
 ~~~bash
 pnpm vitest run apps/web/src/meeting/screen-share.test.tsx
@@ -423,11 +412,11 @@ pnpm vitest run apps/web/src/meeting/screen-share.test.tsx
 
 Expected: the new provider selector cannot be found because the props and settings field do not exist.
 
-- [ ] **Step 6: Implement the UI and page state**
+- [ ] **Step 3: Implement the UI and page state**
 
 Add English and Simplified Chinese messages for the provider label, Auto, server coturn, Cloudflare TURN, and the hint that provider selection applies to the current share and is controlled by the sharer. Put the selector in MeetingSettings beside the screen quality/codec fields; use native select and existing form/grid styles. Pass the page state/ref, discovered providers, visibility, persistence callback, and disabled state through meetingControlsProps. Keep the existing viewer transport selector separate and unchanged.
 
-- [ ] **Step 7: Verify green and run accessibility tests**
+- [ ] **Step 4: Verify green and run accessibility tests**
 
 ~~~bash
 pnpm vitest run apps/web/src/meeting/screen-turn-provider-preference.test.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/accessibility.test.tsx
@@ -436,10 +425,10 @@ pnpm --filter @meeting/web typecheck
 
 Expected: selector, translations, accessibility, and web typecheck pass without warnings.
 
-- [ ] **Step 8: Commit the UI slice**
+- [ ] **Step 5: Commit the UI slice**
 
 ~~~bash
-git add apps/web/src/meeting/screen-turn-provider-preference.ts apps/web/src/meeting/screen-turn-provider-preference.test.tsx apps/web/src/components/meeting-controls.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/pages/meeting-room-page.tsx apps/web/src/i18n/i18n.tsx apps/web/src/styles.css
+git add apps/web/src/components/meeting-controls.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/pages/meeting-room-page.tsx apps/web/src/i18n/i18n.tsx apps/web/src/styles.css
 git commit -m "feat: add screen-share TURN provider selector"
 ~~~
 
