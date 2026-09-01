@@ -82,7 +82,7 @@ export interface P2pShareController {
  * it structurally, so tests can inject a fake without a WebSocket.
  */
 export interface P2pShareSignaling {
-  sendOffer(to: string, sdp: string, generation?: string): void;
+  sendOffer(to: string, sdp: string, generation?: string, turnProvider?: P2pTurnProvider): void;
   sendIce(to: string, candidate: string | null, generation?: string): void;
   sendBye(to: string, reason?: string): void;
 }
@@ -482,7 +482,7 @@ class P2pShareControllerImpl implements P2pShareController {
       await session.pc.setLocalDescription(offer);
       if (session.state === 'closed' || session.state === 'livekit-fallback') return; // left or fell back mid-establish
       if (offer.sdp === undefined) throw new Error('createOffer returned no SDP');
-      this.deps.signaling.sendOffer(session.identity, offer.sdp, session.generation);
+      this.deps.signaling.sendOffer(session.identity, offer.sdp, session.generation, session.turnProvider);
       session.offerSent = true;
       this.flushLocalCandidates(session);
       this.armNegotiationTimer(session);

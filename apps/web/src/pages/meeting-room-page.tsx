@@ -30,8 +30,13 @@ import {
   type ViewerSessionState
 } from '../meeting/p2p-share-controller.js';
 import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
-import { iceConfigurationExpiresSoon, type P2pIceServerConfiguration } from '../meeting/p2p-ice.js';
+import {
+  iceConfigurationExpiresSoon,
+  normalizeP2pIceServerConfiguration,
+  type P2pIceServerConfiguration
+} from '../meeting/p2p-ice.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
+import { readScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
 import {
   createScreenShareController,
   HybridScreenSharePublisher,
@@ -96,6 +101,7 @@ export interface MeetingRoomApi {
 }
 
 type HostAuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
+type RequestedIceTurnProvider = 'auto' | P2pTurnProvider;
 const transportModeKeys: Record<ScreenTransportMode, MessageKey> = {
   p2p: 'screenTransport.p2p', turn: 'screenTransport.turn', sfu: 'screenTransport.sfu', mixed: 'screenTransport.mixed',
   negotiating: 'screenTransport.negotiating', waiting: 'screenTransport.waiting'
@@ -222,6 +228,8 @@ export function MeetingRoomPage({
     readViewerTransportPreference()
   );
   const viewerTransportPreferenceRef = useRef(viewerTransportPreference);
+  const screenTurnProviderPreferenceRef = useRef(readScreenShareTurnProviderPreference());
+  const availableScreenTurnProvidersRef = useRef<readonly P2pTurnProvider[]>([]);
   const viewerSharerIdentityRef = useRef<string | undefined>(undefined);
   const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
   const viewerRosterRef = useRef<Peer[]>([]);
@@ -235,6 +243,19 @@ export function MeetingRoomPage({
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
+  const requestMeetingIceServers = useCallback(async (
+    requestedProvider: RequestedIceTurnProvider = 'auto'
+  ): Promise<P2pIceServerConfiguration> => {
+    const path = requestedProvider === 'auto'
+      ? `/meetings/${encodeURIComponent(slug)}/ice-servers`
+      : `/meetings/${encodeURIComponent(slug)}/ice-servers?turnProvider=${encodeURIComponent(requestedProvider)}`;
+    const configuration = normalizeP2pIceServerConfiguration(await apiRequest<P2pIceServerConfiguration>(
+      path,
+      IceServersResponseSchema
+    ));
+    availableScreenTurnProvidersRef.current = configuration.availableTurnProviders ?? [configuration.turnProvider];
+    return configuration;
+  }, [slug]);
   const authorizationChanged = useCallback((authorized: boolean) => {
     hostAuthorizedRef.current = authorized;
     setHostAuthorized(authorized);
@@ -269,7 +290,12 @@ export function MeetingRoomPage({
     } else {
       const signaling = signalingRef.current;
       if (!signaling) throw new Error('P2P signaling is not connected.');
-      share = createP2pShareController({ slug, signaling, ...deps });
+      share = createP2pShareController({
+        slug,
+        signaling,
+        fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
+        ...deps
+      });
     }
     p2pShareUnsubscribeRef.current?.();
     p2pShareUnsubscribeRef.current = share.subscribe((states) => {
@@ -278,7 +304,7 @@ export function MeetingRoomPage({
       p2pStats.observeShareStates(states);
     });
     return share;
-  }, [p2pStats, shareControllerFactory, slug]);
+  }, [p2pStats, requestMeetingIceServers, shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
       ? meetingApi.grantShare(slug, join.participantIdentity)
@@ -349,29 +375,23 @@ export function MeetingRoomPage({
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let iceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
     type ViewerSignal =
-      | { type: 'offer'; from: string; sdp: string; generation?: string }
+      | { type: 'offer'; from: string; sdp: string; generation?: string; turnProvider?: P2pTurnProvider }
       | { type: 'ice'; from: string; candidate: string | null; generation?: string };
     /** Viewer signaling received while ICE credentials are in flight. */
     const pendingViewerSignals: ViewerSignal[] = [];
     let viewerSignalTail = Promise.resolve();
-    let iceServersFetch: Promise<P2pIceServerConfiguration> | undefined;
-    const fetchIceServersOnce = (): Promise<P2pIceServerConfiguration> => {
-      if (iceServersFetch === undefined) {
-        iceServersFetch = apiRequest<P2pIceServerConfiguration>(
-          `/meetings/${encodeURIComponent(slug)}/ice-servers`,
-          IceServersResponseSchema
-        ).then((response) => ({
-          iceServers: response.iceServers,
-          turnProvider: response.turnProvider ?? 'coturn',
-          turnCredentialsExpiresAt: response.turnCredentialsExpiresAt
-        })).finally(() => {
-          iceServersFetch = undefined;
-        });
-      }
-      return iceServersFetch;
+    const iceServersFetches = new Map<RequestedIceTurnProvider, Promise<P2pIceServerConfiguration>>();
+    const fetchIceServersOnce = (requestedProvider: RequestedIceTurnProvider = 'auto'): Promise<P2pIceServerConfiguration> => {
+      const inFlight = iceServersFetches.get(requestedProvider);
+      if (inFlight) return inFlight;
+      const fetchPromise = requestMeetingIceServers(requestedProvider).finally(() => {
+        iceServersFetches.delete(requestedProvider);
+      });
+      iceServersFetches.set(requestedProvider, fetchPromise);
+      return fetchPromise;
     };
-    const refreshViewerIceServers = (): void => {
-      void fetchIceServersOnce().then((fresh) => {
+    const refreshViewerIceServers = (requestedProvider: RequestedIceTurnProvider = iceConfiguration?.turnProvider ?? 'auto'): void => {
+      void fetchIceServersOnce(requestedProvider).then((fresh) => {
         if (cancelled) return;
         iceConfiguration = fresh;
         viewerP2pRef.current?.updateIceServers(fresh.iceServers, fresh.turnProvider);
@@ -391,7 +411,7 @@ export function MeetingRoomPage({
       const delay = Math.max(1_000, (configuration.turnCredentialsExpiresAt - Date.now() / 1_000 - 60) * 1_000);
       iceRefreshTimer = setTimeout(() => {
         iceRefreshTimer = undefined;
-        refreshViewerIceServers();
+        refreshViewerIceServers(configuration.turnProvider);
       }, delay);
     };
     const ensureController = (): P2pViewerController | undefined => {
@@ -426,6 +446,14 @@ export function MeetingRoomPage({
         if (signal.type === 'offer' && viewerTransportPreferenceRef.current === 'sfu') return;
         if (signal.type === 'offer') {
           viewerSharerIdentityRef.current = signal.from;
+          const requestedProvider: RequestedIceTurnProvider = signal.turnProvider ?? 'coturn';
+          const shouldRefreshIceServers = signal.turnProvider !== undefined
+            ? iceConfiguration === undefined
+              || iceConfiguration.turnProvider !== requestedProvider
+              || iceConfigurationExpiresSoon(iceConfiguration)
+            : iceConfiguration !== undefined
+              && (iceConfiguration.turnProvider !== requestedProvider
+                || iceConfigurationExpiresSoon(iceConfiguration));
           // A fresh offer may arrive long after page load. Refresh ICE
           // credentials when the cached TURN ones are about to expire:
           // gathering with expired credentials silently yields no relay
@@ -433,9 +461,9 @@ export function MeetingRoomPage({
           // though the sharer's fresh session could relay. A refresh failure
           // keeps the cached servers; the sharer's automatic re-drive covers
           // a failed negotiation.
-          if (iceConfiguration !== undefined && iceConfigurationExpiresSoon(iceConfiguration)) {
+          if (shouldRefreshIceServers) {
             try {
-              const fresh = await fetchIceServersOnce();
+              const fresh = await fetchIceServersOnce(requestedProvider);
               if (!cancelled) {
                 iceConfiguration = fresh;
                 viewerP2pRef.current?.updateIceServers(fresh.iceServers, fresh.turnProvider);
@@ -483,8 +511,8 @@ export function MeetingRoomPage({
     };
     fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
-      onOffer: (from, sdp, generation) => {
-        dispatchViewerSignal({ type: 'offer', from, sdp, generation });
+      onOffer: (from, sdp, generation, turnProvider) => {
+        dispatchViewerSignal({ type: 'offer', from, sdp, generation, turnProvider });
       },
       // While we are the sharer, answers/ice/bye belong to the share session.
       onAnswer: (from, sdp, generation) => { void p2pShareRef.current?.handleAnswer(from, sdp, generation); },
@@ -603,7 +631,7 @@ export function MeetingRoomPage({
       p2pShareUnsubscribeRef.current = undefined;
       signaling.close();
     };
-  }, [controller, createSignalingClient, join.participantIdentity, p2pStats, slug]);
+  }, [controller, createSignalingClient, join.participantIdentity, p2pStats, requestMeetingIceServers, slug]);
 
   useEffect(() => {
     if (viewerP2pState === 'p2p' || viewerP2pState === 'turn') return;

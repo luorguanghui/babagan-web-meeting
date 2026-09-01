@@ -293,11 +293,41 @@ describe('p2p share controller', () => {
     }
     expect(signaling.sendOffer).toHaveBeenCalledTimes(4);
     for (const [index, viewer] of viewers.entries()) {
-      expect(signaling.sendOffer).toHaveBeenCalledWith(viewer.identity, `offer-${index}`, expect.any(String));
+      expect(signaling.sendOffer).toHaveBeenCalledWith(viewer.identity, `offer-${index}`, expect.any(String), 'coturn');
     }
     for (const viewer of viewers) {
       expect(controller.getViewerStates().get(viewer.identity)).toBe('negotiating');
     }
+  });
+
+  it('sends the actual TURN provider with a sharer offer', async () => {
+    const sendOffer = vi.fn();
+    const cloudflareIceServers: RTCIceServer[] = [{
+      urls: ['turn:turn.cloudflare.com:3478'],
+      username: 'u',
+      credential: 'c'
+    }];
+    const controller = createP2pShareController({
+      slug: 'meeting-slug',
+      signaling: { sendOffer, sendIce: vi.fn(), sendBye: vi.fn() },
+      fetchIceServers: async () => ({
+        iceServers: cloudflareIceServers,
+        turnProvider: 'cloudflare',
+        turnCredentialsExpiresAt: 9_999_999_999
+      }),
+      createPeerConnection: (servers) =>
+        new FakeRTCPeerConnection({ iceServers: servers }) as unknown as RTCPeerConnection
+    });
+
+    await controller.start(makeStream(), shareOptions, [{ identity: 'viewer-1', nickname: 'Bob' }]);
+
+    expect(FakeRTCPeerConnection.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers });
+    expect(sendOffer).toHaveBeenCalledWith(
+      'viewer-1',
+      expect.any(String),
+      expect.any(String),
+      'cloudflare'
+    );
   });
 
   it('caps bitrate and frame rate and applies the degradation preference on the video sender only', async () => {
@@ -968,8 +998,8 @@ describe('p2p share controller', () => {
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
     expect(FakeRTCPeerConnection.instances).toHaveLength(3);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(3); // original + fresh viewer-1 + viewer-2
-    expect(signaling.sendOffer).toHaveBeenCalledWith('viewer-1', 'offer-0', expect.any(String));
-    expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', 'offer-2', expect.any(String));
+    expect(signaling.sendOffer).toHaveBeenCalledWith('viewer-1', 'offer-0', expect.any(String), 'coturn');
+    expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', 'offer-2', expect.any(String), 'coturn');
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
   });
 
@@ -1025,7 +1055,7 @@ describe('p2p share controller', () => {
     expect([senderMaxBitrate(FakeRTCPeerConnection.instances[0]), senderMaxBitrate(newPc)])
       .toEqual([8_000_000, 8_000_000]);
     expect((signaling.sendOffer as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(offersBefore);
-    expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', expect.any(String), expect.any(String));
+    expect(signaling.sendOffer).toHaveBeenLastCalledWith('viewer-2', expect.any(String), expect.any(String), 'coturn');
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
   });
 

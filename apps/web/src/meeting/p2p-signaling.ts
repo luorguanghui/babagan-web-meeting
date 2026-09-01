@@ -430,7 +430,7 @@ function buildOfferMessage(
   sdp: string,
   generation?: string,
   turnProvider?: P2pTurnProvider
-): P2pClientMessage {
+): QueuedP2pMessage {
   const base = generation === undefined
     ? { type: 'offer', to, sdp } as const
     : { type: 'offer', to, sdp, generation } as const;

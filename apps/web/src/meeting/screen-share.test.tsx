@@ -1967,6 +1967,92 @@ describe('P2P-first screen sharing in the room', () => {
     ]));
   });
 
+  it('refreshes viewer ICE with the provider carried by an offer before accepting it', async () => {
+    const fetchCalls: string[] = [];
+    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
+    const cloudflareIceServers = [{
+      urls: ['turn:turn.cloudflare.com:3478'],
+      username: 'cloudflare-user',
+      credential: 'cloudflare-secret'
+    }];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: cloudflareIceServers,
+          turnProvider: 'cloudflare'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: coturnIceServers,
+          turnProvider: 'coturn'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({
+      meetingApi: authorizedMeetingApi(),
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory
+    });
+    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
+
+    act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
+
+    await waitFor(() => expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true));
+    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
+    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
+  });
+
+  it('requests the persisted TURN provider when starting a share', async () => {
+    window.localStorage.setItem('babagan.screen-turn-provider', 'cloudflare');
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('/ice-servers')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          iceServers: [{ urls: ['stun:stun.example.test:3478'] }],
+          turnProvider: url.includes('turnProvider=cloudflare') ? 'cloudflare' : 'coturn'
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+    vi.stubGlobal('RTCPeerConnection', HybridShareFakePc as unknown as typeof RTCPeerConnection);
+    const signaling = fakeSignalingClient();
+    const { stream } = displayStream({ audio: true });
+
+    render(<MeetingRoomPage
+      slug="meeting-slug"
+      join={{
+        participantIdentity: 'participant-1',
+        participantName: 'Ada',
+        livekitUrl: 'wss://rtc.example.test',
+        token: 'token',
+        meetingExpiresAt: 10_000,
+        permissions: { publishSources: ['microphone'] }
+      }}
+      controller={meetingController()}
+      meetingApi={authorizedMeetingApi()}
+      getDisplayMedia={async () => stream}
+      createSignalingClient={signaling.factory}
+      listDevices={async () => []}
+    />);
+    await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
+    act(() => signaling.welcome([{ identity: 'viewer-1', nickname: 'Bob' }]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+
+    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(2));
+    expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true);
+  });
+
   it('cancels queued viewer signaling when the page unmounts', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
       if (String(input).includes('/ice-servers')) {
@@ -2405,6 +2491,7 @@ class HybridShareFakePc {
 class PageFakePc {
   static instances: PageFakePc[] = [];
   static remoteDescriptionGate: Promise<void> | undefined;
+  readonly config: RTCConfiguration;
   closed = false;
   iceConnectionState: RTCIceConnectionState = 'new';
   remoteDescriptions: RTCSessionDescriptionInit[] = [];
@@ -2413,7 +2500,8 @@ class PageFakePc {
   ontrack: ((event: RTCTrackEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
 
-  constructor() {
+  constructor(config: RTCConfiguration = {}) {
+    this.config = config;
     PageFakePc.instances.push(this);
   }
 
@@ -2477,7 +2565,8 @@ function fakeSignalingClient() {
     welcome: (peers: Peer[]) => wiring.events?.onWelcome(peers),
     peerJoined: (peer: Peer) => wiring.events?.onPeerJoined(peer),
     peerLeft: (identity: string) => wiring.events?.onPeerLeft({ identity }),
-    offer: (from: string, sdp: string) => wiring.events?.onOffer(from, sdp),
+    offer: (from: string, sdp: string, generation?: string, turnProvider?: 'coturn' | 'cloudflare') =>
+      wiring.events?.onOffer(from, sdp, generation, turnProvider),
     ice: (from: string, candidate: string | null) => wiring.events?.onIce(from, candidate),
     bye: (from: string, reason?: string) => wiring.events?.onBye(from, reason),
     shareGone: () => wiring.events?.onShareGone()
