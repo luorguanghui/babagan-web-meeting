@@ -518,9 +518,15 @@ git commit -m "test: verify dual TURN provider deployment paths"
 - Modify: docs/runbooks/rollback-record.md
 - Modify: infra/compose-config.test.mjs only if the new optional env validation needs coverage
 
-- [ ] **Step 1: Write documentation regression checks**
+- [ ] **Step 1: Capture the documentation baseline**
 
-Before editing, add or extend shell/document checks so the deployment docs mention Debian 13, meet/rtc/turn proxy modes, turnProvider query selection, the Cloudflare credential distinction, and the explicit dual-provider smoke. Keep actual secrets and instance IPs out of the committed docs.
+Before editing, run the following focused search and record which required terms are absent; the existing documentation files are the regression surface for this task, so no new test harness is needed:
+
+~~~bash
+rg -n "Debian 13|turnProvider|CLOUDFLARE_TURN_API_TOKEN|meet.*Proxied|rtc.*DNS[- ]only|turn.*DNS[- ]only|SMOKE_REQUESTED_TURN_PROVIDER" README.md docs scripts
+~~~
+
+Keep actual secrets and instance IPs out of the committed docs.
 
 - [ ] **Step 2: Run documentation checks and observe red**
 
