@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { inspectP2pMediaHealth } from './p2p-media-health.js';
+import { inspectP2pMediaHealth, inspectSenderVideoStats } from './p2p-media-health.js';
 
 function report(
   localCandidateType: RTCIceCandidateType,
@@ -53,6 +53,29 @@ describe('inspectP2pMediaHealth', () => {
       packetsReceived: 0,
       packetsLost: 0,
       freezeCount: 0
+    });
+  });
+});
+
+describe('inspectSenderVideoStats', () => {
+  it('returns relay capacity and outbound counters for adaptive encoding', () => {
+    const report = new Map<string, RTCStats>([
+      ['transport', { id: 'transport', type: 'transport', timestamp: 2_000, selectedCandidatePairId: 'pair' } as RTCStats],
+      ['pair', {
+        id: 'pair', type: 'candidate-pair', timestamp: 2_000,
+        state: 'succeeded', nominated: true, availableOutgoingBitrate: 12_000_000
+      } as RTCStats],
+      ['outbound', {
+        id: 'outbound', type: 'outbound-rtp', timestamp: 2_000, kind: 'video',
+        bytesSent: 2_500_000, framesPerSecond: 30
+      } as RTCStats]
+    ]) as unknown as RTCStatsReport;
+
+    expect(inspectSenderVideoStats(report)).toEqual({
+      availableOutgoingBitrateBps: 12_000_000,
+      bytesSent: 2_500_000,
+      timestamp: 2_000,
+      framesPerSecond: 30
     });
   });
 });

@@ -13,6 +13,9 @@ export interface P2pMediaHealth {
 export interface SenderVideoStats {
   qualityLimitationReason?: string;
   framesPerSecond?: number;
+  availableOutgoingBitrateBps?: number;
+  bytesSent?: number;
+  timestamp?: number;
 }
 
 type StatsRecord = RTCStats & Record<string, unknown>;
@@ -76,8 +79,18 @@ export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
  */
 export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStats {
   const result: SenderVideoStats = {};
+  let selectedPairId: string | undefined;
+  let fallbackPair: StatsRecord | undefined;
   report.forEach((entry) => {
     const stat = entry as StatsRecord;
+    if (stat.type === 'transport' && typeof stat.selectedCandidatePairId === 'string') {
+      selectedPairId = stat.selectedCandidatePairId;
+    }
+    if (stat.type === 'candidate-pair'
+      && stat.state === 'succeeded'
+      && (stat.nominated === true || stat.selected === true)) {
+      fallbackPair = stat;
+    }
     if (stat.type !== 'outbound-rtp'
       || stat.isRemote === true
       || (stat.kind !== 'video' && stat.mediaType !== 'video')) return;
@@ -87,6 +100,17 @@ export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStat
     if (typeof stat.framesPerSecond === 'number') {
       result.framesPerSecond = stat.framesPerSecond;
     }
+    if (typeof stat.bytesSent === 'number') {
+      result.bytesSent = stat.bytesSent;
+    }
+    if (typeof stat.timestamp === 'number') {
+      result.timestamp = stat.timestamp;
+    }
   });
+  const pair = (selectedPairId === undefined ? undefined : report.get(selectedPairId) as StatsRecord | undefined)
+    ?? fallbackPair;
+  if (typeof pair?.availableOutgoingBitrate === 'number' && pair.availableOutgoingBitrate > 0) {
+    result.availableOutgoingBitrateBps = pair.availableOutgoingBitrate;
+  }
   return result;
 }

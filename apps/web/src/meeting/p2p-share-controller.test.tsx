@@ -118,7 +118,13 @@ class FakeRTCPeerConnection {
   readonly setConfiguration = vi.fn();
   readonly getStats = vi.fn(async () => statsReport(this.statsCandidateType, this.senderStats));
   statsPathKnown = true;
-  senderStats: { qualityLimitationReason?: string; framesPerSecond?: number } = {};
+  senderStats: {
+    qualityLimitationReason?: string;
+    framesPerSecond?: number;
+    availableOutgoingBitrateBps?: number;
+    bytesSent?: number;
+    timestamp?: number;
+  } = {};
 
   constructor(config: RTCConfiguration) {
     this.config = config;
@@ -166,22 +172,35 @@ class FakeRTCPeerConnection {
 
 function statsReport(
   candidateType: RTCIceCandidateType,
-  sender: { qualityLimitationReason?: string; framesPerSecond?: number } = {}
+  sender: {
+    qualityLimitationReason?: string;
+    framesPerSecond?: number;
+    availableOutgoingBitrateBps?: number;
+    bytesSent?: number;
+    timestamp?: number;
+  } = {}
 ): RTCStatsReport {
   const entries: Array<[string, RTCStats]> = [
     ['transport', { id: 'transport', type: 'transport', timestamp: 1, selectedCandidatePairId: 'pair' } as RTCStats],
     ['pair', {
       id: 'pair', type: 'candidate-pair', timestamp: 1, state: 'succeeded',
-      localCandidateId: 'local', remoteCandidateId: 'remote'
+      localCandidateId: 'local', remoteCandidateId: 'remote',
+      ...(sender.availableOutgoingBitrateBps === undefined
+        ? {}
+        : { availableOutgoingBitrate: sender.availableOutgoingBitrateBps })
     } as RTCStats],
     ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
     ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats]
   ];
-  if (sender.qualityLimitationReason !== undefined || sender.framesPerSecond !== undefined) {
+  if (sender.qualityLimitationReason !== undefined
+    || sender.framesPerSecond !== undefined
+    || sender.bytesSent !== undefined
+    || sender.timestamp !== undefined) {
     entries.push(['outbound', {
-      id: 'outbound', type: 'outbound-rtp', timestamp: 1, kind: 'video',
+      id: 'outbound', type: 'outbound-rtp', timestamp: sender.timestamp ?? 1, kind: 'video',
       ...(sender.qualityLimitationReason !== undefined ? { qualityLimitationReason: sender.qualityLimitationReason } : {}),
-      ...(sender.framesPerSecond !== undefined ? { framesPerSecond: sender.framesPerSecond } : {})
+      ...(sender.framesPerSecond !== undefined ? { framesPerSecond: sender.framesPerSecond } : {}),
+      ...(sender.bytesSent !== undefined ? { bytesSent: sender.bytesSent } : {})
     } as RTCStats]);
   }
   return new Map(entries) as unknown as RTCStatsReport;
@@ -706,6 +725,54 @@ describe('p2p share controller', () => {
 
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
     expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
+  });
+
+  it('ramps Cloudflare relay bitrate above the fixed tier without a 40 Mbps aggregate cap', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, viewers);
+
+    for (const pc of FakeRTCPeerConnection.instances) {
+      pc.statsCandidateType = 'relay';
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 60_000_000,
+        bytesSent: 8_000_000,
+        timestamp: 1_000
+      };
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
+    }
+    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn', 'turn', 'turn']));
+    await runTransportChecks();
+
+    const maxBitrates = FakeRTCPeerConnection.instances.map((pc) => {
+      const parameters = videoSender(pc).getParameters();
+      return parameters.encodings[0]?.maxBitrate ?? 0;
+    });
+    expect(maxBitrates.every((bitrate) => bitrate > 10_000_000)).toBe(true);
+    expect(maxBitrates.reduce((sum, bitrate) => sum + bitrate, 0)).toBeGreaterThan(40_000_000);
+  });
+
+  it('smoothly increases Cloudflare resolution scale as a relay connection slows', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.senderStats = { availableOutgoingBitrateBps: 4_000_000, bytesSent: 8_000_000, timestamp: 1_000 };
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => {
+      const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+      expect(scale).toBeCloseTo(1.1, 5);
+    });
+
+    const firstScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+    pc.senderStats = { availableOutgoingBitrateBps: 4_000_000, bytesSent: 9_000_000, timestamp: 2_000 };
+    await runTransportChecks();
+    const secondScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+
+    expect(firstScale).toBeCloseTo(1.1, 5);
+    expect(secondScale).toBeCloseTo(1.21, 5);
   });
 
   it('updates the provider when a direct viewer later migrates to relay', async () => {

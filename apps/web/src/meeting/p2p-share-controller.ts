@@ -19,6 +19,10 @@ import {
   inspectSenderVideoStats,
   type SenderVideoStats
 } from './p2p-media-health.js';
+import {
+  updateCloudflareEncoding,
+  type CloudflareEncodingState
+} from './cloudflare-adaptive-encoding.js';
 import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
@@ -27,11 +31,13 @@ export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallb
 export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
 
 /**
- * Sender-side pressure adaptation: when the encoder reports `bandwidth`
- * limitation (with a collapsed frame rate) for this many consecutive samples,
- * the session switches from the user's degradation preference to `balanced` so
- * motion stays smooth and the picture avoids blocky quantization. It restores
- * the user's preference after a longer run of unconstrained samples.
+ * Non-Cloudflare sender-side pressure adaptation: when the encoder reports
+ * `bandwidth` limitation (with a collapsed frame rate) for this many
+ * consecutive samples, the session switches from the user's degradation
+ * preference to `balanced` so motion stays smooth and the picture avoids
+ * blocky quantization. Cloudflare relay sessions use the continuous controller
+ * below instead. The fixed policy restores the user's preference after a
+ * longer run of unconstrained samples.
  */
 export const P2P_SENDER_PRESSURE_SAMPLE_LIMIT = 3;
 export const P2P_SENDER_RECOVER_SAMPLE_LIMIT = 5;
@@ -170,6 +176,11 @@ interface ViewerSession {
   degradationRelaxed: boolean;
   bandwidthLimitedSamples: number;
   recoveredSamples: number;
+  /** Smoothed per-connection Cloudflare relay encoding state. */
+  cloudflareEncodingState?: CloudflareEncodingState;
+  /** Previous outbound sample used to derive the actual video bitrate. */
+  lastSenderBytesSent?: number;
+  lastSenderStatsTimestamp?: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
@@ -630,6 +641,10 @@ class P2pShareControllerImpl implements P2pShareController {
   private async adaptEncodingPressure(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
     if (session.state !== 'p2p' && session.state !== 'turn') return;
+    if (session.state === 'turn' && session.turnProvider === 'cloudflare') {
+      await this.adaptCloudflareEncoding(session, sender);
+      return;
+    }
     const bandwidthLimited = sender.qualityLimitationReason === 'bandwidth';
     const fpsCollapsed = sender.framesPerSecond !== undefined
       && session.options.frameRate > 0
@@ -657,21 +672,76 @@ class P2pShareControllerImpl implements P2pShareController {
     }
   }
 
+  /**
+   * Cloudflare relay sessions are controlled per connection. The relay's
+   * available outgoing estimate drives the target; RTP bytes are used as a
+   * fallback/feedback signal when the estimate is missing. No shared 40 Mbps
+   * allocator is applied to these sessions.
+   */
+  private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
+    const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
+    const minimumScaleResolutionDownBy = computeResolutionScale(
+      session.videoSender?.track?.getSettings?.() ?? {}
+    ) ?? 1;
+    const previous = session.cloudflareEncodingState ?? {
+      targetBitrateBps: session.options.maxBitrate,
+      scaleResolutionDownBy: minimumScaleResolutionDownBy
+    };
+    const next = updateCloudflareEncoding({
+      previous,
+      measurement: {
+        availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
+        actualOutgoingBitrateBps
+      },
+      minimumScaleResolutionDownBy
+    });
+    if (next === previous
+      || (session.cloudflareEncodingState !== undefined
+        && next.targetBitrateBps === previous.targetBitrateBps
+        && next.scaleResolutionDownBy === previous.scaleResolutionDownBy
+        && next.bandwidthEstimateBps === previous.bandwidthEstimateBps)) return;
+    session.cloudflareEncodingState = next;
+    await this.applySenderParameters(session);
+  }
+
+  private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
+    const bytesSent = sender.bytesSent;
+    const timestamp = sender.timestamp;
+    const previousBytes = session.lastSenderBytesSent;
+    const previousTimestamp = session.lastSenderStatsTimestamp;
+    session.lastSenderBytesSent = bytesSent;
+    session.lastSenderStatsTimestamp = timestamp;
+    if (bytesSent === undefined || timestamp === undefined
+      || previousBytes === undefined || previousTimestamp === undefined
+      || timestamp <= previousTimestamp || bytesSent < previousBytes) return undefined;
+    const elapsedSeconds = (timestamp - previousTimestamp) / 1_000;
+    return elapsedSeconds > 0 ? (bytesSent - previousBytes) * 8 / elapsedSeconds : undefined;
+  }
+
   /** Applies this active viewer's fair share without disturbing other sessions. */
   private async applySenderParameters(session: ViewerSession): Promise<void> {
     session.senderParameterTail = session.senderParameterTail.then(async () => {
       if (session.videoSender === undefined || session.pcClosed) return;
       try {
         const { options } = session;
-        const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
+        const cloudflareAdaptive = session.state === 'turn'
+          && session.turnProvider === 'cloudflare'
+          && session.cloudflareEncodingState !== undefined;
+        const scale = cloudflareAdaptive
+          ? session.cloudflareEncodingState!.scaleResolutionDownBy
+          : computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
         await session.videoSender.setParameters({
           ...session.videoSender.getParameters(),
           encodings: [{
-            maxBitrate: options.maxBitrate,
+            maxBitrate: cloudflareAdaptive
+              ? session.cloudflareEncodingState!.targetBitrateBps
+              : options.maxBitrate,
             maxFramerate: options.frameRate,
             ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
-          degradationPreference: session.degradationRelaxed
+          degradationPreference: cloudflareAdaptive
+            ? 'maintain-framerate'
+            : session.degradationRelaxed
             ? pressureDegradationPreference(options.degradationPreference)
             : options.degradationPreference
         });
@@ -699,12 +769,10 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   /**
-   * Allocates the per-viewer encoding cap. The selected tier applies to every
-   * live viewer session (direct or relay) — starving a session of bitrate is
-   * exactly what collapses frame rate under motion and fills the relayed
-   * picture with quantization blocks — while the aggregate of all caps never
-   * exceeds `P2P_TOTAL_UPLINK_BUDGET_BPS`, which protects the sharer's uplink
-   * and the voice path.
+   * Allocates the per-viewer encoding cap for direct, coturn and negotiating
+   * sessions. Cloudflare relay sessions are deliberately excluded: their
+   * per-connection controller follows the relay estimate and the selected
+   * Cloudflare policy explicitly accepts aggregate uplink contention.
    */
   private async rebalanceBitrates(): Promise<void> {
     const selected = this.activeOptions;
@@ -712,12 +780,13 @@ class P2pShareControllerImpl implements P2pShareController {
     const active = [...this.sessions.values()].filter((session) => !session.pcClosed
       && (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn'));
     if (active.length === 0) return;
-    const fairShare = Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / active.length);
+    const budgeted = active.filter((session) => !(session.state === 'turn' && session.turnProvider === 'cloudflare'));
+    const fairShare = Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / Math.max(1, budgeted.length));
     const perViewer = Math.min(selected.maxBitrate, fairShare);
-    const maxBitrate = selected.maxBitrate >= P2P_VIEWER_BITRATE_FLOOR * active.length
+    const maxBitrate = selected.maxBitrate >= P2P_VIEWER_BITRATE_FLOOR * Math.max(1, budgeted.length)
       ? Math.max(P2P_VIEWER_BITRATE_FLOOR, perViewer)
       : perViewer;
-    await Promise.all(active.map(async (session) => {
+    await Promise.all(budgeted.map(async (session) => {
       session.options = { ...selected, maxBitrate };
       await this.applySenderParameters(session);
     }));
