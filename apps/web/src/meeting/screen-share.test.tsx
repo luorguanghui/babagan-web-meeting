@@ -512,6 +512,49 @@ describe('controlled browser screen sharing', () => {
     expect(onTransportChange).toHaveBeenCalledWith('turn');
   });
 
+  it('shows a sharer TURN provider selector only when available and disables it during sharing', async () => {
+    const onScreenShareTurnProviderChange = vi.fn();
+    const common = {
+      connection: 'connected' as const,
+      microphoneEnabled: false,
+      audioPlaybackBlocked: false,
+      devices: [],
+      leaving: false,
+      screenShareAuthorized: true,
+      screenShareBusy: false,
+      screenShareTurnProvider: 'auto' as const,
+      screenShareTurnProviderVisible: true,
+      availableTurnProviders: ['coturn', 'cloudflare'] as const,
+      onScreenShareTurnProviderChange,
+      onMicrophoneToggle: () => undefined,
+      onMicrophoneDeviceChange: () => undefined,
+      onSpeakerDeviceChange: () => undefined,
+      onResumeAudio: () => undefined,
+      onScreenShareToggle: () => undefined,
+      onLeave: () => undefined
+    };
+    const rendered = render(<MeetingControls {...common} screenShareActive={false} />);
+
+    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    const selector = screen.getByLabelText('Screen-share TURN provider');
+    expect(within(selector).getByRole('option', { name: 'Auto' })).toBeVisible();
+    expect(within(selector).getByRole('option', { name: 'Server coturn' })).toBeVisible();
+    expect(within(selector).getByRole('option', { name: 'Cloudflare TURN' })).toBeVisible();
+
+    await userEvent.selectOptions(selector, 'cloudflare');
+    expect(onScreenShareTurnProviderChange).toHaveBeenCalledWith('cloudflare');
+
+    rendered.rerender(<MeetingControls {...common} screenShareActive />);
+    expect(screen.getByLabelText('Screen-share TURN provider')).toBeDisabled();
+
+    rendered.rerender(<MeetingControls
+      {...common}
+      screenShareActive={false}
+      availableTurnProviders={['coturn']}
+    />);
+    expect(within(screen.getByLabelText('Screen-share TURN provider')).queryByRole('option', { name: 'Cloudflare TURN' })).not.toBeInTheDocument();
+  });
+
   it('lets a receiver adjust the aggregate call-audio volume', async () => {
     const onCallAudioVolumeChange = vi.fn();
     render(<MeetingControls

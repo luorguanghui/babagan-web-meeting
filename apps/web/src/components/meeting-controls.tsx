@@ -1,9 +1,10 @@
-import type { ScreenShareCodec, ScreenShareQuality } from '@meeting/contracts';
+import type { P2pTurnProvider, ScreenShareCodec, ScreenShareQuality } from '@meeting/contracts';
 import { ChevronDown, ChevronUp, Ellipsis, LogOut, Mic, MicOff, MonitorUp, Volume2 } from 'lucide-react';
 import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 
 import { useI18n } from '../i18n/i18n.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
+import type { ScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
 import type { ViewerTransportPreference } from '../meeting/viewer-transport-preference.js';
 import {
   recommendP2pBitrate,
@@ -31,8 +32,12 @@ export interface MeetingControlsProps {
   screenQuality?: ScreenShareQuality;
   screenViewerCount?: number;
   p2pRetryVisible?: boolean;
+  screenShareTurnProvider?: ScreenShareTurnProviderPreference;
+  availableTurnProviders?: readonly P2pTurnProvider[];
+  screenShareTurnProviderVisible?: boolean;
   viewerTransportPreferenceVisible?: boolean;
   viewerTransportPreference?: ViewerTransportPreference;
+  onScreenShareTurnProviderChange?: (preference: ScreenShareTurnProviderPreference) => void;
   onViewerTransportPreferenceChange?: (preference: ViewerTransportPreference) => void;
   onMicrophoneToggle: () => void;
   onMicrophoneDeviceChange: (deviceId: string) => void;
@@ -162,6 +167,8 @@ export function MeetingSettings(props: MeetingControlsProps) {
   const { t } = useI18n();
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
+  const availableTurnProviders = props.availableTurnProviders ?? ['coturn'];
+  const screenShareProviderDisabled = Boolean(props.screenShareActive || props.screenShareBusy);
   return <div className="meeting-settings-grid">
     <label className="meeting-volume-control">
       <span className="meeting-volume-heading"><span>{t('controls.callAudioVolume')}</span><output>{props.callAudioVolume ?? 100}%</output></span>
@@ -182,6 +189,9 @@ export function MeetingSettings(props: MeetingControlsProps) {
     {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <label>{t('controls.viewerTransport')}<select aria-label={t('controls.viewerTransport')} value={props.viewerTransportPreference ?? 'auto'} onChange={(event) => props.onViewerTransportPreferenceChange?.(event.target.value as ViewerTransportPreference)}>
       <option value="auto">{t('controls.viewerTransportAuto')}</option><option value="turn">{t('controls.viewerTransportTurn')}</option><option value="sfu">{t('controls.viewerTransportSfu')}</option>
     </select></label>}
+    {props.screenShareTurnProviderVisible && props.onScreenShareTurnProviderChange && <label>{t('controls.screenShareTurnProvider')}<select aria-label={t('controls.screenShareTurnProvider')} value={props.screenShareTurnProvider ?? 'auto'} disabled={screenShareProviderDisabled} onChange={(event) => props.onScreenShareTurnProviderChange?.(event.target.value as ScreenShareTurnProviderPreference)}>
+      <option value="auto">{t('controls.screenShareTurnProviderAuto')}</option><option value="coturn">{t('controls.screenShareTurnProviderCoturn')}</option>{availableTurnProviders.includes('cloudflare') && <option value="cloudflare">{t('controls.screenShareTurnProviderCloudflare')}</option>}
+    </select><span className="meeting-controls-hint">{t('controls.screenShareTurnProviderHint')}</span></label>}
     <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
       <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option>
     </select></label>

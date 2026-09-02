@@ -36,7 +36,11 @@ import {
   type P2pIceServerConfiguration
 } from '../meeting/p2p-ice.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
-import { readScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
+import {
+  readScreenShareTurnProviderPreference,
+  saveScreenShareTurnProviderPreference,
+  type ScreenShareTurnProviderPreference
+} from '../meeting/screen-turn-provider-preference.js';
 import {
   createScreenShareController,
   HybridScreenSharePublisher,
@@ -228,8 +232,12 @@ export function MeetingRoomPage({
     readViewerTransportPreference()
   );
   const viewerTransportPreferenceRef = useRef(viewerTransportPreference);
-  const screenTurnProviderPreferenceRef = useRef(readScreenShareTurnProviderPreference());
-  const availableScreenTurnProvidersRef = useRef<readonly P2pTurnProvider[]>([]);
+  const [screenShareTurnProvider, setScreenShareTurnProvider] = useState<ScreenShareTurnProviderPreference>(() =>
+    readScreenShareTurnProviderPreference()
+  );
+  const screenTurnProviderPreferenceRef = useRef(screenShareTurnProvider);
+  const [availableScreenTurnProviders, setAvailableScreenTurnProviders] = useState<readonly P2pTurnProvider[]>(['coturn']);
+  const availableScreenTurnProvidersRef = useRef<readonly P2pTurnProvider[]>(availableScreenTurnProviders);
   const viewerSharerIdentityRef = useRef<string | undefined>(undefined);
   const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
   const viewerRosterRef = useRef<Peer[]>([]);
@@ -253,7 +261,9 @@ export function MeetingRoomPage({
       path,
       IceServersResponseSchema
     ));
-    availableScreenTurnProvidersRef.current = configuration.availableTurnProviders ?? [configuration.turnProvider];
+    const availableTurnProviders = configuration.availableTurnProviders ?? [configuration.turnProvider];
+    availableScreenTurnProvidersRef.current = availableTurnProviders;
+    setAvailableScreenTurnProviders(availableTurnProviders);
     return configuration;
   }, [slug]);
   const authorizationChanged = useCallback((authorized: boolean) => {
@@ -764,6 +774,11 @@ export function MeetingRoomPage({
       signalingRef.current?.sendRetry(viewerSharerIdentityRef.current);
     }
   }, [controller]);
+  const handleScreenShareTurnProviderChange = useCallback((preference: ScreenShareTurnProviderPreference) => {
+    screenTurnProviderPreferenceRef.current = preference;
+    setScreenShareTurnProvider(preference);
+    saveScreenShareTurnProviderPreference(window.localStorage, preference);
+  }, []);
 
   const hostParticipants: ParticipantSummary[] = state.participants.map((participant) => ({
     identity: participant.identity,
@@ -868,6 +883,8 @@ export function MeetingRoomPage({
     screenCodec,
     screenBitrate,
     screenQuality,
+    screenShareTurnProvider,
+    availableTurnProviders: availableScreenTurnProviders,
     onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
     onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
     onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
@@ -883,6 +900,8 @@ export function MeetingRoomPage({
       setScreenBitrate(bitrate);
     },
     onScreenQualityChange: setScreenQuality,
+    screenShareTurnProviderVisible: hostAuthorized || Boolean(state.screenShareAuthorized),
+    onScreenShareTurnProviderChange: handleScreenShareTurnProviderChange,
     viewerTransportPreferenceVisible: Boolean(!screenState.stream && hasActiveScreenShare),
     viewerTransportPreference,
     onViewerTransportPreferenceChange: handleViewerTransportPreferenceChange,
