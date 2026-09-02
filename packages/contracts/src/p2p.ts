@@ -15,10 +15,10 @@ export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000] as const;
 /**
  * Sharer uplink safety cap for the whole P2P screen share: the selected tier
  * applies per viewer, but the sum of all live session caps never exceeds this
- * budget. 20 Mbps keeps a 4-viewer meeting at 5 Mbps each even on the maximum
- * tier while a measured 100 Mbps home uplink retains ample voice headroom.
+ * budget. 40 Mbps keeps a 4-viewer meeting at 10 Mbps each on the maximum
+ * tier while leaving headroom below a measured 100 Mbps uplink.
  */
-export const P2P_TOTAL_UPLINK_BUDGET_BPS = 20_000_000;
+export const P2P_TOTAL_UPLINK_BUDGET_BPS = 40_000_000;
 
 export type P2pScreenBitrate = typeof P2P_SCREEN_BITRATES[number];
 

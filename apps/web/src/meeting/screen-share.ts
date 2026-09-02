@@ -17,13 +17,14 @@ export interface ScreenShareQualityPreset {
 
 /**
  * Screen-share quality presets applied to both the SFU fallback and the P2P
- * path. The default and flow presets preserve spatial resolution under
- * pressure; 60 fps is reserved for the explicitly selected motion preset.
+ * path. The flow preset preserves spatial resolution under pressure; the
+ * 1080p presets prioritize their requested frame rate and may reduce
+ * resolution when the link is constrained.
  */
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
   flow: { width: 1280, height: 720, frameRate: 30, degradationPreference: 'maintain-resolution' },
-  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
-  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
+  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-framerate' },
+  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' }
 };
 
 export const screenShareDefaultQuality: ScreenShareQuality = 'standard';

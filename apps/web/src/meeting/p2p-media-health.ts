@@ -70,9 +70,9 @@ export function inspectP2pMediaHealth(report: RTCStatsReport): P2pMediaHealth {
 /**
  * Reads the local video sender's encoder limitation from a stats report.
  * `qualityLimitationReason` is `'none'` when unconstrained; `'bandwidth'` means
- * the encoder starves against the link, which under `maintain-resolution`
- * collapses frame rate and under a relayed path fills the picture with
- * quantization blocks.
+ * the encoder is constrained by the link. Resolution-first sessions may then
+ * collapse frame rate, while frame-rate-first 1080p sessions are allowed to
+ * reduce resolution instead.
  */
 export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStats {
   const result: SenderVideoStats = {};

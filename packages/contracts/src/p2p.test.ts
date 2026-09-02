@@ -8,6 +8,7 @@ import {
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
   P2P_MESSAGE_MAX_BYTES,
   P2P_SCREEN_BITRATES,
+  P2P_TOTAL_UPLINK_BUDGET_BPS,
   P2pClientMessage,
   P2pClientMessageSchema,
   P2pScreenBitrate,
@@ -51,6 +52,7 @@ describe('P2P signaling contract types', () => {
     expect(P2P_ICE_DISCONNECT_TIMEOUT_MS).toBe(5000);
     expect(P2P_MESSAGE_MAX_BYTES).toBe(64 * 1024);
     expect(P2P_SCREEN_BITRATES).toEqual([5_000_000, 8_000_000, 10_000_000]);
+    expect(P2P_TOTAL_UPLINK_BUDGET_BPS).toBe(40_000_000);
   });
 });
 

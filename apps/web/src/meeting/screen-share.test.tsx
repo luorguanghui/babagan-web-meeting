@@ -723,8 +723,8 @@ describe('controlled browser screen sharing', () => {
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Leave meeting' }));
     expect(screen.getByText('Adaptive screen share · 30–60 fps')).toBeVisible();
     expect(screen.getByRole('option', { name: 'Flow (720p30, resolution first)' })).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Standard (1080p30, resolution first)' })).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Motion (1080p60, resolution first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Standard (1080p30, frame rate first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Motion (1080p60, frame rate first)' })).toBeVisible();
 
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
     expect(selector).toHaveValue('8000000');
@@ -741,7 +741,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.queryByLabelText('Screen-share quality')).not.toBeInTheDocument();
   });
 
-  it('requests adaptive 1080p60 capture in high-motion mode and prioritizes resolution', async () => {
+  it('requests adaptive 1080p60 capture in high-motion mode and prioritizes frame rate', async () => {
     const order: string[] = [];
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
@@ -766,7 +766,7 @@ describe('controlled browser screen sharing', () => {
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate: 8_000_000,
       frameRate: 60,
-      degradationPreference: 'maintain-resolution',
+      degradationPreference: 'maintain-framerate',
       codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
@@ -794,7 +794,7 @@ describe('controlled browser screen sharing', () => {
     }));
   });
 
-  it('defaults to the standard 1080p30 preset with resolution-first degradation', async () => {
+  it('defaults to the standard 1080p30 preset with frame-rate-first degradation', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
     const publish = vi.fn(async () => undefined);
@@ -812,7 +812,7 @@ describe('controlled browser screen sharing', () => {
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       frameRate: 30,
-      degradationPreference: 'maintain-resolution'
+      degradationPreference: 'maintain-framerate'
     }));
   });
 

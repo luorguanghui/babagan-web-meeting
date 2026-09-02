@@ -554,17 +554,28 @@ describe('p2p share controller', () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 3));
 
-    // 3 viewers × 8 Mbps tier = 24 Mbps, capped to the 20 Mbps uplink budget:
-    // floor(20 Mbps / 3) = 6 666 666 bps per viewer.
+    // 3 viewers × 8 Mbps tier = 24 Mbps, which fits under the 40 Mbps budget.
     expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([
-      6_666_666,
-      6_666_666,
-      6_666_666
+      8_000_000,
+      8_000_000,
+      8_000_000
     ]);
     expect(FakeRTCPeerConnection.instances.reduce(
       (sum, pc) => sum + (senderMaxBitrate(pc) ?? 0),
       0
-    )).toBe(19_999_998);
+    )).toBe(24_000_000);
+  });
+
+  it('keeps a 10 Mbps cap for four viewers within the 40 Mbps budget', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(), { ...shareOptions, maxBitrate: 10_000_000 }, viewers);
+
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([
+      10_000_000,
+      10_000_000,
+      10_000_000,
+      10_000_000
+    ]);
   });
 
   it('always signals the offer before candidates gathered during setLocalDescription', async () => {
@@ -589,7 +600,7 @@ describe('p2p share controller', () => {
     expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
 
     await controller.start(makeStream(), shareOptions, viewers.slice(0, 3));
-    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([6_666_666, 6_666_666, 6_666_666]);
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000, 8_000_000]);
 
     controller.handleViewerLeft('viewer-3');
     await vi.waitFor(() => expect(senderMaxBitrate(FakeRTCPeerConnection.instances[0])).toBe(8_000_000));
@@ -784,7 +795,7 @@ describe('p2p share controller', () => {
     expect(await controller.getStatsReports()).toEqual([]);
   });
 
-  it('switches a bandwidth-starved session to balanced degradation and restores it after recovery', async () => {
+  it('keeps a frame-rate-first session on frame-rate-first degradation under pressure', async () => {
     const { controller, runTransportChecks } = makeHarness();
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -797,12 +808,12 @@ describe('p2p share controller', () => {
     await runTransportChecks();
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
 
-    await runTransportChecks(); // third consecutive starved sample → balanced
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('balanced');
+    await runTransportChecks(); // third consecutive starved sample keeps frame rate first
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
 
     pc.senderStats = { qualityLimitationReason: 'none', framesPerSecond: 30 };
     for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('balanced');
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
 
     await runTransportChecks(); // fifth unconstrained sample → restored
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');

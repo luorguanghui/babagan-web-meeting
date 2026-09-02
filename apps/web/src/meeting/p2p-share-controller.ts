@@ -672,7 +672,7 @@ class P2pShareControllerImpl implements P2pShareController {
             ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
           degradationPreference: session.degradationRelaxed
-            ? 'balanced'
+            ? pressureDegradationPreference(options.degradationPreference)
             : options.degradationPreference
         });
       } catch {
@@ -793,6 +793,12 @@ class P2pShareControllerImpl implements P2pShareController {
     const snapshot = this.getViewerStates();
     for (const listener of this.listeners) listener(snapshot);
   }
+}
+
+function pressureDegradationPreference(
+  preference: RTCDegradationPreference
+): RTCDegradationPreference {
+  return preference === 'maintain-framerate' ? 'maintain-framerate' : 'balanced';
 }
 
 /**
