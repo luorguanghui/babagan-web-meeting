@@ -51,7 +51,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 - 更新成员共享权限、移除成员和结束会议。
 - 执行过期与空房清理任务。
 - **P2P 信令端点（新增）**：`/api/v1/meetings/:slug/p2p` WebSocket，校验参与者 Cookie 与同源 Origin，维护房间在线名单，转发 SDP/ICE/`media-ready` 消息，强制"仅共享者发 offer"等权限规则（见 `07` 设计 §4）。
-- **ICE 配置端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经参与者会话鉴权后返回启动时校验的 `P2P_STUN_URLS` 与 `P2P_TURN_URLS`（后者附带参与者绑定的短期 TURN REST HMAC 凭据）。
+- **ICE 配置端点（新增）**：`GET /api/v1/meetings/:slug/ice-servers`，经参与者会话鉴权后返回当前请求对应的 `iceServers`、`availableTurnProviders`、实际 `turnProvider` 和 `turnCredentialsExpiresAt`。当查询参数显式请求 `turnProvider=cloudflare` 且服务端 Cloudflare 凭据可用时，API 返回 Cloudflare 短期凭据；否则返回启动时校验的 `P2P_STUN_URLS` 与 `P2P_TURN_URLS`，并附带参与者绑定的 coturn TURN REST HMAC 凭据。
 
 ### 2.3 SQLite
 
@@ -75,9 +75,12 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 ### 2.6 TURN provider（P2P TURN 中继）
 
 - 默认保留独立 coturn，为 P2P 屏幕共享提供 relay 候选，供直连失败的观看者仍经 P2P 通道收发屏幕媒体。
-- 可将 API 的 `P2P_TURN_PROVIDER` 切换为 `cloudflare`：API 服务端使用受保护的 Cloudflare TURN Key ID 与创建 app 时一次性返回的 TURN Key API Token/Secret 生成短期凭据；Cloudflare 凭据获取失败时回退 coturn。
+- `P2P_TURN_PROVIDER` 定义“自动”请求的默认 provider；生产可保持 `coturn` 默认，同时在服务端同一份受保护 env 中配置 Cloudflare 凭据，以便页面开放两个 provider 选项。
+- 共享者在每次开始屏幕共享前选择 `auto`、`coturn` 或 `cloudflare`；该偏好只存在浏览器本地存储，不改变服务器默认值，也不把长期凭据暴露给浏览器。
+- API 服务端使用受保护的 Cloudflare TURN Key ID 与创建 app 时一次性返回的 TURN Key API Token/Secret 生成短期凭据；Cloudflare 凭据获取失败、返回空配置或未配置时，API 回退 coturn 并把实际 `turnProvider` 写成 `coturn`。
 - 监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP；禁用 DTLS、管理 CLI，并拒绝 loopback/RFC1918/链路本地/组播对端。
 - coturn 使用 TURN REST 鉴权（`use-auth-secret`），共享密钥与 API 的 `P2P_TURN_SECRET` 一致；API 为已认证参与者签发 600 秒短期凭据。Cloudflare provider 使用 Cloudflare API 生成短期凭据，长期 Token 不下发浏览器。
+- 共享者发出的 P2P `offer` 会附带本次实际 `turnProvider`；观看者收到 `offer` 后若本地 ICE 配置与该 provider 不一致，会重新请求匹配 provider 的 `/ice-servers`，再继续协商。旧 `offer` 缺少该字段时，观看者继续按 coturn 兼容处理。
 
 ## 3. 网络与 DNS
 
@@ -93,7 +96,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
 
-P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS` 与当前 TURN provider 的短期凭据。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经当前 TURN relay 中继（仍是 P2P 通道），该观看者仍失败才继续使用始终发布的 LiveKit 屏幕安全网。页面会显示实际使用的 TURN provider。
+P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS` 与当前 TURN provider 的短期凭据。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经当前 TURN relay 中继（仍是 P2P 通道），该观看者仍失败才继续使用始终发布的 LiveKit 屏幕安全网。页面会显示实际使用的 TURN provider；共享中的各观看者由共享者 offer metadata 与观看者二次取 ICE 配置保持同步，不支持每个观看者独立挑选不同 TURN provider。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 
@@ -118,8 +121,8 @@ Token 允许所有成员发布 `microphone`，禁止 `camera` 和数据轨道。
 1. 主持人通过 API 授权目标成员（共享锁，语义不变）。
 2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源。
 3. 共享者客户端调用浏览器屏幕捕获接口，要求用户主动选择来源；屏幕音频轨道必须保留（P2P 音画同步硬约束）。
-4. 共享者先发布 LiveKit 屏幕安全网，再通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。
-5. 观看者验证直连候选对、RTP 增长和视频解码，渲染 P2P 首帧后才取消自己的 LiveKit 屏幕订阅；8 秒未收到媒体、ICE 失败或 5 秒无 RTP 进展时先恢复 LiveKit 订阅，首帧后关闭 P2P。
+4. 共享者先发布 LiveKit 屏幕安全网，再通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。共享者选择了显式 provider 时，`offer` 会携带实际 `turnProvider` metadata。
+5. 观看者验证直连候选对、RTP 增长和视频解码，必要时按 `offer.turnProvider` 重新获取 ICE 配置，渲染 P2P 首帧后才取消自己的 LiveKit 屏幕订阅；8 秒未收到媒体、ICE 失败或 5 秒无 RTP 进展时先恢复 LiveKit 订阅，首帧后关闭 P2P。
 6. 共享停止、断线或撤销时，关闭全部 P2P 连接与 LiveKit 屏幕轨道，API/LiveKit 释放共享锁。
 
 ## 5. 状态模型
@@ -160,7 +163,7 @@ stateDiagram-v2
 | 媒体平台 | LiveKit | 屏幕音频、权限、重连与兼容兜底成熟；P2P STUN 独立由 API 配置 |
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
-| TURN | LiveKit 内置 UDP 443 + 独立 coturn 3478/5349 | LiveKit 的 TURN/UDP 443 服务语音与回退屏幕；coturn 为 P2P 屏幕共享提供可带短期凭据的 TURN 中继 |
+| TURN | LiveKit 内置 UDP 443 + 独立 coturn 3478/5349 + 可选 Cloudflare Realtime TURN | LiveKit 的 TURN/UDP 443 服务语音与回退屏幕；coturn 为 P2P 屏幕共享提供默认 TURN 中继；Cloudflare 由服务端按需生成短期凭据，供共享级别显式切换 |
 | Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
 | P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 信令不新增域名；参与者 Cookie + 同源 Origin 鉴权；服务器不接触媒体内容 |

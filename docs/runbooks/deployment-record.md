@@ -14,10 +14,11 @@ This file is a target-host evidence template. It is not evidence that production
 
 | Gate | Evidence to preserve | Status |
 |---|---|---|
-| Debian 12, Docker and Compose | cat /etc/os-release; docker version; docker compose version | Pending |
+| Debian 12 or Debian 13, Docker and Compose | cat /etc/os-release; docker version; docker compose version | Pending |
 | Capacity | /proc/meminfo and df -h; deploy gate is 1.1 GiB available RAM and 10 GiB free disk | Pending |
 | DNS | getent for meet.babagan.cloud, rtc.babagan.cloud and turn.babagan.cloud | Pending |
 | Production secrets | protected env file and token path, both mode 600; values never copied here | Pending |
+| TURN provider shape | `P2P_TURN_PROVIDER` default plus whether Cloudflare Key ID/API Token are both present; values never copied here | Pending |
 | Alibaba security group | TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH policy | Pending |
 | Host firewall | same public ports, default deny inbound, SSH policy, and internal Docker-to-host 7880 rule | Pending |
 | Cloudflare | meet proxied; rtc DNS-only; turn DNS-only; SSL/TLS Full (strict) | Pending |
@@ -63,7 +64,7 @@ sudo bash scripts/deploy.sh \
 
 Use --env-file only when the production env is outside infra/.env.production. Use --allow-public-ssh only with the public-SSH evidence above.
 
-The script performs all read-only checks first. It then creates a checksummed SQLite backup, writes mode-600 var/releases/pending-release.env, builds or pulls the pinned images, runs the migration, starts the candidate stack, waits for caddy/api/livekit/web/coturn to be healthy, and runs deployment-smoke.sh. The deployment smoke creates a disposable meeting and signs a fresh LiveKit Token; the static smoke-token-file is not the source of RTC freshness. On success, deploy.sh writes the release record, updates current-release.env, and preserves a completed pending record.
+The script performs all read-only checks first. It then creates a checksummed SQLite backup, writes mode-600 var/releases/pending-release.env, builds or pulls the pinned images, runs the migration, starts the candidate stack, waits for caddy/api/livekit/web/coturn to be healthy, and runs deployment-smoke.sh. The deployment smoke creates a disposable meeting and signs a fresh LiveKit Token; the static smoke-token-file is not the source of RTC freshness. When the protected env contains both `CLOUDFLARE_TURN_KEY_ID` and `CLOUDFLARE_TURN_API_TOKEN`, deployment-smoke.sh must also execute explicit `SMOKE_REQUESTED_TURN_PROVIDER=coturn` and `SMOKE_REQUESTED_TURN_PROVIDER=cloudflare` ICE checks in addition to the default request. On success, deploy.sh writes the release record, updates current-release.env, and preserves a completed pending record.
 
 Preserve all of the following outside Git:
 
@@ -72,6 +73,7 @@ Preserve all of the following outside Git:
 - var/releases/releases/<SHA>.pending-completed.env;
 - the SQLite backup and its .sha256 sidecar;
 - docker compose ps, health endpoints, and deployment-smoke output;
+- the default ICE smoke plus explicit `coturn` and `cloudflare` smoke output when Cloudflare credentials are configured;
 - image IDs for api, web, caddy and livekit.
 
 ## Empty-server command
@@ -102,4 +104,4 @@ curl --silent --output /dev/null --write-out '%{http_code}\n' https://meet.babag
 sudo test ! -e var/releases/pending-release.env
 ~~~
 
-Record the resulting DEPLOY SUCCEEDED: <SHA> line. A successful run must also show healthy services, HTTP 200 for the SPA, Cache-Control: no-store in the authenticated ICE response, successful RTC WebSocket open, and cleanup of the disposable smoke meeting.
+Record the resulting DEPLOY SUCCEEDED: <SHA> line. A successful run must also show healthy services, HTTP 200 for the SPA, Cache-Control: no-store in the authenticated ICE response, successful RTC WebSocket open, cleanup of the disposable smoke meeting, and when Cloudflare credentials are configured, successful explicit `turnProvider=coturn` and `turnProvider=cloudflare` ICE checks.

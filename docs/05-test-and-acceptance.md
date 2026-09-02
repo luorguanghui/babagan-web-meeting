@@ -30,7 +30,7 @@
 - 验证 Cookie、Origin、CORS、速率限制和错误响应不泄密。
 - 验证进程重启后的会议恢复和过期清理。
 - P2P 信令：无 Cookie 拒绝升级；有 Cookie 可加入房间名单并收到进退广播；仅共享者可发 `offer`，观看者只能应答共享者；非法目标与越权消息被拒绝；消息限速与 64 KiB 上限；共享锁释放后全员收到失效通知。
-- ICE 凭据端点：参与者 Cookie 可获取 STUN 与带短期 HMAC 凭据的 coturn TURN；无 Cookie 拒绝；凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；响应设置 `Cache-Control: no-store`。
+- ICE 凭据端点：参与者 Cookie 可获取 STUN 与短期 TURN 凭据；查询参数支持 `turnProvider=auto|coturn|cloudflare`；响应包含 `availableTurnProviders`、实际 `turnProvider` 和 `Cache-Control: no-store`。无 Cookie 拒绝；coturn 凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；Cloudflare 失败或未配置时显式/默认请求均应回退为有效 coturn 响应。
 
 ### 2.3 浏览器 E2E
 
@@ -64,6 +64,8 @@
 | AT-020 | 非共享者发起 P2P offer | 信令服务拒绝，目标端不建立连接 |
 | AT-021 | 无 Cookie 访问 P2P 信令 | 升级被拒绝，不进入房间名单 |
 | AT-022 | 接收端独立调节音量 | 通话音量同时作用于全部远端麦克风；共享音量只作用于远端屏幕音频，0% 完全静音，P2P、TURN 和 LiveKit 回退下结果一致，且不改变共享音频动态与音色 |
+| AT-023 | 共享者显式选择 Cloudflare TURN | 共享开始前可见 `Cloudflare TURN` 选项；共享者 `offer` 携带 `turnProvider=cloudflare`；观看者重新拉取 Cloudflare ICE 配置并显示实际 provider 为 Cloudflare |
+| AT-024 | Cloudflare 未配置或临时失败 | 页面隐藏或无法实际使用 Cloudflare 时，`auto`/显式请求都得到可用 coturn 配置；共享双方标签显示实际 provider 为 coturn，不显示错误的 Cloudflare 状态 |
 
 ## 4. 媒体质量测试
 
@@ -110,6 +112,7 @@
 | P2P 协商超时 | 观看者 8 秒未收敛 | 自动回退 LiveKit，画面中断 ≤2 秒 |
 | P2P 中继降级 | 共享者到观看者 5% 丢包 | 仅该路码率自动下降，其他观看者不受影响 |
 | 信令 WS 中断 | P2P 信令断开 | 已建立的 P2P 连接继续工作；共享状态不受影响 |
+| Cloudflare TURN API 不可用 | 服务端无法取到 Cloudflare 短期凭据 | API 回退 coturn，显式 Cloudflare 自动化 smoke 失败，手工共享验证显示实际 provider 为 coturn |
 
 ## 6. 负载与稳定性
 
@@ -133,6 +136,7 @@
 - 错误页、日志和监控不包含密码、Token、Cookie、API Secret 或数据库内容。
 - 外部端口扫描只看到批准的端口。
 - TLS 配置通过现代浏览器和自动化 TLS 检查。
+- Cloudflare TURN 长期 Key ID/API Token 只存在服务器 mode 600 env，不出现在浏览器响应、日志、测试报告或 Git。
 
 ## 8. 发布门禁
 
@@ -143,5 +147,6 @@
 - 5 人 1080p60 负载或两小时稳定性失败。
 - 出现高危安全问题、权限提升或敏感信息泄露。
 - 部署、备份恢复或回滚未在目标环境演练。
+- 本地完整门禁未通过：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`bash scripts/http-headers.test.sh`、`bash scripts/deployment-smoke.test.sh`、`bash scripts/deployment-scripts.test.sh`、`bash scripts/smoke-test.provider.test.sh`、`git diff --check` 任一失败都不得发布。
 
 测试报告记录构建版本、浏览器版本、网络条件、服务器指标、失败证据和最终批准人，不记录会议媒体。

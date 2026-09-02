@@ -5,7 +5,7 @@
 ## 已确认的部署环境
 
 - 阿里云轻量应用服务器，华中 1（武汉）
-- Debian 12.10，2 核 CPU、2 GiB 内存、40 GiB 系统盘
+- Debian 12.10 或 Debian 13.x，2 核 CPU、2 GiB 内存、40 GiB 系统盘
 - 峰值公网带宽 200 Mbps，无固定月流量额度
 - 域名：`babagan.cloud`
 - `meet.babagan.cloud`：Cloudflare 橙云，用于网页和 API
@@ -26,7 +26,7 @@
 10. [测试驱动实施计划](docs/superpowers/plans/2026-08-07-web-meeting-implementation.md)
 11. [P2P 混合模式实施计划](docs/superpowers/plans/2026-08-11-p2p-hybrid-implementation.md)
 
-部署操作从 [部署与运维](docs/04-deployment-and-operations.md) 开始：其中分别说明已有服务器更新和 Debian 12 空白服务器首次部署；[部署证据记录](docs/runbooks/deployment-record.md) 与 [回滚记录](docs/runbooks/rollback-record.md) 用于保存目标服务器证据和受保护恢复记录。
+部署操作从 [部署与运维](docs/04-deployment-and-operations.md) 开始：其中分别说明已有服务器更新和 Debian 12/13 空白服务器首次部署；[部署证据记录](docs/runbooks/deployment-record.md) 与 [回滚记录](docs/runbooks/rollback-record.md) 用于保存目标服务器证据和受保护恢复记录。
 
 ## 核心技术决策
 
@@ -34,7 +34,9 @@
 - Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
 - 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，无法直连时经自托管 coturn TURN 中继，仍失败再回退 LiveKit SFU；云端不承载直连屏幕媒体。
-- P2P 屏幕共享使用可切换的 TURN provider：API 默认保留 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），也支持服务端调用 Cloudflare Realtime TURN 生成短期凭据；`/ice-servers` 会返回实际 provider，Cloudflare 暂时不可用时回退 coturn。
+- P2P 屏幕共享使用可切换的 TURN provider：共享者在每次开始共享前可选“自动 / 服务器 coturn / Cloudflare TURN”，该选择保存在当前浏览器的 `babagan.screen-turn-provider`，并只作用于下一次共享。
+- API 默认保留 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），也支持服务端调用 Cloudflare Realtime TURN 生成短期凭据；`/api/v1/meetings/:slug/ice-servers` 会返回 `availableTurnProviders`、本次实际 `turnProvider` 和到期时间，Cloudflare 暂时不可用时回退 coturn。
+- 共享者发给观看者的 P2P `offer` 会携带实际 `turnProvider` metadata；观看者会据此重新拉取匹配 provider 的 ICE 配置，保证同一轮共享双方使用同一 provider。旧的无 metadata `offer` 仍按 coturn 兼容处理。
 - LiveKit 内置 TURN/UDP 443 与 RTC/TCP 7881 作为语音与回退屏幕的媒体兜底。
 - Caddy 负责 HTTPS、证书续期和反向代理。
 - Docker Compose 统一部署和管理进程。

@@ -39,11 +39,13 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `P2P_TURN_URLS` | 逗号分隔的 `turn:`/`turns:` URL（3478/udp、3478/tcp、5349/tls） | 启动时严格校验协议；指向自托管 coturn |
 | `P2P_TURN_SECRET` | 与 coturn `TURN_SHARED_SECRET` 完全相同的 TURN REST 密钥 | 至少 32 字节、权限 600 |
 | `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
-| `P2P_TURN_PROVIDER` | `coturn` 或 `cloudflare` | 默认 `coturn`；Cloudflare 失败时回退 coturn |
+| `P2P_TURN_PROVIDER` | `coturn` 或 `cloudflare` | `auto` 请求的默认 provider；生产默认 `coturn`，Cloudflare 失败时回退 coturn |
 | `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN Key ID | 仅服务端使用，不下发浏览器 |
 | `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN Key API Token/Secret（创建 TURN app 时一次性返回；不是 User API Token） | 仅服务端使用，权限 600 |
 | `CLOUDFLARE_TURN_TTL_SECONDS` | Cloudflare 短期凭据有效期 | 默认 600，范围 60–86400 |
 | `CLOUDFLARE_TURN_CONNECT_IPS` | 可选的 Cloudflare API 出站连接 IP 列表 | 逗号分隔，仅在 DNS 返回地址不可达时配置；服务端保留 `rtc.live.cloudflare.com` 的 TLS SNI/Host |
+
+Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开放共享者的显式 Cloudflare 选项；`CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN` 必须成对出现，长期凭据只放服务端 mode 600 文件。
 
 以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
 
@@ -138,11 +140,11 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | POST | `/meetings/:slug/leave` | 参与者会话 | 提前释放参与状态 |
 | DELETE | `/meetings/:slug/share` | 参与者会话 | 共享者主动释放自己的共享权限 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
-| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN 列表与带短期凭据的 coturn TURN 列表 |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN/TURN 列表、`availableTurnProviders`、实际 `turnProvider` 与短期凭据到期时间 |
 | POST | `/meetings/:slug/p2p-stats` | 参与者会话（离会容忍） | 记录匿名 P2P 质量统计（无媒体/SDP/IP/身份） |
 | WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready`/`retry` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers, turnProvider, turnCredentialsExpiresAt }`；`turnProvider` 表示本次实际使用的 `coturn` 或 `cloudflare`，响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取，并在 TURN 标签中显示 provider。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers, availableTurnProviders, turnProvider, turnCredentialsExpiresAt }`；查询参数支持 `turnProvider=auto|coturn|cloudflare`，其中 `auto` 解析为服务端默认 provider。`turnProvider` 表示本次实际使用的 `coturn` 或 `cloudflare`，响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取，并在 TURN 标签中显示 provider。
 
 ### 4.3 P2P 信令端点行为
 
@@ -150,6 +152,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。客户端发送 `hello` 声明身份，服务端校验其与 Cookie 会话一致。
 - 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice`/`bye` 只能发给当前共享者（或由共享者发出）；观看者确认直连视频已解码后向共享者发送 `media-ready`；观看者可用 `retry` 请求共享者为其重建会话并重发 offer；目标必须是同会议在线成员。
 - `offer`/`answer`/`ice`/`media-ready` 携带可选 `generation` 字段，用于区分同一次会话的重协商，避免陈旧候选污染重试。
+- `offer` 还可携带可选 `turnProvider: coturn|cloudflare`。共享者发送时只在已知 provider 下附带该字段；服务端按既有权限规则原样转发；观看者收到后若当前 ICE 配置与该 provider 不一致，会先重新请求匹配 provider 的 `ice-servers` 再继续协商。无该字段的旧 `offer` 仍按 coturn 兼容处理。
 - 共享锁释放（撤销/结束/共享者离开/被移除）时服务端广播 `share-gone`，客户端据此关闭全部 P2P 连接。
 - 消息上限 64 KiB；单连接限速 120 条/60 秒；SDP、ICE 候选与凭据不写入日志。
 - 心跳：客户端每 25 秒发送 `ping`，服务端以 `pong` 应答；服务端 120 秒未收到任何帧判定失联并关闭（后台标签页计时器节流下仍足够宽松）。
@@ -195,6 +198,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 观看者端屏幕源为双源渲染：P2P 直连流优先，LiveKit 轨道为回退；切换时不出现重复画面或黑屏超过 2 秒。
 - 成员列表显示昵称、麦克风状态、共享者和连接质量。
 - 控制栏只包含麦克风、设备、接收音量、屏幕共享（含码率档位选择与在线观看人数联动建议）、离开/结束和连接状态；接收音量分为共享音频和聚合通话音频两路。
+- 已获共享权限的共享者在设置面板可见“自动 / 服务器 coturn / Cloudflare TURN”选择器。该选择器只影响下一次共享请求的 TURN provider，且在共享进行中禁用；Cloudflare 未配置时页面只显示 `auto` 与 `coturn`。
 - 主持人操作通过成员菜单提供，不占用普通成员界面。
 - 无共享时显示会议名称和等待状态。
 
@@ -226,7 +230,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。
 
-**共享端流程**：授权 → 获取屏幕流（含音频）→ 先发布 LiveKit 安全网 → 获取显式 STUN 配置 → 对 P2P 信令在线的观看者发起协商 → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
+**共享端流程**：授权 → 读取浏览器保存的 TURN provider 偏好（默认 `auto`，键为 `babagan.screen-turn-provider`）→ 获取屏幕流（含音频）→ 先发布 LiveKit 安全网 → 获取与当前偏好匹配的 ICE 配置 → 对 P2P 信令在线的观看者发起协商，并在 `offer` 中写入本次实际 `turnProvider` → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
 
 ## 8. 定时任务与恢复
 

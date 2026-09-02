@@ -3,7 +3,7 @@
 本文件是 Babagan 的主部署指南，覆盖两条路径：
 
 - **已有服务器更新**：服务器已有 Docker、Compose、生产环境文件和当前 release 记录。
-- **从零部署**：全新的 Debian 12 服务器，没有 API 数据卷和当前发布记录。
+- **从零部署**：全新的 Debian 12 或 Debian 13 服务器，没有 API 数据卷和当前发布记录。
 
 默认域名是 meet.babagan.cloud、rtc.babagan.cloud、turn.babagan.cloud。命令中的 APP_DIR、TARGET_IP、TURN_RELAY_IP 和仓库地址必须替换成目标环境值。真实密码、Token、API secret 和公网 IP 只放在服务器受保护文件中，不进入 Git、命令历史或本文档。
 
@@ -11,7 +11,7 @@
 
 | 项目 | 当前约定 |
 |---|---|
-| 系统 | Debian 12，推荐 2 核、2 GiB、40 GiB |
+| 系统 | Debian 12 或 Debian 13，推荐 2 核、2 GiB、40 GiB |
 | 网页/API | https://meet.babagan.cloud，Cloudflare Proxied |
 | LiveKit 信令 | wss://rtc.babagan.cloud，DNS only |
 | TURN | turn.babagan.cloud，DNS only |
@@ -45,7 +45,7 @@ df -h "$APP_DIR"
 awk '/MemAvailable:/ {print $2 " KiB available"}' /proc/meminfo
 ~~~
 
-deploy.sh 要求 Debian 12、至少约 1.1 GiB 可用内存和至少 10 GiB 可用磁盘。2 GiB 主机在构建时内存紧张时，可在停机窗口停止 Compose 并释放缓存：
+deploy.sh 要求 Debian 12 或 Debian 13、至少约 1.1 GiB 可用内存和至少 10 GiB 可用磁盘。2 GiB 主机在构建时内存紧张时，可在停机窗口停止 Compose 并释放缓存：
 
 ~~~bash
 sudo docker compose --env-file "$APP_DIR/infra/.env.production" -f "$APP_DIR/infra/docker-compose.yml" stop
@@ -111,7 +111,7 @@ git status --short
 
 工作树不得有未解释的源码修改；受保护运行时文件应由 .gitignore 忽略。
 
-## 3. 从零部署 Debian 12
+## 3. 从零部署 Debian 12 / Debian 13
 
 本节只适用于没有 current-release.env、没有 babagan-meeting_api-data volume、没有运行中的 Babagan Compose 栈。已有任一项时改用第 4 节，不得添加 --bootstrap-empty。
 
@@ -151,7 +151,9 @@ sudo chmod 600 infra/.env.production
 sudoedit infra/.env.production
 ~~~
 
-至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。将 `P2P_TURN_PROVIDER` 设为 `cloudflare` 时，还必须配置 Cloudflare TURN app 创建页一次性返回的 `CLOUDFLARE_TURN_KEY_ID` 和 `CLOUDFLARE_TURN_API_TOKEN`（这里存的是 TURN Key API Token/Secret，不是 User API Token），以及 `CLOUDFLARE_TURN_TTL_SECONDS=600`；若服务器 DNS 返回的 Cloudflare API 地址不可达，可配置 `CLOUDFLARE_TURN_CONNECT_IPS` 为逗号分隔的可达 Cloudflare 边缘 IP，连接仍使用 `rtc.live.cloudflare.com` 的 TLS SNI/Host。长期 Cloudflare TURN Key Secret 只放服务器 mode 600 的生产环境文件。LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少 32 字符；镜像必须保持示例中的批准 digest。
+至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。生产默认保持 `P2P_TURN_PROVIDER=coturn`，这样 `/ice-servers` 的 `auto` 请求默认走 coturn；如果要开放页面中的 Cloudflare TURN 选项，则在同一份受保护 env 中同时配置 Cloudflare TURN app 创建页一次性返回的 `CLOUDFLARE_TURN_KEY_ID` 和 `CLOUDFLARE_TURN_API_TOKEN`（这里存的是 TURN Key API Token/Secret，不是 User API Token），以及 `CLOUDFLARE_TURN_TTL_SECONDS=600`。若旧的 `babagan-turn-production-v2` 长期凭据无法在受保护流程中取得，则在 Cloudflare Realtime TURN 页面新建 `babagan-turn-production-v3`，保留 v2，不把一次性返回的长期凭据写入聊天、Git 或日志。若服务器 DNS 返回的 Cloudflare API 地址不可达，可配置 `CLOUDFLARE_TURN_CONNECT_IPS` 为逗号分隔的可达 Cloudflare 边缘 IP，连接仍使用 `rtc.live.cloudflare.com` 的 TLS SNI/Host。长期 Cloudflare TURN Key Secret 只放服务器 mode 600 的生产环境文件。LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少 32 字符；镜像必须保持示例中的批准 digest。
+
+这样部署后，API 会把 `availableTurnProviders` 暴露给浏览器；共享者只有在服务端同时存在 Cloudflare Key ID 与 API Token 时，才会在设置里看到 `Cloudflare TURN` 选项。共享者每次开始共享前可选 `auto`、`coturn` 或 `cloudflare`；选择持久化在浏览器本地，但不修改服务器默认 env。
 
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
@@ -234,7 +236,7 @@ EOF
 sudo chmod 600 /root/babagan-protected/network.txt /root/babagan-protected/cloudflare.txt
 ~~~
 
-deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token。准备一个 24 小时 Token：
+deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token，并在检测到 Cloudflare 长期凭据成对存在时额外执行显式 `turnProvider=coturn` 与 `turnProvider=cloudflare` 两轮 ICE smoke。准备一个 24 小时 Token：
 
 ~~~bash
 sudo bash -c 'umask 077; docker run --rm --network none --env-file /opt/babagan-meeting/infra/.env.production --entrypoint node babagan-meeting-api:bootstrap --input-type=module -e '\''import {AccessToken} from "livekit-server-sdk"; const t=new AccessToken(process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET,{identity:"deployment-rollback",ttl=86400}); t.addGrant({room:"deployment-smoke",roomJoin:true}); process.stdout.write(await t.toJwt());'\'' > /root/babagan-secrets/smoke-token; chmod 600 /root/babagan-secrets/smoke-token'
@@ -334,7 +336,7 @@ sudo bash scripts/deploy.sh \
 
 若使用公网 SSH 证据，追加 --allow-public-ssh；非默认 env 文件追加 --env-file /受保护路径/infra.env.production。
 
-deploy.sh 顺序固定为：只读预检 → SQLite 在线备份和 checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像 tag → 启动并等待五服务 healthy → deployment-smoke。smoke 会创建临时会议并现场签发 LiveKit Token，检查健康端点、认证 ICE、Cache-Control: no-store、P2P 跨站 403、RTC WebSocket 和公网 3000/7880 阻断。成功后写 release record、更新 current-release.env，并保存 completed pending record。
+deploy.sh 顺序固定为：只读预检 → SQLite 在线备份和 checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像 tag → 启动并等待五服务 healthy → deployment-smoke。smoke 会创建临时会议并现场签发 LiveKit Token，检查健康端点、认证 ICE、Cache-Control: no-store、P2P 跨站 403、RTC WebSocket 和公网 3000/7880 阻断。若生产 env 同时包含 `CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN`，还会追加显式 `SMOKE_REQUESTED_TURN_PROVIDER=coturn` 与 `SMOKE_REQUESTED_TURN_PROVIDER=cloudflare` 两轮检查；显式 Cloudflare 请求若服务端实际回退 coturn，则 smoke 应失败。成功后写 release record、更新 current-release.env，并保存 completed pending record。
 
 ### 4.4 更新后验收
 
@@ -348,7 +350,7 @@ sudo sed -n '1,32p' var/releases/current-release.env
 sudo test ! -e var/releases/pending-release.env
 ~~~
 
-应看到五服务 healthy、健康端点分别返回 {"status":"ok"} 和 {"status":"ready"}、首页 HTTP 200、current-release.env 为本次 SHA、没有 pending。保留 deploy、compose ps、健康和 smoke 输出到受保护运维记录。
+应看到五服务 healthy、健康端点分别返回 {"status":"ok"} 和 {"status":"ready"}、首页 HTTP 200、current-release.env 为本次 SHA、没有 pending。若 Cloudflare 凭据已配置，deployment smoke 还应留下默认请求、显式 coturn 请求和显式 cloudflare 请求都通过的证据。保留 deploy、compose ps、健康和 smoke 输出到受保护运维记录。
 
 ## 5. 失败处理：先诊断，不自动回滚
 
@@ -418,9 +420,27 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 
 - Caddy 续期 turn 证书后，重复 3.4 节读取权限检查，重启 coturn 并验证 5349/TCP。
 - P2P_TURN_SECRET 与 TURN_SHARED_SECRET 必须相同且至少 32 字符；P2P_TURN_TTL_SECONDS 固定 600。Cloudflare provider 的长期 API Token 不得进入 Git、浏览器或日志；页面的 TURN 标签应显示本次实际 provider。
+- 共享者的 TURN provider 选择只影响当前这次共享，进行中的共享不允许切换；若 Cloudflare 取凭据失败，API 会回退 coturn，页面状态与 WebRTC 统计面板应显示实际 provider，而不是显示请求值。
 - Cache-Control: no-store 是认证 ICE 响应的验收条件。
 - 7880 不对公网开放；7881/TCP、UDP 443、50000–60000 由安全组和 UFW 同步允许。
 - 旧 standalone babagan-coturn.service 不应与 Compose coturn 并存；确认使用容器版后执行 sudo systemctl disable --now babagan-coturn.service。
 - 每周检查五服务健康、CPU/内存/磁盘/OOM、证书、TURN allocation、备份和 P2P 直连/中继/SFU 回退标签。
 - 2 GiB 主机必须保留 1.1 GiB MemAvailable 门槛；日志不得记录 Token、密码、SDP 敏感标识或媒体内容，备份和发布记录不得放进 Web 目录。
+
+## 8. DNS 切换与恢复
+
+从旧源站迁移到新主机时，只改三条业务记录的目标 IP，代理状态保持不变：
+
+- `meet.babagan.cloud`：改到新公网 IP，保持 Proxied。
+- `rtc.babagan.cloud`：改到新公网 IP，保持 DNS only。
+- `turn.babagan.cloud`：改到新公网 IP，保持 DNS only。
+
+建议顺序：
+
+1. 先在新主机完成部署、证书、健康、默认 coturn smoke。
+2. 若 Cloudflare 长期凭据已配置，再确认显式 Cloudflare smoke。
+3. 最后切换 `meet`、`rtc`、`turn` 三条 A 记录到新公网 IP，并分别核对代理状态未改变。
+4. 在新主机重复 `getent ahostsv4 "$PUBLIC_HOST" "$RTC_HOST" "$TURN_HOST"`，确认解析结果已更新。
+
+若切换后发现 Caddy、TURN 或 LiveKit 不可用，只回退这三条业务 DNS 记录的原始 IP 与代理状态；不要删除现有 Cloudflare TURN 应用，也不要把长期凭据导出到 Git 或聊天。
 

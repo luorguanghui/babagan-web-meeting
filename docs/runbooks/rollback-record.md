@@ -12,9 +12,10 @@ Confirm all of these first:
 - The database backup and checksum sidecar exist and match the recorded checksum.
 - Every predecessor image tag resolves to the immutable image ID recorded in the release/pending record.
 - The smoke token file is non-empty, mode 600, and not expired. Generate a fresh token from the current API image before rollback if necessary.
+- If the failed or current deployment had Cloudflare credentials configured, preserve the deployment-smoke evidence showing default, explicit `coturn`, and explicit `cloudflare` ICE checks before changing state.
 - There is no active meeting or planned destructive migration window.
 
-A stale smoke-token file can make the core-only RTC check fail even when LiveKit is healthy. The normal deployment smoke creates a temporary meeting and signs a fresh Token, but rollback consumes the supplied file directly.
+A stale smoke-token file can make the core-only RTC check fail even when LiveKit is healthy. The normal deployment smoke creates a temporary meeting and signs a fresh Token, and may also run explicit `SMOKE_REQUESTED_TURN_PROVIDER=coturn|cloudflare` ICE checks when Cloudflare credentials are present, but rollback consumes the supplied file directly.
 
 ## Roll back a committed release
 
