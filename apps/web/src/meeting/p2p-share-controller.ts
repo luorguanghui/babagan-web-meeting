@@ -79,6 +79,8 @@ export interface P2pShareController {
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
+  /** Supplies the latest independent Cloudflare edge upload measurement. */
+  setCloudflareUplinkEstimate?(bitrateBps: number): void;
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
@@ -199,6 +201,7 @@ class P2pShareControllerImpl implements P2pShareController {
   private activeStream?: MediaStream;
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
+  private cloudflareUplinkEstimateBps?: number;
   private nextGeneration = 0;
   private nextRetryToken = 0;
   private readonly pendingRetryTokens = new Map<string, number>();
@@ -346,6 +349,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.iceRefreshTimer = undefined;
     this.activeStream = undefined;
     this.activeOptions = undefined;
+    this.cloudflareUplinkEstimateBps = undefined;
     this.pendingRetryTokens.clear();
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
@@ -371,6 +375,11 @@ class P2pShareControllerImpl implements P2pShareController {
       if (session.state === 'turn') snapshot.set(identity, session.turnProvider);
     }
     return snapshot;
+  }
+
+  setCloudflareUplinkEstimate(bitrateBps: number): void {
+    if (!Number.isFinite(bitrateBps) || bitrateBps <= 0) return;
+    this.cloudflareUplinkEstimateBps = bitrateBps;
   }
 
   refreshIceServers(configuration: P2pIceServerConfiguration): void {
@@ -689,9 +698,9 @@ class P2pShareControllerImpl implements P2pShareController {
 
   /**
    * Cloudflare relay sessions are controlled per connection. The relay's
-   * available outgoing estimate drives the target; RTP bytes are used as a
-   * fallback/feedback signal when the estimate is missing. No shared 40 Mbps
-   * allocator is applied to these sessions.
+   * independent Cloudflare upload test seeds the target. The RTC estimate is
+   * diagnostic only; actual RTP rate, frame rate and encoder limitation decide
+   * whether probing is healthy or genuinely congested.
    */
   private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
@@ -710,19 +719,21 @@ class P2pShareControllerImpl implements P2pShareController {
       previous,
       measurement: {
         availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
-        actualOutgoingBitrateBps
+        actualOutgoingBitrateBps,
+        testedCloudflareUplinkBitrateBps: this.cloudflareUplinkEstimateBps,
+        qualityLimitationReason: sender.qualityLimitationReason,
+        framesPerSecond: sender.framesPerSecond,
+        targetFrameRate: session.options.frameRate
       },
       minimumScaleResolutionDownBy,
       maximumScaleResolutionDownBy,
       referenceBitrateBps
     });
-    if (next === previous
-      || (session.cloudflareEncodingState !== undefined
-        && next.targetBitrateBps === previous.targetBitrateBps
-        && next.scaleResolutionDownBy === previous.scaleResolutionDownBy
-        && next.bandwidthEstimateBps === previous.bandwidthEstimateBps)) return;
+    if (next === previous) return;
+    const encodingChanged = next.targetBitrateBps !== previous.targetBitrateBps
+      || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy;
     session.cloudflareEncodingState = next;
-    await this.applySenderParameters(session);
+    if (encodingChanged) await this.applySenderParameters(session);
   }
 
   private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {

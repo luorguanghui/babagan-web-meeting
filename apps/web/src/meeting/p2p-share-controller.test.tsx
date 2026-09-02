@@ -733,6 +733,28 @@ describe('p2p share controller', () => {
     expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
   });
 
+  it('uses an independent Cloudflare upload test without trusting a low RTC estimate', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 30,
+      bytesSent: 1_000_000,
+      timestamp: 1_000
+    };
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    controller.setCloudflareUplinkEstimate?.(18_000_000);
+    await runTransportChecks();
+
+    expect(senderMaxBitrate(pc)).toBe(15_300_000);
+  });
+
   it('ramps Cloudflare relay bitrate above the fixed tier without a 40 Mbps aggregate cap', async () => {
     const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
     await controller.start(makeStream(), shareOptions, viewers);
@@ -741,6 +763,8 @@ describe('p2p share controller', () => {
       pc.statsCandidateType = 'relay';
       pc.senderStats = {
         availableOutgoingBitrateBps: 60_000_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
         bytesSent: 8_000_000,
         timestamp: 1_000
       };
@@ -748,6 +772,25 @@ describe('p2p share controller', () => {
       controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
     }
     await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn', 'turn', 'turn']));
+    for (const pc of FakeRTCPeerConnection.instances) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 13_250_000,
+        timestamp: 2_000
+      };
+    }
+    await runTransportChecks();
+    for (const pc of FakeRTCPeerConnection.instances) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 18_500_000,
+        timestamp: 3_000
+      };
+    }
     await runTransportChecks();
 
     const maxBitrates = FakeRTCPeerConnection.instances.map((pc) => {
@@ -763,18 +806,40 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
-    pc.senderStats = { availableOutgoingBitrateBps: 4_000_000, bytesSent: 8_000_000, timestamp: 1_000 };
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 10,
+      bytesSent: 8_000_000,
+      timestamp: 1_000
+    };
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => {
-      const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
-      expect(scale).toBeCloseTo(1.1, 5);
-    });
+    await vi.waitFor(() => expect(senderMaxBitrate(pc)).toBe(10_000_000));
+
+    for (let sample = 0; sample < 2; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 10,
+        bytesSent: 8_000_000 + (sample + 1) * 500_000,
+        timestamp: 2_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
 
     const firstScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
-    pc.senderStats = { availableOutgoingBitrateBps: 4_000_000, bytesSent: 9_000_000, timestamp: 2_000 };
-    await runTransportChecks();
+    for (let sample = 0; sample < 3; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 10,
+        bytesSent: 9_000_000 + (sample + 1) * 500_000,
+        timestamp: 4_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
     const secondScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
 
     expect(firstScale).toBeCloseTo(1.1, 5);
@@ -786,18 +851,23 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
-    pc.senderStats = { availableOutgoingBitrateBps: 500_000, bytesSent: 8_000_000, timestamp: 1_000 };
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 500_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 10,
+      bytesSent: 8_000_000,
+      timestamp: 1_000
+    };
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => {
-      const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
-      expect(scale).toBeCloseTo(1.1, 5);
-    });
+    await vi.waitFor(() => expect(senderMaxBitrate(pc)).toBe(10_000_000));
 
     for (let sample = 0; sample < 40; sample += 1) {
       pc.senderStats = {
         availableOutgoingBitrateBps: 500_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 10,
         bytesSent: 8_000_000 + (sample + 1) * 62_500,
         timestamp: 2_000 + sample * 1_000
       };

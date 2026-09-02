@@ -1790,6 +1790,33 @@ describe('P2P-first screen sharing in the room', () => {
     expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
   });
 
+  it('shows the independent Cloudflare upload test in the meeting-room sharing label', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
+    const probeCloudflareUplink = vi.fn(async () => ({
+      bitrateBps: 10_400_000,
+      sampleCount: 2
+    }));
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; },
+      probeCloudflareUplink
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+
+    expect(await screen.findByText('Cloudflare available uplink: 10.4 Mbps (tested)')).toBeVisible();
+    expect(probeCloudflareUplink).toHaveBeenCalledOnce();
+  });
+
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
     const signaling = fakeSignalingClient();
     renderP2pRoom({
@@ -2866,6 +2893,7 @@ function renderP2pRoom(props: {
     onAllViewersClosed: () => void;
   }) => P2pShareController;
   createStatsCollector?: () => P2pStatsCollector;
+  probeCloudflareUplink?: (signal?: AbortSignal) => Promise<{ bitrateBps: number; sampleCount: number }>;
   leaveMeeting?: (slug: string) => Promise<void>;
 }) {
   const P2pRoomPage = MeetingRoomPage as ComponentType<MeetingRoomPageProps>;
@@ -2883,6 +2911,7 @@ function renderP2pRoom(props: {
     shareControllerFactory={props.shareControllerFactory}
     listDevices={async () => []}
     {...(props.createStatsCollector ? { createStatsCollector: props.createStatsCollector } : {})}
+    {...(props.probeCloudflareUplink ? { probeCloudflareUplink: props.probeCloudflareUplink } : {})}
     {...(props.leaveMeeting ? { leaveMeeting: props.leaveMeeting } : {})}
   />);
 }

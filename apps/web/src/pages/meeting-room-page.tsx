@@ -53,6 +53,11 @@ import {
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
 import {
+  CLOUDFLARE_UPLINK_PROBE_INTERVAL_MS,
+  measureCloudflareUplink,
+  type CloudflareUplinkProbeResult
+} from '../meeting/cloudflare-uplink-probe.js';
+import {
   deriveSharerScreenTransportMode,
   deriveSharerTurnProvider,
   deriveViewerTurnProvider,
@@ -89,6 +94,8 @@ export interface MeetingRoomPageProps {
   }) => P2pShareController;
   /** Test seam: anonymous quality-stats collector factory, defaults to `createP2pStatsCollector({ slug })`. */
   createStatsCollector?: () => P2pStatsCollector;
+  /** Test seam for the bounded Cloudflare edge upload measurement. */
+  probeCloudflareUplink?: (signal?: AbortSignal) => Promise<CloudflareUplinkProbeResult>;
   onLeft?: () => void;
   onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
@@ -123,6 +130,10 @@ async function defaultLeaveMeeting(slug: string): Promise<void> {
 
 async function defaultListDevices(): Promise<MediaDeviceInfo[]> {
   return navigator.mediaDevices?.enumerateDevices ? navigator.mediaDevices.enumerateDevices() : [];
+}
+
+function defaultCloudflareUplinkProbe(signal?: AbortSignal): Promise<CloudflareUplinkProbeResult> {
+  return measureCloudflareUplink(signal ? { signal } : {});
 }
 
 const defaultMeetingApi: MeetingRoomApi = {
@@ -195,6 +206,7 @@ export function MeetingRoomPage({
   createSignalingClient,
   shareControllerFactory,
   createStatsCollector,
+  probeCloudflareUplink = defaultCloudflareUplinkProbe,
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
@@ -248,6 +260,10 @@ export function MeetingRoomPage({
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
+  const [cloudflareUplink, setCloudflareUplink] = useState<{
+    status: 'probing' | 'ready' | 'failed';
+    bitrateBps?: number;
+  }>();
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
@@ -814,6 +830,49 @@ export function MeetingRoomPage({
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
+  const localCloudflareRelayActive = Boolean(
+    screenState.stream
+    && (screenTurnProvider === 'cloudflare' || screenTurnProvider === 'mixed')
+  );
+  useEffect(() => {
+    if (!localCloudflareRelayActive) {
+      setCloudflareUplink(undefined);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    let abortController: AbortController | undefined;
+    const runProbe = async () => {
+      abortController = new AbortController();
+      setCloudflareUplink((previous) => previous?.bitrateBps === undefined
+        ? { status: 'probing' }
+        : previous);
+      try {
+        const result = await probeCloudflareUplink(abortController.signal);
+        if (cancelled) return;
+        p2pShareRef.current?.setCloudflareUplinkEstimate?.(result.bitrateBps);
+        setCloudflareUplink({ status: 'ready', bitrateBps: result.bitrateBps });
+      } catch {
+        if (cancelled || abortController.signal.aborted) return;
+        setCloudflareUplink({ status: 'failed' });
+      }
+      if (!cancelled) timer = window.setTimeout(runProbe, CLOUDFLARE_UPLINK_PROBE_INTERVAL_MS);
+    };
+    void runProbe();
+    return () => {
+      cancelled = true;
+      abortController?.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [localCloudflareRelayActive, probeCloudflareUplink]);
+  const cloudflareUplinkLabel = cloudflareUplink?.status === 'ready'
+    && cloudflareUplink.bitrateBps !== undefined
+    ? t('room.cloudflareUplinkReady', { bitrate: (cloudflareUplink.bitrateBps / 1_000_000).toFixed(1) })
+    : cloudflareUplink?.status === 'failed'
+      ? t('room.cloudflareUplinkFailed')
+      : cloudflareUplink?.status === 'probing'
+        ? t('room.cloudflareUplinkProbing')
+        : undefined;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
     if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
@@ -960,7 +1019,13 @@ export function MeetingRoomPage({
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
         {hasActiveScreenShare && <p className="meeting-sharing-label">
-          <MonitorUp aria-hidden="true" size={18} />{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}
+          <MonitorUp aria-hidden="true" size={18} />
+          <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
+          {localCloudflareRelayActive && cloudflareUplinkLabel && <span
+            className="meeting-uplink-badge"
+            role="status"
+            aria-live="polite"
+          >{cloudflareUplinkLabel}</span>}
         </p>}
         <section className="meeting-stage-shell">
           <ScreenStage

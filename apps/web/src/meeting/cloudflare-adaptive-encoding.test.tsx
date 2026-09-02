@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CLOUDFLARE_PROBE_INITIAL_BITRATE_BPS,
   computeCloudflareMaximumScale,
   updateCloudflareEncoding,
   type CloudflareEncodingState
@@ -12,20 +13,14 @@ const initialState: CloudflareEncodingState = {
 };
 
 describe('Cloudflare TURN adaptive encoding', () => {
-  it('raises the target bitrate toward a fast relay connection', () => {
-    const next = updateCloudflareEncoding({
-      previous: initialState,
-      measurement: { availableOutgoingBitrateBps: 30_000_000, actualOutgoingBitrateBps: 8_000_000 },
-      minimumScaleResolutionDownBy: 1
-    });
-
-    expect(next.bandwidthEstimateBps).toBe(30_000_000);
-    expect(next.targetBitrateBps).toBe(11_500_000);
-    expect(next.scaleResolutionDownBy).toBe(1);
-  });
-
-  it('changes the resolution scale gradually under a slow relay connection', () => {
-    const measurement = { availableOutgoingBitrateBps: 4_000_000, actualOutgoingBitrateBps: 8_000_000 };
+  it('ignores a low RTC estimate and probes upward after two healthy sender samples', () => {
+    const measurement = {
+      availableOutgoingBitrateBps: 700_000,
+      actualOutgoingBitrateBps: 10_400_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 60,
+      targetFrameRate: 60
+    };
     const first = updateCloudflareEncoding({
       previous: initialState,
       measurement,
@@ -37,21 +32,144 @@ describe('Cloudflare TURN adaptive encoding', () => {
       minimumScaleResolutionDownBy: 1
     });
 
-    expect(first.targetBitrateBps).toBe(7_080_000);
+    expect(first.targetBitrateBps).toBe(CLOUDFLARE_PROBE_INITIAL_BITRATE_BPS);
+    expect(first.scaleResolutionDownBy).toBe(1);
+    expect(second.targetBitrateBps).toBe(11_500_000);
+    expect(second.trustedAvailableOutgoingBitrateBps).toBe(10_400_000);
+    expect(second.probeStatus).toBe('stable');
+  });
+
+  it('uses the independent Cloudflare upload test as the initial probe target', () => {
+    const next = updateCloudflareEncoding({
+      previous: initialState,
+      measurement: { testedCloudflareUplinkBitrateBps: 18_000_000 },
+      minimumScaleResolutionDownBy: 1
+    });
+
+    expect(next.targetBitrateBps).toBe(15_300_000);
+    expect(next.testedCloudflareUplinkBitrateBps).toBe(18_000_000);
+    expect(next.probeStatus).toBe('probing');
+  });
+
+  it('smoothly lowers bitrate and sampling scale when a later upload test is slow', () => {
+    const previous: CloudflareEncodingState = {
+      targetBitrateBps: 15_300_000,
+      scaleResolutionDownBy: 1,
+      testedCloudflareUplinkBitrateBps: 18_000_000,
+      probeStatus: 'stable'
+    };
+    const first = updateCloudflareEncoding({
+      previous,
+      measurement: { testedCloudflareUplinkBitrateBps: 4_000_000 },
+      minimumScaleResolutionDownBy: 1,
+      referenceBitrateBps: 15_000_000
+    });
+    const second = updateCloudflareEncoding({
+      previous: first,
+      measurement: { testedCloudflareUplinkBitrateBps: 4_000_000 },
+      minimumScaleResolutionDownBy: 1,
+      referenceBitrateBps: 15_000_000
+    });
+
+    expect(first.targetBitrateBps).toBeLessThan(previous.targetBitrateBps);
+    expect(first.targetBitrateBps).toBeGreaterThan(3_400_000);
     expect(first.scaleResolutionDownBy).toBeCloseTo(1.1, 5);
+    expect(second.targetBitrateBps).toBeLessThan(first.targetBitrateBps);
     expect(second.scaleResolutionDownBy).toBeCloseTo(1.21, 5);
-    expect(second.scaleResolutionDownBy).not.toBe(2);
+  });
+
+  it('does not back off from a low RTC estimate by itself', () => {
+    let state: CloudflareEncodingState = {
+      targetBitrateBps: 15_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
+    for (let sample = 0; sample < 10; sample += 1) {
+      state = updateCloudflareEncoding({
+        previous: state,
+        measurement: { availableOutgoingBitrateBps: 500_000 },
+        minimumScaleResolutionDownBy: 1
+      });
+    }
+
+    expect(state.targetBitrateBps).toBe(15_000_000);
+    expect(state.scaleResolutionDownBy).toBe(1);
+  });
+
+  it('backs off smoothly only after three sustained sender-congestion samples', () => {
+    const measurement = {
+      availableOutgoingBitrateBps: 700_000,
+      actualOutgoingBitrateBps: 4_000_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 12,
+      targetFrameRate: 60
+    };
+    let state: CloudflareEncodingState = {
+      targetBitrateBps: 15_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
+    state = updateCloudflareEncoding({ previous: state, measurement, minimumScaleResolutionDownBy: 1 });
+    state = updateCloudflareEncoding({ previous: state, measurement, minimumScaleResolutionDownBy: 1 });
+    expect(state.targetBitrateBps).toBe(15_000_000);
+    expect(state.scaleResolutionDownBy).toBe(1);
+
+    state = updateCloudflareEncoding({
+      previous: state,
+      measurement,
+      minimumScaleResolutionDownBy: 1,
+      referenceBitrateBps: 15_000_000
+    });
+
+    expect(state.targetBitrateBps).toBeLessThan(15_000_000);
+    expect(state.targetBitrateBps).toBeGreaterThan(4_000_000);
+    expect(state.scaleResolutionDownBy).toBeCloseTo(1.1, 5);
+    expect(state.probeStatus).toBe('constrained');
+  });
+
+  it('does not let a previously applied upload result undo congestion backoff', () => {
+    const measurement = {
+      testedCloudflareUplinkBitrateBps: 18_000_000,
+      actualOutgoingBitrateBps: 4_000_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 12,
+      targetFrameRate: 60
+    };
+    let state = updateCloudflareEncoding({
+      previous: initialState,
+      measurement: { testedCloudflareUplinkBitrateBps: 18_000_000 },
+      minimumScaleResolutionDownBy: 1
+    });
+    for (let sample = 0; sample < 3; sample += 1) {
+      state = updateCloudflareEncoding({ previous: state, measurement, minimumScaleResolutionDownBy: 1 });
+    }
+    const backedOffTarget = state.targetBitrateBps;
+
+    state = updateCloudflareEncoding({ previous: state, measurement, minimumScaleResolutionDownBy: 1 });
+
+    expect(backedOffTarget).toBeLessThan(15_300_000);
+    expect(state.targetBitrateBps).toBe(backedOffTarget);
   });
 
   it('keeps a 1728x1080 source from falling below a 720p short side', () => {
-    let state = initialState;
+    let state: CloudflareEncodingState = {
+      targetBitrateBps: 10_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
     for (let sample = 0; sample < 40; sample += 1) {
       state = updateCloudflareEncoding({
         previous: state,
-        measurement: { availableOutgoingBitrateBps: 500_000, actualOutgoingBitrateBps: 8_000_000 },
+        measurement: {
+          availableOutgoingBitrateBps: 500_000,
+          actualOutgoingBitrateBps: 500_000,
+          qualityLimitationReason: 'bandwidth',
+          framesPerSecond: 10,
+          targetFrameRate: 60
+        },
         minimumScaleResolutionDownBy: 1,
         maximumScaleResolutionDownBy: 1.5,
-        referenceBitrateBps: 8_000_000
+        referenceBitrateBps: 10_000_000
       });
     }
 
@@ -65,24 +183,33 @@ describe('Cloudflare TURN adaptive encoding', () => {
     expect(computeCloudflareMaximumScale({ width: 640, height: 480 })).toBe(1);
   });
 
-  it('can exceed the old 40 Mbps aggregate budget on a fast Cloudflare path', () => {
-    const next = updateCloudflareEncoding({
-      previous: {
-        targetBitrateBps: 40_000_000,
-        scaleResolutionDownBy: 1
-      },
-      measurement: { availableOutgoingBitrateBps: 60_000_000, actualOutgoingBitrateBps: 40_000_000 },
+  it('can exceed the old 40 Mbps aggregate budget through healthy probing', () => {
+    const measurement = {
+      actualOutgoingBitrateBps: 42_000_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 60,
+      targetFrameRate: 60
+    };
+    const first = updateCloudflareEncoding({
+      previous: { targetBitrateBps: 40_000_000, scaleResolutionDownBy: 1 },
+      measurement,
       minimumScaleResolutionDownBy: 1
     });
+    const second = updateCloudflareEncoding({ previous: first, measurement, minimumScaleResolutionDownBy: 1 });
 
-    expect(next.targetBitrateBps).toBeGreaterThan(40_000_000);
+    expect(second.targetBitrateBps).toBeGreaterThan(40_000_000);
   });
 
-  it('holds the previous state when the connection exposes no usable rate', () => {
+  it('holds the previous state when the connection exposes no usable evidence', () => {
+    const state: CloudflareEncodingState = {
+      targetBitrateBps: 15_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
     expect(updateCloudflareEncoding({
-      previous: initialState,
+      previous: state,
       measurement: {},
       minimumScaleResolutionDownBy: 1
-    })).toEqual(initialState);
+    })).toEqual(state);
   });
 });
