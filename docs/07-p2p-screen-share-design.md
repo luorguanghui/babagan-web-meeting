@@ -205,7 +205,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 **总上行预算**：所有活跃会话的码率上限之和不得超过 40 Mbps（`P2P_TOTAL_UPLINK_BUDGET_BPS`）。观看者加入/离开/回退时按 `min(档位, ⌊预算 ÷ 活跃会话数⌋)` 重分配。40 Mbps 允许最多四名观看者在 10 Mbps 档位下运行，同时仍为 100 Mbps 级上行保留协议和语音余量；四名及以上观看者默认建议 5 Mbps，避免把总预算用满。
 
-**Cloudflare TURN 自适应例外**：当共享者显式选择 Cloudflare 且选中的 candidate pair 实际为 relay 时，该会话不参与上述 40 Mbps 预算，也不受 5/8/10 Mbps UI 档位上限约束。发送端逐会话读取 `candidate-pair.availableOutgoingBitrate`，并以 `outbound-rtp.bytesSent` 与时间戳计算实际视频速率；经过 0.25 权重的 EWMA 和 15% 余量得到目标码率，`maxBitrate` 每秒平滑逼近目标，`scaleResolutionDownBy` 每秒最多变化 10%，并限制在 50 Mbps 单会话技术上限内。该例外不改变共享者物理上行能力；多条 Cloudflare 会话仍可能争抢共享者上行，这是为利用 Cloudflare 中继额度而接受的明确权衡。
+**Cloudflare TURN 自适应例外**：当共享者显式选择 Cloudflare 且选中的 candidate pair 实际为 relay 时，该会话不参与上述 40 Mbps 预算，也不受 5/8/10 Mbps UI 档位上限约束。发送端逐会话读取 `candidate-pair.availableOutgoingBitrate`，并以 `outbound-rtp.bytesSent` 与时间戳计算实际视频速率；经过 0.25 权重的 EWMA 和 15% 余量得到目标码率，`maxBitrate` 每秒平滑逼近目标，`scaleResolutionDownBy` 每秒最多变化 10%，源画面的短边不会主动降到 720p 以下，并限制在 50 Mbps 单会话技术上限内。若浏览器仍报告低于源短边 80% 的编码层，则切换为 `maintain-resolution`，优先恢复清晰度。该例外不改变共享者物理上行能力；多条 Cloudflare 会话仍可能争抢共享者上行，这是为利用 Cloudflare 中继额度而接受的明确权衡。
 
 ### 7.3 自适应
 

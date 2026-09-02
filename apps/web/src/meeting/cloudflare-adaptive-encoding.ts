@@ -24,6 +24,10 @@ export interface CloudflareEncodingUpdate {
   measurement: CloudflareEncodingMeasurement;
   /** The fixed source-normalization scale, if the capture is already oversized. */
   minimumScaleResolutionDownBy: number;
+  /** Maximum permitted scale derived from the source's 720p short-side floor. */
+  maximumScaleResolutionDownBy?: number;
+  /** High-quality bitrate used to translate capacity into a pixel scale. */
+  referenceBitrateBps?: number;
 }
 
 /**
@@ -53,17 +57,29 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
 
   const minimumScale = Math.max(1, input.minimumScaleResolutionDownBy);
   const previousScale = Math.max(minimumScale, input.previous.scaleResolutionDownBy);
-  const observedBitrateBps = positive(input.measurement.actualOutgoingBitrateBps)
+  const referenceBitrateBps = positive(input.referenceBitrateBps)
     ?? input.previous.targetBitrateBps;
-  const pixelLoadRatio = clamp(observedBitrateBps / Math.max(desiredBitrateBps, 1), 0.25, 4);
+  const pixelLoadRatio = clamp(referenceBitrateBps / Math.max(desiredBitrateBps, 1), 0.25, 4);
+  const maximumScale = Math.max(
+    minimumScale,
+    input.maximumScaleResolutionDownBy ?? CLOUDFLARE_ADAPTATION_MAX_SCALE_RESOLUTION_DOWN_BY
+  );
   const idealScale = clamp(
     previousScale * Math.sqrt(pixelLoadRatio),
     minimumScale,
-    Math.max(minimumScale, CLOUDFLARE_ADAPTATION_MAX_SCALE_RESOLUTION_DOWN_BY)
+    maximumScale
   );
   const scaleResolutionDownBy = moveScale(previousScale, idealScale);
 
   return { bandwidthEstimateBps, targetBitrateBps, scaleResolutionDownBy };
+}
+
+/** Returns the scale that keeps a known source's shorter side at least 720px. */
+export function computeCloudflareMaximumScale(settings: { width?: number; height?: number }): number {
+  const width = positive(settings.width);
+  const height = positive(settings.height);
+  if (width === undefined || height === undefined) return 1.5;
+  return Math.max(1, Math.min(width, height) / 720);
 }
 
 function positive(value: number | undefined): number | undefined {

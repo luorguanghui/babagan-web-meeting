@@ -13,6 +13,8 @@ export interface P2pMediaHealth {
 export interface SenderVideoStats {
   qualityLimitationReason?: string;
   framesPerSecond?: number;
+  frameWidth?: number;
+  frameHeight?: number;
   availableOutgoingBitrateBps?: number;
   bytesSent?: number;
   timestamp?: number;
@@ -99,6 +101,12 @@ export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStat
     }
     if (typeof stat.framesPerSecond === 'number') {
       result.framesPerSecond = stat.framesPerSecond;
+    }
+    if (typeof stat.frameWidth === 'number') {
+      result.frameWidth = stat.frameWidth;
+    }
+    if (typeof stat.frameHeight === 'number') {
+      result.frameHeight = stat.frameHeight;
     }
     if (typeof stat.bytesSent === 'number') {
       result.bytesSent = stat.bytesSent;

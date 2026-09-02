@@ -226,7 +226,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 - 三档质量预设：`flow` 1280×720@30fps（弱网优先，保分辨率）、`standard` 1920×1080@30fps（默认，帧率优先）、`motion` 1920×1080@60fps（高动态，帧率优先）；1080p 档位在受限链路上允许降低分辨率以保持帧率。
 - 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
 - `flow` 使用 `degradationPreference: maintain-resolution`；1080p 档位使用 `maintain-framerate`，优先保持目标帧率。
-- Cloudflare TURN 实际 relay 会话是显式例外：不参与 40 Mbps P2P 总上行预算，也不受 5/8/10 Mbps UI 档位上限约束；发送端按每条连接的 `availableOutgoingBitrate` 与实际 RTP 发送速率做 EWMA 平滑，以 15% 余量逐步调整码率和连续 `scaleResolutionDownBy`，单会话技术上限为 50 Mbps。直连、coturn relay 与 LiveKit 回退继续使用现有档位和预算策略。
+- Cloudflare TURN 实际 relay 会话是显式例外：不参与 40 Mbps P2P 总上行预算，也不受 5/8/10 Mbps UI 档位上限约束；发送端按每条连接的 `availableOutgoingBitrate` 与实际 RTP 发送速率做 EWMA 平滑，以 15% 余量逐步调整码率和连续 `scaleResolutionDownBy`，源画面短边不主动降到 720p 以下，浏览器仍报告极低编码层时切换为 `maintain-resolution`，单会话技术上限为 50 Mbps。直连、coturn relay 与 LiveKit 回退继续使用现有档位和预算策略。
 - 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。

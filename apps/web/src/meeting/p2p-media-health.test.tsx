@@ -67,7 +67,7 @@ describe('inspectSenderVideoStats', () => {
       } as RTCStats],
       ['outbound', {
         id: 'outbound', type: 'outbound-rtp', timestamp: 2_000, kind: 'video',
-        bytesSent: 2_500_000, framesPerSecond: 30
+        bytesSent: 2_500_000, frameWidth: 432, frameHeight: 270, framesPerSecond: 30
       } as RTCStats]
     ]) as unknown as RTCStatsReport;
 
@@ -75,6 +75,8 @@ describe('inspectSenderVideoStats', () => {
       availableOutgoingBitrateBps: 12_000_000,
       bytesSent: 2_500_000,
       timestamp: 2_000,
+      frameWidth: 432,
+      frameHeight: 270,
       framesPerSecond: 30
     });
   });

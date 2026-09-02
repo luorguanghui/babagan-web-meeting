@@ -121,6 +121,8 @@ class FakeRTCPeerConnection {
   senderStats: {
     qualityLimitationReason?: string;
     framesPerSecond?: number;
+    frameWidth?: number;
+    frameHeight?: number;
     availableOutgoingBitrateBps?: number;
     bytesSent?: number;
     timestamp?: number;
@@ -175,6 +177,8 @@ function statsReport(
   sender: {
     qualityLimitationReason?: string;
     framesPerSecond?: number;
+    frameWidth?: number;
+    frameHeight?: number;
     availableOutgoingBitrateBps?: number;
     bytesSent?: number;
     timestamp?: number;
@@ -200,6 +204,8 @@ function statsReport(
       id: 'outbound', type: 'outbound-rtp', timestamp: sender.timestamp ?? 1, kind: 'video',
       ...(sender.qualityLimitationReason !== undefined ? { qualityLimitationReason: sender.qualityLimitationReason } : {}),
       ...(sender.framesPerSecond !== undefined ? { framesPerSecond: sender.framesPerSecond } : {}),
+      ...(sender.frameWidth !== undefined ? { frameWidth: sender.frameWidth } : {}),
+      ...(sender.frameHeight !== undefined ? { frameHeight: sender.frameHeight } : {}),
       ...(sender.bytesSent !== undefined ? { bytesSent: sender.bytesSent } : {})
     } as RTCStats]);
   }
@@ -775,6 +781,54 @@ describe('p2p share controller', () => {
     expect(secondScale).toBeCloseTo(1.21, 5);
   });
 
+  it('keeps a low-rate Cloudflare relay at or above a 720p short side', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.senderStats = { availableOutgoingBitrateBps: 500_000, bytesSent: 8_000_000, timestamp: 1_000 };
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => {
+      const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+      expect(scale).toBeCloseTo(1.1, 5);
+    });
+
+    for (let sample = 0; sample < 40; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 500_000,
+        bytesSent: 8_000_000 + (sample + 1) * 62_500,
+        timestamp: 2_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+    expect(scale).toBeLessThanOrEqual(1.5);
+  });
+
+  it('protects a Cloudflare relay when the browser still reports a 432x270 layer', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 4_000_000,
+      bytesSent: 8_000_000,
+      timestamp: 1_000,
+      frameWidth: 432,
+      frameHeight: 270
+    };
+    await runTransportChecks();
+
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+  });
+
   it('updates the provider when a direct viewer later migrates to relay', async () => {
     const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
@@ -895,6 +949,45 @@ describe('p2p share controller', () => {
 
     await runTransportChecks(); // fifth unconstrained sample → restored
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+  });
+
+  it('protects resolution when a direct P2P sender reports a 432x270 layer', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+
+    pc.senderStats = {
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 30,
+      frameWidth: 432,
+      frameHeight: 270
+    };
+    await runTransportChecks();
+
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+  });
+
+  it('protects resolution when a coturn relay sender reports a 432x270 layer', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    pc.senderStats = {
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 30,
+      frameWidth: 432,
+      frameHeight: 270
+    };
+    await runTransportChecks();
+
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('keeps the degradation preference when a bandwidth limit does not collapse frame rate', async () => {
