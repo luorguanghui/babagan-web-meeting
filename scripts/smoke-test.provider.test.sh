@@ -28,7 +28,7 @@ args="$*"
 case "$args" in
   */health/live*) printf '%s\n' '{"status":"ok"}' ;;
   */health/ready*) printf '%s\n' '{"status":"ready"}' ;;
-  */api/v1/meetings/*/ice-servers*)
+  */api/v1/meetings/*/ice-servers*turnProvider=cloudflare*)
     cat <<'JSON'
 HTTP/1.1 200 OK
 cache-control: no-store
@@ -50,6 +50,7 @@ SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value \
 P2P_STUN_URLS=stun:stun.example.com:3478 \
 P2P_TURN_URLS=turn:turn.example.com:3478 \
 P2P_TURN_PROVIDER=cloudflare \
+SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
 SMOKE_NODE_IMAGE=meeting-api:test \
   bash "$root/scripts/smoke-test.sh" https://meet.example.com wss://rtc.example.com
 

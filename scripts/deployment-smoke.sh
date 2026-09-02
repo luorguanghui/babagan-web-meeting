@@ -73,6 +73,11 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
+cloudflare_credentials_present=0
+if grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_TURN_API_TOKEN=.+$' "$env_file"; then
+  cloudflare_credentials_present=1
+fi
+
 SMOKE_MEETING_SLUG="$smoke_slug" \
 SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
 SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
@@ -81,6 +86,26 @@ P2P_TURN_URLS="$p2p_turn_urls" \
 P2P_TURN_PROVIDER="$turn_provider" \
 SMOKE_NODE_IMAGE="$api_image" \
   "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
+if (( cloudflare_credentials_present )); then
+  SMOKE_REQUESTED_TURN_PROVIDER=coturn \
+  SMOKE_MEETING_SLUG="$smoke_slug" \
+  SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
+  SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
+  P2P_STUN_URLS="$p2p_stun_urls" \
+  P2P_TURN_URLS="$p2p_turn_urls" \
+  P2P_TURN_PROVIDER="$turn_provider" \
+  SMOKE_NODE_IMAGE="$api_image" \
+    "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
+  SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
+  SMOKE_MEETING_SLUG="$smoke_slug" \
+  SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
+  SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
+  P2P_STUN_URLS="$p2p_stun_urls" \
+  P2P_TURN_URLS="$p2p_turn_urls" \
+  P2P_TURN_PROVIDER="$turn_provider" \
+  SMOKE_NODE_IMAGE="$api_image" \
+    "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
+fi
 
 cleanup_probe
 trap - EXIT

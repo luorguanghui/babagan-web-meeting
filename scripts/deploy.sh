@@ -35,7 +35,7 @@ else
   previous_api_id="$API_IMAGE_ID"; previous_web_id="$WEB_IMAGE_ID"; previous_caddy_id="$CADDY_IMAGE_ID"; previous_livekit_id="$LIVEKIT_IMAGE_ID"
 fi
 need docker; need sqlite3; need sha256sum; need getent; need ss; need git; need curl
-. /etc/os-release; [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12* ]] || fail 'target must run Debian 12'
+. /etc/os-release; [[ "${ID:-}" == debian && ( "${VERSION_ID:-}" == 12* || "${VERSION_ID:-}" == 13* ) ]] || fail 'target must run Debian 12 or Debian 13'
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
 grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" && fail 'production environment contains example values'
 for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET P2P_STUN_URLS P2P_TURN_URLS P2P_TURN_SECRET P2P_TURN_TTL_SECONDS TURN_SHARED_SECRET TURN_EXTERNAL_IP TURN_RELAY_IP; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done

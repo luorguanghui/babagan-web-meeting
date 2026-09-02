@@ -28,6 +28,7 @@ need "$deploy" 'coturn_image='
 need "$deploy" 'for service in caddy api livekit web coturn'
 need "$deploy" 'compose run --rm --no-deps api'
 need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
+need "$deploy" 'VERSION_ID'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
 need "$deploy" '(( mem_kib >= 1153434 ))'
@@ -68,6 +69,8 @@ need "$deploy" 'wss://meet.babagan.cloud/rtc'
 need "$rollback" 'wss://meet.babagan.cloud/rtc'
 need "$deploy" 'compose config | awk -v service="$1"'
 need "$deploy" 'image_ref="babagan-meeting-$1:latest"'
+need "$root/scripts/smoke-test.sh" 'SMOKE_REQUESTED_TURN_PROVIDER'
+need "$deployment_smoke" 'SMOKE_REQUESTED_TURN_PROVIDER=cloudflare'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before

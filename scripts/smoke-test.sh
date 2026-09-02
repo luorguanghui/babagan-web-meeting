@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  echo "Usage: SMOKE_LIVEKIT_TOKEN=token [SMOKE_CORE_ONLY=1 | SMOKE_MEETING_SLUG=slug SMOKE_PARTICIPANT_COOKIE='name=value' P2P_TURN_PROVIDER=coturn|cloudflare P2P_STUN_URLS=stun:host:3478 P2P_TURN_URLS=turn:host:3478] $0 https://meet.example.com wss://rtc.example.com" >&2
+  echo "Usage: SMOKE_LIVEKIT_TOKEN=token [SMOKE_CORE_ONLY=1 | SMOKE_MEETING_SLUG=slug SMOKE_PARTICIPANT_COOKIE='name=value' P2P_TURN_PROVIDER=coturn|cloudflare SMOKE_REQUESTED_TURN_PROVIDER=auto|coturn|cloudflare P2P_STUN_URLS=stun:host:3478 P2P_TURN_URLS=turn:host:3478] $0 https://meet.example.com wss://rtc.example.com" >&2
   exit 64
 }
 
@@ -19,6 +19,9 @@ core_only=${SMOKE_CORE_ONLY:-0}
 [[ "$core_only" == 0 || "$core_only" == 1 ]] || { echo 'SMOKE_CORE_ONLY must be 0 or 1.' >&2; exit 64; }
 turn_provider=${P2P_TURN_PROVIDER:-coturn}
 [[ "$turn_provider" == coturn || "$turn_provider" == cloudflare ]] || { echo 'P2P_TURN_PROVIDER must be coturn or cloudflare.' >&2; exit 64; }
+requested_turn_provider=${SMOKE_REQUESTED_TURN_PROVIDER:-auto}
+[[ "$requested_turn_provider" == auto || "$requested_turn_provider" == coturn || "$requested_turn_provider" == cloudflare ]] \
+  || { echo 'SMOKE_REQUESTED_TURN_PROVIDER must be auto, coturn, or cloudflare.' >&2; exit 64; }
 if [[ "$core_only" == 0 ]]; then
   [[ -n ${SMOKE_MEETING_SLUG:-} ]] || { echo 'SMOKE_MEETING_SLUG is required to verify P2P endpoints.' >&2; exit 64; }
   [[ -n ${SMOKE_PARTICIPANT_COOKIE:-} ]] || { echo 'SMOKE_PARTICIPANT_COOKIE is required to verify authenticated P2P endpoints.' >&2; exit 64; }
@@ -45,13 +48,19 @@ curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/healt
 curl --fail --silent --show-error --proto '=https' --tlsv1.2 "$public_base/" | grep -q 'id="root"' || fail 'SPA did not load'
 
 if [[ "$core_only" == 0 ]]; then
+  ice_request_url="$public_base/api/v1/meetings/$SMOKE_MEETING_SLUG/ice-servers"
+  if [[ "$requested_turn_provider" != auto ]]; then
+    ice_request_url+="?turnProvider=$requested_turn_provider"
+  fi
   ice_response=$(curl --dump-header - --fail --silent --show-error --proto '=https' --tlsv1.2 \
     -H "Origin: $public_base" \
     -H "Cookie: $SMOKE_PARTICIPANT_COOKIE" \
-    "$public_base/api/v1/meetings/$SMOKE_MEETING_SLUG/ice-servers") \
+    "$ice_request_url") \
     || fail 'authenticated ICE configuration request failed'
   ice_response="$(normalize_http_response "$ice_response")"
-  if [[ "$turn_provider" == cloudflare ]]; then
+  active_turn_provider=$turn_provider
+  [[ "$requested_turn_provider" == auto ]] || active_turn_provider=$requested_turn_provider
+  if [[ "$active_turn_provider" == cloudflare ]]; then
     grep -Eq '"turnProvider"[[:space:]]*:[[:space:]]*"cloudflare"' <<<"$ice_response" \
       || fail 'authenticated ICE response does not report Cloudflare as the active TURN provider'
     grep -Eq '"stun:stun\.cloudflare\.com:3478"' <<<"$ice_response" \
@@ -66,8 +75,8 @@ if [[ "$core_only" == 0 ]]; then
     grep -Fq "\"$expected_turn\"" <<<"$ice_response" \
       || fail 'authenticated ICE response does not contain the configured TURN URL'
   fi
-  if [[ "$turn_provider" == cloudflare ]]; then
-    grep -Eq '"username":"[^"]+"' <<<"$ice_response" \
+  if [[ "$active_turn_provider" == cloudflare ]]; then
+    grep -Eq '"username":"[^":]+"' <<<"$ice_response" \
       || fail 'authenticated Cloudflare ICE response does not contain a TURN username'
   else
     grep -Eq '"username":"[0-9]+:[^"]+"' <<<"$ice_response" \
