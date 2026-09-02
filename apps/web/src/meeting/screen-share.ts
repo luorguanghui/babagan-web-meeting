@@ -132,7 +132,11 @@ class BrowserScreenShareController implements ScreenShareController {
         return;
       }
       stream = await this.dependencies.getDisplayMedia({
-        video: { width: settings.width, height: settings.height, frameRate: settings.frameRate },
+        video: {
+          width: { ideal: settings.width },
+          height: { ideal: settings.height },
+          frameRate: { ideal: settings.frameRate }
+        },
         audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
           restrictOwnAudio: boolean;
         },
@@ -181,16 +185,13 @@ class BrowserScreenShareController implements ScreenShareController {
         await this.cancelStart(stream, grantAcquired);
         return;
       }
-      // Normalize the capture resolution: display scaling can make the browser
-      // capture at odd logical sizes (e.g. 1536x864 on a 125%-scaled 1080p
-      // screen), which would then transmit unchanged on both the direct P2P
-      // and the SFU path. The preset dimensions are ideal — the browser keeps
-      // the native size when the display cannot provide more — so the shared
-      // picture settles on a standard tier instead.
+      // Keep the dimensions selected by the display source. Applying fixed
+      // width/height constraints here makes non-16:9 captures converge on a
+      // 16:9 size (or a much smaller nearest supported size). The P2P sender
+      // applies an aspect-preserving cap from the actual track settings; the
+      // SFU publisher receives the same unmodified source.
       await (typeof videoTrack.applyConstraints === 'function'
         ? videoTrack.applyConstraints({
-          width: { ideal: settings.width },
-          height: { ideal: settings.height },
           frameRate: { ideal: settings.frameRate }
         }).catch(() => undefined)
         : undefined);

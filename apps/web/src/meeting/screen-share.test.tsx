@@ -757,7 +757,11 @@ describe('controlled browser screen sharing', () => {
 
     expect(order).toEqual(['grant', 'capture', 'publish']);
     expect(getDisplayMedia).toHaveBeenCalledWith({
-      video: { width: 1920, height: 1080, frameRate: 60 },
+      video: {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 60 }
+      },
       audio: { restrictOwnAudio: true },
       systemAudio: 'include',
       windowAudio: 'window',
@@ -786,7 +790,11 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000, 'flow');
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1280, height: 720, frameRate: 30 }
+      video: {
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+        frameRate: { ideal: 30 }
+      }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       frameRate: 30,
@@ -808,7 +816,11 @@ describe('controlled browser screen sharing', () => {
     await controller.start('h264', 8_000_000);
 
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
-      video: { width: 1920, height: 1080, frameRate: 30 }
+      video: {
+        width: { ideal: 1920 },
+        height: { ideal: 1080 },
+        frameRate: { ideal: 30 }
+      }
     }));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       frameRate: 30,
@@ -816,7 +828,7 @@ describe('controlled browser screen sharing', () => {
     }));
   });
 
-  it('normalizes the capture resolution to the preset dimensions after capture', async () => {
+  it('does not override the captured aspect ratio with fixed 16:9 constraints', async () => {
     const { stream, video } = displayStream({ audio: false });
     const applyConstraints = vi.fn(async () => undefined);
     Object.assign(video, { applyConstraints });
@@ -830,13 +842,7 @@ describe('controlled browser screen sharing', () => {
 
     await controller.start('h264', 8_000_000, 'standard');
 
-    // Display scaling can make the browser capture at odd logical sizes
-    // (e.g. 1536x864); the ideal constraints steer it back to a standard tier.
-    expect(applyConstraints).toHaveBeenCalledWith({
-      width: { ideal: 1920 },
-      height: { ideal: 1080 },
-      frameRate: { ideal: 30 }
-    });
+    expect(applyConstraints).toHaveBeenCalledWith({ frameRate: { ideal: 30 } });
   });
 
   it.each([

@@ -187,13 +187,16 @@ function statsReport(
   return new Map(entries) as unknown as RTCStatsReport;
 }
 
-function makeTrack(kind: 'video' | 'audio'): MediaStreamTrack {
-  return { kind } as unknown as MediaStreamTrack;
+function makeTrack(kind: 'video' | 'audio', settings?: { width?: number; height?: number }): MediaStreamTrack {
+  return {
+    kind,
+    ...(settings === undefined ? {} : { getSettings: () => settings })
+  } as unknown as MediaStreamTrack;
 }
 
-function makeStream(video = true, audio = true): MediaStream {
+function makeStream(video = true, audio = true, videoSettings?: { width?: number; height?: number }): MediaStream {
   return {
-    getVideoTracks: () => (video ? [makeTrack('video')] : []),
+    getVideoTracks: () => (video ? [makeTrack('video', videoSettings)] : []),
     getAudioTracks: () => (audio ? [makeTrack('audio')] : [])
   } as unknown as MediaStream;
 }
@@ -342,6 +345,14 @@ describe('p2p share controller', () => {
       degradationPreference: 'maintain-framerate'
     }));
     expect(audioSender.setParameters).not.toHaveBeenCalled();
+  });
+
+  it('applies an aspect-preserving scale for non-16:9 captures', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1600, height: 1200 }), shareOptions, [viewers[0]]);
+
+    const scale = videoSender(FakeRTCPeerConnection.instances[0]).getParameters().encodings[0]?.scaleResolutionDownBy;
+    expect(scale).toBeCloseTo(10 / 9, 5);
   });
 
   it('prefers the selected codec on the video transceiver', async () => {
@@ -1136,6 +1147,18 @@ describe('computeResolutionScale', () => {
     expect(computeResolutionScale({ width: 3840, height: 2160 })).toBe(2);
   });
 
+  it('keeps 1080p detail for a 4:3 capture whose short side exceeds 1080', () => {
+    expect(computeResolutionScale({ width: 1600, height: 1200 })).toBeCloseTo(10 / 9, 5);
+  });
+
+  it('fits a wide capture to the 1080p bound without forcing a 16:9 output', () => {
+    expect(computeResolutionScale({ width: 2560, height: 1080 })).toBeCloseTo(4 / 3, 5);
+  });
+
+  it('handles portrait captures using portrait bounds', () => {
+    expect(computeResolutionScale({ width: 1440, height: 2560 })).toBeCloseTo(4 / 3, 5);
+  });
+
   it('normalizes display-scaled 1080p captures to 720p', () => {
     expect(computeResolutionScale({ width: 1536, height: 864 })).toBeCloseTo(1536 / 1280, 5);
   });
@@ -1147,9 +1170,9 @@ describe('computeResolutionScale', () => {
 
   it('never scales up and tolerates missing dimensions', () => {
     expect(computeResolutionScale({ width: 800, height: 600 })).toBeUndefined();
-    // 1366x768 is not exactly 16:9; the height ratio binds, so the scale is
-    // 768/720 and the output preserves the capture's own aspect.
-    expect(computeResolutionScale({ width: 1366, height: 768 })).toBeCloseTo(Math.min(1366 / 1280, 768 / 720), 5);
+    // 1366x768 is not exactly 16:9; the larger fit ratio binds, and the output
+    // still preserves the capture's own aspect.
+    expect(computeResolutionScale({ width: 1366, height: 768 })).toBeCloseTo(Math.max(1366 / 1280, 768 / 720), 5);
     expect(computeResolutionScale({})).toBeUndefined();
     expect(computeResolutionScale({ width: 1920 })).toBeUndefined();
   });

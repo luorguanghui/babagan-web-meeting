@@ -835,23 +835,29 @@ export function createP2pShareController(dependencies: P2pShareControllerDepende
 }
 
 /**
- * Computes the `scaleResolutionDownBy` that normalizes a captured track to a
- * standard tier: 1080p when the capture is at least 1920x1080, 720p when it is
- * at least 1280x720, native otherwise (never upscale). Returns `undefined` when
- * no scaling is needed or the track reports no dimensions. Display-scaled
- * Windows captures (e.g. 1536x864 on a 125% 1080p screen) otherwise transmit
- * their odd native resolution on both the P2P and the SFU path.
+ * Computes an aspect-preserving `scaleResolutionDownBy` for a captured track.
+ * The tier is selected by the source's shorter side, so 4:3 and portrait
+ * captures can still use the 1080p tier when they have enough detail. The
+ * target is an orientation-aware bounding box and the larger fit ratio is used
+ * so neither output dimension exceeds that box. A source below 720p is kept
+ * native; the helper never upscales.
  */
 export function computeResolutionScale(settings: { width?: number; height?: number }): number | undefined {
   const width = settings.width;
   const height = settings.height;
   if (width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
-  const target = width >= 1920 && height >= 1080
-    ? { width: 1920, height: 1080 }
-    : width >= 1280 && height >= 720
-      ? { width: 1280, height: 720 }
+
+  const shortSide = Math.min(width, height);
+  const target = shortSide >= 1080
+    ? { long: 1920, short: 1080 }
+    : shortSide >= 720
+      ? { long: 1280, short: 720 }
       : undefined;
   if (target === undefined) return undefined;
-  const scale = Math.min(width / target.width, height / target.height);
+
+  const landscape = width >= height;
+  const targetWidth = landscape ? target.long : target.short;
+  const targetHeight = landscape ? target.short : target.long;
+  const scale = Math.max(width / targetWidth, height / targetHeight);
   return scale > 1.0 ? scale : undefined;
 }
