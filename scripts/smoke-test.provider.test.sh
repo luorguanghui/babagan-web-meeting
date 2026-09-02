@@ -36,6 +36,14 @@ cache-control: no-store
 {"iceServers":[{"urls":["stun:stun.cloudflare.com:3478"]},{"urls":["turn:turn.cloudflare.com:3478?transport=udp"],"username":"opaque-user","credential":"c21va2U="}],"turnProvider":"cloudflare","turnCredentialsExpiresAt":9999999999}
 JSON
     ;;
+  */api/v1/meetings/*/ice-servers*turnProvider=coturn*)
+    cat <<'JSON'
+HTTP/1.1 200 OK
+cache-control: no-store
+
+{"iceServers":[{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"1234567890:expiry-user","credential":"c21va2U="}],"turnProvider":"cloudflare","turnCredentialsExpiresAt":9999999999}
+JSON
+    ;;
   */api/v1/meetings/*/p2p*) printf '403' ;;
   */) printf '%s\n' '<div id="root"></div>' ;;
   *) echo "unexpected curl request: $args" >&2; exit 1 ;;
@@ -48,10 +56,24 @@ SMOKE_LIVEKIT_TOKEN=fresh.header.signature \
 SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx \
 SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value \
 P2P_STUN_URLS=stun:stun.example.com:3478 \
-P2P_TURN_URLS=turn:turn.example.com:3478 \
+P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp \
 P2P_TURN_PROVIDER=cloudflare \
 SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
 SMOKE_NODE_IMAGE=meeting-api:test \
   bash "$root/scripts/smoke-test.sh" https://meet.example.com wss://rtc.example.com
+
+if PATH="$temp_dir/bin:$PATH" \
+SMOKE_LIVEKIT_TOKEN=fresh.header.signature \
+SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx \
+SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value \
+P2P_STUN_URLS=stun:stun.example.com:3478 \
+P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp \
+P2P_TURN_PROVIDER=coturn \
+SMOKE_REQUESTED_TURN_PROVIDER=coturn \
+SMOKE_NODE_IMAGE=meeting-api:test \
+  bash "$root/scripts/smoke-test.sh" https://meet.example.com wss://rtc.example.com; then
+  echo 'coturn provider smoke unexpectedly accepted mismatched turnProvider metadata' >&2
+  exit 1
+fi
 
 echo 'Cloudflare provider smoke regression passed'

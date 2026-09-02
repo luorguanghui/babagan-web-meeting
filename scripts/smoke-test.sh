@@ -68,6 +68,8 @@ if [[ "$core_only" == 0 ]]; then
     grep -Eq '"turn:turn\.cloudflare\.com:3478\?transport=udp"' <<<"$ice_response" \
       || fail 'authenticated Cloudflare ICE response does not contain the Cloudflare TURN URL'
   else
+    grep -Eq '"turnProvider"[[:space:]]*:[[:space:]]*"coturn"' <<<"$ice_response" \
+      || fail 'authenticated ICE response does not report coturn as the active TURN provider'
     expected_stun=${P2P_STUN_URLS%%,*}
     expected_turn=${P2P_TURN_URLS%%,*}
     grep -Fq "\"$expected_stun\"" <<<"$ice_response" \
