@@ -72,7 +72,7 @@
 - Produces: credential-free JSON `{ selectedRelay, protocol, windows, medianBps, dispersion }` plus a sanitized acceptance report.
 - Gate: Tasks 2–9 execute only if the real-provider probe passes all criteria three times.
 
-- [ ] **Step 1: Prepare the authenticated Edge gate**
+- [x] **Step 1**: Prepare the authenticated Edge gate**
 
 Ask the operator to open a disposable authenticated meeting in Edge and select Cloudflare TURN. Use the Browser CDP capability on that exact tab. Enable `Runtime` and `Network`, then execute one in-page async expression. Inside the expression, fetch the Cloudflare ICE configuration with `credentials: 'include'`, keep it in a local variable, and immediately construct the two peer connections. Never return or log the response body.
 
@@ -90,19 +90,31 @@ const left = new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' });
 const right = new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' });
 const data = left.createDataChannel('probe-data', { ordered: false, maxRetransmits: 0 });
 const control = left.createDataChannel('probe-control', { ordered: true });
-left.onicecandidate = ({ candidate }) => candidate && right.addIceCandidate(candidate);
-right.onicecandidate = ({ candidate }) => candidate && left.addIceCandidate(candidate);
+const leftPending = [];
+const rightPending = [];
+left.onicecandidate = ({ candidate }) => {
+  if (!candidate) return;
+  if (right.remoteDescription) void right.addIceCandidate(candidate);
+  else leftPending.push(candidate);
+};
+right.onicecandidate = ({ candidate }) => {
+  if (!candidate) return;
+  if (left.remoteDescription) void left.addIceCandidate(candidate);
+  else rightPending.push(candidate);
+};
 const offer = await left.createOffer();
 await left.setLocalDescription(offer);
 await right.setRemoteDescription(offer);
+for (const candidate of leftPending.splice(0)) await right.addIceCandidate(candidate);
 const answer = await right.createAnswer();
 await right.setLocalDescription(answer);
 await left.setRemoteDescription(answer);
+for (const candidate of rightPending.splice(0)) await left.addIceCandidate(candidate);
 ```
 
-The right peer must count 16 KiB data messages and return one reliable cumulative result per window. The left peer must pace writes using `bufferedAmountLowThreshold`, run 2/4/8/16 Mbps windows, and inspect both selected candidate pairs through `transport.selectedCandidatePairId`. Fail unless both selected local candidates are `relay` and their `url` includes `turn.cloudflare.com`. Close both peer connections in `finally`.
+Do not wait for `iceGatheringState === 'complete'`: Cloudflare publishes multiple UDP/TCP/TLS URLs and unreachable alternates may keep gathering open after usable relay candidates exist. The right peer must count 16 KiB data messages and return one reliable cumulative result per window. The left peer must pace writes using `bufferedAmountLowThreshold`, run 2/4/8/16 Mbps windows, and inspect both selected candidate pairs through `transport.selectedCandidatePairId`. Fail unless both selected local candidates are `relay` and their `url` includes `turn.cloudflare.com`. Close both peer connections in `finally`.
 
-- [ ] **Step 2: Add explicit result redaction inside the CDP expression**
+- [x] **Step 2**: Add explicit result redaction inside the CDP expression**
 
 Before returning from page scope, serialize the result and reject it if it contains `username`, `credential`, `iceServers`, `password`, `cookie`, or `token`. Return only:
 
@@ -110,7 +122,7 @@ Before returning from page scope, serialize the result and reject it if it conta
 {"selectedRelay":true,"protocol":"udp","windows":[{"offeredBps":2000000,"confirmedBps":1900000,"lossRatio":0}],"medianBps":1900000,"dispersion":0.04}
 ```
 
-- [ ] **Step 3: Run the gate against the real provider**
+- [x] **Step 3**: Run the gate against the real provider**
 
 Run the CDP expression in the authenticated Edge tab. Expected:
 
@@ -120,7 +132,7 @@ Run the CDP expression in the authenticated Edge tab. Expected:
 - returned object contains no credential or participant fields;
 - CDP Network events show TURN/WebRTC activity but the saved report contains no addresses or credentials.
 
-- [ ] **Step 4: Repeat three times and enforce the gate**
+- [x] **Step 4**: Repeat three times and enforce the gate**
 
 Expected across three runs:
 
@@ -130,7 +142,7 @@ Expected across three runs:
 - every process exits after closing both peer connections;
 - Cloudflare TURN analytics or browser stats show allocations disappear after the test.
 
-- [ ] **Step 5: Choose the branch**
+- [x] **Step 5**: Choose the branch**
 
 If any hard criterion fails, write only the failed criterion and sanitized timings to `docs/acceptance/cloudflare-turn-loop-probe-2026-09-03.md`, commit that report with `test(web): record unsupported Cloudflare TURN loopback`, stop this plan, and write `docs/superpowers/plans/2026-09-03-cloudflare-turn-pion-probe.md` from spec section 4.2. Do not continue with a partly working loopback implementation.
 
