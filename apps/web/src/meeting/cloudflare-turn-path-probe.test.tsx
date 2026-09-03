@@ -290,6 +290,8 @@ describe('Cloudflare TURN path probe', () => {
       await startPromise;
 
       expect(probe.getSnapshot().status).toBe('unsupported');
+      expect(left.closed).toBe(true);
+      expect(right.closed).toBe(true);
       await probe.stop();
     }
   });
@@ -306,6 +308,8 @@ describe('Cloudflare TURN path probe', () => {
     await startPromise;
 
     expect(probe.getSnapshot().status).toBe('error');
+    expect(left.closed).toBe(true);
+    expect(right.closed).toBe(true);
     await probe.stop();
   });
 
@@ -419,6 +423,37 @@ describe('Cloudflare TURN path probe', () => {
 
     await clock.settleUntil(() => probe.getSnapshot().status === 'error', 1_000);
     expect(probe.getSnapshot().status).toBe('error');
+  });
+
+  it('rejects a result whose confirmed bytes do not match its message count', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    const rightControl = right.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+    const originalSend = rightControl.send.bind(rightControl);
+    rightControl.send = (data) => {
+      if (typeof data === 'string') {
+        const message = JSON.parse(data) as { type?: string; confirmedBytes?: number };
+        if (message.type === 'result') message.confirmedBytes = (message.confirmedBytes ?? 0) + 1;
+        originalSend(JSON.stringify(message));
+        return;
+      }
+      originalSend(data);
+    };
+    probe.requestVerification();
+
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error', 2_000);
+    expect(probe.getSnapshot().measuredCapacityBps).toBeUndefined();
+  });
+
+  it('does not publish a zero-capacity result when every data chunk is lost', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    const data = wireNetwork(left, right);
+    data.forwardTo = null;
+    probe.requestVerification();
+
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error', 2_000);
+    expect(probe.getSnapshot().measuredCapacityBps).toBeUndefined();
+    expect(probe.getSnapshot().stableCapacityBps).toBeUndefined();
   });
 
   it('settles start when stopped while the channels are still negotiating', async () => {

@@ -124,8 +124,10 @@ export function createCloudflareTurnPathProbe(
       try {
         await negotiate();
       } catch {
+        if (stopped) return;
         // Negotiation failures retry on the backoff ladder; unsupported stops here.
         if (capacityState.snapshot.status !== 'unsupported') {
+          teardownConnections();
           publishFailure();
           scheduleRetry();
         }
@@ -261,6 +263,7 @@ export function createCloudflareTurnPathProbe(
       // A non-relay or non-Cloudflare selected pair is a topology verdict, not a
       // transient failure: keep the snapshot unsupported and do not retry it.
       publish({ ...capacityState.snapshot, status: 'unsupported' });
+      teardownConnections();
       return;
     }
 
@@ -382,19 +385,21 @@ export function createCloudflareTurnPathProbe(
 
   async function runWindow(offeredBps: number, isLadder: boolean): Promise<void> {
     if (stopped || windowActive || !dataChannel || !controlChannel) return;
-    if (left === undefined || right === undefined || !await validateRelaySelection()) {
+    // Reserve the single active window before the asynchronous path check so
+    // multiple due driver callbacks cannot pass validation concurrently.
+    windowActive = true;
+    const windowRelayValid = left !== undefined && right !== undefined && await validateRelaySelection();
+    if (!windowRelayValid) {
+      windowActive = false;
       invalidateRelayPath();
       return;
     }
-    windowActive = true;
     windowId += 1;
     sentMessages = 0;
     paceBudgetBytes = 0;
 
     if (!sendControl({ type: 'start', windowId, offeredBps, durationMs: LADDER_WINDOW_DURATION_MS })) {
-      windowActive = false;
-      publishFailure();
-      scheduleRetry();
+      handleWindowFailure();
       return;
     }
     const startedAt = now();
@@ -404,9 +409,7 @@ export function createCloudflareTurnPathProbe(
       try {
         paceTickOnce(offeredBps);
       } catch {
-        windowActive = false;
-        publishFailure();
-        scheduleRetry();
+        handleWindowFailure();
         return;
       }
       const ticked = new Promise<void>((resolve) => {
@@ -418,6 +421,7 @@ export function createCloudflareTurnPathProbe(
       resolvePaceTick = undefined;
     }
 
+    const pendingBytesAtEnd = dataChannel?.bufferedAmount ?? 0;
     const runnable = !stopped && relayValidated && isDocumentVisible();
     let result: ResultMessage | undefined;
     if (runnable) {
@@ -445,6 +449,10 @@ export function createCloudflareTurnPathProbe(
       invalidateRelayPath();
       return;
     }
+    if (!isValidResult(result, sentMessages)) {
+      invalidateRelayPath();
+      return;
+    }
 
     const lossRatio = sentMessages === 0
       ? 1
@@ -454,7 +462,7 @@ export function createCloudflareTurnPathProbe(
       confirmedBytes: result.confirmedBytes,
       durationMs: LADDER_WINDOW_DURATION_MS,
       lossRatio,
-      pendingBytesAtEnd: dataChannel?.bufferedAmount ?? 0,
+      pendingBytesAtEnd,
       sampledAt: now(),
       selectedProtocol
     };
@@ -527,11 +535,10 @@ export function createCloudflareTurnPathProbe(
     channel.onmessage = ({ data }) => {
       const counters = remoteCounters;
       if (!(data instanceof ArrayBuffer)) return;
-      if (!counters) {
-        const pendingBytes = remotePendingData.reduce((total, frame) => total + frame.byteLength, 0);
-        if (pendingBytes + data.byteLength <= MAX_REMOTE_PENDING_DATA_BYTES) {
-          remotePendingData.push(data);
-        }
+      const incomingWindowId = readRemoteWindowId(data);
+      if (incomingWindowId === undefined) return;
+      if (!counters || incomingWindowId !== counters.windowId) {
+        if (!counters || incomingWindowId > counters.windowId) queueRemoteData(data);
         return;
       }
       recordRemoteData(counters, data);
@@ -539,12 +546,35 @@ export function createCloudflareTurnPathProbe(
   }
 
   function recordRemoteData(counters: RemoteWindowCounters, data: ArrayBuffer): void {
-    if (data.byteLength < TURN_PROBE_HEADER_BYTES) return;
+    const windowId = readRemoteWindowId(data);
+    if (windowId === undefined || windowId !== counters.windowId) return;
     const view = new DataView(data);
-    if (view.getUint32(0) !== counters.windowId) return;
+    if (view.getUint32(8) !== data.byteLength) return;
     counters.confirmedBytes += data.byteLength;
     counters.receivedMessages += 1;
     counters.highestSequence = Math.max(counters.highestSequence, view.getUint32(4));
+  }
+
+  function isValidResult(result: ResultMessage, sentMessageCount: number): boolean {
+    const valid = Number.isInteger(result.confirmedBytes)
+      && result.confirmedBytes >= 0
+      && Number.isInteger(result.receivedMessages)
+      && result.receivedMessages > 0
+      && result.receivedMessages <= sentMessageCount
+      && result.confirmedBytes === result.receivedMessages * TURN_PROBE_CHUNK_BYTES
+      && Number.isInteger(result.highestSequence)
+      && result.highestSequence >= 0
+      && (result.receivedMessages === 0 || result.highestSequence < sentMessageCount);
+    return valid;
+  }
+
+  function readRemoteWindowId(data: ArrayBuffer): number | undefined {
+    return data.byteLength < TURN_PROBE_HEADER_BYTES ? undefined : new DataView(data).getUint32(0);
+  }
+
+  function queueRemoteData(data: ArrayBuffer): void {
+    const pendingBytes = remotePendingData.reduce((total, frame) => total + frame.byteLength, 0);
+    if (pendingBytes + data.byteLength <= MAX_REMOTE_PENDING_DATA_BYTES) remotePendingData.push(data);
   }
 
   function attachRemoteControlChannel(channel: RTCDataChannel): void {
@@ -634,7 +664,9 @@ export function createCloudflareTurnPathProbe(
       cancelRetry = undefined;
       if (stopped || !started) return;
       void negotiate().catch(() => {
+        if (stopped) return;
         if (capacityState.snapshot.status !== 'unsupported') {
+          teardownConnections();
           publishFailure();
           scheduleRetry();
         }

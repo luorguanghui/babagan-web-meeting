@@ -159,6 +159,20 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
     expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
   });
 
+  it('does not raise the cap while RTT has materially increased', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    state = step(state, measurement({
+      qualityLimitationReason: 'none', framesPerSecond: 30, roundTripTimeMs: 100,
+      turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, sampledAt: 1_000 })
+    }));
+    state = step(state, measurement({
+      qualityLimitationReason: 'none', framesPerSecond: 30, roundTripTimeMs: 220,
+      turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, sampledAt: 2_000 })
+    }));
+
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+  });
+
   it('requires two low probe windows plus three pressure samples to back off', () => {
     let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
     state = step(state, pressureMeasurement({}, 1_000));

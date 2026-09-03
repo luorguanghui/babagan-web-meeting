@@ -129,6 +129,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   const outputAffected = frameRateAffected || encoderTargetAffected;
   const pressure = outputAffected && (bandwidthLimited || lossBad || discardsBad || rttBad);
   const healthy = !pressure && !bandwidthLimited && !cpuLimited
+    && !rttBad
     && measurement.qualityLimitationReason !== undefined
     && !lossBad && !discardsBad;
   const hasMediaEvidence = measurement.qualityLimitationReason !== undefined || fps !== undefined;
