@@ -1013,7 +1013,7 @@ export function MeetingRoomPage({
           <MonitorUp aria-hidden="true" size={18} />
           <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
           {cloudflareTurnProbeLabel && <span
-            className="meeting-uplink-badge"
+            className="meeting-turn-probe-badge"
             role="status"
             aria-live="polite"
           >{cloudflareTurnProbeLabel}</span>}
