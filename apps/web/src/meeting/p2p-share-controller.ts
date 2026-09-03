@@ -81,6 +81,7 @@ export interface P2pShareController {
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
   /** Supplies the latest independent Cloudflare edge upload measurement. */
   setCloudflareUplinkEstimate?(bitrateBps: number): void;
+  getEffectiveUplinkEstimateBps?(): number | undefined;
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
@@ -183,6 +184,8 @@ interface ViewerSession {
   resolutionProtected: boolean;
   /** Smoothed per-connection Cloudflare relay encoding state. */
   cloudflareEncodingState?: CloudflareEncodingState;
+  /** Smoothed per-connection P2P / direct encoding state for dynamic resolution scaling. */
+  p2pEncodingState?: CloudflareEncodingState;
   /** Previous outbound sample used to derive the actual video bitrate. */
   lastSenderBytesSent?: number;
   lastSenderStatsTimestamp?: number;
@@ -380,6 +383,25 @@ class P2pShareControllerImpl implements P2pShareController {
   setCloudflareUplinkEstimate(bitrateBps: number): void {
     if (!Number.isFinite(bitrateBps) || bitrateBps <= 0) return;
     this.cloudflareUplinkEstimateBps = bitrateBps;
+  }
+
+  getEffectiveUplinkEstimateBps(): number | undefined {
+    let maxRtcBitrate = 0;
+    for (const session of this.sessions.values()) {
+      if (session.pcClosed) continue;
+      const cfState = session.cloudflareEncodingState;
+      if (cfState?.trustedAvailableOutgoingBitrateBps) {
+        maxRtcBitrate = Math.max(maxRtcBitrate, cfState.trustedAvailableOutgoingBitrateBps);
+      }
+      if (cfState?.bandwidthEstimateBps) {
+        maxRtcBitrate = Math.max(maxRtcBitrate, cfState.bandwidthEstimateBps);
+      }
+      if (cfState?.targetBitrateBps) {
+        maxRtcBitrate = Math.max(maxRtcBitrate, cfState.targetBitrateBps);
+      }
+    }
+    const estimate = Math.max(this.cloudflareUplinkEstimateBps ?? 0, maxRtcBitrate);
+    return estimate > 0 ? estimate : undefined;
   }
 
   refreshIceServers(configuration: P2pIceServerConfiguration): void {
@@ -656,19 +678,29 @@ class P2pShareControllerImpl implements P2pShareController {
     if (session.state !== 'p2p' && session.state !== 'turn') return;
     if (session.state === 'turn' && session.turnProvider === 'cloudflare') {
       await this.adaptCloudflareEncoding(session, sender);
-      if (this.hasCollapsedResolution(session, sender) && !session.resolutionProtected) {
+      const isCollapsed = this.hasCollapsedResolution(session, sender);
+      if (isCollapsed && !session.resolutionProtected) {
         session.resolutionProtected = true;
+        await this.applySenderParameters(session);
+      } else if (!isCollapsed && session.resolutionProtected) {
+        session.resolutionProtected = false;
         await this.applySenderParameters(session);
       }
       return;
     }
-    if (this.hasCollapsedResolution(session, sender)) {
+
+    const isCollapsed = this.hasCollapsedResolution(session, sender);
+    if (isCollapsed) {
       if (!session.resolutionProtected) {
         session.resolutionProtected = true;
         await this.applySenderParameters(session);
       }
       return;
+    } else if (session.resolutionProtected) {
+      session.resolutionProtected = false;
+      await this.applySenderParameters(session);
     }
+
     const bandwidthLimited = sender.qualityLimitationReason === 'bandwidth';
     const fpsCollapsed = sender.framesPerSecond !== undefined
       && session.options.frameRate > 0
@@ -683,9 +715,7 @@ class P2pShareControllerImpl implements P2pShareController {
           await this.applySenderParameters(session);
         }
       }
-      return;
-    }
-    if (bandwidthLimited && (fpsCollapsed || sender.framesPerSecond === undefined)) {
+    } else if (bandwidthLimited && (fpsCollapsed || sender.framesPerSecond === undefined)) {
       session.bandwidthLimitedSamples += 1;
       if (session.bandwidthLimitedSamples >= P2P_SENDER_PRESSURE_SAMPLE_LIMIT) {
         session.degradationRelaxed = true;
@@ -694,6 +724,43 @@ class P2pShareControllerImpl implements P2pShareController {
     } else {
       session.bandwidthLimitedSamples = 0;
     }
+
+    // Dynamically adjust sampling rate for P2P / coturn sessions to maintain frame rate
+    await this.adaptP2pEncoding(session, sender);
+  }
+
+  /**
+   * Direct P2P and coturn sessions dynamically adjust resolution sampling scale
+   * (scaleResolutionDownBy) to preserve target frame rate when bandwidth pressure
+   * occurs, without artificially lowering the maxBitrate cap or causing low-bitrate lock-in.
+   */
+  private async adaptP2pEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
+    const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
+    const sourceSettings = session.videoSender?.track?.getSettings?.() ?? {};
+    const minimumScaleResolutionDownBy = computeResolutionScale(sourceSettings) ?? 1;
+    const maximumScaleResolutionDownBy = computeCloudflareMaximumScale(sourceSettings);
+    const referenceBitrateBps = session.options.maxBitrate;
+    const previous = session.p2pEncodingState ?? {
+      targetBitrateBps: session.options.maxBitrate,
+      scaleResolutionDownBy: minimumScaleResolutionDownBy
+    };
+    const next = updateCloudflareEncoding({
+      previous,
+      measurement: {
+        availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
+        actualOutgoingBitrateBps,
+        qualityLimitationReason: sender.qualityLimitationReason,
+        framesPerSecond: sender.framesPerSecond,
+        targetFrameRate: session.options.frameRate
+      },
+      minimumScaleResolutionDownBy,
+      maximumScaleResolutionDownBy,
+      referenceBitrateBps
+    });
+    if (next === previous) return;
+    const encodingChanged = next.scaleResolutionDownBy !== previous.scaleResolutionDownBy;
+    session.p2pEncodingState = next;
+    if (encodingChanged) await this.applySenderParameters(session);
   }
 
   /**
@@ -772,9 +839,15 @@ class P2pShareControllerImpl implements P2pShareController {
         const cloudflareAdaptive = session.state === 'turn'
           && session.turnProvider === 'cloudflare'
           && session.cloudflareEncodingState !== undefined;
+        const p2pAdaptive = (session.state === 'p2p' || (session.state === 'turn' && session.turnProvider !== 'cloudflare'))
+          && session.p2pEncodingState !== undefined;
+        const baseScale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
         const scale = cloudflareAdaptive
           ? session.cloudflareEncodingState!.scaleResolutionDownBy
-          : computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
+          : p2pAdaptive
+            ? session.p2pEncodingState!.scaleResolutionDownBy
+            : baseScale;
+        const isActivelyDownscaled = scale !== undefined && (baseScale === undefined ? scale > 1.05 : scale > baseScale * 1.05);
         await session.videoSender.setParameters({
           ...session.videoSender.getParameters(),
           encodings: [{
@@ -786,7 +859,7 @@ class P2pShareControllerImpl implements P2pShareController {
           }],
           degradationPreference: session.resolutionProtected
             ? 'maintain-resolution'
-            : cloudflareAdaptive
+            : (cloudflareAdaptive || isActivelyDownscaled)
               ? 'maintain-framerate'
               : session.degradationRelaxed
                 ? pressureDegradationPreference(options.degradationPreference)

@@ -212,4 +212,118 @@ describe('Cloudflare TURN adaptive encoding', () => {
       minimumScaleResolutionDownBy: 1
     })).toEqual(state);
   });
+
+  it('does not choke bitrate or scale down when HTTP upload probe is 0.3 Mbps but RTC estimate is 9 Mbps', () => {
+    const previous: CloudflareEncodingState = {
+      targetBitrateBps: 10_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
+    const measurement = {
+      testedCloudflareUplinkBitrateBps: 300_000, // low HTTP upload test (0.3 Mbps)
+      availableOutgoingBitrateBps: 9_000_000,   // real RTC candidate-pair estimate (9 Mbps)
+      actualOutgoingBitrateBps: 8_500_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 30,
+      targetFrameRate: 30
+    };
+
+    const first = updateCloudflareEncoding({
+      previous,
+      measurement,
+      minimumScaleResolutionDownBy: 1,
+      referenceBitrateBps: 10_000_000
+    });
+    const second = updateCloudflareEncoding({
+      previous: first,
+      measurement,
+      minimumScaleResolutionDownBy: 1,
+      referenceBitrateBps: 10_000_000
+    });
+
+    // Must NOT be throttled down towards 1 Mbps
+    expect(first.targetBitrateBps).toBeGreaterThanOrEqual(10_000_000);
+    expect(first.scaleResolutionDownBy).toBe(1);
+    expect(second.targetBitrateBps).toBeGreaterThanOrEqual(10_000_000);
+    expect(second.scaleResolutionDownBy).toBe(1);
+  });
+
+  it('does not lower sampling rate on static content when bitrate is low but limitation is none', () => {
+    const previous: CloudflareEncodingState = {
+      targetBitrateBps: 8_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
+    // Static desktop: encoder emits only 400 kbps, but framerate is steady 30fps and limitation is none
+    const measurement = {
+      actualOutgoingBitrateBps: 400_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 30,
+      targetFrameRate: 30
+    };
+
+    let state = previous;
+    for (let i = 0; i < 5; i++) {
+      state = updateCloudflareEncoding({
+        previous: state,
+        measurement,
+        minimumScaleResolutionDownBy: 1,
+        referenceBitrateBps: 8_000_000
+      });
+    }
+
+    expect(state.scaleResolutionDownBy).toBe(1);
+    expect(state.targetBitrateBps).toBeGreaterThanOrEqual(8_000_000);
+  });
+
+  it('reduces sampling rate to recover collapsed framerate under congestion, then restores scale without vicious cycle', () => {
+    const previous: CloudflareEncodingState = {
+      targetBitrateBps: 8_000_000,
+      scaleResolutionDownBy: 1,
+      probeStatus: 'stable'
+    };
+
+    // 1. Congestion: actual bitrate is low and framerate collapsed
+    const congestedMeasurement = {
+      actualOutgoingBitrateBps: 1_500_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 10,
+      targetFrameRate: 60
+    };
+
+    let state = previous;
+    for (let i = 0; i < 3; i++) {
+      state = updateCloudflareEncoding({
+        previous: state,
+        measurement: congestedMeasurement,
+        minimumScaleResolutionDownBy: 1,
+        referenceBitrateBps: 8_000_000
+      });
+    }
+
+    // Scale must step up to reduce pixel load and relieve the framerate
+    expect(state.scaleResolutionDownBy).toBeGreaterThan(1);
+    const congestedScale = state.scaleResolutionDownBy;
+
+    // 2. Framerate recovers thanks to downsampling, stream becomes healthy
+    const recoveredMeasurement = {
+      actualOutgoingBitrateBps: 1_800_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 60,
+      targetFrameRate: 60
+    };
+
+    for (let i = 0; i < 6; i++) {
+      state = updateCloudflareEncoding({
+        previous: state,
+        measurement: recoveredMeasurement,
+        minimumScaleResolutionDownBy: 1,
+        referenceBitrateBps: 8_000_000
+      });
+    }
+
+    // Scale must steadily recover back towards 1 without getting trapped in low bitrate
+    expect(state.scaleResolutionDownBy).toBeLessThan(congestedScale);
+    expect(state.scaleResolutionDownBy).toBeCloseTo(1, 1);
+  });
 });

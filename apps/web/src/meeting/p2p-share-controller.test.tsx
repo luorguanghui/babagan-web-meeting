@@ -899,6 +899,82 @@ describe('p2p share controller', () => {
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
+  it('smoothly adjusts resolution scale in direct P2P mode under bandwidth and frame-rate pressure', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+
+    // Initial state: scale is 1
+    const initialScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+    expect(initialScale).toBe(1);
+
+    // Sender experiences bandwidth pressure and frame rate drop
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 800_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 10,
+      bytesSent: 1_000_000,
+      timestamp: 1_000
+    };
+    await runTransportChecks();
+
+    for (let sample = 0; sample < 2; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 800_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 10,
+        bytesSent: 1_000_000 + (sample + 1) * 200_000,
+        timestamp: 2_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    // Scale should have increased to protect frame rate
+    const adaptedScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
+    expect(adaptedScale).toBeGreaterThan(1);
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+  });
+
+  it('returns effective uplink estimate using RTC stats when HTTP upload test is low', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    // HTTP test was only 300 kbps
+    controller.setCloudflareUplinkEstimate?.(300_000);
+
+    // RTC telemetry reports 9 Mbps available bandwidth and high outbound bitrate
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 9_000_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 30,
+      bytesSent: 1_000_000,
+      timestamp: 1_000
+    };
+    await runTransportChecks();
+
+    for (let sample = 0; sample < 3; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 9_000_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 1_000_000 + (sample + 1) * 1_000_000,
+        timestamp: 2_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    const effectiveEstimate = controller.getEffectiveUplinkEstimateBps?.();
+    expect(effectiveEstimate).toBeGreaterThanOrEqual(9_000_000);
+  });
+
   it('updates the provider when a direct viewer later migrates to relay', async () => {
     const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);

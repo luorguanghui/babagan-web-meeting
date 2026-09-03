@@ -76,8 +76,11 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     && fps !== undefined
     && fps < targetFrameRate * CLOUDFLARE_PROBE_HEALTHY_FPS_RATIO;
   const bandwidthLimited = input.measurement.qualityLimitationReason === 'bandwidth';
-  const healthy = actualBitrate !== undefined && fpsHealthy && !bandwidthLimited;
-  const congested = bandwidthLimited && (fpsCollapsed || fps === undefined);
+  const frameRateStruggling = fpsCollapsed
+    && actualBitrate !== undefined
+    && actualBitrate < input.previous.targetBitrateBps;
+  const healthy = (actualBitrate !== undefined || rtcEstimate !== undefined) && fpsHealthy && !bandwidthLimited;
+  const congested = (bandwidthLimited || frameRateStruggling) && (fpsCollapsed || fps === undefined);
 
   let healthySamples = healthy ? (input.previous.healthySamples ?? 0) + 1 : 0;
   let congestedSamples = congested ? (input.previous.congestedSamples ?? 0) + 1 : 0;
@@ -94,13 +97,28 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   }
   const hasNewTestedUplink = testedUplink !== undefined
     && testedUplink !== input.previous.testedCloudflareUplinkBitrateBps;
-  const testedTargetBitrateBps = testedCloudflareUplinkBitrateBps === undefined
+
+  const knownRtcBitrate = Math.max(
+    rtcEstimate ?? 0,
+    actualBitrate ?? 0,
+    trustedAvailableOutgoingBitrateBps ?? 0
+  );
+  const rawTestedTargetBitrateBps = testedCloudflareUplinkBitrateBps === undefined
     ? undefined
     : clamp(
       testedCloudflareUplinkBitrateBps * CLOUDFLARE_ADAPTATION_HEADROOM,
       CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS,
       CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS
     );
+  // If RTC telemetry indicates actual/available bandwidth is substantially higher than the
+  // external upload speed test (e.g. RTC has 9 Mbps while HTTP upload probe measured 0.3 Mbps),
+  // the external test must not artificially choke the target bitrate down.
+  const testedUplinkInvalidatedByRtc = rawTestedTargetBitrateBps !== undefined
+    && knownRtcBitrate > rawTestedTargetBitrateBps;
+  const testedTargetBitrateBps = testedUplinkInvalidatedByRtc
+    ? undefined
+    : rawTestedTargetBitrateBps;
+
   let testedUplinkConstrained = false;
   if (testedTargetBitrateBps !== undefined && testedTargetBitrateBps < targetBitrateBps) {
     targetBitrateBps = moveNumber(
@@ -118,12 +136,14 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   if (healthy) {
     trustedAvailableOutgoingBitrateBps = Math.max(
       trustedAvailableOutgoingBitrateBps ?? 0,
-      actualBitrate
+      actualBitrate ?? 0,
+      rtcEstimate ?? 0
     );
     if (healthySamples >= CLOUDFLARE_PROBE_HEALTHY_SAMPLE_LIMIT) {
-      const desiredProbeBitrate = testedTargetBitrateBps ?? targetBitrateBps * CLOUDFLARE_PROBE_GROWTH;
+      const desiredProbeBitrate = testedTargetBitrateBps
+        ?? Math.max(knownRtcBitrate, targetBitrateBps * CLOUDFLARE_PROBE_GROWTH);
       targetBitrateBps = clamp(
-        Math.max(targetBitrateBps, desiredProbeBitrate),
+        desiredProbeBitrate,
         CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS,
         CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS
       );
@@ -135,6 +155,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     && congestedSamples >= CLOUDFLARE_PROBE_CONGESTED_SAMPLE_LIMIT) {
     const supportedBitrate = actualBitrate
       ?? trustedAvailableOutgoingBitrateBps
+      ?? rtcEstimate
       ?? CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS;
     const desiredBitrateBps = clamp(
       supportedBitrate * CLOUDFLARE_PROBE_GROWTH,
@@ -196,7 +217,7 @@ function moveScaleForBitrate(
     input.maximumScaleResolutionDownBy ?? CLOUDFLARE_ADAPTATION_MAX_SCALE_RESOLUTION_DOWN_BY
   );
   const idealScale = clamp(
-    currentScale * Math.sqrt(referenceBitrateBps / Math.max(desiredBitrateBps, 1)),
+    minimumScale * Math.sqrt(referenceBitrateBps / Math.max(desiredBitrateBps, 1)),
     minimumScale,
     maximumScale
   );

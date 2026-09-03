@@ -851,10 +851,19 @@ export function MeetingRoomPage({
         const result = await probeCloudflareUplink(abortController.signal);
         if (cancelled) return;
         p2pShareRef.current?.setCloudflareUplinkEstimate?.(result.bitrateBps);
-        setCloudflareUplink({ status: 'ready', bitrateBps: result.bitrateBps });
+        const effectiveBitrateBps = Math.max(
+          result.bitrateBps,
+          p2pShareRef.current?.getEffectiveUplinkEstimateBps?.() ?? 0
+        );
+        setCloudflareUplink({ status: 'ready', bitrateBps: effectiveBitrateBps });
       } catch {
         if (cancelled || abortController.signal.aborted) return;
-        setCloudflareUplink({ status: 'failed' });
+        const effectiveBitrateBps = p2pShareRef.current?.getEffectiveUplinkEstimateBps?.();
+        if (effectiveBitrateBps !== undefined && effectiveBitrateBps > 0) {
+          setCloudflareUplink({ status: 'ready', bitrateBps: effectiveBitrateBps });
+        } else {
+          setCloudflareUplink({ status: 'failed' });
+        }
       }
       if (!cancelled) timer = window.setTimeout(runProbe, CLOUDFLARE_UPLINK_PROBE_INTERVAL_MS);
     };
@@ -865,6 +874,22 @@ export function MeetingRoomPage({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [localCloudflareRelayActive, probeCloudflareUplink]);
+
+  useEffect(() => {
+    if (!localCloudflareRelayActive) return;
+    const interval = window.setInterval(() => {
+      const effective = p2pShareRef.current?.getEffectiveUplinkEstimateBps?.();
+      if (effective !== undefined && effective > 0) {
+        setCloudflareUplink((previous) => {
+          if (previous?.status === 'ready' && previous.bitrateBps !== undefined && effective <= previous.bitrateBps) {
+            return previous;
+          }
+          return { status: 'ready', bitrateBps: effective };
+        });
+      }
+    }, 1_000);
+    return () => window.clearInterval(interval);
+  }, [localCloudflareRelayActive]);
   const cloudflareUplinkLabel = cloudflareUplink?.status === 'ready'
     && cloudflareUplink.bitrateBps !== undefined
     ? t('room.cloudflareUplinkReady', { bitrate: (cloudflareUplink.bitrateBps / 1_000_000).toFixed(1) })
