@@ -1,209 +1,281 @@
-export const CLOUDFLARE_ADAPTATION_HEADROOM = 0.85;
-export const CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS = 1_000_000;
-export const CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS = 50_000_000;
-export const CLOUDFLARE_ADAPTATION_BANDWIDTH_SMOOTHING = 0.25;
-export const CLOUDFLARE_ADAPTATION_MAX_BITRATE_STEP = 0.2;
-export const CLOUDFLARE_ADAPTATION_MAX_SCALE_STEP = 0.1;
-export const CLOUDFLARE_ADAPTATION_MAX_SCALE_RESOLUTION_DOWN_BY = 4;
-export const CLOUDFLARE_PROBE_INITIAL_BITRATE_BPS = 10_000_000;
-export const CLOUDFLARE_PROBE_GROWTH = 1.15;
-export const CLOUDFLARE_PROBE_HEALTHY_SAMPLE_LIMIT = 2;
-export const CLOUDFLARE_PROBE_CONGESTED_SAMPLE_LIMIT = 3;
-export const CLOUDFLARE_PROBE_HEALTHY_FPS_RATIO = 0.85;
+import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 
-export type CloudflareProbeStatus = 'probing' | 'stable' | 'constrained';
+export const CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS = 1_000_000;
+export const CLOUDFLARE_TRANSPORT_MAX_BITRATE_BPS = 50_000_000;
+export const CLOUDFLARE_TRANSPORT_RAISE_RATIO = 1.15;
+export const CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO = 1.15;
+export const CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_HEADROOM = 0.90;
+export const CLOUDFLARE_TRANSPORT_DROP_FLOOR_RATIO = 0.80;
+export const CLOUDFLARE_TRANSPORT_DROP_CEILING_RATIO = 0.95;
+export const CLOUDFLARE_TRANSPORT_DROP_LAST_STABLE_RATIO = 0.90;
+export const CLOUDFLARE_HEALTHY_RAISE_SAMPLES = 2;
+export const CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES = 5;
+export const CLOUDFLARE_PRESSURE_SAMPLE_LIMIT = 3;
+export const CLOUDFLARE_LOW_PROBE_SAMPLE_LIMIT = 2;
+export const CLOUDFLARE_HEALTHY_FPS_RATIO = 0.85;
+export const CLOUDFLARE_SEVERE_FPS_RATIO = 0.5;
+export const CLOUDFLARE_PRESSURE_LOSS_RATIO = 0.02;
+export const CLOUDFLARE_SEVERE_LOSS_RATIO = 0.05;
+export const CLOUDFLARE_MAX_SCALE_INCREASE_STEP = 0.10;
+export const CLOUDFLARE_MAX_SCALE_RECOVERY_STEP = 0.05;
+export const CLOUDFLARE_NORMAL_SHORT_SIDE_PX = 720;
+export const CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX = 540;
+export const CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY = 4;
 
-export interface CloudflareEncodingMeasurement {
-  /** Advisory congestion estimate, retained for diagnostics but never trusted alone for backoff. */
-  availableOutgoingBitrateBps?: number;
-  /** Actual outbound video bitrate calculated from successive RTP samples. */
-  actualOutgoingBitrateBps?: number;
-  /** Independent bounded upload measurement against Cloudflare's speed-test edge. */
-  testedCloudflareUplinkBitrateBps?: number;
-  qualityLimitationReason?: string;
-  framesPerSecond?: number;
-  targetFrameRate?: number;
+/**
+ * Per-viewer encoding control state. `profileTargetBitrateBps` is the user's
+ * quality tier and never changes for the lifetime of a share; every dynamic
+ * decision writes `transportBitrateCapBps` only.
+ */
+export interface CloudflareEncodingState {
+  profileTargetBitrateBps: number;
+  transportBitrateCapBps: number;
+  scaleResolutionDownBy: number;
+  emergencyResolution: boolean;
+  hardResolutionProtection: boolean;
+  bandwidthPressureSamples: number;
+  healthySamples: number;
+  healthyRecoverySamples: number;
+  lowProbeSamples: number;
+  lastProbeSampledAt?: number;
+  lastStableBitrateBps?: number;
 }
 
-export interface CloudflareEncodingState {
-  bandwidthEstimateBps?: number;
-  testedCloudflareUplinkBitrateBps?: number;
-  trustedAvailableOutgoingBitrateBps?: number;
-  targetBitrateBps: number;
-  scaleResolutionDownBy: number;
-  probeStatus?: CloudflareProbeStatus;
-  healthySamples?: number;
-  congestedSamples?: number;
+export interface CloudflareEncodingMeasurement {
+  /** Latest independent TURN path probe snapshot; the only raising signal. */
+  turnProbe: TurnPathProbeSnapshot;
+  /** Encoder-reported instantaneous target; read-only evidence. */
+  encoderTargetBitrateBps?: number;
+  /** Actual outbound rate from RTP byte deltas; read-only evidence. */
+  actualOutgoingBitrateBps?: number;
+  /** Browser congestion estimate; diagnostics only, never a control input. */
+  availableOutgoingBitrateBps?: number;
+  qualityLimitationReason?: string;
+  framesPerSecond?: number;
+  targetFrameRate: number;
+  packetLossRatio?: number;
+  roundTripTimeMs?: number;
+  packetsDiscardedOnSendDelta?: number;
+  frameWidth?: number;
+  frameHeight?: number;
 }
 
 export interface CloudflareEncodingUpdate {
   previous: CloudflareEncodingState;
   measurement: CloudflareEncodingMeasurement;
-  minimumScaleResolutionDownBy: number;
-  maximumScaleResolutionDownBy?: number;
-  referenceBitrateBps?: number;
+  /** Shorter side of the capture source; bounds sampling via the resolution floors. */
+  sourceShortSide?: number;
 }
 
-/**
- * Probes upward and backs off only after sustained sender-side congestion.
- * A low RTC estimate alone can be caused by the existing sender cap, so it
- * must not create a self-fulfilling low-bitrate loop.
- */
-export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): CloudflareEncodingState {
-  const rtcEstimate = positive(input.measurement.availableOutgoingBitrateBps);
-  const actualBitrate = positive(input.measurement.actualOutgoingBitrateBps);
-  const testedUplink = positive(input.measurement.testedCloudflareUplinkBitrateBps);
-  const hasEvidence = rtcEstimate !== undefined
-    || actualBitrate !== undefined
-    || testedUplink !== undefined
-    || input.measurement.qualityLimitationReason !== undefined
-    || input.measurement.framesPerSecond !== undefined;
-  if (!hasEvidence) return input.previous;
-
-  const bandwidthEstimateBps = rtcEstimate === undefined
-    ? input.previous.bandwidthEstimateBps
-    : input.previous.bandwidthEstimateBps === undefined
-      ? rtcEstimate
-      : input.previous.bandwidthEstimateBps
-        + (rtcEstimate - input.previous.bandwidthEstimateBps) * CLOUDFLARE_ADAPTATION_BANDWIDTH_SMOOTHING;
-  const testedCloudflareUplinkBitrateBps = testedUplink ?? input.previous.testedCloudflareUplinkBitrateBps;
-  const targetFrameRate = positive(input.measurement.targetFrameRate);
-  const fps = positive(input.measurement.framesPerSecond);
-  const fpsHealthy = targetFrameRate !== undefined
-    && fps !== undefined
-    && fps >= targetFrameRate * CLOUDFLARE_PROBE_HEALTHY_FPS_RATIO;
-  const fpsCollapsed = targetFrameRate !== undefined
-    && fps !== undefined
-    && fps < targetFrameRate * CLOUDFLARE_PROBE_HEALTHY_FPS_RATIO;
-  const bandwidthLimited = input.measurement.qualityLimitationReason === 'bandwidth';
-  const healthy = actualBitrate !== undefined && fpsHealthy && !bandwidthLimited;
-  const congested = bandwidthLimited && (fpsCollapsed || fps === undefined);
-
-  let healthySamples = healthy ? (input.previous.healthySamples ?? 0) + 1 : 0;
-  let congestedSamples = congested ? (input.previous.congestedSamples ?? 0) + 1 : 0;
-  let probeStatus = input.previous.probeStatus ?? 'probing';
-  let targetBitrateBps = input.previous.targetBitrateBps;
-  let trustedAvailableOutgoingBitrateBps = input.previous.trustedAvailableOutgoingBitrateBps;
-  let scaleResolutionDownBy = Math.max(
-    input.minimumScaleResolutionDownBy,
-    input.previous.scaleResolutionDownBy
-  );
-
-  if (probeStatus !== 'constrained') {
-    targetBitrateBps = Math.max(targetBitrateBps, CLOUDFLARE_PROBE_INITIAL_BITRATE_BPS);
-  }
-  const hasNewTestedUplink = testedUplink !== undefined
-    && testedUplink !== input.previous.testedCloudflareUplinkBitrateBps;
-  const testedTargetBitrateBps = testedCloudflareUplinkBitrateBps === undefined
-    ? undefined
-    : clamp(
-      testedCloudflareUplinkBitrateBps * CLOUDFLARE_ADAPTATION_HEADROOM,
-      CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS,
-      CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS
-    );
-  let testedUplinkConstrained = false;
-  if (testedTargetBitrateBps !== undefined && testedTargetBitrateBps < targetBitrateBps) {
-    targetBitrateBps = moveNumber(
-      targetBitrateBps,
-      testedTargetBitrateBps,
-      CLOUDFLARE_ADAPTATION_MAX_BITRATE_STEP
-    );
-    scaleResolutionDownBy = moveScaleForBitrate(input, scaleResolutionDownBy, testedTargetBitrateBps);
-    testedUplinkConstrained = true;
-  } else if (hasNewTestedUplink && testedTargetBitrateBps !== undefined) {
-    targetBitrateBps = Math.max(targetBitrateBps, testedTargetBitrateBps);
-    scaleResolutionDownBy = moveScale(scaleResolutionDownBy, input.minimumScaleResolutionDownBy);
-  }
-
-  if (healthy) {
-    trustedAvailableOutgoingBitrateBps = Math.max(
-      trustedAvailableOutgoingBitrateBps ?? 0,
-      actualBitrate
-    );
-    if (healthySamples >= CLOUDFLARE_PROBE_HEALTHY_SAMPLE_LIMIT) {
-      const desiredProbeBitrate = testedTargetBitrateBps ?? targetBitrateBps * CLOUDFLARE_PROBE_GROWTH;
-      targetBitrateBps = clamp(
-        Math.max(targetBitrateBps, desiredProbeBitrate),
-        CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS,
-        CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS
-      );
-      healthySamples = 0;
-      probeStatus = 'stable';
-      scaleResolutionDownBy = moveScale(scaleResolutionDownBy, input.minimumScaleResolutionDownBy);
-    }
-  } else if (!testedUplinkConstrained
-    && congestedSamples >= CLOUDFLARE_PROBE_CONGESTED_SAMPLE_LIMIT) {
-    const supportedBitrate = actualBitrate
-      ?? trustedAvailableOutgoingBitrateBps
-      ?? CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS;
-    const desiredBitrateBps = clamp(
-      supportedBitrate * CLOUDFLARE_PROBE_GROWTH,
-      CLOUDFLARE_ADAPTATION_MIN_BITRATE_BPS,
-      CLOUDFLARE_ADAPTATION_MAX_BITRATE_BPS
-    );
-    targetBitrateBps = moveNumber(
-      targetBitrateBps,
-      Math.min(targetBitrateBps, desiredBitrateBps),
-      CLOUDFLARE_ADAPTATION_MAX_BITRATE_STEP
-    );
-    scaleResolutionDownBy = moveScaleForBitrate(input, scaleResolutionDownBy, desiredBitrateBps);
-    congestedSamples = 0;
-    probeStatus = 'constrained';
-  }
-
+export function createCloudflareEncodingState(profileTargetBitrateBps: number): CloudflareEncodingState {
   return {
-    ...(bandwidthEstimateBps === undefined ? {} : { bandwidthEstimateBps }),
-    ...(testedCloudflareUplinkBitrateBps === undefined ? {} : { testedCloudflareUplinkBitrateBps }),
-    ...(trustedAvailableOutgoingBitrateBps === undefined ? {} : { trustedAvailableOutgoingBitrateBps }),
-    targetBitrateBps,
-    scaleResolutionDownBy,
-    probeStatus,
-    healthySamples,
-    congestedSamples
+    profileTargetBitrateBps: profileTargetBitrateBps,
+    transportBitrateCapBps: profileTargetBitrateBps,
+    scaleResolutionDownBy: 1,
+    emergencyResolution: false,
+    hardResolutionProtection: false,
+    bandwidthPressureSamples: 0,
+    healthySamples: 0,
+    healthyRecoverySamples: 0,
+    lowProbeSamples: 0
   };
 }
 
-/** Returns the scale that keeps a known source's shorter side at least 720px. */
-export function computeCloudflareMaximumScale(settings: { width?: number; height?: number }): number {
+/**
+ * Adjusts the transport cap and sampling scale for one viewer.
+ *
+ * Raising requires a high stable probe capacity plus healthy media samples.
+ * Lowering requires two independent low probe windows AND sustained real media
+ * pressure, and can never run away: one step is 5–20% and the floor is 1 Mbps.
+ * A low RTC estimate, a low actual bitrate, static content, missing stats, or
+ * a single low probe window never lowers anything on its own.
+ */
+export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): CloudflareEncodingState {
+  const { previous, measurement } = input;
+  const currentCap = previous.transportBitrateCapBps;
+
+  const probeWindow = readNewProbeWindow(previous, measurement.turnProbe);
+  let lowProbeSamples = probeWindow === undefined
+    ? previous.lowProbeSamples
+    : probeWindow < currentCap
+      ? previous.lowProbeSamples + 1
+      : 0;
+
+  const fps = positive(measurement.framesPerSecond);
+  const targetFps = positive(measurement.targetFrameRate);
+  const bandwidthLimited = measurement.qualityLimitationReason === 'bandwidth';
+  const cpuLimited = measurement.qualityLimitationReason === 'cpu';
+  const fpsCollapsed = fps !== undefined && targetFps !== undefined
+    && fps < targetFps * CLOUDFLARE_SEVERE_FPS_RATIO;
+  const lossRatio = finite(measurement.packetLossRatio);
+  const lossBad = lossRatio !== undefined && lossRatio >= CLOUDFLARE_PRESSURE_LOSS_RATIO;
+  const discardsBad = (measurement.packetsDiscardedOnSendDelta ?? 0) > 0;
+  const severe = fpsCollapsed && lossRatio !== undefined && lossRatio >= CLOUDFLARE_SEVERE_LOSS_RATIO;
+  const pressure = bandwidthLimited || (fpsCollapsed && (lossBad || discardsBad));
+  const healthy = !pressure && !cpuLimited
+    && measurement.qualityLimitationReason !== undefined
+    && !lossBad && !discardsBad;
+  const hasMediaEvidence = measurement.qualityLimitationReason !== undefined || fps !== undefined;
+
+  // Missing stats hold the counters instead of counting as healthy or pressured.
+  let healthySamples = hasMediaEvidence
+    ? (healthy ? previous.healthySamples + 1 : 0)
+    : previous.healthySamples;
+  const healthyRecoverySamples = hasMediaEvidence
+    ? (healthy
+      ? Math.min(previous.healthyRecoverySamples + 1, CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES)
+      : 0)
+    : previous.healthyRecoverySamples;
+  let bandwidthPressureSamples = hasMediaEvidence
+    ? (pressure ? previous.bandwidthPressureSamples + 1 : 0)
+    : previous.bandwidthPressureSamples;
+
+  let emergencyResolution = previous.emergencyResolution;
+  if (healthyRecoverySamples >= CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES) emergencyResolution = false;
+
+  let hardResolutionProtection = previous.hardResolutionProtection;
+  const outputShortSide = shortSide(measurement.frameWidth, measurement.frameHeight);
+  if (outputShortSide !== undefined) {
+    hardResolutionProtection = outputShortSide < CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX;
+  }
+
+  let transportBitrateCapBps = currentCap;
+  let lastStableBitrateBps = previous.lastStableBitrateBps;
+  const corroborated = lowProbeSamples >= CLOUDFLARE_LOW_PROBE_SAMPLE_LIMIT
+    && (bandwidthPressureSamples >= CLOUDFLARE_PRESSURE_SAMPLE_LIMIT || severe);
+
+  if (corroborated && currentCap > CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS) {
+    if (severe) emergencyResolution = true;
+    const recentFloor = (lastStableBitrateBps ?? CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS)
+      * CLOUDFLARE_TRANSPORT_DROP_LAST_STABLE_RATIO;
+    transportBitrateCapBps = Math.max(
+      currentCap * CLOUDFLARE_TRANSPORT_DROP_FLOOR_RATIO,
+      Math.min(currentCap * CLOUDFLARE_TRANSPORT_DROP_CEILING_RATIO, recentFloor),
+      CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS
+    );
+    bandwidthPressureSamples = 0;
+    lowProbeSamples = 0;
+    healthySamples = 0;
+  } else {
+    const stableCapacityBps = positive(measurement.turnProbe.stableCapacityBps);
+    if (stableCapacityBps !== undefined
+      && stableCapacityBps >= currentCap * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO
+      && healthySamples >= CLOUDFLARE_HEALTHY_RAISE_SAMPLES) {
+      transportBitrateCapBps = clamp(
+        Math.min(
+          currentCap * CLOUDFLARE_TRANSPORT_RAISE_RATIO,
+          stableCapacityBps * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_HEADROOM
+        ),
+        currentCap,
+        CLOUDFLARE_TRANSPORT_MAX_BITRATE_BPS
+      );
+      const sustainedBitrateBps = measurement.encoderTargetBitrateBps ?? measurement.actualOutgoingBitrateBps;
+      if (sustainedBitrateBps !== undefined) lastStableBitrateBps = sustainedBitrateBps;
+      healthySamples = 0;
+    }
+  }
+
+  const scaleResolutionDownBy = nextScale(input, previous, transportBitrateCapBps, emergencyResolution, healthyRecoverySamples);
+
+  return {
+    profileTargetBitrateBps: previous.profileTargetBitrateBps,
+    transportBitrateCapBps,
+    scaleResolutionDownBy,
+    emergencyResolution,
+    hardResolutionProtection,
+    bandwidthPressureSamples,
+    healthySamples,
+    healthyRecoverySamples,
+    lowProbeSamples,
+    ...(probeWindow === undefined
+      ? {}
+      : { lastProbeSampledAt: measurement.turnProbe.sampledAt }),
+    ...(lastStableBitrateBps === undefined ? {} : { lastStableBitrateBps })
+  };
+}
+
+/** Shorter capture-source side, or undefined when the dimensions are unknown. */
+export function computeCloudflareSourceShortSide(
+  settings: { width?: number; height?: number }
+): number | undefined {
+  return shortSide(settings.width, settings.height);
+}
+
+/**
+ * Maximum sampling scale that keeps the source's shorter side at or above the
+ * 720p normal floor, or the 540p emergency floor.
+ */
+export function computeCloudflareMaximumScale(
+  settings: { width?: number; height?: number },
+  emergency = false
+): number {
   const width = positive(settings.width);
   const height = positive(settings.height);
-  if (width === undefined || height === undefined) return 1.5;
-  return Math.max(1, Math.min(width, height) / 720);
+  if (width === undefined || height === undefined) return CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY;
+  const floor = emergency ? CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX : CLOUDFLARE_NORMAL_SHORT_SIDE_PX;
+  return Math.max(1, Math.min(width, height) / floor);
+}
+
+function nextScale(
+  input: CloudflareEncodingUpdate,
+  previous: CloudflareEncodingState,
+  transportBitrateCapBps: number,
+  emergencyResolution: boolean,
+  healthyRecoverySamples: number
+): number {
+  const effectiveBudgetBps = Math.min(previous.profileTargetBitrateBps, transportBitrateCapBps);
+  let idealScale = Math.max(1, Math.sqrt(previous.profileTargetBitrateBps / effectiveBudgetBps));
+  const maximumScale = Math.max(
+    1,
+    Math.min(
+      input.sourceShortSide === undefined
+        ? CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY
+        : input.sourceShortSide / (emergencyResolution
+          ? CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX
+          : CLOUDFLARE_NORMAL_SHORT_SIDE_PX),
+      CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY
+    )
+  );
+  idealScale = clamp(idealScale, 1, maximumScale);
+
+  const current = clamp(previous.scaleResolutionDownBy, 1, maximumScale);
+  if (idealScale > current) {
+    // Sampling up (fewer pixels) is capped at 10% per sample.
+    return clamp(Math.min(idealScale, current * (1 + CLOUDFLARE_MAX_SCALE_INCREASE_STEP)), 1, maximumScale);
+  }
+  // Resolution recovery waits for sustained health and is capped at 5%.
+  if (idealScale < current && healthyRecoverySamples >= CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES) {
+    return clamp(Math.max(idealScale, current * (1 - CLOUDFLARE_MAX_SCALE_RECOVERY_STEP)), 1, maximumScale);
+  }
+  return current;
+}
+
+/** Returns the window's measured capacity when it has not been counted yet. */
+function readNewProbeWindow(
+  previous: CloudflareEncodingState,
+  turnProbe: TurnPathProbeSnapshot
+): number | undefined {
+  const sampledAt = finite(turnProbe.sampledAt);
+  if (sampledAt === undefined || sampledAt === previous.lastProbeSampledAt) return undefined;
+  const measured = finite(turnProbe.measuredCapacityBps) ?? finite(turnProbe.stableCapacityBps);
+  return measured;
 }
 
 function positive(value: number | undefined): number | undefined {
   return value !== undefined && Number.isFinite(value) && value > 0 ? value : undefined;
 }
 
+function finite(value: number | undefined): number | undefined {
+  return value !== undefined && Number.isFinite(value) ? value : undefined;
+}
+
+function shortSide(width: number | undefined, height: number | undefined): number | undefined {
+  const w = positive(width);
+  const h = positive(height);
+  if (w === undefined || h === undefined) return undefined;
+  return Math.min(w, h);
+}
+
 function clamp(value: number, minimum: number, maximum: number): number {
   return Math.min(maximum, Math.max(minimum, value));
-}
-
-function moveNumber(current: number, desired: number, fraction: number): number {
-  return current + (desired - current) * fraction;
-}
-
-function moveScaleForBitrate(
-  input: CloudflareEncodingUpdate,
-  currentScale: number,
-  desiredBitrateBps: number
-): number {
-  const referenceBitrateBps = positive(input.referenceBitrateBps)
-    ?? input.previous.targetBitrateBps;
-  const minimumScale = Math.max(1, input.minimumScaleResolutionDownBy);
-  const maximumScale = Math.max(
-    minimumScale,
-    input.maximumScaleResolutionDownBy ?? CLOUDFLARE_ADAPTATION_MAX_SCALE_RESOLUTION_DOWN_BY
-  );
-  const idealScale = clamp(
-    currentScale * Math.sqrt(referenceBitrateBps / Math.max(desiredBitrateBps, 1)),
-    minimumScale,
-    maximumScale
-  );
-  return moveScale(currentScale, idealScale);
-}
-
-function moveScale(current: number, desired: number): number {
-  const maxDelta = Math.max(0.01, current * CLOUDFLARE_ADAPTATION_MAX_SCALE_STEP);
-  return current + Math.sign(desired - current) * Math.min(Math.abs(desired - current), maxDelta);
 }

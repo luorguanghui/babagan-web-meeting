@@ -20,7 +20,8 @@ import {
   type SenderVideoStats
 } from './p2p-media-health.js';
 import {
-  computeCloudflareMaximumScale,
+  computeCloudflareSourceShortSide,
+  createCloudflareEncodingState,
   updateCloudflareEncoding,
   type CloudflareEncodingState
 } from './cloudflare-adaptive-encoding.js';
@@ -697,43 +698,50 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   /**
-   * Cloudflare relay sessions are controlled per connection. The relay's
-   * independent Cloudflare upload test seeds the target. The RTC estimate is
-   * diagnostic only; actual RTP rate, frame rate and encoder limitation decide
-   * whether probing is healthy or genuinely congested.
+   * Cloudflare relay sessions are controlled per connection. The fixed quality
+   * tier is the profile target; the dynamic transport cap follows the measured
+   * Cloudflare capacity and corroborated congestion only. Until the TURN path
+   * probe lands, the HTTPS uplink estimate feeds a synthetic probe snapshot.
    */
   private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
     const sourceSettings = session.videoSender?.track?.getSettings?.() ?? {};
-    const minimumScaleResolutionDownBy = computeResolutionScale(sourceSettings) ?? 1;
-    const maximumScaleResolutionDownBy = computeCloudflareMaximumScale(sourceSettings);
-    const referenceBitrateBps = Math.max(
-      session.options.maxBitrate,
-      session.options.frameRate >= 60 ? 15_000_000 : 8_000_000
-    );
-    const previous = session.cloudflareEncodingState ?? {
-      targetBitrateBps: session.options.maxBitrate,
-      scaleResolutionDownBy: minimumScaleResolutionDownBy
-    };
+    const sourceShortSide = computeCloudflareSourceShortSide(sourceSettings);
+    const created = session.cloudflareEncodingState === undefined;
+    const previous = session.cloudflareEncodingState
+      ?? createCloudflareEncodingState(session.options.maxBitrate);
     const next = updateCloudflareEncoding({
       previous,
       measurement: {
+        turnProbe: this.syntheticTurnProbeSnapshot(sender),
         availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
         actualOutgoingBitrateBps,
-        testedCloudflareUplinkBitrateBps: this.cloudflareUplinkEstimateBps,
         qualityLimitationReason: sender.qualityLimitationReason,
         framesPerSecond: sender.framesPerSecond,
-        targetFrameRate: session.options.frameRate
+        targetFrameRate: session.options.frameRate,
+        frameWidth: sender.frameWidth,
+        frameHeight: sender.frameHeight
       },
-      minimumScaleResolutionDownBy,
-      maximumScaleResolutionDownBy,
-      referenceBitrateBps
+      ...(sourceShortSide === undefined ? {} : { sourceShortSide })
     });
-    if (next === previous) return;
-    const encodingChanged = next.targetBitrateBps !== previous.targetBitrateBps
-      || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy;
     session.cloudflareEncodingState = next;
-    if (encodingChanged) await this.applySenderParameters(session);
+    const encodingChanged = next.transportBitrateCapBps !== previous.transportBitrateCapBps
+      || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
+      || next.hardResolutionProtection !== previous.hardResolutionProtection;
+    if (created || encodingChanged) await this.applySenderParameters(session);
+  }
+
+  /** Bridges the legacy HTTPS uplink estimate into probe-snapshot shape. */
+  private syntheticTurnProbeSnapshot(sender: SenderVideoStats) {
+    const estimate = this.cloudflareUplinkEstimateBps;
+    return estimate === undefined
+      ? { status: 'idle' as const, probeTargetBps: 2_000_000 }
+      : {
+        status: 'ready' as const,
+        probeTargetBps: 2_000_000,
+        stableCapacityBps: estimate,
+        ...(sender.timestamp === undefined ? {} : { sampledAt: sender.timestamp })
+      };
   }
 
   private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
@@ -779,7 +787,7 @@ class P2pShareControllerImpl implements P2pShareController {
           ...session.videoSender.getParameters(),
           encodings: [{
             maxBitrate: cloudflareAdaptive
-              ? session.cloudflareEncodingState!.targetBitrateBps
+              ? session.cloudflareEncodingState!.transportBitrateCapBps
               : options.maxBitrate,
             maxFramerate: options.frameRate,
             ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
