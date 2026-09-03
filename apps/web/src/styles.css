@@ -158,6 +158,8 @@ meter { height: .9rem; width: 100%; }
 .webrtc-stats-grid dl div { display: flex; gap: .5rem; justify-content: space-between; padding: .16rem 0; }
 .webrtc-stats-grid dt { color: var(--meeting-muted); }
 .webrtc-stats-grid dd { font-variant-numeric: tabular-nums; font-weight: 650; text-align: right; }
+.webrtc-stats-detail { border-top: 1px solid rgba(196, 231, 236, .12); grid-column: 1 / -1; padding-top: .65rem; }
+.webrtc-stats-detail h4 { color: var(--meeting-muted); font-size: .72rem; margin: .55rem 0 .25rem; }
 .meeting-controls { background: rgba(30, 41, 48, .96); border: 1px solid rgba(220, 241, 244, .2); border-radius: 20px; display: grid; gap: .75rem 1rem; grid-template-columns: minmax(0, 1fr); padding: .65rem; }
 .meeting-control-dock { bottom: .75rem; box-shadow: 0 1rem 2.75rem rgba(2, 8, 11, .35), inset 0 1px 0 rgba(255, 255, 255, .05); justify-self: center; position: sticky; width: min(58rem, calc(100vw - 3rem)); z-index: 10; }
 .meeting-control-dock .meeting-control-status { display: none; }

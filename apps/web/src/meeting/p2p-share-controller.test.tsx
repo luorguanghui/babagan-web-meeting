@@ -960,6 +960,44 @@ describe('p2p share controller', () => {
     expect(senderMaxBitrate(pc)).toBe(9_200_000);
   });
 
+  it('exposes fixed target and current transport cap for diagnostics', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
+      profileTargetBitrateBps: 8_000_000,
+      transportBitrateCapBps: 8_000_000,
+      scaleResolutionDownBy: 1
+    });
+
+    probes.items[0].setSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 40_000_000,
+      sampledAt: 1_000
+    });
+    for (let sample = 0; sample < 2; sample += 1) {
+      pc.senderStats = {
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 2_000_000 + sample * 5_000_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
+      profileTargetBitrateBps: 8_000_000,
+      transportBitrateCapBps: 9_200_000,
+      scaleResolutionDownBy: 1
+    });
+  });
+
   it('does not lower maxBitrate for one low probe or one low RTC estimate', async () => {
     const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
@@ -1157,180 +1195,6 @@ describe('p2p share controller', () => {
     };
     await runTransportChecks();
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
-  });
-
-  it('uses an independent Cloudflare upload test without trusting a low RTC estimate', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'none',
-      framesPerSecond: 30,
-      bytesSent: 1_000_000,
-      timestamp: 1_000
-    };
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    // Healthy media with a low RTC estimate but no capacity evidence: no raise.
-    await runTransportChecks();
-    await runTransportChecks();
-    expect(senderMaxBitrate(pc)).toBe(8_000_000);
-
-    controller.setCloudflareUplinkEstimate?.(18_000_000);
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'none',
-      framesPerSecond: 30,
-      bytesSent: 1_600_000,
-      timestamp: 2_000
-    };
-    await runTransportChecks();
-
-    expect(senderMaxBitrate(pc)).toBe(9_200_000);
-  });
-
-  it('ramps Cloudflare relay bitrate above the fixed tier without a 40 Mbps aggregate cap', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, viewers);
-    controller.setCloudflareUplinkEstimate?.(60_000_000);
-
-    for (const pc of FakeRTCPeerConnection.instances) {
-      pc.statsCandidateType = 'relay';
-      pc.senderStats = {
-        availableOutgoingBitrateBps: 60_000_000,
-        qualityLimitationReason: 'none',
-        framesPerSecond: 30,
-        bytesSent: 8_000_000,
-        timestamp: 1_000
-      };
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
-    }
-    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn', 'turn', 'turn']));
-
-    // Two healthy samples per 15% raise: 8 -> 9.2 -> 10.58 Mbps per viewer.
-    for (let sample = 0; sample < 4; sample += 1) {
-      for (const pc of FakeRTCPeerConnection.instances) {
-        pc.senderStats = {
-          availableOutgoingBitrateBps: 700_000,
-          qualityLimitationReason: 'none',
-          framesPerSecond: 30,
-          bytesSent: 13_250_000 + sample * 5_250_000,
-          timestamp: 2_000 + sample * 1_000
-        };
-      }
-      await runTransportChecks();
-    }
-
-    const maxBitrates = FakeRTCPeerConnection.instances.map((pc) => {
-      const parameters = videoSender(pc).getParameters();
-      return parameters.encodings[0]?.maxBitrate ?? 0;
-    });
-    expect(maxBitrates.every((bitrate) => bitrate > 10_000_000)).toBe(true);
-    expect(maxBitrates.reduce((sum, bitrate) => sum + bitrate, 0)).toBeGreaterThan(40_000_000);
-  });
-
-  it('smoothly increases Cloudflare resolution scale as a relay connection slows', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 10,
-      bytesSent: 8_000_000,
-      timestamp: 1_000
-    };
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(senderMaxBitrate(pc)).toBe(8_000_000));
-
-    controller.setCloudflareUplinkEstimate?.(2_000_000);
-    // Two low probe windows plus three pressure samples produce the first drop;
-    // the scale then follows the reduced cap in steps of at most 10%.
-    const scales: number[] = [];
-    for (let sample = 0; sample < 6; sample += 1) {
-      pc.senderStats = {
-        availableOutgoingBitrateBps: 700_000,
-        qualityLimitationReason: 'bandwidth',
-        framesPerSecond: 10,
-        bytesSent: 8_000_000 + (sample + 1) * 500_000,
-        timestamp: 2_000 + sample * 1_000
-      };
-      await runTransportChecks();
-      scales.push(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1);
-    }
-
-    expect(scales[0]).toBe(1);
-    expect(scales[1]).toBeCloseTo(1.1, 3);
-    expect(scales[2]).toBeCloseTo(1.118, 3);
-    expect(scales[4]).toBeCloseTo(1.2298, 3);
-    expect(scales[5]).toBeCloseTo(1.25, 3);
-    for (let index = 1; index < scales.length; index += 1) {
-      expect(scales[index]).toBeGreaterThanOrEqual(scales[index - 1] - 1e-9);
-      expect(scales[index] / scales[index - 1]).toBeLessThanOrEqual(1.1 + 1e-9);
-    }
-  });
-
-  it('keeps a low-rate Cloudflare relay at or above a 720p short side', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 500_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 10,
-      bytesSent: 8_000_000,
-      timestamp: 1_000
-    };
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(senderMaxBitrate(pc)).toBe(8_000_000));
-
-    controller.setCloudflareUplinkEstimate?.(500_000);
-    for (let sample = 0; sample < 40; sample += 1) {
-      pc.senderStats = {
-        availableOutgoingBitrateBps: 500_000,
-        qualityLimitationReason: 'bandwidth',
-        framesPerSecond: 10,
-        bytesSent: 8_000_000 + (sample + 1) * 62_500,
-        timestamp: 2_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-
-    const scale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
-    expect(scale).toBeLessThanOrEqual(1.5);
-    expect(scale).toBeGreaterThan(1);
-  });
-
-  it('protects a Cloudflare relay when the browser still reports a 432x270 layer', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 4_000_000,
-      bytesSent: 8_000_000,
-      timestamp: 1_000,
-      frameWidth: 432,
-      frameHeight: 270
-    };
-    await runTransportChecks();
-
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('updates the provider when a direct viewer later migrates to relay', async () => {

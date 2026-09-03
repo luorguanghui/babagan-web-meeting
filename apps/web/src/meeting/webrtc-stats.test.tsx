@@ -27,7 +27,14 @@ describe('WebRTC screen-share statistics', () => {
         retransmittedBytesSent: 20_000, targetBitrate: 6_500_000
       },
       remote: { id: 'remote', type: 'remote-inbound-rtp', kind: 'video', packetsLost: 6, roundTripTime: 0.08 },
-      pair: { id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: 12_000_000 }
+      pair: {
+        id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded',
+        availableOutgoingBitrate: 12_000_000, localCandidateId: 'local'
+      },
+      local: {
+        id: 'local', type: 'local-candidate', candidateType: 'relay',
+        url: 'turn:turn.cloudflare.com:443?transport=tcp', relayProtocol: 'tcp'
+      }
     })], previous, 2_000);
 
     expect(current.sender).toMatchObject({
@@ -36,6 +43,8 @@ describe('WebRTC screen-share statistics', () => {
       qualityLimitationReason: 'bandwidth', packetsLost: 6, roundTripTimeMs: 80,
       // The RTC estimate and the encoder's own target stay distinct fields.
       availableOutgoingBitrateMbps: 12, encoderTargetBitrateMbps: 6.5,
+      selectedCandidateType: 'relay', selectedCandidateUrl: 'turn:turn.cloudflare.com:443?transport=tcp',
+      relayProtocol: 'tcp',
       nackCount: 4, pliCount: 2, firCount: 1
     });
   });

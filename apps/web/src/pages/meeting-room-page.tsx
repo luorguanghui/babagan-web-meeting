@@ -27,6 +27,7 @@ import {
   createP2pShareController,
   IceServersResponseSchema,
   type P2pShareController,
+  type P2pEncodingDiagnostics,
   type ViewerSessionState
 } from '../meeting/p2p-share-controller.js';
 import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
@@ -52,11 +53,7 @@ import {
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
-import {
-  CLOUDFLARE_UPLINK_PROBE_INTERVAL_MS,
-  measureCloudflareUplink,
-  type CloudflareUplinkProbeResult
-} from '../meeting/cloudflare-uplink-probe.js';
+import type { TurnPathProbeSnapshot } from '../meeting/cloudflare-turn-capacity.js';
 import {
   deriveSharerScreenTransportMode,
   deriveSharerTurnProvider,
@@ -94,8 +91,6 @@ export interface MeetingRoomPageProps {
   }) => P2pShareController;
   /** Test seam: anonymous quality-stats collector factory, defaults to `createP2pStatsCollector({ slug })`. */
   createStatsCollector?: () => P2pStatsCollector;
-  /** Test seam for the bounded Cloudflare edge upload measurement. */
-  probeCloudflareUplink?: (signal?: AbortSignal) => Promise<CloudflareUplinkProbeResult>;
   onLeft?: () => void;
   onTerminal?: (reason: 'ended' | 'expired' | 'rejoin-required') => void;
 }
@@ -130,10 +125,6 @@ async function defaultLeaveMeeting(slug: string): Promise<void> {
 
 async function defaultListDevices(): Promise<MediaDeviceInfo[]> {
   return navigator.mediaDevices?.enumerateDevices ? navigator.mediaDevices.enumerateDevices() : [];
-}
-
-function defaultCloudflareUplinkProbe(signal?: AbortSignal): Promise<CloudflareUplinkProbeResult> {
-  return measureCloudflareUplink(signal ? { signal } : {});
 }
 
 const defaultMeetingApi: MeetingRoomApi = {
@@ -206,7 +197,6 @@ export function MeetingRoomPage({
   createSignalingClient,
   shareControllerFactory,
   createStatsCollector,
-  probeCloudflareUplink = defaultCloudflareUplinkProbe,
   onLeft,
   onTerminal
 }: MeetingRoomPageProps) {
@@ -255,15 +245,17 @@ export function MeetingRoomPage({
   const viewerRosterRef = useRef<Peer[]>([]);
   const p2pShareRef = useRef<P2pShareController | undefined>(undefined);
   const p2pShareUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const p2pShareProbeUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
   const [shareViewerStates, setShareViewerStates] = useState<ReadonlyMap<string, ViewerSessionState>>(() => new Map());
   const [shareViewerTurnProviders, setShareViewerTurnProviders] = useState<ReadonlyMap<string, P2pTurnProvider>>(() => new Map());
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
-  const [cloudflareUplink, setCloudflareUplink] = useState<{
-    status: 'probing' | 'ready' | 'failed';
-    bitrateBps?: number;
-  }>();
+  const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
+  const [turnPathProbeSnapshot, setTurnPathProbeSnapshot] = useState<TurnPathProbeSnapshot>(() => ({
+    status: 'idle',
+    probeTargetBps: 2_000_000
+  }));
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
@@ -329,6 +321,14 @@ export function MeetingRoomPage({
       setShareViewerTurnProviders(new Map(share.getViewerTurnProviders?.() ?? []));
       p2pStats.observeShareStates(states);
     });
+    p2pShareProbeUnsubscribeRef.current?.();
+    setTurnPathProbeSnapshot(share.getTurnPathProbeSnapshot?.() ?? {
+      status: 'idle',
+      probeTargetBps: 2_000_000
+    });
+    p2pShareProbeUnsubscribeRef.current = share.subscribeTurnPathProbe?.((snapshot) => {
+      setTurnPathProbeSnapshot(snapshot);
+    });
     return share;
   }, [p2pStats, requestMeetingIceServers, shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
@@ -368,8 +368,12 @@ export function MeetingRoomPage({
         hybridShareRef.current = undefined;
         p2pShareUnsubscribeRef.current?.();
         p2pShareUnsubscribeRef.current = undefined;
+        p2pShareProbeUnsubscribeRef.current?.();
+        p2pShareProbeUnsubscribeRef.current = undefined;
         setShareViewerStates(new Map());
         setShareViewerTurnProviders(new Map());
+        setEncodingDiagnostics(new Map());
+        setTurnPathProbeSnapshot({ status: 'idle', probeTargetBps: 2_000_000 });
         p2pShareRef.current = undefined;
         if (hybrid) await hybrid.release(stream);
       }
@@ -700,6 +704,8 @@ export function MeetingRoomPage({
       setViewerTurnProvider(undefined);
       p2pShareUnsubscribeRef.current?.();
       p2pShareUnsubscribeRef.current = undefined;
+      p2pShareProbeUnsubscribeRef.current?.();
+      p2pShareProbeUnsubscribeRef.current = undefined;
       signaling.close();
     };
   }, [controller, createSignalingClient, join.participantIdentity, p2pStats, requestMeetingIceServers, slug]);
@@ -834,45 +840,23 @@ export function MeetingRoomPage({
     screenState.stream
     && (screenTurnProvider === 'cloudflare' || screenTurnProvider === 'mixed')
   );
-  useEffect(() => {
-    if (!localCloudflareRelayActive) {
-      setCloudflareUplink(undefined);
-      return;
-    }
-    let cancelled = false;
-    let timer: number | undefined;
-    let abortController: AbortController | undefined;
-    const runProbe = async () => {
-      abortController = new AbortController();
-      setCloudflareUplink((previous) => previous?.bitrateBps === undefined
-        ? { status: 'probing' }
-        : previous);
-      try {
-        const result = await probeCloudflareUplink(abortController.signal);
-        if (cancelled) return;
-        p2pShareRef.current?.setCloudflareUplinkEstimate?.(result.bitrateBps);
-        setCloudflareUplink({ status: 'ready', bitrateBps: result.bitrateBps });
-      } catch {
-        if (cancelled || abortController.signal.aborted) return;
-        setCloudflareUplink({ status: 'failed' });
-      }
-      if (!cancelled) timer = window.setTimeout(runProbe, CLOUDFLARE_UPLINK_PROBE_INTERVAL_MS);
-    };
-    void runProbe();
-    return () => {
-      cancelled = true;
-      abortController?.abort();
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [localCloudflareRelayActive, probeCloudflareUplink]);
-  const cloudflareUplinkLabel = cloudflareUplink?.status === 'ready'
-    && cloudflareUplink.bitrateBps !== undefined
-    ? t('room.cloudflareUplinkReady', { bitrate: (cloudflareUplink.bitrateBps / 1_000_000).toFixed(1) })
-    : cloudflareUplink?.status === 'failed'
-      ? t('room.cloudflareUplinkFailed')
-      : cloudflareUplink?.status === 'probing'
-        ? t('room.cloudflareUplinkProbing')
-        : undefined;
+  const turnProbeCapacityBps = turnPathProbeSnapshot.stableCapacityBps
+    ?? turnPathProbeSnapshot.measuredCapacityBps;
+  const turnProbeBitrateLabel = turnProbeCapacityBps === undefined
+    ? undefined
+    : (turnProbeCapacityBps / 1_000_000).toFixed(1);
+  const cloudflareTurnProbeLabel = !localCloudflareRelayActive
+    ? undefined
+    : turnPathProbeSnapshot.status === 'ready' && turnProbeBitrateLabel !== undefined
+      ? t('room.cloudflareTurnProbeReady', { bitrate: turnProbeBitrateLabel })
+      : (turnPathProbeSnapshot.status === 'stale' || turnPathProbeSnapshot.status === 'probing')
+        && turnProbeBitrateLabel !== undefined
+        ? t('room.cloudflareTurnProbeRemeasuring', { bitrate: turnProbeBitrateLabel })
+        : turnPathProbeSnapshot.status === 'negotiating' || turnPathProbeSnapshot.status === 'probing'
+          ? t('room.cloudflareTurnProbeProbing')
+          : turnPathProbeSnapshot.status === 'error' || turnPathProbeSnapshot.status === 'unsupported'
+            ? t('room.cloudflareTurnProbeUnavailable')
+            : undefined;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
     if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
@@ -890,6 +874,7 @@ export function MeetingRoomPage({
   useEffect(() => {
     if (!hasActiveScreenShare) {
       setScreenStats(undefined);
+      setEncodingDiagnostics(new Map());
       return;
     }
     let cancelled = false;
@@ -914,6 +899,11 @@ export function MeetingRoomPage({
         if (cancelled) return;
         previous = summarizeWebRtcStats(reports, previous);
         setScreenStats(previous);
+        setEncodingDiagnostics(new Map(
+          screenState.status === 'sharing'
+            ? p2pShareRef.current?.getEncodingDiagnostics?.() ?? []
+            : []
+        ));
         p2pStats.observeQuality(previous);
       } catch {
         // Statistics are diagnostic only and must never interrupt the meeting.
@@ -1021,11 +1011,11 @@ export function MeetingRoomPage({
         {hasActiveScreenShare && <p className="meeting-sharing-label">
           <MonitorUp aria-hidden="true" size={18} />
           <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
-          {localCloudflareRelayActive && cloudflareUplinkLabel && <span
+          {cloudflareTurnProbeLabel && <span
             className="meeting-uplink-badge"
             role="status"
             aria-live="polite"
-          >{cloudflareUplinkLabel}</span>}
+          >{cloudflareTurnProbeLabel}</span>}
         </p>}
         <section className="meeting-stage-shell">
           <ScreenStage
@@ -1110,6 +1100,8 @@ export function MeetingRoomPage({
       embedded
       active={hasActiveScreenShare}
       snapshot={screenStats}
+      turnProbe={screenState.status === 'sharing' ? turnPathProbeSnapshot : undefined}
+      encodingDiagnostics={screenState.status === 'sharing' ? encodingDiagnostics : undefined}
       requestedCodec={screenCodec}
       mode={screenTransportMode}
       turnProvider={screenTurnProvider}

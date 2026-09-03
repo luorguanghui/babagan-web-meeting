@@ -85,8 +85,7 @@ export interface P2pShareController {
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
-  /** Supplies the latest independent Cloudflare edge upload measurement. */
-  setCloudflareUplinkEstimate?(bitrateBps: number): void;
+  getEncodingDiagnostics?(): ReadonlyMap<string, P2pEncodingDiagnostics>;
   /** Current TURN path probe snapshot, or an idle snapshot before the first probe. */
   getTurnPathProbeSnapshot?(): TurnPathProbeSnapshot;
   /** Subscribes to immutable TURN path probe snapshots; never mutates senders. */
@@ -94,6 +93,12 @@ export interface P2pShareController {
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
+}
+
+export interface P2pEncodingDiagnostics {
+  profileTargetBitrateBps: number;
+  transportBitrateCapBps: number;
+  scaleResolutionDownBy: number;
 }
 
 /**
@@ -223,7 +228,6 @@ class P2pShareControllerImpl implements P2pShareController {
   private activeStream?: MediaStream;
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
-  private cloudflareUplinkEstimateBps?: number;
   private turnPathProbe?: CloudflareTurnPathProbe;
   private turnPathProbeIceServers?: RTCIceServer[];
   private turnPathProbeUnsubscribe?: () => void;
@@ -379,7 +383,6 @@ class P2pShareControllerImpl implements P2pShareController {
     this.iceRefreshTimer = undefined;
     this.activeStream = undefined;
     this.activeOptions = undefined;
-    this.cloudflareUplinkEstimateBps = undefined;
     this.stopTurnPathProbe();
     this.pendingRetryTokens.clear();
     for (const session of this.sessions.values()) {
@@ -408,9 +411,21 @@ class P2pShareControllerImpl implements P2pShareController {
     return snapshot;
   }
 
-  setCloudflareUplinkEstimate(bitrateBps: number): void {
-    if (!Number.isFinite(bitrateBps) || bitrateBps <= 0) return;
-    this.cloudflareUplinkEstimateBps = bitrateBps;
+  getEncodingDiagnostics(): ReadonlyMap<string, P2pEncodingDiagnostics> {
+    const snapshot = new Map<string, P2pEncodingDiagnostics>();
+    for (const [identity, session] of this.sessions) {
+      if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') continue;
+      const encoding = session.cloudflareEncodingState;
+      const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
+      snapshot.set(identity, {
+        profileTargetBitrateBps: encoding?.profileTargetBitrateBps
+          ?? this.activeOptions?.maxBitrate
+          ?? session.options.maxBitrate,
+        transportBitrateCapBps: encoding?.transportBitrateCapBps ?? session.options.maxBitrate,
+        scaleResolutionDownBy: encoding?.scaleResolutionDownBy ?? sourceScale
+      });
+    }
+    return snapshot;
   }
 
   getTurnPathProbeSnapshot(): TurnPathProbeSnapshot {
@@ -743,9 +758,8 @@ class P2pShareControllerImpl implements P2pShareController {
    * Cloudflare relay sessions are controlled per connection. The fixed quality
    * tier is the profile target; the dynamic transport cap follows the measured
    * Cloudflare capacity and corroborated congestion only. In `'control'` mode
-   * the independent TURN path probe drives the cap; `'observe'` keeps the
-   * legacy HTTPS estimate as a synthetic snapshot until the HTTPS probe is
-   * removed entirely.
+   * the independent TURN path probe drives the cap; `'observe'` publishes the
+   * probe without allowing it to mutate sender parameters.
    */
   private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
@@ -766,7 +780,7 @@ class P2pShareControllerImpl implements P2pShareController {
       measurement: {
         turnProbe: controlMode
           ? this.getTurnPathProbeSnapshot()
-          : this.syntheticTurnProbeSnapshot(sender),
+          : idleTurnPathProbeSnapshot(),
         availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
         actualOutgoingBitrateBps,
         encoderTargetBitrateBps: sender.encoderTargetBitrateBps,
@@ -791,19 +805,6 @@ class P2pShareControllerImpl implements P2pShareController {
       || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
       || next.hardResolutionProtection !== previous.hardResolutionProtection;
     if (created || encodingChanged) await this.applySenderParameters(session);
-  }
-
-  /** Bridges the legacy HTTPS uplink estimate into probe-snapshot shape. */
-  private syntheticTurnProbeSnapshot(sender: SenderVideoStats) {
-    const estimate = this.cloudflareUplinkEstimateBps;
-    return estimate === undefined
-      ? { status: 'idle' as const, probeTargetBps: 2_000_000 }
-      : {
-        status: 'ready' as const,
-        probeTargetBps: 2_000_000,
-        stableCapacityBps: estimate,
-        ...(sender.timestamp === undefined ? {} : { sampledAt: sender.timestamp })
-      };
   }
 
   private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
@@ -1027,6 +1028,10 @@ function pressureDegradationPreference(
   preference: RTCDegradationPreference
 ): RTCDegradationPreference {
   return preference === 'maintain-framerate' ? 'maintain-framerate' : 'balanced';
+}
+
+function idleTurnPathProbeSnapshot(): TurnPathProbeSnapshot {
+  return { status: 'idle', probeTargetBps: 2_000_000 };
 }
 
 /** Per-sample increase of a cumulative counter; undefined until a baseline exists. */
