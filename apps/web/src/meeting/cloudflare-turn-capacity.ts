@@ -106,7 +106,7 @@ function isValidWindow(window: TurnProbeWindow): boolean {
   return Number.isFinite(window.durationMs)
     && window.durationMs > 0
     && Number.isFinite(window.confirmedBytes)
-    && window.confirmedBytes >= 0
+    && window.confirmedBytes > 0
     && Number.isFinite(window.offeredBps)
     && window.offeredBps > 0
     && Number.isFinite(window.lossRatio)
