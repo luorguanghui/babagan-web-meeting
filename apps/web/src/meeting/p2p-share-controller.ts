@@ -99,6 +99,7 @@ export interface P2pEncodingDiagnostics {
   profileTargetBitrateBps: number;
   transportBitrateCapBps: number;
   scaleResolutionDownBy: number;
+  provider?: P2pTurnProvider;
 }
 
 /**
@@ -415,14 +416,16 @@ class P2pShareControllerImpl implements P2pShareController {
     const snapshot = new Map<string, P2pEncodingDiagnostics>();
     for (const [identity, session] of this.sessions) {
       if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') continue;
-      const encoding = session.cloudflareEncodingState;
+      const isCloudflareTurn = session.state === 'turn' && session.turnProvider === 'cloudflare';
+      const encoding = isCloudflareTurn ? session.cloudflareEncodingState : undefined;
       const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
       snapshot.set(identity, {
         profileTargetBitrateBps: encoding?.profileTargetBitrateBps
           ?? this.activeOptions?.maxBitrate
           ?? session.options.maxBitrate,
         transportBitrateCapBps: encoding?.transportBitrateCapBps ?? session.options.maxBitrate,
-        scaleResolutionDownBy: encoding?.scaleResolutionDownBy ?? sourceScale
+        scaleResolutionDownBy: encoding?.scaleResolutionDownBy ?? sourceScale,
+        ...(session.state === 'turn' ? { provider: session.turnProvider } : {})
       });
     }
     return snapshot;

@@ -972,7 +972,8 @@ describe('p2p share controller', () => {
     expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
       profileTargetBitrateBps: 8_000_000,
       transportBitrateCapBps: 8_000_000,
-      scaleResolutionDownBy: 1
+      scaleResolutionDownBy: 1,
+      provider: 'cloudflare'
     });
 
     probes.items[0].setSnapshot({
@@ -994,6 +995,44 @@ describe('p2p share controller', () => {
     expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
       profileTargetBitrateBps: 8_000_000,
       transportBitrateCapBps: 9_200_000,
+      scaleResolutionDownBy: 1,
+      provider: 'cloudflare'
+    });
+  });
+
+  it('does not expose stale Cloudflare cap after a viewer returns to direct P2P', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    probes.items[0].setSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 40_000_000,
+      sampledAt: 1_000
+    });
+    for (let sample = 0; sample < 2; sample += 1) {
+      pc.senderStats = {
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 2_000_000 + sample * 5_000_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+    expect(controller.getEncodingDiagnostics?.().get('viewer-1')?.transportBitrateCapBps).toBe(9_200_000);
+
+    pc.statsCandidateType = 'srflx';
+    await runTransportChecks();
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+
+    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
+      profileTargetBitrateBps: 8_000_000,
+      transportBitrateCapBps: 8_000_000,
       scaleResolutionDownBy: 1
     });
   });

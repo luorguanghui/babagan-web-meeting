@@ -29,7 +29,7 @@ describe('WebRTC screen-share statistics', () => {
       remote: { id: 'remote', type: 'remote-inbound-rtp', kind: 'video', packetsLost: 6, roundTripTime: 0.08 },
       pair: {
         id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded',
-        availableOutgoingBitrate: 12_000_000, localCandidateId: 'local'
+        availableOutgoingBitrate: 12_000_000, packetsDiscardedOnSend: 3, localCandidateId: 'local'
       },
       local: {
         id: 'local', type: 'local-candidate', candidateType: 'relay',
@@ -44,7 +44,7 @@ describe('WebRTC screen-share statistics', () => {
       // The RTC estimate and the encoder's own target stay distinct fields.
       availableOutgoingBitrateMbps: 12, encoderTargetBitrateMbps: 6.5,
       selectedCandidateType: 'relay', selectedCandidateUrl: 'turn:turn.cloudflare.com:443?transport=tcp',
-      relayProtocol: 'tcp',
+      relayProtocol: 'tcp', packetsDiscardedOnSend: 3,
       nackCount: 4, pliCount: 2, firCount: 1
     });
   });

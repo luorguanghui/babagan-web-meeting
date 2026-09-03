@@ -194,6 +194,7 @@ const en = {
   'stats.bandwidth': 'Available outgoing bandwidth',
   'stats.limitation': 'Quality limitation',
   'stats.turnDiagnostics': 'TURN path diagnostics',
+  'stats.encodingDiagnostics': 'Per-viewer encoding diagnostics',
   'stats.turnProbeStatus': 'Probe status',
   'stats.turnProbeCapacity': 'Verified TURN capacity',
   'stats.turnProbeSampledAt': 'Probe sample time',
@@ -295,6 +296,7 @@ const zhCN: Record<MessageKey, Message> = {
   'screen.videoOnly': '由于浏览器无法避免会议回音，当前只共享画面，不共享电脑音频。', 'screen.echoRisk': '浏览器无法从系统音频中隔离会议声音，你已选择承担回音风险并继续。',
   'screen.chooseTab': '已取消屏幕共享。请选择浏览器标签页并启用“共享标签页音频”，以隔离内容音频。',
   'stats.selectedCandidateUrl': '选中候选 URL',
+  'stats.encodingDiagnostics': '逐观看者编码诊断',
   'audioWarning.heading': '系统音频回音保护', 'audioWarning.description': ({ surface }) => `浏览器无法确认会从所捕获的${surface}音频中移除会议声音，请选择继续方式。`,
   'audioWarning.videoOnly': '仅共享画面', 'audioWarning.continue': '继续共享系统音频', 'audioWarning.cancel': '取消并选择浏览器标签页'
 };

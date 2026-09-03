@@ -152,6 +152,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('main')).toHaveClass('meeting-room-sharing');
     expect(remoteTrack.attach).toHaveBeenCalledWith(video);
     expect(video).toHaveProperty('srcObject', stream);
+    expect(document.querySelector('.meeting-turn-probe-badge')).toBeNull();
   });
 
   it('groups the presentation workspace, control dock, and side panel around an active share', async () => {
@@ -1352,6 +1353,7 @@ describe('screen stage', () => {
         profileTargetBitrateBps: number;
         transportBitrateCapBps: number;
         scaleResolutionDownBy: number;
+        provider: 'cloudflare';
       }>;
       snapshot: {
         sampledAt: number;
@@ -1381,7 +1383,8 @@ describe('screen stage', () => {
       encodingDiagnostics={new Map([['viewer-1', {
         profileTargetBitrateBps: 8_000_000,
         transportBitrateCapBps: 9_200_000,
-        scaleResolutionDownBy: 1.1
+        scaleResolutionDownBy: 1.1,
+        provider: 'cloudflare'
       }]])}
       snapshot={{
         sampledAt: 1_000,
@@ -1397,13 +1400,16 @@ describe('screen stage', () => {
       }}
     />);
 
-    expect(screen.getAllByText('TURN path diagnostics')).toHaveLength(2);
+    expect(screen.getByText('TURN path diagnostics')).toBeVisible();
     expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+    expect(screen.getByText('1970-01-01T00:00:01.000Z')).toBeVisible();
     expect(screen.getByText('12.4 Mbps')).toBeVisible();
     expect(screen.getByText('Fixed profile target')).toBeVisible();
     expect(screen.getByText('8 Mbps')).toBeVisible();
     expect(screen.getByText('Dynamic transport cap')).toBeVisible();
     expect(screen.getByText('9.2 Mbps')).toBeVisible();
+    expect(screen.getByText('Selected provider')).toBeVisible();
+    expect(screen.getByText('cloudflare')).toBeVisible();
     expect(screen.getByText('Encoder target bitrate')).toBeVisible();
     expect(screen.getByText('7.5 Mbps')).toBeVisible();
     expect(screen.getByText('RTC available estimate')).toBeVisible();
@@ -1411,6 +1417,60 @@ describe('screen stage', () => {
     expect(screen.getByText('relay')).toBeVisible();
     expect(screen.getAllByText('Relay protocol')).toHaveLength(2);
     expect(screen.getAllByText('tcp')).toHaveLength(2);
+  });
+
+  it('keeps Cloudflare probe diagnostics visible for mixed TURN shares', () => {
+    const MixedStatsPanel = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264';
+      mode: 'mixed';
+      turnProvider: 'mixed';
+      embedded: true;
+      turnProbe: TurnPathProbeSnapshot;
+      snapshot: { sampledAt: number; sender: Record<string, never>; counters: Record<string, never> };
+    }>;
+    render(<MixedStatsPanel
+      requestedCodec="h264"
+      mode="mixed"
+      turnProvider="mixed"
+      embedded
+      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
+      snapshot={{ sampledAt: 1_000, sender: {}, counters: {} }}
+    />);
+
+    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+  });
+
+  it('shows independent TURN diagnostics when media stats are unavailable', () => {
+    const StatsPanelWithoutMedia = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264';
+      mode: 'turn';
+      turnProvider: 'cloudflare';
+      embedded: true;
+      turnProbe: TurnPathProbeSnapshot;
+      encodingDiagnostics: ReadonlyMap<string, {
+        profileTargetBitrateBps: number;
+        transportBitrateCapBps: number;
+        scaleResolutionDownBy: number;
+        provider: 'cloudflare';
+      }>;
+    }>;
+    render(<StatsPanelWithoutMedia
+      requestedCodec="h264"
+      mode="turn"
+      turnProvider="cloudflare"
+      embedded
+      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
+      encodingDiagnostics={new Map([['viewer-1', {
+        profileTargetBitrateBps: 8_000_000,
+        transportBitrateCapBps: 8_000_000,
+        scaleResolutionDownBy: 1,
+        provider: 'cloudflare'
+      }]])}
+    />);
+
+    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+    expect(screen.getByText('Fixed profile target')).toBeVisible();
+    expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
   });
 
   it('reports the replacement source ready only after its probe renders a frame', () => {
@@ -1887,7 +1947,7 @@ describe('P2P-first screen sharing in the room', () => {
       sampledAt: 1_000
     }));
 
-    expect(await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-uplink-badge' })).toBeVisible();
+    expect(await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
   });
 
   it('shows remeasuring copy while the probe revalidates a previous result', async () => {
@@ -1913,7 +1973,7 @@ describe('P2P-first screen sharing in the room', () => {
       stableCapacityBps: 12_400_000,
       sampledAt: 1_000
     }));
-    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-uplink-badge' });
+    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
     act(() => share.triggerProbeSnapshot({
       status: 'stale',
       probeTargetBps: 4_000_000,
@@ -1921,7 +1981,7 @@ describe('P2P-first screen sharing in the room', () => {
       sampledAt: 61_000
     }));
 
-    expect(await screen.findByText('Cloudflare TURN path probe: remeasuring (last 12.4 Mbps)', { selector: '.meeting-uplink-badge' })).toBeVisible();
+    expect(await screen.findByText('Cloudflare TURN path probe: remeasuring (last 12.4 Mbps)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
   });
 
   it('shows the unavailable probe copy without blaming the TURN connection', async () => {
@@ -1943,7 +2003,7 @@ describe('P2P-first screen sharing in the room', () => {
     act(() => share.triggerStates([['viewer-1', 'turn']]));
     act(() => share.triggerProbeSnapshot({ status: 'error', probeTargetBps: 2_000_000 }));
 
-    expect(await screen.findByText('Cloudflare TURN path probe unavailable (does not affect the TURN connection)', { selector: '.meeting-uplink-badge' })).toBeVisible();
+    expect(await screen.findByText('Cloudflare TURN path probe unavailable (does not affect the TURN connection)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
   });
 
   it('never requests speed.cloudflare.com from the room page', async () => {
@@ -1970,7 +2030,7 @@ describe('P2P-first screen sharing in the room', () => {
       stableCapacityBps: 12_400_000,
       sampledAt: 1_000
     }));
-    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-uplink-badge' });
+    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
 
     const requestedUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
     expect(requestedUrls.some((url) => url.includes('speed.cloudflare.com'))).toBe(false);
@@ -2001,7 +2061,7 @@ describe('P2P-first screen sharing in the room', () => {
       sampledAt: 1_000
     }));
 
-    expect(document.querySelector('.meeting-uplink-badge')).toBeNull();
+    expect(document.querySelector('.meeting-turn-probe-badge')).toBeNull();
   });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
