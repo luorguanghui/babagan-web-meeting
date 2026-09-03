@@ -312,6 +312,7 @@ export function MeetingRoomPage({
         slug,
         signaling,
         fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
+        cloudflareTurnControlMode: 'observe',
         ...deps
       });
     }

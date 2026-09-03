@@ -24,6 +24,7 @@ const RESULT_TIMEOUT_MS = 3_000;
 const RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const PACE_TICK_MS = 20;
 const MAX_PENDING_VERIFICATIONS = 2;
+const MAX_REMOTE_PENDING_DATA_BYTES = 2 * 1024 * 1024;
 
 type ProbeControlMessage =
   | { type: 'start'; windowId: number; offeredBps: number; durationMs: number }
@@ -111,6 +112,7 @@ export function createCloudflareTurnPathProbe(
   let cancelResultWait: (() => void) | undefined;
   let cancelRemoteResultTimer: (() => void) | undefined;
   let resolvePaceTick: (() => void) | undefined;
+  let remotePendingData: ArrayBuffer[] = [];
 
   const probe: CloudflareTurnPathProbe = {
     async start(iceServers: RTCIceServer[]): Promise<void> {
@@ -185,6 +187,11 @@ export function createCloudflareTurnPathProbe(
     relayValidated = false;
     windowActive = false;
     remoteCounters = undefined;
+    remotePendingData = [];
+    cancelResultWait?.();
+    cancelResultWait = undefined;
+    cancelRemoteResultTimer?.();
+    cancelRemoteResultTimer = undefined;
     resolveResult = undefined;
     rejectResult?.(new Error('probe stopped'));
     rejectResult = undefined;
@@ -401,6 +408,7 @@ export function createCloudflareTurnPathProbe(
       confirmedBytes: result.confirmedBytes,
       durationMs: LADDER_WINDOW_DURATION_MS,
       lossRatio,
+      pendingBytesAtEnd: dataChannel?.bufferedAmount ?? 0,
       sampledAt: now(),
       selectedProtocol
     };
@@ -443,9 +451,11 @@ export function createCloudflareTurnPathProbe(
       resolveResult = resolve;
       rejectResult = reject;
       cancelResultWait = schedule(() => {
+        const rejectResultWait = rejectResult;
         resolveResult = undefined;
         rejectResult = undefined;
-        reject(new Error('probe result timed out'));
+        cancelResultWait = undefined;
+        rejectResultWait?.(new Error('probe result timed out'));
       }, RESULT_TIMEOUT_MS + RESULT_GRACE_MS);
     });
   }
@@ -454,13 +464,25 @@ export function createCloudflareTurnPathProbe(
     channel.binaryType = 'arraybuffer';
     channel.onmessage = ({ data }) => {
       const counters = remoteCounters;
-      if (!counters || !(data instanceof ArrayBuffer)) return;
-      const view = new DataView(data);
-      if (view.getUint32(0) !== counters.windowId) return;
-      counters.confirmedBytes += data.byteLength;
-      counters.receivedMessages += 1;
-      counters.highestSequence = Math.max(counters.highestSequence, view.getUint32(4));
+      if (!(data instanceof ArrayBuffer)) return;
+      if (!counters) {
+        const pendingBytes = remotePendingData.reduce((total, frame) => total + frame.byteLength, 0);
+        if (pendingBytes + data.byteLength <= MAX_REMOTE_PENDING_DATA_BYTES) {
+          remotePendingData.push(data);
+        }
+        return;
+      }
+      recordRemoteData(counters, data);
     };
+  }
+
+  function recordRemoteData(counters: RemoteWindowCounters, data: ArrayBuffer): void {
+    if (data.byteLength < TURN_PROBE_HEADER_BYTES) return;
+    const view = new DataView(data);
+    if (view.getUint32(0) !== counters.windowId) return;
+    counters.confirmedBytes += data.byteLength;
+    counters.receivedMessages += 1;
+    counters.highestSequence = Math.max(counters.highestSequence, view.getUint32(4));
   }
 
   function attachRemoteControlChannel(channel: RTCDataChannel): void {
@@ -480,9 +502,13 @@ export function createCloudflareTurnPathProbe(
         receivedMessages: 0,
         highestSequence: 0
       };
+      const pending = remotePendingData;
+      remotePendingData = [];
+      for (const frame of pending) recordRemoteData(remoteCounters, frame);
       cancelRemoteResultTimer = schedule(() => {
         const counters = remoteCounters;
         if (!counters || counters.windowId !== message.windowId) return;
+        cancelRemoteResultTimer = undefined;
         try {
           // The remote side replies on its own channel, back toward the sender.
           channel.send(JSON.stringify({

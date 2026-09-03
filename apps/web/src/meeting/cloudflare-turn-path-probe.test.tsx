@@ -352,6 +352,23 @@ describe('Cloudflare TURN path probe', () => {
     expect(startMessages(control)).toHaveLength(TURN_PROBE_LADDER_BPS.length + 2);
   });
 
+  it('does not count data delivered before the control start message as loss', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    const data = wireNetwork(left, right);
+    const leftControl = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+    const rightControl = right.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+    // Data and control channels have independent delivery order in WebRTC.
+    leftControl.forwardTo = null;
+    probe.requestVerification();
+
+    await clock.settleUntil(() => data.frames.length > 3);
+    rightControl.receive(leftControl.frames[0]!);
+    leftControl.forwardTo = rightControl;
+    await clock.settleUntil(() => probe.getSnapshot().measuredCapacityBps !== undefined);
+
+    expect(probe.getSnapshot().lossRatio).toBe(0);
+  });
+
   it('invalidates a window when the document is hidden', async () => {
     let visible = false;
     const { clock, left, right, probe } = await startedProbe({ isDocumentVisible: () => visible });
