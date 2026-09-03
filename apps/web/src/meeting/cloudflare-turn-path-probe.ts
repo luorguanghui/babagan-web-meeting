@@ -102,6 +102,7 @@ export function createCloudflareTurnPathProbe(
   let retryAttempt = 0;
   let cancelDriver: (() => void) | undefined;
   let cancelRetry: (() => void) | undefined;
+  let cancelChannelPoll: (() => void) | undefined;
   let sentMessages = 0;
   let paceBudgetBytes = 0;
   let remoteCounters: RemoteWindowCounters | undefined;
@@ -143,8 +144,10 @@ export function createCloudflareTurnPathProbe(
       teardownConnections();
       cancelDriver?.();
       cancelRetry?.();
+      cancelChannelPoll?.();
       cancelDriver = undefined;
       cancelRetry = undefined;
+      cancelChannelPoll = undefined;
     }
   };
 
@@ -191,6 +194,8 @@ export function createCloudflareTurnPathProbe(
 
   async function negotiate(): Promise<void> {
     teardownConnections();
+    cancelChannelPoll?.();
+    cancelChannelPoll = undefined;
     const configuration: RTCConfiguration = { iceServers: lastIceServers, iceTransportPolicy: 'relay' };
     left = createPeerConnection(configuration);
     right = createPeerConnection(configuration);
@@ -250,8 +255,8 @@ export function createCloudflareTurnPathProbe(
   function waitForOpenChannels(): Promise<void> {
     const deadline = now() + NEGOTIATION_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
-      let cancelPoll: () => void = () => undefined;
       const poll = () => {
+        cancelChannelPoll = undefined;
         if (stopped) {
           reject(new Error('probe stopped'));
           return;
@@ -265,7 +270,7 @@ export function createCloudflareTurnPathProbe(
           reject(new Error('probe data channels did not open'));
           return;
         }
-        cancelPoll = schedule(poll, CHANNEL_POLL_MS);
+        cancelChannelPoll = schedule(poll, CHANNEL_POLL_MS);
       };
       poll();
     });

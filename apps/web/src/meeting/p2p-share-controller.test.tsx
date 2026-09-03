@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
+  P2P_TOTAL_UPLINK_BUDGET_BPS,
   type P2pScreenBitrate
 } from '@meeting/contracts';
 
@@ -256,12 +257,13 @@ interface FakeTurnPathProbe {
   };
   listeners: Set<(snapshot: TurnPathProbeSnapshot) => void>;
   publishedSnapshots: TurnPathProbeSnapshot[];
+  setSnapshot(next: TurnPathProbeSnapshot): void;
 }
 
 function createFakeTurnPathProbe(): FakeTurnPathProbe {
   const listeners = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
   const publishedSnapshots: TurnPathProbeSnapshot[] = [];
-  const current: TurnPathProbeSnapshot = {
+  let current: TurnPathProbeSnapshot = {
     status: 'ready',
     probeTargetBps: 2_000_000,
     stableCapacityBps: 4_000_000,
@@ -279,7 +281,14 @@ function createFakeTurnPathProbe(): FakeTurnPathProbe {
     }),
     stop: vi.fn(async () => undefined)
   };
-  return { probe, listeners, publishedSnapshots };
+  return {
+    probe,
+    listeners,
+    publishedSnapshots,
+    setSnapshot(next: TurnPathProbeSnapshot) {
+      current = next;
+    }
+  };
 }
 
 function makeHarness(options: {
@@ -287,6 +296,7 @@ function makeHarness(options: {
   turnProvider?: 'coturn' | 'cloudflare';
   turnCredentialsExpiresAt?: number;
   probes?: boolean;
+  control?: boolean;
 } = {}) {
   const signaling: P2pShareSignaling = { sendOffer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
   const onViewerFallback = vi.fn();
@@ -317,7 +327,7 @@ function makeHarness(options: {
     },
     onViewerFallback,
     onAllViewersClosed,
-    ...(options.probes
+    ...(options.probes || options.control
       ? {
         createTurnPathProbe: () => {
           const fake = createFakeTurnPathProbe();
@@ -326,7 +336,8 @@ function makeHarness(options: {
           return fake.probe as unknown as CloudflareTurnPathProbe;
         }
       }
-      : {})
+      : {}),
+    ...(options.control ? { cloudflareTurnControlMode: 'control' as const } : {})
   });
   const runTransportChecks = async () => {
     await Promise.all([...transportChecks].map((check) => check()));
@@ -916,6 +927,236 @@ describe('p2p share controller', () => {
     // Observation mode: the published snapshot alone never touches the sender.
     expect(senderMaxBitrate(pc)).toBe(8_000_000);
     expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1).toBeLessThanOrEqual(1.1);
+  });
+
+  it('raises maxBitrate without changing the profile target when probe capacity is high', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    probes.items[0].setSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 40_000_000,
+      sampledAt: 1_000
+    });
+    for (let sample = 0; sample < 2; sample += 1) {
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 2_000_000 + sample * 5_000_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    // One 15% step on the transport cap; the probe headroom and profile target
+    // never let it jump straight to the measured 40 Mbps.
+    expect(senderMaxBitrate(pc)).toBe(9_200_000);
+  });
+
+  it('does not lower maxBitrate for one low probe or one low RTC estimate', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    probes.items[0].setSnapshot({
+      status: 'probing',
+      probeTargetBps: 2_000_000,
+      measuredCapacityBps: 500_000,
+      sampledAt: 1_000
+    });
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 500_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 10,
+      bytesSent: 2_000_000,
+      timestamp: 1_000
+    };
+    await runTransportChecks();
+
+    expect(senderMaxBitrate(pc)).toBe(8_000_000);
+    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1).toBe(1);
+  });
+
+  it('backs off only the pressured viewer after corroborated low probe windows', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0], viewers[1]]);
+    const pressured = FakeRTCPeerConnection.instances[0];
+    const healthy = FakeRTCPeerConnection.instances[1];
+    for (const pc of [pressured, healthy]) {
+      pc.statsCandidateType = 'relay';
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
+    }
+    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn']));
+
+    for (let sample = 0; sample < 3; sample += 1) {
+      probes.items[0].setSnapshot({
+        status: 'ready',
+        probeTargetBps: 2_000_000,
+        measuredCapacityBps: 1_500_000,
+        stableCapacityBps: 1_500_000,
+        sampledAt: 1_000 + sample * 1_000
+      });
+      pressured.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 8,
+        bytesSent: 2_000_000 + sample * 500_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      healthy.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'none',
+        framesPerSecond: 30,
+        bytesSent: 9_000_000 + sample * 5_000_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    expect(senderMaxBitrate(pressured)).toBeLessThan(8_000_000);
+    expect(senderMaxBitrate(healthy)).toBe(8_000_000);
+  });
+
+  it('does not include Cloudflare viewers in the aggregate uplink budget', async () => {
+    const roster: Peer[] = [
+      ...viewers,
+      { identity: 'viewer-5', nickname: 'Eve' },
+      { identity: 'viewer-6', nickname: 'Fay' },
+      { identity: 'viewer-7', nickname: 'Gus' }
+    ];
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, roster);
+    const cloudflarePc = FakeRTCPeerConnection.instances[0];
+    cloudflarePc.statsCandidateType = 'relay';
+    cloudflarePc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    for (let index = 1; index < roster.length; index += 1) {
+      const pc = FakeRTCPeerConnection.instances[index];
+      pc.statsCandidateType = 'srflx';
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady(roster[index].identity);
+    }
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await runTransportChecks();
+
+    // Six budgeted direct viewers squeeze the 40 Mbps budget to ~6.67 Mbps each,
+    // while the Cloudflare viewer keeps the full profile tier.
+    expect(senderMaxBitrate(cloudflarePc)).toBe(8_000_000);
+    expect(senderMaxBitrate(FakeRTCPeerConnection.instances[1])).toBe(Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / 6));
+  });
+
+  it('requests probe verification when sender pressure begins', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'none',
+      framesPerSecond: 30,
+      bytesSent: 1_000_000,
+      timestamp: 1_000
+    };
+    await runTransportChecks();
+    expect(probes.items[0].probe.requestVerification).not.toHaveBeenCalled();
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 1_500_000,
+      timestamp: 2_000
+    };
+    await runTransportChecks();
+    expect(probes.items[0].probe.requestVerification).toHaveBeenCalledTimes(1);
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 2_000_000,
+      timestamp: 3_000
+    };
+    await runTransportChecks();
+    expect(probes.items[0].probe.requestVerification).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies continuous scale and 540p hard protection', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    const scales: number[] = [];
+    for (let sample = 0; sample < 6; sample += 1) {
+      probes.items[0].setSnapshot({
+        status: 'ready',
+        probeTargetBps: 2_000_000,
+        measuredCapacityBps: 1_500_000,
+        stableCapacityBps: 1_500_000,
+        sampledAt: 1_000 + sample * 1_000
+      });
+      pc.senderStats = {
+        availableOutgoingBitrateBps: 700_000,
+        qualityLimitationReason: 'bandwidth',
+        framesPerSecond: 8,
+        bytesSent: 2_000_000 + sample * 500_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+      scales.push(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1);
+    }
+
+    expect(scales[0]).toBe(1);
+    expect(scales.at(-1)!).toBeGreaterThan(1.1);
+    for (let index = 1; index < scales.length; index += 1) {
+      expect(scales[index] / scales[index - 1]).toBeLessThanOrEqual(1.1 + 1e-9);
+    }
+
+    // The browser itself dropped to a 480p short side: hard protection kicks in.
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 6_000_000,
+      timestamp: 10_000,
+      frameWidth: 854,
+      frameHeight: 480
+    };
+    await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 6_500_000,
+      timestamp: 11_000,
+      frameWidth: 1728,
+      frameHeight: 1080
+    };
+    await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
   });
 
   it('uses an independent Cloudflare upload test without trusting a low RTC estimate', async () => {

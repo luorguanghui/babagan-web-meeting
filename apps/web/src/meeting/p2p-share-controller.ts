@@ -203,6 +203,8 @@ interface ViewerSession {
   /** Previous outbound sample used to derive the actual video bitrate. */
   lastSenderBytesSent?: number;
   lastSenderStatsTimestamp?: number;
+  /** Previous ICE-layer discard counter; the delta is the per-sample pressure. */
+  lastPacketsDiscardedOnSend?: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
@@ -740,22 +742,37 @@ class P2pShareControllerImpl implements P2pShareController {
   /**
    * Cloudflare relay sessions are controlled per connection. The fixed quality
    * tier is the profile target; the dynamic transport cap follows the measured
-   * Cloudflare capacity and corroborated congestion only. Until the TURN path
-   * probe lands, the HTTPS uplink estimate feeds a synthetic probe snapshot.
+   * Cloudflare capacity and corroborated congestion only. In `'control'` mode
+   * the independent TURN path probe drives the cap; `'observe'` keeps the
+   * legacy HTTPS estimate as a synthetic snapshot until the HTTPS probe is
+   * removed entirely.
    */
   private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
     const sourceSettings = session.videoSender?.track?.getSettings?.() ?? {};
     const sourceShortSide = computeCloudflareSourceShortSide(sourceSettings);
     const created = session.cloudflareEncodingState === undefined;
+    // The profile target is the user's share-level tier, NOT session.options:
+    // a Cloudflare session budgeted while still negotiating would otherwise
+    // inherit a squeezed aggregate share as its permanent quality target.
+    const profileTargetBps = this.activeOptions?.maxBitrate ?? session.options.maxBitrate;
     const previous = session.cloudflareEncodingState
-      ?? createCloudflareEncodingState(session.options.maxBitrate);
+      ?? createCloudflareEncodingState(profileTargetBps);
+    const controlMode = this.cloudflareTurnControlMode === 'control';
+    const discardedDelta = deltaOf(sender.packetsDiscardedOnSend, session.lastPacketsDiscardedOnSend);
+    session.lastPacketsDiscardedOnSend = sender.packetsDiscardedOnSend;
     const next = updateCloudflareEncoding({
       previous,
       measurement: {
-        turnProbe: this.syntheticTurnProbeSnapshot(sender),
+        turnProbe: controlMode
+          ? this.getTurnPathProbeSnapshot()
+          : this.syntheticTurnProbeSnapshot(sender),
         availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
         actualOutgoingBitrateBps,
+        encoderTargetBitrateBps: sender.encoderTargetBitrateBps,
+        roundTripTimeMs: sender.roundTripTimeMs,
+        packetLossRatio: remoteLossRatio(sender),
+        packetsDiscardedOnSendDelta: discardedDelta,
         qualityLimitationReason: sender.qualityLimitationReason,
         framesPerSecond: sender.framesPerSecond,
         targetFrameRate: session.options.frameRate,
@@ -765,6 +782,11 @@ class P2pShareControllerImpl implements P2pShareController {
       ...(sourceShortSide === undefined ? {} : { sourceShortSide })
     });
     session.cloudflareEncodingState = next;
+    if (controlMode && previous.bandwidthPressureSamples === 0
+      && next.bandwidthPressureSamples === 1) {
+      // Pressure just began on this viewer: ask the probe for fresh windows.
+      this.turnPathProbe?.requestVerification();
+    }
     const encodingChanged = next.transportBitrateCapBps !== previous.transportBitrateCapBps
       || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
       || next.hardResolutionProtection !== previous.hardResolutionProtection;
@@ -832,10 +854,12 @@ class P2pShareControllerImpl implements P2pShareController {
             maxFramerate: options.frameRate,
             ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
-          degradationPreference: session.resolutionProtected
-            ? 'maintain-resolution'
-            : cloudflareAdaptive
-              ? 'maintain-framerate'
+          degradationPreference: cloudflareAdaptive
+            ? (session.cloudflareEncodingState!.hardResolutionProtection
+              ? 'maintain-resolution'
+              : 'maintain-framerate')
+            : session.resolutionProtected
+              ? 'maintain-resolution'
               : session.degradationRelaxed
                 ? pressureDegradationPreference(options.degradationPreference)
                 : options.degradationPreference
@@ -1003,6 +1027,22 @@ function pressureDegradationPreference(
   preference: RTCDegradationPreference
 ): RTCDegradationPreference {
   return preference === 'maintain-framerate' ? 'maintain-framerate' : 'balanced';
+}
+
+/** Per-sample increase of a cumulative counter; undefined until a baseline exists. */
+function deltaOf(current: number | undefined, previous: number | undefined): number | undefined {
+  if (current === undefined) return undefined;
+  if (previous === undefined || current < previous) return undefined;
+  return current - previous;
+}
+
+/** Remote reception loss ratio; undefined when the remote report is missing. */
+function remoteLossRatio(sender: SenderVideoStats): number | undefined {
+  const lost = sender.remotePacketsLost;
+  const received = sender.remotePacketsReceived;
+  if (lost === undefined || received === undefined || lost < 0 || received <= 0) return undefined;
+  const total = lost + received;
+  return total > 0 ? lost / total : undefined;
 }
 
 /**
