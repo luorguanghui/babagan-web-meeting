@@ -1,5 +1,6 @@
 import type { JoinMeetingResponse, ScreenShareCodec } from '@meeting/contracts';
 import {
+  AudioPresets,
   Room,
   RoomEvent,
   Track,
@@ -226,10 +227,18 @@ class RoomController implements MeetingRoomController {
         degradationPreference: options.degradationPreference,
         ...(options.codec === 'auto' ? {} : { videoCodec: options.codec })
       }
-    }, ...stream.getAudioTracks().map((track) => ({
-      track,
-      options: { source: Track.Source.ScreenShareAudio, stream: 'screen-share' }
-    }))];
+    }, ...stream.getAudioTracks().map((track) => {
+      track.contentHint = 'music';
+      return {
+        track,
+        options: {
+          source: Track.Source.ScreenShareAudio,
+          stream: 'screen-share',
+          audioPreset: AudioPresets.musicStereo,
+          dtx: false
+        }
+      };
+    })];
     const published: MediaStreamTrack[] = [];
     try {
       for (const value of tracks) {

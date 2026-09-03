@@ -29,6 +29,7 @@ export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQu
 
 export const screenShareDefaultQuality: ScreenShareQuality = 'standard';
 export const screenShareContentHint = 'detail' as const;
+export const screenShareAudioContentHint = 'music' as const;
 
 /**
  * P2P screen-share bitrate tiers (contracts constants): the direct peer-to-peer
@@ -137,7 +138,12 @@ class BrowserScreenShareController implements ScreenShareController {
           height: { ideal: settings.height },
           frameRate: { ideal: settings.frameRate }
         },
-        audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
+        audio: {
+          autoGainControl: false,
+          echoCancellation: false,
+          noiseSuppression: false,
+          restrictOwnAudio: true
+        } as MediaTrackConstraints & {
           restrictOwnAudio: boolean;
         },
         systemAudio: 'include',
@@ -158,6 +164,14 @@ class BrowserScreenShareController implements ScreenShareController {
       const displaySurface = videoTrack.getSettings?.().displaySurface;
       const [audioTrack] = stream.getAudioTracks();
       if (audioTrack) {
+        audioTrack.contentHint = screenShareAudioContentHint;
+        await (typeof audioTrack.applyConstraints === 'function'
+          ? audioTrack.applyConstraints({
+            autoGainControl: false,
+            echoCancellation: false,
+            noiseSuppression: false
+          }).catch(() => undefined)
+          : undefined);
         const ownAudioRestricted = await this.verifyOwnAudioRestriction(audioTrack);
         if ((displaySurface === 'monitor' || displaySurface === 'window') && !ownAudioRestricted) {
           const choice = await this.dependencies.chooseUnrestrictedSystemAudio({ displaySurface });

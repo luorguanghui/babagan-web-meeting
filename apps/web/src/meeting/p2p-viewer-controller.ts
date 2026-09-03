@@ -6,7 +6,7 @@ import {
 } from '@meeting/contracts';
 
 import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
-import { deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
+import { configureOpusSdp, deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
 export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
 
@@ -148,11 +148,13 @@ export class P2pViewerController {
       await session.pc.setRemoteDescription({ type: 'offer', sdp });
       if (!this.ownsSession(session)) return;
       const answer = await session.pc.createAnswer();
-      await session.pc.setLocalDescription(answer);
+      const answerSdp = answer.sdp !== undefined ? configureOpusSdp(answer.sdp) : undefined;
+      const answerWithSdp = answerSdp !== undefined ? { ...answer, sdp: answerSdp } : answer;
+      await session.pc.setLocalDescription(answerWithSdp);
       if (!this.ownsSession(session)) return;
-      if (answer.sdp === undefined) throw new Error('createAnswer returned no SDP');
-      if (session.generation === undefined) this.signaling.sendAnswer(this.sharerIdentity, answer.sdp);
-      else this.signaling.sendAnswer(this.sharerIdentity, answer.sdp, session.generation);
+      if (answerWithSdp.sdp === undefined) throw new Error('createAnswer returned no SDP');
+      if (session.generation === undefined) this.signaling.sendAnswer(this.sharerIdentity, answerWithSdp.sdp);
+      else this.signaling.sendAnswer(this.sharerIdentity, answerWithSdp.sdp, session.generation);
       await this.flushCandidates(session);
       if (!this.ownsSession(session)) return;
       this.armMediaTimer(session);

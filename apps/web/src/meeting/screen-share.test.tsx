@@ -762,7 +762,12 @@ describe('controlled browser screen sharing', () => {
         height: { ideal: 1080 },
         frameRate: { ideal: 60 }
       },
-      audio: { restrictOwnAudio: true },
+      audio: {
+        autoGainControl: false,
+        echoCancellation: false,
+        noiseSuppression: false,
+        restrictOwnAudio: true
+      },
       systemAudio: 'include',
       windowAudio: 'window',
       selfBrowserSurface: 'exclude'
@@ -774,6 +779,7 @@ describe('controlled browser screen sharing', () => {
       codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
+    expect(stream.getAudioTracks()[0]?.contentHint).toBe('music');
   });
 
   it('captures and publishes at the flow preset (resolution first, 720p30)', async () => {

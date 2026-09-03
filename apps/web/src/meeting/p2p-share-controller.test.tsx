@@ -9,6 +9,7 @@ import {
 import type { Peer } from './p2p-signaling.js';
 import {
   computeResolutionScale,
+  configureOpusSdp,
   createP2pShareController,
   deserializeIceCandidate,
   serializeIceCandidate,
@@ -1504,5 +1505,25 @@ describe('ice candidate serialization', () => {
 
   it('falls back to a bare candidate for JSON that is not an init', () => {
     expect(deserializeIceCandidate('{"not":"an init"}')).toEqual({ candidate: '{"not":"an init"}' });
+  });
+});
+describe('Opus SDP configuration for high-fidelity screen audio', () => {
+  it('leaves non-Opus and mock SDP untouched', () => {
+    expect(configureOpusSdp('offer-pc-1')).toBe('offer-pc-1');
+    expect(configureOpusSdp('v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000')).toBe(
+      'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 0\r\na=rtpmap:0 PCMU/8000'
+    );
+  });
+
+  it('injects stereo, sprop-stereo, and maxaveragebitrate into existing Opus fmtp line', () => {
+    const sdp = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 minptime=10;useinbandfec=1';
+    const modified = configureOpusSdp(sdp);
+    expect(modified).toContain('a=fmtp:111 minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000');
+  });
+
+  it('does not duplicate parameters if already present', () => {
+    const sdp = 'v=0\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\na=rtpmap:111 opus/48000/2\r\na=fmtp:111 stereo=1;sprop-stereo=1;maxaveragebitrate=128000';
+    const modified = configureOpusSdp(sdp);
+    expect(modified).toBe(sdp);
   });
 });

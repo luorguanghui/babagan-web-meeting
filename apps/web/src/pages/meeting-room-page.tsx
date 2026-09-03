@@ -1148,7 +1148,11 @@ export function MeetingRoomPage({
  * P2P sessions are sending.
  */
 function cloneShareStream(stream: MediaStream): MediaStream {
-  const tracks = stream.getTracks().map((track) => track.clone());
+  const tracks = stream.getTracks().map((track) => {
+    const cloned = track.clone();
+    if (track.contentHint) cloned.contentHint = track.contentHint;
+    return cloned;
+  });
   return {
     getTracks: () => tracks,
     getVideoTracks: () => tracks.filter((track) => track.kind === 'video'),

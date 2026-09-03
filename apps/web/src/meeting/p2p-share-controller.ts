@@ -509,6 +509,7 @@ class P2pShareControllerImpl implements P2pShareController {
       session.videoSender = transceiver.sender;
     }
     for (const track of stream.getAudioTracks().slice(0, 1)) {
+      track.contentHint = 'music';
       pc.addTrack(track, stream);
     }
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
@@ -525,10 +526,12 @@ class P2pShareControllerImpl implements P2pShareController {
         await this.applySenderParameters(session);
       }
       const offer = await session.pc.createOffer();
-      await session.pc.setLocalDescription(offer);
+      const sdp = offer.sdp !== undefined ? configureOpusSdp(offer.sdp) : undefined;
+      const offerWithSdp = sdp !== undefined ? { ...offer, sdp } : offer;
+      await session.pc.setLocalDescription(offerWithSdp);
       if (session.state === 'closed' || session.state === 'livekit-fallback') return; // left or fell back mid-establish
-      if (offer.sdp === undefined) throw new Error('createOffer returned no SDP');
-      this.deps.signaling.sendOffer(session.identity, offer.sdp, session.generation, session.turnProvider);
+      if (offerWithSdp.sdp === undefined) throw new Error('createOffer returned no SDP');
+      this.deps.signaling.sendOffer(session.identity, offerWithSdp.sdp, session.generation, session.turnProvider);
       session.offerSent = true;
       this.flushLocalCandidates(session);
       this.armNegotiationTimer(session);
@@ -1007,6 +1010,31 @@ function applyCodecPreference(transceiver: RTCRtpTransceiver, codec: ScreenShare
     .filter((codecCapability) => codecCapability.mimeType.toLowerCase() === wanted)
     .concat(capabilities.filter((codecCapability) => codecCapability.mimeType.toLowerCase() !== wanted));
   if (preferred.length > 0) transceiver.setCodecPreferences(preferred);
+}
+
+/**
+ * Configures Opus codec in the SDP for high-fidelity stereo audio and higher bitrate.
+ * If the SDP does not contain Opus (e.g. mock test SDP), it is returned unchanged.
+ */
+export function configureOpusSdp(sdp: string): string {
+  const opusMatch = sdp.match(/a=rtpmap:(\d+)\s+opus\/48000\/2/i);
+  if (!opusMatch) return sdp;
+  const pt = opusMatch[1];
+  const fmtpRegex = new RegExp(`a=fmtp:${pt}\\s+(.*)`);
+  if (fmtpRegex.test(sdp)) {
+    return sdp.replace(fmtpRegex, (_match, params) => {
+      const existing = params.split(';').map((p: string) => p.trim());
+      const additions = ['stereo=1', 'sprop-stereo=1', 'maxaveragebitrate=128000'];
+      for (const add of additions) {
+        const key = add.split('=')[0];
+        if (!existing.some((p: string) => p.startsWith(`${key}=`))) {
+          existing.push(add);
+        }
+      }
+      return `a=fmtp:${pt} ${existing.join(';')}`;
+    });
+  }
+  return sdp.replace(opusMatch[0], `${opusMatch[0]}\r\na=fmtp:${pt} minptime=10;useinbandfec=1;stereo=1;sprop-stereo=1;maxaveragebitrate=128000`);
 }
 
 function defaultFetchIceServers(slug: string): () => Promise<P2pIceServerConfiguration> {
