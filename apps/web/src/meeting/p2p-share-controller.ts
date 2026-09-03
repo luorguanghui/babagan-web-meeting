@@ -25,6 +25,11 @@ import {
   updateCloudflareEncoding,
   type CloudflareEncodingState
 } from './cloudflare-adaptive-encoding.js';
+import {
+  createCloudflareTurnPathProbe,
+  type CloudflareTurnPathProbe
+} from './cloudflare-turn-path-probe.js';
+import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import type { Peer } from './p2p-signaling.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
@@ -82,6 +87,10 @@ export interface P2pShareController {
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
   /** Supplies the latest independent Cloudflare edge upload measurement. */
   setCloudflareUplinkEstimate?(bitrateBps: number): void;
+  /** Current TURN path probe snapshot, or an idle snapshot before the first probe. */
+  getTurnPathProbeSnapshot?(): TurnPathProbeSnapshot;
+  /** Subscribes to immutable TURN path probe snapshots; never mutates senders. */
+  subscribeTurnPathProbe?(listener: (snapshot: TurnPathProbeSnapshot) => void): () => void;
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
@@ -110,6 +119,13 @@ export interface P2pShareControllerDependencies {
   onAllViewersClosed?: () => void;
   /** Injectable scheduler used by tests; production samples the selected ICE pair once per second. */
   scheduleTransportChecks?: (check: () => Promise<void>, intervalMs: number) => () => void;
+  /** TURN path probe factory; defaults to the browser relay-to-relay loopback probe. */
+  createTurnPathProbe?: () => CloudflareTurnPathProbe;
+  /**
+   * `'observe'` (default) publishes probe snapshots without letting them touch
+   * sender parameters; `'control'` lets the probe drive per-viewer transport caps.
+   */
+  cloudflareTurnControlMode?: 'observe' | 'control';
   /** Monotonic clock (ms); defaults to `Date.now`. Injectable for deadline tests. */
   now?: () => number;
 }
@@ -193,9 +209,12 @@ class P2pShareControllerImpl implements P2pShareController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private readonly fetchIceServers: () => Promise<RTCIceServer[] | P2pIceServerConfiguration>;
   private readonly scheduleTransportChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
+  private readonly createTurnPathProbe: () => CloudflareTurnPathProbe;
+  private readonly cloudflareTurnControlMode: 'observe' | 'control';
   private readonly nowMs: () => number;
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
+  private readonly probeListeners = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
   private iceConfiguration?: P2pIceServerConfiguration;
   private iceRefreshTimer?: ReturnType<typeof setTimeout>;
   /** The captured share the sessions publish; kept for retry re-drives. */
@@ -203,6 +222,9 @@ class P2pShareControllerImpl implements P2pShareController {
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
   private cloudflareUplinkEstimateBps?: number;
+  private turnPathProbe?: CloudflareTurnPathProbe;
+  private turnPathProbeIceServers?: RTCIceServer[];
+  private turnPathProbeUnsubscribe?: () => void;
   private nextGeneration = 0;
   private nextRetryToken = 0;
   private readonly pendingRetryTokens = new Map<string, number>();
@@ -215,6 +237,8 @@ class P2pShareControllerImpl implements P2pShareController {
       const timer = setInterval(() => { void check(); }, intervalMs);
       return () => clearInterval(timer);
     });
+    this.createTurnPathProbe = deps.createTurnPathProbe ?? (() => createCloudflareTurnPathProbe());
+    this.cloudflareTurnControlMode = deps.cloudflareTurnControlMode ?? 'observe';
     this.nowMs = deps.now ?? Date.now;
   }
 
@@ -339,6 +363,9 @@ class P2pShareControllerImpl implements P2pShareController {
       const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceConfiguration);
       sessionsToEstablish.push(session);
     }
+    // Every old session is gone; the probe restarts only once a viewer is on
+    // the Cloudflare relay again.
+    this.reconcileTurnPathProbe();
     this.emit();
     await this.rebalanceBitrates();
     const establishes = sessionsToEstablish.map((session) => this.establishSession(session));
@@ -351,6 +378,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.activeStream = undefined;
     this.activeOptions = undefined;
     this.cloudflareUplinkEstimateBps = undefined;
+    this.stopTurnPathProbe();
     this.pendingRetryTokens.clear();
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
@@ -383,6 +411,16 @@ class P2pShareControllerImpl implements P2pShareController {
     this.cloudflareUplinkEstimateBps = bitrateBps;
   }
 
+  getTurnPathProbeSnapshot(): TurnPathProbeSnapshot {
+    return this.turnPathProbe?.getSnapshot() ?? { status: 'idle', probeTargetBps: 2_000_000 };
+  }
+
+  subscribeTurnPathProbe(listener: (snapshot: TurnPathProbeSnapshot) => void): () => void {
+    this.probeListeners.add(listener);
+    listener(this.getTurnPathProbeSnapshot());
+    return () => this.probeListeners.delete(listener);
+  }
+
   refreshIceServers(configuration: P2pIceServerConfiguration): void {
     this.iceConfiguration = configuration;
     for (const session of this.sessions.values()) {
@@ -396,6 +434,8 @@ class P2pShareControllerImpl implements P2pShareController {
       }
     }
     this.armIceRefresh(configuration);
+    // Refreshed Cloudflare credentials invalidate the running probe's path.
+    this.reconcileTurnPathProbe();
   }
 
   async getStatsReports(): Promise<RTCStatsReport[]> {
@@ -907,6 +947,46 @@ class P2pShareControllerImpl implements P2pShareController {
     session.state = state;
     this.emit();
     void this.rebalanceBitrates();
+    this.reconcileTurnPathProbe();
+  }
+
+  /**
+   * Keeps exactly one TURN path probe alive while (and only while) some viewer
+   * is on a Cloudflare TURN relay. The probe follows the controller's current
+   * Cloudflare ICE credentials; refreshed credentials rebuild it. Observation
+   * mode only publishes snapshots — senders are never touched from here.
+   */
+  private reconcileTurnPathProbe(): void {
+    const hasCloudflareViewer = [...this.sessions.values()].some(
+      (session) => session.state === 'turn' && session.turnProvider === 'cloudflare' && !session.pcClosed
+    );
+    if (!hasCloudflareViewer) {
+      this.stopTurnPathProbe();
+      return;
+    }
+    const iceServers = this.iceConfiguration?.iceServers;
+    if (iceServers === undefined) return;
+    if (this.turnPathProbe !== undefined && this.turnPathProbeIceServers === iceServers) return;
+
+    // New credentials (or a first start): rebuild the probe on the fresh path.
+    this.stopTurnPathProbe();
+    const probe = this.createTurnPathProbe();
+    this.turnPathProbe = probe;
+    this.turnPathProbeIceServers = iceServers;
+    this.turnPathProbeUnsubscribe = probe.subscribe((snapshot) => {
+      for (const listener of [...this.probeListeners]) listener(snapshot);
+    });
+    void probe.start(iceServers).catch(() => undefined);
+  }
+
+  private stopTurnPathProbe(): void {
+    const probe = this.turnPathProbe;
+    if (probe === undefined) return;
+    this.turnPathProbe = undefined;
+    this.turnPathProbeIceServers = undefined;
+    this.turnPathProbeUnsubscribe?.();
+    this.turnPathProbeUnsubscribe = undefined;
+    void probe.stop().catch(() => undefined);
   }
 
   private allViewersClosed(): boolean {

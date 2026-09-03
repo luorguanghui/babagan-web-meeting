@@ -7,6 +7,8 @@ import {
 } from '@meeting/contracts';
 
 import type { Peer } from './p2p-signaling.js';
+import type { CloudflareTurnPathProbe } from './cloudflare-turn-path-probe.js';
+import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import {
   computeResolutionScale,
   createP2pShareController,
@@ -244,10 +246,47 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
   } as unknown as RTCPeerConnectionIceEvent;
 }
 
+interface FakeTurnPathProbe {
+  probe: {
+    start: ReturnType<typeof vi.fn>;
+    requestVerification: ReturnType<typeof vi.fn>;
+    getSnapshot: ReturnType<typeof vi.fn>;
+    subscribe: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+  };
+  listeners: Set<(snapshot: TurnPathProbeSnapshot) => void>;
+  publishedSnapshots: TurnPathProbeSnapshot[];
+}
+
+function createFakeTurnPathProbe(): FakeTurnPathProbe {
+  const listeners = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
+  const publishedSnapshots: TurnPathProbeSnapshot[] = [];
+  const current: TurnPathProbeSnapshot = {
+    status: 'ready',
+    probeTargetBps: 2_000_000,
+    stableCapacityBps: 4_000_000,
+    sampledAt: 1_234
+  };
+  const probe = {
+    start: vi.fn(async () => undefined),
+    requestVerification: vi.fn(),
+    getSnapshot: vi.fn(() => current),
+    subscribe: vi.fn((listener: (snapshot: TurnPathProbeSnapshot) => void) => {
+      listeners.add(listener);
+      listener(current);
+      publishedSnapshots.push(current);
+      return () => listeners.delete(listener);
+    }),
+    stop: vi.fn(async () => undefined)
+  };
+  return { probe, listeners, publishedSnapshots };
+}
+
 function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
   turnProvider?: 'coturn' | 'cloudflare';
   turnCredentialsExpiresAt?: number;
+  probes?: boolean;
 } = {}) {
   const signaling: P2pShareSignaling = { sendOffer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
   const onViewerFallback = vi.fn();
@@ -262,6 +301,7 @@ function makeHarness(options: {
         : { turnCredentialsExpiresAt: options.turnCredentialsExpiresAt })
     });
   const transportChecks = new Set<() => Promise<void>>();
+  const probes = { created: 0, items: [] as FakeTurnPathProbe[] };
   const controller = createP2pShareController({
     slug: 'meeting-slug',
     signaling,
@@ -276,12 +316,22 @@ function makeHarness(options: {
       return () => transportChecks.delete(check);
     },
     onViewerFallback,
-    onAllViewersClosed
+    onAllViewersClosed,
+    ...(options.probes
+      ? {
+        createTurnPathProbe: () => {
+          const fake = createFakeTurnPathProbe();
+          probes.created += 1;
+          probes.items.push(fake);
+          return fake.probe as unknown as CloudflareTurnPathProbe;
+        }
+      }
+      : {})
   });
   const runTransportChecks = async () => {
     await Promise.all([...transportChecks].map((check) => check()));
   };
-  return { controller, signaling, onViewerFallback, onAllViewersClosed, fetchIceServers, runTransportChecks };
+  return { controller, signaling, onViewerFallback, onAllViewersClosed, fetchIceServers, runTransportChecks, probes };
 }
 
 const viewers: Peer[] = [
@@ -731,6 +781,141 @@ describe('p2p share controller', () => {
 
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
     expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
+  });
+
+  it('does not start a probe for negotiating, direct, coturn, or SFU sessions', async () => {
+    const direct = makeHarness({ probes: true });
+    await direct.controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const directPc = FakeRTCPeerConnection.instances[0];
+    directPc.statsCandidateType = 'srflx';
+    directPc.setIceConnectionState('connected');
+    direct.controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(direct.controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+    await direct.runTransportChecks();
+    expect(direct.probes.created).toBe(0);
+
+    const coturn = makeHarness({ turnProvider: 'coturn', probes: true });
+    await coturn.controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const coturnPc = FakeRTCPeerConnection.instances.at(-1)!;
+    coturnPc.statsCandidateType = 'relay';
+    coturnPc.setIceConnectionState('connected');
+    coturn.controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(coturn.controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await coturn.runTransportChecks();
+    expect(coturn.probes.created).toBe(0);
+
+    const negotiating = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await negotiating.controller.start(makeStream(), shareOptions, [viewers[0]]);
+    expect(negotiating.probes.created).toBe(0);
+    await negotiating.controller.stop();
+  });
+
+  it('starts one probe when the first viewer becomes Cloudflare turn', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await runTransportChecks();
+
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+    await vi.waitFor(() => expect(probes.items[0].probe.start).toHaveBeenCalledWith(iceServers));
+  });
+
+  it('does not create another probe for additional Cloudflare viewers', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, viewers);
+    for (const pc of FakeRTCPeerConnection.instances) {
+      pc.statsCandidateType = 'relay';
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
+    }
+    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn', 'turn', 'turn']));
+    await runTransportChecks();
+
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+    await controller.stop();
+    expect(probes.items[0].probe.stop).toHaveBeenCalled();
+  });
+
+  it('keeps the probe while at least one Cloudflare viewer remains and stops after the final one leaves', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0], viewers[1]]);
+    for (const pc of FakeRTCPeerConnection.instances) {
+      pc.statsCandidateType = 'relay';
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
+    }
+    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn']));
+    await runTransportChecks();
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    controller.handleViewerLeft('viewer-1');
+    await runTransportChecks();
+    expect(probes.items[0].probe.stop).not.toHaveBeenCalled();
+
+    controller.handleViewerLeft('viewer-2');
+    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
+  });
+
+  it('rebuilds the probe after Cloudflare credential refresh', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await runTransportChecks();
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    controller.refreshIceServers?.({
+      iceServers: [{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }],
+      turnProvider: 'cloudflare'
+    });
+
+    await vi.waitFor(() => expect(probes.created).toBe(2));
+    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
+    expect(probes.items[1].probe.start).toHaveBeenCalledWith([{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }]);
+  });
+
+  it('publishes immutable probe snapshots without changing sender parameters in observation mode', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    const snapshots: TurnPathProbeSnapshot[] = [];
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    controller.subscribeTurnPathProbe?.((snapshot) => snapshots.push(snapshot));
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 1_000_000,
+      timestamp: 1_000
+    };
+    await runTransportChecks();
+    pc.senderStats = {
+      availableOutgoingBitrateBps: 700_000,
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 8,
+      bytesSent: 3_000_000,
+      timestamp: 2_000
+    };
+    await runTransportChecks();
+
+    const published = probes.items[0]?.publishedSnapshots.at(-1);
+    expect(published).toBeDefined();
+    expect(controller.getTurnPathProbeSnapshot?.()).toEqual(published);
+    expect(snapshots).toContain(published);
+    // Observation mode: the published snapshot alone never touches the sender.
+    expect(senderMaxBitrate(pc)).toBe(8_000_000);
+    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1).toBeLessThanOrEqual(1.1);
   });
 
   it('uses an independent Cloudflare upload test without trusting a low RTC estimate', async () => {
