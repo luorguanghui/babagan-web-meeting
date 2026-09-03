@@ -24,7 +24,7 @@ describe('WebRTC screen-share statistics', () => {
         bytesSent: 2_250_000, frameWidth: 1920, frameHeight: 1080, framesPerSecond: 60,
         framesEncoded: 120, framesSent: 118, totalEncodeTime: 1.2,
         qualityLimitationReason: 'bandwidth', nackCount: 4, pliCount: 2, firCount: 1,
-        retransmittedBytesSent: 20_000
+        retransmittedBytesSent: 20_000, targetBitrate: 6_500_000
       },
       remote: { id: 'remote', type: 'remote-inbound-rtp', kind: 'video', packetsLost: 6, roundTripTime: 0.08 },
       pair: { id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: 12_000_000 }
@@ -34,7 +34,9 @@ describe('WebRTC screen-share statistics', () => {
       codec: 'H264', width: 1920, height: 1080, framesPerSecond: 60,
       bitrateMbps: 10, framesEncoded: 120, framesSent: 118, averageEncodeTimeMs: 10,
       qualityLimitationReason: 'bandwidth', packetsLost: 6, roundTripTimeMs: 80,
-      availableOutgoingBitrateMbps: 12, nackCount: 4, pliCount: 2, firCount: 1
+      // The RTC estimate and the encoder's own target stay distinct fields.
+      availableOutgoingBitrateMbps: 12, encoderTargetBitrateMbps: 6.5,
+      nackCount: 4, pliCount: 2, firCount: 1
     });
   });
 

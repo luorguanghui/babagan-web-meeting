@@ -16,6 +16,16 @@ export interface SenderVideoStats {
   frameWidth?: number;
   frameHeight?: number;
   availableOutgoingBitrateBps?: number;
+  /** Encoder-reported instantaneous target bitrate; read-only evidence. */
+  encoderTargetBitrateBps?: number;
+  /** Frames the ICE layer dropped on send; growth signals real send pressure. */
+  packetsDiscardedOnSend?: number;
+  roundTripTimeMs?: number;
+  remotePacketsLost?: number;
+  remotePacketsReceived?: number;
+  selectedLocalCandidateType?: string;
+  selectedLocalCandidateUrl?: string;
+  selectedRelayProtocol?: string;
   bytesSent?: number;
   timestamp?: number;
 }
@@ -83,6 +93,7 @@ export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStat
   const result: SenderVideoStats = {};
   let selectedPairId: string | undefined;
   let fallbackPair: StatsRecord | undefined;
+  let outbound: StatsRecord | undefined;
   report.forEach((entry) => {
     const stat = entry as StatsRecord;
     if (stat.type === 'transport' && typeof stat.selectedCandidatePairId === 'string') {
@@ -96,6 +107,7 @@ export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStat
     if (stat.type !== 'outbound-rtp'
       || stat.isRemote === true
       || (stat.kind !== 'video' && stat.mediaType !== 'video')) return;
+    outbound = stat;
     if (typeof stat.qualityLimitationReason === 'string') {
       result.qualityLimitationReason = stat.qualityLimitationReason;
     }
@@ -111,14 +123,66 @@ export function inspectSenderVideoStats(report: RTCStatsReport): SenderVideoStat
     if (typeof stat.bytesSent === 'number') {
       result.bytesSent = stat.bytesSent;
     }
+    if (typeof stat.targetBitrate === 'number' && stat.targetBitrate > 0) {
+      result.encoderTargetBitrateBps = stat.targetBitrate;
+    }
     if (typeof stat.timestamp === 'number') {
       result.timestamp = stat.timestamp;
     }
   });
   const pair = (selectedPairId === undefined ? undefined : report.get(selectedPairId) as StatsRecord | undefined)
     ?? fallbackPair;
-  if (typeof pair?.availableOutgoingBitrate === 'number' && pair.availableOutgoingBitrate > 0) {
-    result.availableOutgoingBitrateBps = pair.availableOutgoingBitrate;
+  if (pair) {
+    if (typeof pair.availableOutgoingBitrate === 'number' && pair.availableOutgoingBitrate > 0) {
+      result.availableOutgoingBitrateBps = pair.availableOutgoingBitrate;
+    }
+    // Missing fields stay undefined so absent stats cannot look like zero pressure.
+    if (typeof pair.packetsDiscardedOnSend === 'number') {
+      result.packetsDiscardedOnSend = pair.packetsDiscardedOnSend;
+    }
+    const local = typeof pair.localCandidateId === 'string'
+      ? report.get(pair.localCandidateId) as StatsRecord | undefined
+      : undefined;
+    if (local) {
+      if (typeof local.candidateType === 'string') result.selectedLocalCandidateType = local.candidateType;
+      if (typeof local.url === 'string') result.selectedLocalCandidateUrl = local.url;
+      if (typeof local.relayProtocol === 'string') result.selectedRelayProtocol = local.relayProtocol;
+    }
+  }
+  const remoteInbound = findRemoteInbound(report, outbound);
+  if (remoteInbound) {
+    // roundTripTime is reported in seconds.
+    if (typeof remoteInbound.roundTripTime === 'number' && remoteInbound.roundTripTime >= 0) {
+      result.roundTripTimeMs = remoteInbound.roundTripTime * 1_000;
+    }
+    if (typeof remoteInbound.packetsLost === 'number') {
+      result.remotePacketsLost = remoteInbound.packetsLost;
+    }
+    if (typeof remoteInbound.packetsReceived === 'number') {
+      result.remotePacketsReceived = remoteInbound.packetsReceived;
+    }
   }
   return result;
+}
+
+/** Prefers the remote report bound to this outbound stream via `remoteId`. */
+function findRemoteInbound(
+  report: RTCStatsReport,
+  outbound: StatsRecord | undefined
+): StatsRecord | undefined {
+  const remoteId = typeof outbound?.remoteId === 'string' ? outbound.remoteId : undefined;
+  if (remoteId !== undefined) {
+    const bound = report.get(remoteId) as StatsRecord | undefined;
+    if (bound && bound.type === 'remote-inbound-rtp') return bound;
+  }
+  let fallback: StatsRecord | undefined;
+  report.forEach((entry) => {
+    const stat = entry as StatsRecord;
+    if (stat.type === 'remote-inbound-rtp'
+      && (stat.kind === 'video' || stat.mediaType === 'video')
+      && fallback === undefined) {
+      fallback = stat;
+    }
+  });
+  return fallback;
 }

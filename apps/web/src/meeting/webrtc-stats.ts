@@ -19,6 +19,8 @@ export interface WebRtcMediaStats {
   jitterMs?: number;
   averageJitterBufferDelayMs?: number;
   availableOutgoingBitrateMbps?: number;
+  /** Encoder-reported instantaneous target; distinct from the RTC estimate. */
+  encoderTargetBitrateMbps?: number;
   nackCount?: number;
   pliCount?: number;
   firCount?: number;
@@ -68,6 +70,8 @@ export function summarizeWebRtcStats(
       packetsLost: numberValue(remoteInbound?.packetsLost),
       packetsReceived: numberValue(remoteInbound?.packetsReceived),
       roundTripTimeMs: secondsToMilliseconds(remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime),
+      // The encoder's own instantaneous target, kept separate from the RTC estimate.
+      encoderTargetBitrateMbps: toMbps(outbound.targetBitrate),
       availableOutgoingBitrateMbps: toMbps(candidatePair?.availableOutgoingBitrate),
       nackCount: numberValue(outbound.nackCount),
       pliCount: numberValue(outbound.pliCount),
