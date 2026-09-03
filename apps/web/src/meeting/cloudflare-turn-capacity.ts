@@ -87,6 +87,9 @@ export function markTurnProbeFailure(
 ): TurnProbeCapacityState {
   const retained = previous.snapshot.stableCapacityBps !== undefined
     && !isExpired(previous, now);
+  const staleUntil = retained && previous.staleUntil !== undefined
+    ? previous.staleUntil
+    : now + TURN_PROBE_STALE_RETENTION_MS;
   return {
     snapshot: {
       ...previous.snapshot,
@@ -95,7 +98,7 @@ export function markTurnProbeFailure(
       stableCapacityBps: retained ? previous.snapshot.stableCapacityBps : undefined
     },
     recentValidCapacitiesBps: retained ? previous.recentValidCapacitiesBps : [],
-    staleUntil: now + TURN_PROBE_STALE_RETENTION_MS
+    staleUntil
   };
 }
 
@@ -117,7 +120,7 @@ function isBackwardSample(previous: TurnProbeCapacityState, sampledAt: number): 
 }
 
 function isExpired(previous: TurnProbeCapacityState, now: number): boolean {
-  return previous.staleUntil !== undefined && now > previous.staleUntil;
+  return previous.staleUntil !== undefined && now >= previous.staleUntil;
 }
 
 /** History measured before a stale period expired no longer represents the path. */

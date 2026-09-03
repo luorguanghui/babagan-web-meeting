@@ -95,6 +95,24 @@ describe('TURN probe capacity reducer', () => {
     expect(failed.staleUntil).toBe(5_000 + TURN_PROBE_STALE_RETENTION_MS);
   });
 
+  it('does not extend stale retention on repeated failures', () => {
+    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const stale = markTurnProbeFailure(ready, 5_000);
+    const repeated = markTurnProbeFailure(stale, 10_000);
+
+    expect(repeated.snapshot.status).toBe('stale');
+    expect(repeated.staleUntil).toBe(stale.staleUntil);
+  });
+
+  it('expires retained capacity at the retention boundary', () => {
+    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const stale = markTurnProbeFailure(ready, 5_000);
+    const expired = markTurnProbeFailure(stale, stale.staleUntil!);
+
+    expect(expired.snapshot.status).toBe('error');
+    expect(expired.snapshot.stableCapacityBps).toBeUndefined();
+  });
+
   it('drops expired stable capacity without reporting zero', () => {
     const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
     const stale = markTurnProbeFailure(ready, 5_000);

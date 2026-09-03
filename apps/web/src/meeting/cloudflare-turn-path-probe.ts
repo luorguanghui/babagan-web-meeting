@@ -124,7 +124,10 @@ export function createCloudflareTurnPathProbe(
         await negotiate();
       } catch {
         // Negotiation failures retry on the backoff ladder; unsupported stops here.
-        if (capacityState.snapshot.status !== 'unsupported') scheduleRetry();
+        if (capacityState.snapshot.status !== 'unsupported') {
+          publishFailure();
+          scheduleRetry();
+        }
       }
     },
     requestVerification(): void {
@@ -203,6 +206,7 @@ export function createCloudflareTurnPathProbe(
     teardownConnections();
     cancelChannelPoll?.();
     cancelChannelPoll = undefined;
+    publish({ ...capacityState.snapshot, status: 'negotiating' });
     const configuration: RTCConfiguration = { iceServers: lastIceServers, iceTransportPolicy: 'relay' };
     left = createPeerConnection(configuration);
     right = createPeerConnection(configuration);
@@ -558,8 +562,18 @@ export function createCloudflareTurnPathProbe(
     cancelRetry = schedule(() => {
       cancelRetry = undefined;
       if (stopped || !started) return;
-      void negotiate().catch(() => scheduleRetry());
+      void negotiate().catch(() => {
+        if (capacityState.snapshot.status !== 'unsupported') {
+          publishFailure();
+          scheduleRetry();
+        }
+      });
     }, delay);
+  }
+
+  function publishFailure(): void {
+    capacityState = markTurnProbeFailure(capacityState, now());
+    publish(capacityState.snapshot);
   }
 
   return probe;

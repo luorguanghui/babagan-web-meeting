@@ -294,6 +294,21 @@ describe('Cloudflare TURN path probe', () => {
     }
   });
 
+  it('publishes an unavailable status when relay negotiation fails and schedules a retry', async () => {
+    const clock = new FakeClock();
+    const { left, right } = relayPair();
+    left.getStats = async () => { throw new Error('stats unavailable'); };
+    right.getStats = async () => { throw new Error('stats unavailable'); };
+    const { probe } = probeFixture(clock, left, right);
+    const startPromise = probe.start(cloudflareIceServers);
+
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error');
+    await startPromise;
+
+    expect(probe.getSnapshot().status).toBe('error');
+    await probe.stop();
+  });
+
   it('opens unreliable data and reliable control channels', async () => {
     const { left } = await startedProbe();
     const data = left.localDataChannels.find((channel) => channel.label === 'probe-data');
