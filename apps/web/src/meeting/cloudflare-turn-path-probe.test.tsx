@@ -367,6 +367,21 @@ describe('Cloudflare TURN path probe', () => {
     expect(startMessages(control)).toHaveLength(TURN_PROBE_LADDER_BPS.length + 2);
   });
 
+  it('starts a queued verification immediately after an active recovery window', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+
+    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length);
+    probe.requestVerification();
+    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length + 1);
+    probe.requestVerification();
+    const activeWindowCount = startMessages(control).length;
+    await clock.settleUntil(() => startMessages(control).length === activeWindowCount + 1, 1_000);
+
+    expect(startMessages(control)).toHaveLength(activeWindowCount + 1);
+  });
+
   it('does not count data delivered before the control start message as loss', async () => {
     const { clock, left, right, probe } = await startedProbe();
     const data = wireNetwork(left, right);
@@ -382,6 +397,51 @@ describe('Cloudflare TURN path probe', () => {
     await clock.settleUntil(() => probe.getSnapshot().measuredCapacityBps !== undefined);
 
     expect(probe.getSnapshot().lossRatio).toBe(0);
+  });
+
+  it('invalidates the probe when the selected path migrates away from Cloudflare relay', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    const before = probe.getSnapshot().sampledAt;
+    left.stats = relayStats('turn:turn.cloudflare.com:3478?transport=udp', 'host');
+    probe.requestVerification();
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error', 1_000);
+
+    expect(probe.getSnapshot().status).toBe('error');
+    expect(probe.getSnapshot().sampledAt).toBe(before);
+  });
+
+  it('publishes an unavailable status when a DataChannel send fails', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    const data = wireNetwork(left, right);
+    data.send = () => { throw new Error('data channel closed'); };
+    probe.requestVerification();
+
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error', 1_000);
+    expect(probe.getSnapshot().status).toBe('error');
+  });
+
+  it('settles start when stopped while the channels are still negotiating', async () => {
+    const clock = new FakeClock();
+    const { left, right } = relayPair();
+    const originalCreateDataChannel = left.createDataChannel.bind(left);
+    left.createDataChannel = (label, options) => {
+      const channel = originalCreateDataChannel(label, options);
+      channel.readyState = 'connecting';
+      return channel;
+    };
+    const { probe } = probeFixture(clock, left, right);
+    const startPromise = probe.start(cloudflareIceServers);
+    await clock.settleUntil(() => left.localDataChannels.length === 2);
+    await clock.settleUntil(() => right.localDataChannels.length === 2);
+    await clock.advance(25);
+    await probe.stop();
+
+    let settled = false;
+    void startPromise.then(() => { settled = true; });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBe(true);
   });
 
   it('invalidates a window when the document is hidden', async () => {

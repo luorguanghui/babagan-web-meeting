@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY,
   CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS,
   computeCloudflareMaximumScale,
   createCloudflareEncodingState,
@@ -81,6 +80,15 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
     expect(state.profileTargetBitrateBps).toBe(PROFILE_TARGET_BPS);
   });
 
+  it('does not raise from a stale probe capacity', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    const staleProbe = { status: 'stale' as const, stableCapacityBps: 20_000_000, probeTargetBps: 2_000_000 };
+    state = step(state, healthyMeasurement(staleProbe));
+    state = step(state, healthyMeasurement({ ...staleProbe, sampledAt: 2_000 }));
+
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+  });
+
   it('treats actual outgoing bitrate as read-only evidence, never as a requested bitrate', () => {
     let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
     // High actual bitrate without probe capacity must not raise the cap…
@@ -111,6 +119,44 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
     expect(state.scaleResolutionDownBy).toBe(1);
     expect(state.bandwidthPressureSamples).toBe(0);
     expect(state.lowProbeSamples).toBe(1);
+  });
+
+  it('uses RTT growth only when the affected output also loses frame rate', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    state = step(state, measurement({
+      qualityLimitationReason: 'none', framesPerSecond: 30, roundTripTimeMs: 100,
+      turnProbe: probeSnapshot({ measuredCapacityBps: 1_500_000, stableCapacityBps: 1_500_000, sampledAt: 1_000 })
+    }));
+    state = step(state, measurement({
+      qualityLimitationReason: 'none', framesPerSecond: 10, roundTripTimeMs: 220,
+      turnProbe: probeSnapshot({ measuredCapacityBps: 1_500_000, stableCapacityBps: 1_500_000, sampledAt: 2_000 })
+    }));
+    state = step(state, measurement({
+      qualityLimitationReason: 'none', framesPerSecond: 10, roundTripTimeMs: 340,
+      turnProbe: probeSnapshot({ measuredCapacityBps: 1_500_000, stableCapacityBps: 1_500_000, sampledAt: 3_000 })
+    }));
+
+    expect(state.bandwidthPressureSamples).toBe(2);
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+  });
+
+  it('does not count a bandwidth label as pressure while output remains healthy', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    state = step(state, measurement({
+      qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+      turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, sampledAt: 1_000 })
+    }));
+    state = step(state, measurement({
+      qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+      turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, sampledAt: 2_000 })
+    }));
+    state = step(state, measurement({
+      qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+      turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, sampledAt: 3_000 })
+    }));
+
+    expect(state.bandwidthPressureSamples).toBe(0);
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
   });
 
   it('requires two low probe windows plus three pressure samples to back off', () => {
@@ -215,6 +261,19 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
     expect(state.scaleResolutionDownBy).toBeLessThanOrEqual(2);
   });
 
+  it('recovers from the emergency scale within the five-percent slew limit', () => {
+    const previous: CloudflareEncodingState = {
+      ...createCloudflareEncodingState(PROFILE_TARGET_BPS),
+      emergencyResolution: true,
+      scaleResolutionDownBy: 2,
+      healthyRecoverySamples: 4
+    };
+    const next = step(previous, healthyMeasurement({ stableCapacityBps: 20_000_000 }), 1080);
+
+    expect(next.emergencyResolution).toBe(false);
+    expect(next.scaleResolutionDownBy).toBeCloseTo(1.9, 5);
+  });
+
   it('activates hard resolution protection below 540p', () => {
     let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
     state = step(state, measurement({
@@ -237,6 +296,6 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
   it('falls back to the absolute scale bound without a known source size', () => {
     expect(computeCloudflareMaximumScale({ width: 1728, height: 1080 }, false)).toBeCloseTo(1.5, 5);
     expect(computeCloudflareMaximumScale({ width: 1728, height: 1080 }, true)).toBeCloseTo(2, 5);
-    expect(computeCloudflareMaximumScale({}, false)).toBe(CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY);
+    expect(computeCloudflareMaximumScale({}, false)).toBe(2);
   });
 });

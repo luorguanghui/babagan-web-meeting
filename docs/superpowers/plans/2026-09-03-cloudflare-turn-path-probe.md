@@ -701,7 +701,7 @@ Document exact cases:
 - 720p normal, 540p emergency, never 270p;
 - all resources close on stop.
 
-- [ ] **Step 2: Run the complete test suite**
+- [x] **Step 2: Run the complete test suite**
 
 ```bash
 pnpm test
@@ -709,7 +709,7 @@ pnpm test
 
 Expected: all projects PASS.
 
-- [ ] **Step 3: Run static and production checks**
+- [x] **Step 3: Run static and production checks**
 
 ```bash
 pnpm typecheck
@@ -737,7 +737,7 @@ Expected: probe results are stable enough to meet the spec, no persistent FPS dr
 
 At the manual checkpoint, change the production controller construction in `meeting-room-page.tsx` from `cloudflareTurnControlMode: 'observe'` to `cloudflareTurnControlMode: 'control'`. Keep the dependency injectable so tests can cover both modes. Re-run Steps 2–4. Do not enable control if probe credibility or cleanup failed.
 
-- [ ] **Step 6: Update architecture and acceptance docs**
+- [x] **Step 6: Update architecture and acceptance docs**
 
 Describe the final selected topology, fixed-target/dynamic-cap terminology, state machine gates, UI labels, and rollback behavior. If Task 1 failed, this step belongs to the separate Pion plan instead.
 

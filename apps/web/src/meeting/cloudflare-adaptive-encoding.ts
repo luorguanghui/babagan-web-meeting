@@ -16,11 +16,15 @@ export const CLOUDFLARE_HEALTHY_FPS_RATIO = 0.85;
 export const CLOUDFLARE_SEVERE_FPS_RATIO = 0.5;
 export const CLOUDFLARE_PRESSURE_LOSS_RATIO = 0.02;
 export const CLOUDFLARE_SEVERE_LOSS_RATIO = 0.05;
+export const CLOUDFLARE_RTT_PRESSURE_GROWTH_MS = 50;
+export const CLOUDFLARE_RTT_PRESSURE_GROWTH_RATIO = 1.5;
+export const CLOUDFLARE_ENCODER_PRESSURE_RATIO = 0.75;
 export const CLOUDFLARE_MAX_SCALE_INCREASE_STEP = 0.10;
 export const CLOUDFLARE_MAX_SCALE_RECOVERY_STEP = 0.05;
 export const CLOUDFLARE_NORMAL_SHORT_SIDE_PX = 720;
 export const CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX = 540;
 export const CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY = 4;
+export const CLOUDFLARE_UNKNOWN_SOURCE_MAX_SCALE = 2;
 
 /**
  * Per-viewer encoding control state. `profileTargetBitrateBps` is the user's
@@ -39,6 +43,7 @@ export interface CloudflareEncodingState {
   lowProbeSamples: number;
   lastProbeSampledAt?: number;
   lastStableBitrateBps?: number;
+  lastRoundTripTimeMs?: number;
 }
 
 export interface CloudflareEncodingMeasurement {
@@ -110,9 +115,20 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   const lossRatio = finite(measurement.packetLossRatio);
   const lossBad = lossRatio !== undefined && lossRatio >= CLOUDFLARE_PRESSURE_LOSS_RATIO;
   const discardsBad = (measurement.packetsDiscardedOnSendDelta ?? 0) > 0;
+  const roundTripTimeMs = positive(measurement.roundTripTimeMs);
+  const rttBad = roundTripTimeMs !== undefined
+    && previous.lastRoundTripTimeMs !== undefined
+    && roundTripTimeMs >= previous.lastRoundTripTimeMs * CLOUDFLARE_RTT_PRESSURE_GROWTH_RATIO
+    && roundTripTimeMs - previous.lastRoundTripTimeMs >= CLOUDFLARE_RTT_PRESSURE_GROWTH_MS;
   const severe = fpsCollapsed && lossRatio !== undefined && lossRatio >= CLOUDFLARE_SEVERE_LOSS_RATIO;
-  const pressure = bandwidthLimited || (fpsCollapsed && (lossBad || discardsBad));
-  const healthy = !pressure && !cpuLimited
+  const frameRateAffected = fps !== undefined && targetFps !== undefined
+    && fps < targetFps * CLOUDFLARE_HEALTHY_FPS_RATIO;
+  const encoderTargetBps = positive(measurement.encoderTargetBitrateBps);
+  const encoderTargetAffected = encoderTargetBps !== undefined
+    && encoderTargetBps < previous.profileTargetBitrateBps * CLOUDFLARE_ENCODER_PRESSURE_RATIO;
+  const outputAffected = frameRateAffected || encoderTargetAffected;
+  const pressure = outputAffected && (bandwidthLimited || lossBad || discardsBad || rttBad);
+  const healthy = !pressure && !bandwidthLimited && !cpuLimited
     && measurement.qualityLimitationReason !== undefined
     && !lossBad && !discardsBad;
   const hasMediaEvidence = measurement.qualityLimitationReason !== undefined || fps !== undefined;
@@ -157,7 +173,9 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     lowProbeSamples = 0;
     healthySamples = 0;
   } else {
-    const stableCapacityBps = positive(measurement.turnProbe.stableCapacityBps);
+    const stableCapacityBps = measurement.turnProbe.status === 'ready'
+      ? positive(measurement.turnProbe.stableCapacityBps)
+      : undefined;
     if (stableCapacityBps !== undefined
       && stableCapacityBps >= currentCap * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO
       && healthySamples >= CLOUDFLARE_HEALTHY_RAISE_SAMPLES) {
@@ -190,7 +208,10 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     ...(probeWindow === undefined
       ? {}
       : { lastProbeSampledAt: measurement.turnProbe.sampledAt }),
-    ...(lastStableBitrateBps === undefined ? {} : { lastStableBitrateBps })
+    ...(lastStableBitrateBps === undefined ? {} : { lastStableBitrateBps }),
+    ...(roundTripTimeMs === undefined && previous.lastRoundTripTimeMs === undefined
+      ? {}
+      : { lastRoundTripTimeMs: roundTripTimeMs ?? previous.lastRoundTripTimeMs })
   };
 }
 
@@ -211,7 +232,7 @@ export function computeCloudflareMaximumScale(
 ): number {
   const width = positive(settings.width);
   const height = positive(settings.height);
-  if (width === undefined || height === undefined) return CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY;
+  if (width === undefined || height === undefined) return CLOUDFLARE_UNKNOWN_SOURCE_MAX_SCALE;
   const floor = emergency ? CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX : CLOUDFLARE_NORMAL_SHORT_SIDE_PX;
   return Math.max(1, Math.min(width, height) / floor);
 }
@@ -229,7 +250,7 @@ function nextScale(
     1,
     Math.min(
       input.sourceShortSide === undefined
-        ? CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY
+        ? CLOUDFLARE_UNKNOWN_SOURCE_MAX_SCALE
         : input.sourceShortSide / (emergencyResolution
           ? CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX
           : CLOUDFLARE_NORMAL_SHORT_SIDE_PX),
@@ -238,14 +259,17 @@ function nextScale(
   );
   idealScale = clamp(idealScale, 1, maximumScale);
 
-  const current = clamp(previous.scaleResolutionDownBy, 1, maximumScale);
+  // Keep the prior scale when leaving the emergency layer so recovery is
+  // gradual. Clamping it to the new normal maximum here would create a large
+  // one-sample resolution jump and violate the 5% recovery slew limit.
+  const current = clamp(previous.scaleResolutionDownBy, 1, CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY);
   if (idealScale > current) {
     // Sampling up (fewer pixels) is capped at 10% per sample.
     return clamp(Math.min(idealScale, current * (1 + CLOUDFLARE_MAX_SCALE_INCREASE_STEP)), 1, maximumScale);
   }
   // Resolution recovery waits for sustained health and is capped at 5%.
   if (idealScale < current && healthyRecoverySamples >= CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES) {
-    return clamp(Math.max(idealScale, current * (1 - CLOUDFLARE_MAX_SCALE_RECOVERY_STEP)), 1, maximumScale);
+    return clamp(Math.max(idealScale, current * (1 - CLOUDFLARE_MAX_SCALE_RECOVERY_STEP)), 1, CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY);
   }
   return current;
 }
@@ -255,6 +279,7 @@ function readNewProbeWindow(
   previous: CloudflareEncodingState,
   turnProbe: TurnPathProbeSnapshot
 ): number | undefined {
+  if (turnProbe.status !== 'ready' && turnProbe.status !== 'probing') return undefined;
   const sampledAt = finite(turnProbe.sampledAt);
   if (sampledAt === undefined || sampledAt === previous.lastProbeSampledAt) return undefined;
   const measured = finite(turnProbe.measuredCapacityBps) ?? finite(turnProbe.stableCapacityBps);

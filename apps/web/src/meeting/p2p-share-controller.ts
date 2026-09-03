@@ -211,6 +211,9 @@ interface ViewerSession {
   lastSenderStatsTimestamp?: number;
   /** Previous ICE-layer discard counter; the delta is the per-sample pressure. */
   lastPacketsDiscardedOnSend?: number;
+  /** Previous remote reception counters used to derive per-sample loss. */
+  lastRemotePacketsLost?: number;
+  lastRemotePacketsReceived?: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
@@ -333,7 +336,10 @@ class P2pShareControllerImpl implements P2pShareController {
   handleRetry(from: string): void {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
     const existing = this.sessions.get(from);
-    if (existing) this.closeSession(existing);
+    if (existing) {
+      this.closeSession(existing);
+      if (existing.state !== 'closed') this.transition(existing, 'closed');
+    }
     const retryToken = ++this.nextRetryToken;
     this.pendingRetryTokens.set(from, retryToken);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
@@ -697,11 +703,26 @@ class P2pShareControllerImpl implements P2pShareController {
         const classifiedState: ViewerSessionState = health.path === 'relay' ? 'turn' : 'p2p';
         if (classifiedState !== session.state) this.transition(session, classifiedState);
       }
-      await this.adaptEncodingPressure(session, inspectSenderVideoStats(report));
+      const sender = inspectSenderVideoStats(report);
+      this.syncSessionProviderFromStats(session, sender);
+      await this.adaptEncodingPressure(session, sender);
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
       // The usable session remains active and later UI stats can classify it.
     }
+  }
+
+  private syncSessionProviderFromStats(session: ViewerSession, sender: SenderVideoStats): void {
+    if (session.state !== 'turn' || sender.selectedLocalCandidateUrl === undefined) return;
+    const provider: P2pTurnProvider | undefined = sender.selectedLocalCandidateUrl.includes('turn.cloudflare.com')
+      ? 'cloudflare'
+      : /^turns?:/i.test(sender.selectedLocalCandidateUrl)
+        ? 'coturn'
+        : undefined;
+    if (provider === undefined || provider === session.turnProvider) return;
+    session.turnProvider = provider;
+    this.emit();
+    this.reconcileTurnPathProbe();
   }
 
   /**
@@ -788,7 +809,7 @@ class P2pShareControllerImpl implements P2pShareController {
         actualOutgoingBitrateBps,
         encoderTargetBitrateBps: sender.encoderTargetBitrateBps,
         roundTripTimeMs: sender.roundTripTimeMs,
-        packetLossRatio: remoteLossRatio(sender),
+        packetLossRatio: sampleRemoteLossRatio(session, sender),
         packetsDiscardedOnSendDelta: discardedDelta,
         qualityLimitationReason: sender.qualityLimitationReason,
         framesPerSecond: sender.framesPerSecond,
@@ -985,9 +1006,11 @@ class P2pShareControllerImpl implements P2pShareController {
    * mode only publishes snapshots — senders are never touched from here.
    */
   private reconcileTurnPathProbe(): void {
-    const hasCloudflareViewer = [...this.sessions.values()].some(
+    const configuration = this.iceConfiguration;
+    const hasCloudflareViewer = configuration?.turnProvider === 'cloudflare'
+      && [...this.sessions.values()].some(
       (session) => session.state === 'turn' && session.turnProvider === 'cloudflare' && !session.pcClosed
-    );
+      );
     if (!hasCloudflareViewer) {
       this.stopTurnPathProbe();
       return;
@@ -1044,13 +1067,21 @@ function deltaOf(current: number | undefined, previous: number | undefined): num
   return current - previous;
 }
 
-/** Remote reception loss ratio; undefined when the remote report is missing. */
-function remoteLossRatio(sender: SenderVideoStats): number | undefined {
+/** Remote reception loss ratio for this sample; undefined until a baseline exists. */
+function sampleRemoteLossRatio(session: ViewerSession, sender: SenderVideoStats): number | undefined {
   const lost = sender.remotePacketsLost;
   const received = sender.remotePacketsReceived;
-  if (lost === undefined || received === undefined || lost < 0 || received <= 0) return undefined;
-  const total = lost + received;
-  return total > 0 ? lost / total : undefined;
+  const previousLost = session.lastRemotePacketsLost;
+  const previousReceived = session.lastRemotePacketsReceived;
+  if (lost !== undefined && lost >= 0) session.lastRemotePacketsLost = lost;
+  if (received !== undefined && received >= 0) session.lastRemotePacketsReceived = received;
+  if (lost === undefined || received === undefined || lost < 0 || received < 0
+    || previousLost === undefined || previousReceived === undefined
+    || lost < previousLost || received < previousReceived) return undefined;
+  const lostDelta = lost - previousLost;
+  const receivedDelta = received - previousReceived;
+  const total = lostDelta + receivedDelta;
+  return total > 0 ? lostDelta / total : undefined;
 }
 
 /**

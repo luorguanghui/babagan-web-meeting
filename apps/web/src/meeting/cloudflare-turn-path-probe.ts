@@ -104,6 +104,7 @@ export function createCloudflareTurnPathProbe(
   let cancelDriver: (() => void) | undefined;
   let cancelRetry: (() => void) | undefined;
   let cancelChannelPoll: (() => void) | undefined;
+  let rejectChannelPoll: ((reason: Error) => void) | undefined;
   let sentMessages = 0;
   let paceBudgetBytes = 0;
   let remoteCounters: RemoteWindowCounters | undefined;
@@ -191,6 +192,10 @@ export function createCloudflareTurnPathProbe(
     windowActive = false;
     remoteCounters = undefined;
     remotePendingData = [];
+    cancelChannelPoll?.();
+    cancelChannelPoll = undefined;
+    rejectChannelPoll?.(new Error('probe stopped'));
+    rejectChannelPoll = undefined;
     cancelResultWait?.();
     cancelResultWait = undefined;
     cancelRemoteResultTimer?.();
@@ -210,6 +215,8 @@ export function createCloudflareTurnPathProbe(
     const configuration: RTCConfiguration = { iceServers: lastIceServers, iceTransportPolicy: 'relay' };
     left = createPeerConnection(configuration);
     right = createPeerConnection(configuration);
+    left.oniceconnectionstatechange = handlePeerConnectionState;
+    right.oniceconnectionstatechange = handlePeerConnectionState;
 
     const leftPending: RTCIceCandidate[] = [];
     const rightPending: RTCIceCandidate[] = [];
@@ -266,18 +273,22 @@ export function createCloudflareTurnPathProbe(
   function waitForOpenChannels(): Promise<void> {
     const deadline = now() + NEGOTIATION_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
+      rejectChannelPoll = reject;
       const poll = () => {
         cancelChannelPoll = undefined;
         if (stopped) {
+          rejectChannelPoll = undefined;
           reject(new Error('probe stopped'));
           return;
         }
         const open = (channel?: RTCDataChannel) => channel?.readyState === 'open';
         if (open(dataChannel) && open(controlChannel)) {
+          rejectChannelPoll = undefined;
           resolve();
           return;
         }
         if (now() >= deadline) {
+          rejectChannelPoll = undefined;
           reject(new Error('probe data channels did not open'));
           return;
         }
@@ -288,10 +299,7 @@ export function createCloudflareTurnPathProbe(
   }
 
   async function validateRelaySelection(): Promise<boolean> {
-    const configCloudflareOnly = lastIceServers.length > 0 && lastIceServers.every((server) => {
-      const urls = server.urls === undefined ? [] : Array.isArray(server.urls) ? server.urls : [server.urls];
-      return urls.length > 0 && urls.every((url) => url.includes('turn.cloudflare.com'));
-    });
+    const configCloudflareOnly = isCloudflareTurnConfiguration(lastIceServers);
     const localCandidates = await Promise.all([
       selectedRelayCandidate(left!, configCloudflareOnly),
       selectedRelayCandidate(right!, configCloudflareOnly)
@@ -334,6 +342,20 @@ export function createCloudflareTurnPathProbe(
     return undefined;
   }
 
+  function isCloudflareTurnConfiguration(iceServers: RTCIceServer[]): boolean {
+    let hasCloudflareTurn = false;
+    const onlyCloudflareTurn = iceServers.length > 0 && iceServers.every((server) => {
+      const urls = server.urls === undefined ? [] : Array.isArray(server.urls) ? server.urls : [server.urls];
+      return urls.length > 0 && urls.every((url) => {
+        if (!/^turns?:/i.test(url)) return true;
+        if (!url.includes('turn.cloudflare.com')) return false;
+        hasCloudflareTurn = true;
+        return true;
+      });
+    });
+    return onlyCloudflareTurn && hasCloudflareTurn;
+  }
+
   function scheduleDriver(delayMs: number): void {
     cancelDriver?.();
     cancelDriver = schedule(runDriver, delayMs);
@@ -347,12 +369,12 @@ export function createCloudflareTurnPathProbe(
       return;
     }
     if (ladderIndex < TURN_PROBE_LADDER_BPS.length) {
-      void runWindow(TURN_PROBE_LADDER_BPS[ladderIndex], true);
+      void runWindow(TURN_PROBE_LADDER_BPS[ladderIndex], true).catch(handleWindowFailure);
       return;
     }
     if (pendingVerifications > 0) {
       pendingVerifications -= 1;
-      void runWindow(capacityState.snapshot.probeTargetBps, false);
+      void runWindow(capacityState.snapshot.probeTargetBps, false).catch(handleWindowFailure);
       return;
     }
     scheduleDriver(RECOVERY_INTERVAL_MS);
@@ -360,17 +382,33 @@ export function createCloudflareTurnPathProbe(
 
   async function runWindow(offeredBps: number, isLadder: boolean): Promise<void> {
     if (stopped || windowActive || !dataChannel || !controlChannel) return;
+    if (left === undefined || right === undefined || !await validateRelaySelection()) {
+      invalidateRelayPath();
+      return;
+    }
     windowActive = true;
     windowId += 1;
     sentMessages = 0;
     paceBudgetBytes = 0;
 
-    sendControl({ type: 'start', windowId, offeredBps, durationMs: LADDER_WINDOW_DURATION_MS });
+    if (!sendControl({ type: 'start', windowId, offeredBps, durationMs: LADDER_WINDOW_DURATION_MS })) {
+      windowActive = false;
+      publishFailure();
+      scheduleRetry();
+      return;
+    }
     const startedAt = now();
     const deadline = startedAt + LADDER_WINDOW_DURATION_MS;
 
-    while (!stopped && isDocumentVisible() && now() < deadline) {
-      paceTickOnce(offeredBps);
+    while (!stopped && relayValidated && isDocumentVisible() && now() < deadline) {
+      try {
+        paceTickOnce(offeredBps);
+      } catch {
+        windowActive = false;
+        publishFailure();
+        scheduleRetry();
+        return;
+      }
       const ticked = new Promise<void>((resolve) => {
         resolvePaceTick = resolve;
       });
@@ -380,7 +418,7 @@ export function createCloudflareTurnPathProbe(
       resolvePaceTick = undefined;
     }
 
-    const runnable = !stopped && isDocumentVisible();
+    const runnable = !stopped && relayValidated && isDocumentVisible();
     let result: ResultMessage | undefined;
     if (runnable) {
       try {
@@ -403,6 +441,10 @@ export function createCloudflareTurnPathProbe(
       scheduleRetry();
       return;
     }
+    if (left === undefined || right === undefined || !await validateRelaySelection()) {
+      invalidateRelayPath();
+      return;
+    }
 
     const lossRatio = sentMessages === 0
       ? 1
@@ -419,7 +461,7 @@ export function createCloudflareTurnPathProbe(
     capacityState = reduceTurnProbeWindow(capacityState, window);
     publish(capacityState.snapshot);
     if (!isLadder) {
-      scheduleDriver(RECOVERY_INTERVAL_MS);
+      scheduleDriver(pendingVerifications > 0 ? 0 : RECOVERY_INTERVAL_MS);
       return;
     }
     if (capacityState.snapshot.probeTargetBps <= offeredBps) {
@@ -448,6 +490,22 @@ export function createCloudflareTurnPathProbe(
       sentMessages += 1;
       paceBudgetBytes -= TURN_PROBE_CHUNK_BYTES;
     }
+  }
+
+  function handlePeerConnectionState(): void {
+    if (stopped || !relayValidated) return;
+    const states = [left?.iceConnectionState, right?.iceConnectionState];
+    if (states.some((state) => state === 'disconnected' || state === 'failed' || state === 'closed')) {
+      invalidateRelayPath();
+    }
+  }
+
+  function invalidateRelayPath(): void {
+    if (stopped || !relayValidated) return;
+    relayValidated = false;
+    publishFailure();
+    teardownConnections();
+    scheduleRetry();
   }
 
   function awaitResult(): Promise<ResultMessage> {
@@ -546,12 +604,25 @@ export function createCloudflareTurnPathProbe(
     resolve?.(message);
   }
 
-  function sendControl(message: ProbeControlMessage): void {
+  function sendControl(message: ProbeControlMessage): boolean {
     try {
       controlChannel?.send(JSON.stringify(message));
+      return controlChannel !== undefined;
     } catch {
       // A closed control channel surfaces through the result timeout.
+      return false;
     }
+  }
+
+  function handleWindowFailure(): void {
+    if (stopped) return;
+    if (relayValidated) {
+      invalidateRelayPath();
+      return;
+    }
+    windowActive = false;
+    publishFailure();
+    scheduleRetry();
   }
 
   function scheduleRetry(): void {

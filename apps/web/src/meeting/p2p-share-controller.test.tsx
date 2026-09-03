@@ -127,6 +127,9 @@ class FakeRTCPeerConnection {
     frameWidth?: number;
     frameHeight?: number;
     availableOutgoingBitrateBps?: number;
+    selectedLocalCandidateUrl?: string;
+    remotePacketsLost?: number;
+    remotePacketsReceived?: number;
     bytesSent?: number;
     timestamp?: number;
   } = {};
@@ -183,6 +186,9 @@ function statsReport(
     frameWidth?: number;
     frameHeight?: number;
     availableOutgoingBitrateBps?: number;
+    selectedLocalCandidateUrl?: string;
+    remotePacketsLost?: number;
+    remotePacketsReceived?: number;
     bytesSent?: number;
     timestamp?: number;
   } = {}
@@ -196,11 +202,16 @@ function statsReport(
         ? {}
         : { availableOutgoingBitrate: sender.availableOutgoingBitrateBps })
     } as RTCStats],
-    ['local', { id: 'local', type: 'local-candidate', timestamp: 1, candidateType } as RTCStats],
+    ['local', {
+      id: 'local', type: 'local-candidate', timestamp: 1, candidateType,
+      ...(sender.selectedLocalCandidateUrl === undefined ? {} : { url: sender.selectedLocalCandidateUrl })
+    } as RTCStats],
     ['remote', { id: 'remote', type: 'remote-candidate', timestamp: 1, candidateType: 'host' } as RTCStats]
   ];
   if (sender.qualityLimitationReason !== undefined
     || sender.framesPerSecond !== undefined
+    || sender.remotePacketsLost !== undefined
+    || sender.remotePacketsReceived !== undefined
     || sender.bytesSent !== undefined
     || sender.timestamp !== undefined) {
     entries.push(['outbound', {
@@ -209,8 +220,20 @@ function statsReport(
       ...(sender.framesPerSecond !== undefined ? { framesPerSecond: sender.framesPerSecond } : {}),
       ...(sender.frameWidth !== undefined ? { frameWidth: sender.frameWidth } : {}),
       ...(sender.frameHeight !== undefined ? { frameHeight: sender.frameHeight } : {}),
+      ...(sender.remotePacketsLost !== undefined ? { remotePacketsLost: sender.remotePacketsLost } : {}),
+      ...(sender.remotePacketsReceived !== undefined ? { remotePacketsReceived: sender.remotePacketsReceived } : {}),
+      ...(sender.remotePacketsLost !== undefined || sender.remotePacketsReceived !== undefined
+        ? { remoteId: 'remote-inbound' }
+        : {}),
       ...(sender.bytesSent !== undefined ? { bytesSent: sender.bytesSent } : {})
     } as RTCStats]);
+    if (sender.remotePacketsLost !== undefined || sender.remotePacketsReceived !== undefined) {
+      entries.push(['remote-inbound', {
+        id: 'remote-inbound', type: 'remote-inbound-rtp', kind: 'video', timestamp: sender.timestamp ?? 1,
+        ...(sender.remotePacketsLost === undefined ? {} : { packetsLost: sender.remotePacketsLost }),
+        ...(sender.remotePacketsReceived === undefined ? {} : { packetsReceived: sender.remotePacketsReceived })
+      } as RTCStats]);
+    }
   }
   return new Map(entries) as unknown as RTCStatsReport;
 }
@@ -892,6 +915,55 @@ describe('p2p share controller', () => {
     expect(probes.items[1].probe.start).toHaveBeenCalledWith([{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }]);
   });
 
+  it('stops the probe when a Cloudflare viewer closes before a retry can replace it', async () => {
+    const { controller, fetchIceServers, probes } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    fetchIceServers.mockRejectedValueOnce(new Error('retry credentials unavailable'));
+    controller.handleRetry('viewer-1');
+
+    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
+  });
+
+  it('does not bind a Cloudflare probe to refreshed coturn credentials', async () => {
+    const { controller, fetchIceServers, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    fetchIceServers.mockResolvedValueOnce({
+      iceServers: [
+        { urls: ['stun:stun.example.test:3478'] },
+        { urls: ['turn:turn.cloudflare.com:3478'], username: 'user', credential: 'credential' }
+      ],
+      turnProvider: 'cloudflare'
+    });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    controller.refreshIceServers?.({
+      iceServers: [{ urls: ['turn:turn.example.test:3478?transport=udp'] }],
+      turnProvider: 'coturn'
+    });
+
+    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
+    expect(probes.created).toBe(1);
+
+    pc.senderStats = {
+      ...pc.senderStats,
+      selectedLocalCandidateUrl: 'turn:turn.example.test:3478?transport=udp'
+    };
+    await runTransportChecks();
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
+  });
+
   it('publishes immutable probe snapshots without changing sender parameters in observation mode', async () => {
     const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
     const snapshots: TurnPathProbeSnapshot[] = [];
@@ -1173,6 +1245,38 @@ describe('p2p share controller', () => {
     };
     await runTransportChecks();
     expect(probes.items[0].probe.requestVerification).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses remote loss deltas instead of cumulative remote loss for pressure', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    await vi.waitFor(() => expect(probes.created).toBe(1));
+
+    for (let sample = 0; sample < 3; sample += 1) {
+      probes.items[0].setSnapshot({
+        status: 'ready',
+        probeTargetBps: 2_000_000,
+        measuredCapacityBps: 1_500_000,
+        stableCapacityBps: 1_500_000,
+        sampledAt: 1_000 + sample * 1_000
+      });
+      pc.senderStats = {
+        qualityLimitationReason: 'none',
+        framesPerSecond: 10,
+        remotePacketsLost: 10,
+        remotePacketsReceived: 90 + sample * 100,
+        bytesSent: 1_000_000 + sample * 500_000,
+        timestamp: 1_000 + sample * 1_000
+      };
+      await runTransportChecks();
+    }
+
+    expect(senderMaxBitrate(pc)).toBe(8_000_000);
   });
 
   it('applies continuous scale and 540p hard protection', async () => {
