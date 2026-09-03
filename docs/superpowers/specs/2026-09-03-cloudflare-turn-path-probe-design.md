@@ -4,23 +4,32 @@
 
 ## 1. 目标
 
-在共享者实际使用 Cloudflare TURN 中继时，使用与 TURN 路径绑定、且不依赖当前屏幕媒体目标码率的主动探测，估计共享者到 Cloudflare TURN 网络的可用传输能力。探测结果用于提高每名观看者的媒体目标码率，并在持续真实拥塞时平滑降低码率和像素采样量，以稳定目标帧率。
+在共享者实际使用 Cloudflare TURN 中继时，使用与 TURN 路径绑定、且不依赖当前屏幕媒体传输上限的主动探测，估计共享者到 Cloudflare TURN 网络的可用传输能力。用户/画质档位定义的目标码率保持不变；探测结果用于提高每名观看者的传输码率上限，并在持续真实拥塞时平滑降低传输上限和像素采样量，以稳定目标帧率。
 
 设计必须消除以下自限流闭环：
 
 ```text
-媒体目标码率低
+媒体传输码率上限低
   -> 实际发送量低
   -> 浏览器带宽估值低
-  -> 应用继续降低媒体目标码率
+  -> 应用继续降低媒体传输码率上限
 ```
+
+本文统一使用以下术语：
+
+- `profileTargetBitrateBps`：用户选择的画质档位目标码率；同一次共享中保持不变，是画质恢复基准。
+- `transportBitrateCapBps`：应用动态写入 `RTCRtpEncodingParameters.maxBitrate` 的传输码率上限。
+- `encoderTargetBitrateBps`：浏览器通过 WebRTC stats 报告的编码器瞬时目标，只读。
+- `actualOutgoingBitrateBps`：通过 RTP 字节差计算的实际发送码率，只读。
+
+浏览器 API 只能提高 `maxBitrate` 上限，不能强迫静态画面或低复杂度内容产生额外编码数据。因此本文中的“提高传输码率”指提高 `transportBitrateCapBps`，实际发送码率仍由内容、编码器和 WebRTC 拥塞控制共同决定。
 
 ## 2. 非目标和边界
 
 - 不把 `speed.cloudflare.com` 的 HTTPS 上传结果称为 TURN 路径容量，也不再让它参与媒体控制。
 - 不声称可以从浏览器精确测量媒体 PeerConnection 的同一个物理 TURN allocation。浏览器和 Cloudflare 均未提供该第一跳的专用带宽测试 API。
 - 不强制浏览器发送超过 WebRTC 自身拥塞控制允许的流量。
-- 不让一个弱接收端降低其他观看者的目标码率或全局 TURN 探测结果。
+- 不让一个弱接收端降低其他观看者的传输码率上限或全局 TURN 探测结果。
 - 不改变 P2P 直连、coturn 和 LiveKit SFU 安全网的现有策略。
 - Cloudflare 模式继续不使用现有的共享总上行预算分配器；每名观看者保持独立 sender 控制。
 
@@ -172,7 +181,8 @@ confirmedBytes * 8 / windowDurationSeconds
 
 ### 9.2 每名观看者的独立状态
 
-- `targetBitrateBps`
+- `profileTargetBitrateBps`（固定）
+- `transportBitrateCapBps`（动态）
 - `scaleResolutionDownBy`
 - `bandwidthPressureSamples`
 - `healthySamples`
@@ -181,29 +191,29 @@ confirmedBytes * 8 / windowDurationSeconds
 
 一个观看者的媒体压力只能修改其对应 sender。
 
-## 10. 提高码率
+## 10. 提高传输码率
 
 当以下条件持续两个媒体样本：
 
-- `stableCapacityBps >= targetBitrateBps * 1.15`
+- `stableCapacityBps >= transportBitrateCapBps * 1.15`
 - 当前 sender 没有 `bandwidth` 或 `cpu` 限制
 - RTT、丢包和发送队列没有明显增长
 
 则：
 
 ```text
-newTarget = min(
-  currentTarget * 1.15,
+newTransportCap = min(
+  currentTransportCap * 1.15,
   stableCapacityBps * 0.90,
   50 Mbps
 )
 ```
 
-单次最多增加 15%。Cloudflare 官方单 allocation 数据率限制处于约 50–100 Mbps 范围，因此应用上限保持 50 Mbps。
+单次最多增加 15%。该操作不修改 `profileTargetBitrateBps`；只提高 sender 的 `maxBitrate`，为复杂画面、关键帧和高质量编码提供更大的实际传输空间。Cloudflare 官方单 allocation 数据率限制处于约 50–100 Mbps 范围，因此应用上限保持 50 Mbps。
 
 ## 11. 降低码率与防死循环
 
-以下信号不能单独降低媒体目标：
+以下信号不能单独降低媒体传输上限：
 
 - 单个低 TURN 探测窗口
 - 低 `availableOutgoingBitrate`
@@ -213,29 +223,30 @@ newTarget = min(
 
 普通下降必须同时满足：
 
-1. 独立 TURN 验证连续两个窗口低于当前目标；以及
+1. 独立 TURN 验证连续两个窗口低于当前传输上限；以及
 2. 当前观看者连续三个媒体样本出现真实压力：`qualityLimitationReason=bandwidth`，或 RTT、丢包、发送丢弃明显恶化，并且实际帧率或编码输出受到影响。
 
 下降公式：
 
 ```text
-newTarget = max(
-  currentTarget * 0.80,
-  min(currentTarget * 0.95, lastStableBitrateBps * 0.90),
+newTransportCap = max(
+  currentTransportCap * 0.80,
+  min(currentTransportCap * 0.95, lastStableBitrateBps * 0.90),
   1 Mbps
 )
 ```
 
-`lastStableBitrateBps` 缺失时该项按 1 Mbps 处理。该公式保证新目标严格低于当前目标，单次下降范围为 5%–20%。严重情况（例如帧率低于目标 50% 并伴随高丢包）允许立即执行一次 20% 下降。
+`lastStableBitrateBps` 缺失时该项按 1 Mbps 处理。该公式保证新传输上限严格低于当前传输上限，单次下降范围为 5%–20%，但 `profileTargetBitrateBps` 始终不变。严重情况（例如帧率低于目标 50% 并伴随高丢包）允许立即执行一次 20% 下降。
 
-下降后 probe 强度不跟随媒体目标降低；5 秒后继续独立向上验证。`lastKnownGoodBps` 不能因静态内容或低应用目标自然衰减，只能在持续独立低探测和媒体压力共同存在时更新。
+下降后 probe 强度不跟随媒体传输上限降低；5 秒后继续独立向上验证。`profileTargetBitrateBps` 继续作为恢复基准；`lastKnownGoodBps` 不能因静态内容或低应用传输上限自然衰减，只能在持续独立低探测和媒体压力共同存在时更新。
 
 ## 12. 动态采样与帧率
 
-网络目标码率和像素采样比例分别控制。理想采样倍数使用绝对关系：
+固定画质目标、动态传输上限和像素采样比例分别控制。只有传输上限低于固定目标时才需要增加采样倍数：
 
 ```text
-idealScale = sqrt(referenceBitrateBps / targetBitrateBps)
+effectiveBudget = min(profileTargetBitrateBps, transportBitrateCapBps)
+idealScale = max(1, sqrt(profileTargetBitrateBps / effectiveBudget))
 ```
 
 并根据源尺寸和分辨率底线进行限制。
@@ -254,7 +265,7 @@ idealScale = sqrt(referenceBitrateBps / targetBitrateBps)
 - 每秒检查 outbound `frameWidth`/`frameHeight`；如果浏览器自身的 `maintain-framerate` 降级使输出短边低于 540p，则触发分辨率硬保护，临时切换为 `maintain-resolution`，直到输出恢复到安全范围。该硬保护优先级高于帧率目标。
 - 网络恢复后优先退出 540p 紧急层，再缓慢恢复原始分辨率。
 
-若 540p 仍无法维持目标帧率，控制器保持 540p 和当前目标码率，让浏览器拥塞控制决定实际发送；不继续无限降低分辨率。
+若 540p 仍无法维持目标帧率，控制器保持 540p，固定画质目标仍不改变，由动态传输上限和浏览器拥塞控制决定实际发送；不继续无限降低分辨率。
 
 ## 13. 模块边界和现有代码变更
 
@@ -266,10 +277,10 @@ idealScale = sqrt(referenceBitrateBps / targetBitrateBps)
 
 ### 修改模块
 
-- `p2p-media-health.ts`：增加 `targetBitrate`、发送丢弃、remote inbound RTT/丢包等可信压力字段。
+- `p2p-media-health.ts`：增加只读 `encoderTargetBitrate`、发送丢弃、remote inbound RTT/丢包等可信压力字段。
 - `p2p-share-controller.ts`：拥有 probe 生命周期，按观看者运行编码状态机，暴露只读快照。
 - `meeting-room-page.tsx`：删除 HTTPS probe effect，只订阅和展示 controller 快照。
-- `webrtc-stats.ts` / 统计面板：区分 TURN 探测、媒体目标、实际码率和 RTC 原始估值。
+- `webrtc-stats.ts` / 统计面板：区分固定画质目标、动态传输上限、编码器瞬时目标、实际码率和 RTC 原始估值。
 
 ### 删除模块
 
@@ -300,7 +311,9 @@ Cloudflare TURN 路径探测暂不可用（不影响 TURN 连接）
 WebRTC 详细面板分别显示：
 
 - TURN 路径探测容量和更新时间
-- 当前媒体目标码率
+- 固定画质目标码率
+- 动态传输码率上限
+- 编码器瞬时目标码率
 - 实际发送码率
 - RTC 原始 `availableOutgoingBitrate`
 - 输出分辨率、帧率和采样倍数
@@ -322,7 +335,7 @@ WebRTC 详细面板分别显示：
 
 ### 单元测试
 
-- 低媒体目标不降低独立 probe 强度。
+- 低媒体传输上限不降低独立 probe 强度。
 - 单个低探测、低 RTC 估值、静态画面和缺失字段不触发下降。
 - 持续低探测加真实媒体压力才触发最多 20% 下降。
 - 网络恢复后按最多 15% 上升。
@@ -355,10 +368,11 @@ WebRTC 详细面板分别显示：
 ## 19. 验收标准
 
 - Cloudflare TURN 模式下不再访问 `speed.cloudflare.com`。
-- probe 流量不受媒体目标码率限制。
-- 媒体目标低时，probe 仍能发现更高容量并推动恢复。
-- 低 RTC 估值或低实际媒体码率不能单独继续压低目标。
-- 持续真实拥塞能在有界时间内平滑降低目标和采样量。
+- probe 流量不受媒体传输码率上限限制。
+- 媒体传输上限低时，probe 仍能发现更高容量并推动传输上限恢复。
+- 固定画质目标在共享期间保持不变。
+- 低 RTC 估值或低实际媒体码率不能单独继续压低传输上限。
+- 持续真实拥塞能在有界时间内平滑降低传输上限和采样量。
 - 一个弱观看者不会降低其他观看者或全局 probe。
 - 正常最低 720p，严重弱网最低 540p，禁止自动降到 270p。
 - 主界面和详细统计使用明确、不误导的术语。
