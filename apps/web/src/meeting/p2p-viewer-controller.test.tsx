@@ -514,6 +514,105 @@ describe('p2p viewer controller', () => {
     expect(controller.getTurnProvider()).toBe('cloudflare');
   });
 
+  it.each(['coturn', 'cloudflare'] as const)(
+    'keeps an established %s TURN session when ICE fails automatically',
+    async (turnProvider) => {
+      const { controller, signaling, onFallback } = makeHarness({ turnProvider });
+      await controller.acceptOffer('sharer-1', 'offer-sdp');
+      const pc = FakeRTCPeerConnection.instances[0];
+      pc.statsCandidateType = 'relay';
+      const videoTrack = pc.fireTrack('video', makeStream());
+      videoTrack.unmute();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(controller.getState()).toBe('turn');
+
+      pc.setIceConnectionState('failed');
+
+      expect(controller.getState()).toBe('turn');
+      expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(pc.closed).toBe(false);
+    }
+  );
+
+  it('keeps an established TURN session after the disconnect timeout', async () => {
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    pc.setIceConnectionState('disconnected');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('keeps an established TURN session when RTP stalls', async () => {
+    let now = 0;
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({
+      turnProvider: 'cloudflare',
+      now: () => now
+    });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    pc.autoProgress = false;
+
+    for (let elapsed = 0; elapsed < P2P_RTP_STALL_TIMEOUT_MS + 1_000; elapsed += 1_000) {
+      now += 1_000;
+      await runHealthCheck();
+    }
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('keeps an established TURN session through sustained poor-quality samples', async () => {
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.statsPacketsReceived = 100;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    for (let sample = 0; sample < 8; sample += 1) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await runHealthCheck();
+    }
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('still honors an explicit SFU request from an established TURN session', async () => {
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    controller.requestSfu();
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).toHaveBeenCalledOnce();
+  });
+
   it('applies refreshed ICE credentials to the active peer connection', async () => {
     const { controller } = makeHarness({ turnProvider: 'cloudflare' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');

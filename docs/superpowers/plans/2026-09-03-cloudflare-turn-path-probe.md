@@ -72,7 +72,7 @@
 - Produces: credential-free JSON `{ selectedRelay, protocol, windows, medianBps, dispersion }` plus a sanitized acceptance report.
 - Gate: Tasks 2–9 execute only if the real-provider probe passes all criteria three times.
 
-- [ ] **Step 1: Prepare the authenticated Edge gate**
+- [x] **Step 1**: Prepare the authenticated Edge gate**
 
 Ask the operator to open a disposable authenticated meeting in Edge and select Cloudflare TURN. Use the Browser CDP capability on that exact tab. Enable `Runtime` and `Network`, then execute one in-page async expression. Inside the expression, fetch the Cloudflare ICE configuration with `credentials: 'include'`, keep it in a local variable, and immediately construct the two peer connections. Never return or log the response body.
 
@@ -90,19 +90,31 @@ const left = new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' });
 const right = new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' });
 const data = left.createDataChannel('probe-data', { ordered: false, maxRetransmits: 0 });
 const control = left.createDataChannel('probe-control', { ordered: true });
-left.onicecandidate = ({ candidate }) => candidate && right.addIceCandidate(candidate);
-right.onicecandidate = ({ candidate }) => candidate && left.addIceCandidate(candidate);
+const leftPending = [];
+const rightPending = [];
+left.onicecandidate = ({ candidate }) => {
+  if (!candidate) return;
+  if (right.remoteDescription) void right.addIceCandidate(candidate);
+  else leftPending.push(candidate);
+};
+right.onicecandidate = ({ candidate }) => {
+  if (!candidate) return;
+  if (left.remoteDescription) void left.addIceCandidate(candidate);
+  else rightPending.push(candidate);
+};
 const offer = await left.createOffer();
 await left.setLocalDescription(offer);
 await right.setRemoteDescription(offer);
+for (const candidate of leftPending.splice(0)) await right.addIceCandidate(candidate);
 const answer = await right.createAnswer();
 await right.setLocalDescription(answer);
 await left.setRemoteDescription(answer);
+for (const candidate of rightPending.splice(0)) await left.addIceCandidate(candidate);
 ```
 
-The right peer must count 16 KiB data messages and return one reliable cumulative result per window. The left peer must pace writes using `bufferedAmountLowThreshold`, run 2/4/8/16 Mbps windows, and inspect both selected candidate pairs through `transport.selectedCandidatePairId`. Fail unless both selected local candidates are `relay` and their `url` includes `turn.cloudflare.com`. Close both peer connections in `finally`.
+Do not wait for `iceGatheringState === 'complete'`: Cloudflare publishes multiple UDP/TCP/TLS URLs and unreachable alternates may keep gathering open after usable relay candidates exist. The right peer must count 16 KiB data messages and return one reliable cumulative result per window. The left peer must pace writes using `bufferedAmountLowThreshold`, run 2/4/8/16 Mbps windows, and inspect both selected candidate pairs through `transport.selectedCandidatePairId`. Fail unless both selected local candidates are `relay` and their `url` includes `turn.cloudflare.com`. Close both peer connections in `finally`.
 
-- [ ] **Step 2: Add explicit result redaction inside the CDP expression**
+- [x] **Step 2**: Add explicit result redaction inside the CDP expression**
 
 Before returning from page scope, serialize the result and reject it if it contains `username`, `credential`, `iceServers`, `password`, `cookie`, or `token`. Return only:
 
@@ -110,7 +122,7 @@ Before returning from page scope, serialize the result and reject it if it conta
 {"selectedRelay":true,"protocol":"udp","windows":[{"offeredBps":2000000,"confirmedBps":1900000,"lossRatio":0}],"medianBps":1900000,"dispersion":0.04}
 ```
 
-- [ ] **Step 3: Run the gate against the real provider**
+- [x] **Step 3**: Run the gate against the real provider**
 
 Run the CDP expression in the authenticated Edge tab. Expected:
 
@@ -120,7 +132,7 @@ Run the CDP expression in the authenticated Edge tab. Expected:
 - returned object contains no credential or participant fields;
 - CDP Network events show TURN/WebRTC activity but the saved report contains no addresses or credentials.
 
-- [ ] **Step 4: Repeat three times and enforce the gate**
+- [x] **Step 4**: Repeat three times and enforce the gate**
 
 Expected across three runs:
 
@@ -130,7 +142,7 @@ Expected across three runs:
 - every process exits after closing both peer connections;
 - Cloudflare TURN analytics or browser stats show allocations disappear after the test.
 
-- [ ] **Step 5: Choose the branch**
+- [x] **Step 5**: Choose the branch**
 
 If any hard criterion fails, write only the failed criterion and sanitized timings to `docs/acceptance/cloudflare-turn-loop-probe-2026-09-03.md`, commit that report with `test(web): record unsupported Cloudflare TURN loopback`, stop this plan, and write `docs/superpowers/plans/2026-09-03-cloudflare-turn-pion-probe.md` from spec section 4.2. Do not continue with a partly working loopback implementation.
 
@@ -192,7 +204,7 @@ export function markTurnProbeFailure(
 ): TurnProbeCapacityState;
 ```
 
-- [ ] **Step 1: Write failing reducer tests**
+- [x] **Step 1: Write failing reducer tests**
 
 Cover exact cases:
 
@@ -206,7 +218,7 @@ it('drops expired stable capacity without reporting zero');
 it('advances the independent probe ladder even when media is capped low');
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run:
 
@@ -216,17 +228,17 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement the reducer**
+- [x] **Step 3: Implement the reducer**
 
 Use `confirmedBytes * 8_000 / durationMs`, reject non-finite/zero duration, loss outside 0–1, or timestamps that move backward. Store only the latest three valid capacities in `recentValidCapacitiesBps` and compute their median into the public snapshot. Keep stable capacity for 60 seconds after a failure; never synthesize `0`.
 
 The probe ladder is exactly `[2, 4, 8, 16, 32, 50] * 1_000_000`. Advance only when confirmed throughput reaches at least 85% of offered rate, loss is below 2%, and queued bytes drained by window end.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run the same command. Expected: all capacity tests PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/meeting/cloudflare-turn-capacity.ts apps/web/src/meeting/cloudflare-turn-capacity.test.tsx
@@ -267,7 +279,7 @@ export function createCloudflareTurnPathProbe(
 ): CloudflareTurnPathProbe;
 ```
 
-- [ ] **Step 1: Write failing protocol/lifecycle tests**
+- [x] **Step 1: Write failing protocol/lifecycle tests**
 
 Use fake peer connections and fake DataChannels. Cover:
 
@@ -282,7 +294,7 @@ it('invalidates a window when the document is hidden');
 it('stops both peers, channels, listeners, and timers idempotently');
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```bash
 pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meeting/cloudflare-turn-path-probe.test.tsx
@@ -290,11 +302,11 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement negotiation and relay validation**
+- [x] **Step 3: Implement negotiation and relay validation**
 
 Create both PCs with `{ iceServers, iceTransportPolicy: 'relay' }`, exchange SDP/ICE locally, wait at most 8 seconds for both channels, then call `getStats()` on both PCs. Follow `transport.selectedCandidatePairId` to local/remote candidates. Require `candidateType === 'relay'` and either `url` contains `turn.cloudflare.com` or the supplied ICE configuration contains only Cloudflare TURN URLs.
 
-- [ ] **Step 4: Implement the two-channel window protocol**
+- [x] **Step 4: Implement the two-channel window protocol**
 
 Use these control messages:
 
@@ -306,15 +318,15 @@ type ProbeControlMessage =
 
 Send binary frames with a 12-byte header (`windowId`, `sequence`, `payloadLength`) and random payload. Stop writing when the deadline is reached, wait for the reliable result, compute loss, and feed the pure reducer.
 
-- [ ] **Step 5: Implement scheduling and failure states**
+- [x] **Step 5: Implement scheduling and failure states**
 
 Run startup ladder windows immediately; run a 500ms recovery window every 10 seconds. `requestVerification()` schedules two 500ms windows but coalesces concurrent requests. On transient failure publish `stale`/`error` and retry at 5s, 15s, 30s, then 30s. Hidden documents do not run active windows.
 
-- [ ] **Step 6: Run tests to verify GREEN**
+- [x] **Step 6: Run tests to verify GREEN**
 
 Run the targeted path-probe and capacity tests. Expected: PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/src/meeting/cloudflare-turn-path-probe.ts apps/web/src/meeting/cloudflare-turn-path-probe.test.tsx
@@ -357,7 +369,7 @@ export interface CloudflareEncodingMeasurement {
 }
 ```
 
-- [ ] **Step 1: Replace tests with fixed-target semantics**
+- [x] **Step 1: Replace tests with fixed-target semantics**
 
 Write failing tests proving:
 
@@ -374,7 +386,7 @@ it('uses 720p normal and 540p emergency short-side floors');
 it('activates hard resolution protection below 540p');
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```bash
 pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meeting/cloudflare-adaptive-encoding.test.tsx
@@ -382,7 +394,7 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: failures against the old dynamic-target state.
 
-- [ ] **Step 3: Implement cap increase**
+- [x] **Step 3: Implement cap increase**
 
 When two healthy media samples satisfy `stableCapacityBps >= transportBitrateCapBps * 1.15`, compute:
 
@@ -396,7 +408,7 @@ const newTransportCap = Math.min(
 
 Return the original `profileTargetBitrateBps` unchanged.
 
-- [ ] **Step 4: Implement bounded cap decrease**
+- [x] **Step 4: Implement bounded cap decrease**
 
 Only enter the down branch after two independently low probe windows and three media-pressure samples. Compute:
 
@@ -411,7 +423,7 @@ const newTransportCap = Math.max(
 
 If the current cap is already 1 Mbps, hold it at the floor and do not enter the down branch. Otherwise assert in code that `newTransportCap < state.transportBitrateCapBps`. Severe pressure may execute one immediate 20% step.
 
-- [ ] **Step 5: Implement absolute sampling scale and floors**
+- [x] **Step 5: Implement absolute sampling scale and floors**
 
 Compute:
 
@@ -422,11 +434,11 @@ const idealScale = Math.max(1, Math.sqrt(state.profileTargetBitrateBps / effecti
 
 Clamp the scale so the source short-side remains at least 720px normally or 540px in emergency mode. Slew-limit increasing scale to 10% and recovery to 5% after five healthy samples. If outbound frame size falls below 540p, set hard-resolution protection.
 
-- [ ] **Step 6: Run tests to verify GREEN**
+- [x] **Step 6: Run tests to verify GREEN**
 
 Run the adaptive tests. Expected: all PASS.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add apps/web/src/meeting/cloudflare-adaptive-encoding.ts apps/web/src/meeting/cloudflare-adaptive-encoding.test.tsx
@@ -457,11 +469,11 @@ selectedLocalCandidateUrl?: string;
 selectedRelayProtocol?: string;
 ```
 
-- [ ] **Step 1: Write failing stats extraction tests**
+- [x] **Step 1: Write failing stats extraction tests**
 
 Build one `RTCStatsReport` containing outbound RTP, remote inbound RTP, transport, candidate pair, and relay candidate. Assert exact extraction of encoder `targetBitrate`, candidate-pair `packetsDiscardedOnSend`, RTT seconds converted to milliseconds, remote loss counters, and relay URL/protocol.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```bash
 pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meeting/p2p-media-health.test.tsx apps/web/src/meeting/webrtc-stats.test.tsx
@@ -469,15 +481,15 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: missing-field assertions fail.
 
-- [ ] **Step 3: Implement extraction without defaulting missing data to zero**
+- [x] **Step 3: Implement extraction without defaulting missing data to zero**
 
 Follow `transport.selectedCandidatePairId`, then `localCandidateId`. Find remote inbound RTP for the local outbound stream through `remoteId` when present. Convert RTT to ms. Leave missing fields `undefined` so missing stats cannot look like zero congestion.
 
-- [ ] **Step 4: Run tests to verify GREEN**
+- [x] **Step 4: Run tests to verify GREEN**
 
 Run the same targeted tests. Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/web/src/meeting/p2p-media-health.ts apps/web/src/meeting/p2p-media-health.test.tsx apps/web/src/meeting/webrtc-stats.ts apps/web/src/meeting/webrtc-stats.test.tsx
@@ -509,7 +521,7 @@ cloudflareTurnControlMode?: 'observe' | 'control';
 
 - Remove `setCloudflareUplinkEstimate` and `cloudflareUplinkEstimateBps`.
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 Cover:
 
@@ -523,7 +535,7 @@ it('rebuilds the probe after Cloudflare credential refresh');
 it('publishes immutable probe snapshots without changing sender parameters in observation mode');
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```bash
 pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meeting/p2p-share-controller.test.tsx
@@ -531,19 +543,19 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: failures because the controller has no probe lifecycle.
 
-- [ ] **Step 3: Implement lifecycle helpers**
+- [x] **Step 3: Implement lifecycle helpers**
 
 Add private `reconcileTurnPathProbe()` called after state/provider transitions, viewer closure, retry, credential refresh, and stop. It starts only when `some(session.state === 'turn' && session.turnProvider === 'cloudflare')`. It reuses the controller's current Cloudflare ICE servers and owns exactly one unsubscribe handle.
 
-- [ ] **Step 4: Keep observation mode non-mutating**
+- [x] **Step 4: Keep observation mode non-mutating**
 
 Feed probe snapshots to listeners but do not pass them into `updateCloudflareEncoding` when `cloudflareTurnControlMode` is omitted or `'observe'`. Tests may construct the controller with `'control'` starting in Task 7. Production remains observation-only until Task 9.
 
-- [ ] **Step 5: Run tests to verify GREEN**
+- [x] **Step 5: Run tests to verify GREEN**
 
 Run controller, path-probe, and existing screen-share tests. Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/meeting/p2p-share-controller.ts apps/web/src/meeting/p2p-share-controller.test.tsx
@@ -563,7 +575,7 @@ git commit -m "feat(web): observe one Cloudflare TURN path probe per share"
 - `applySenderParameters` writes `state.transportBitrateCapBps` to `encodings[0].maxBitrate`.
 - `profileTargetBitrateBps` is initialized from the immutable share option and never overwritten by rebalance/adaptation.
 
-- [ ] **Step 1: Write failing integration tests**
+- [x] **Step 1: Write failing integration tests**
 
 Cover:
 
@@ -576,15 +588,15 @@ it('requests probe verification when sender pressure begins');
 it('applies continuous scale and 540p hard protection');
 ```
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 Run the controller test file. Expected: integration assertions fail while observation mode is active.
 
-- [ ] **Step 3: Connect probe and sender measurements**
+- [x] **Step 3: Connect probe and sender measurements**
 
 For each Cloudflare TURN session, compute deltas for bytes, discarded packets, remote loss, and timestamps. Call `updateCloudflareEncoding` with the shared probe snapshot and that session's stats. Store state on the session; never store per-viewer pressure globally.
 
-- [ ] **Step 4: Apply sender parameters serially**
+- [x] **Step 4: Apply sender parameters serially**
 
 Use the existing `senderParameterTail`. Apply:
 
@@ -597,11 +609,11 @@ encodings: [{
 degradationPreference: hardResolutionProtection ? 'maintain-resolution' : 'maintain-framerate'
 ```
 
-- [ ] **Step 5: Run tests to verify GREEN**
+- [x] **Step 5: Run tests to verify GREEN**
 
 Run controller, adaptive, media-health, and screen-share tests. Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/meeting/p2p-share-controller.ts apps/web/src/meeting/p2p-share-controller.test.tsx
@@ -631,11 +643,11 @@ Cloudflare TURN 路径探测：重测中（上次 12.4 Mbps）
 Cloudflare TURN 路径探测暂不可用（不影响 TURN 连接）
 ```
 
-- [ ] **Step 1: Write failing page tests**
+- [x] **Step 1: Write failing page tests**
 
 Assert ready, stale, and error copy. Assert no `fetch` call targets `speed.cloudflare.com`. Assert remote viewers and non-Cloudflare paths do not show the badge.
 
-- [ ] **Step 2: Run tests to verify RED**
+- [x] **Step 2: Run tests to verify RED**
 
 ```bash
 pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meeting/screen-share.test.tsx
@@ -643,19 +655,19 @@ pnpm exec vitest run --config vitest.config.ts --project web apps/web/src/meetin
 
 Expected: old page-owned probe and old copy fail assertions.
 
-- [ ] **Step 3: Remove page-owned probing**
+- [x] **Step 3: Remove page-owned probing**
 
 Delete the `useEffect` that calls `measureCloudflareUplink`, remove its prop/test seam, and delete the HTTPS module/tests. Subscribe to controller snapshots while the local user is sharing.
 
-- [ ] **Step 4: Add distinct detailed diagnostics**
+- [x] **Step 4: Add distinct detailed diagnostics**
 
 Render separate rows for fixed profile target, dynamic transport cap, encoder target, actual bitrate, RTC estimate, probe capacity, scale, selected provider, and relay protocol. Never label RTC estimate or HTTP data as TURN capacity.
 
-- [ ] **Step 5: Run tests to verify GREEN**
+- [x] **Step 5: Run tests to verify GREEN**
 
 Run screen-share, stats-panel, and i18n tests. Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add apps/web/src/pages/meeting-room-page.tsx apps/web/src/meeting/screen-share.test.tsx apps/web/src/components/webrtc-stats-panel.tsx apps/web/src/i18n/i18n.tsx apps/web/src/styles.css
@@ -675,7 +687,7 @@ git commit -m "feat(web): show verified Cloudflare TURN path capacity"
 **Interfaces:**
 - Produces a verified observation-mode release first, followed by a control-mode release only after manual acceptance.
 
-- [ ] **Step 1: Add acceptance cases**
+- [x] **Step 1: Add acceptance cases**
 
 Document exact cases:
 
@@ -689,7 +701,7 @@ Document exact cases:
 - 720p normal, 540p emergency, never 270p;
 - all resources close on stop.
 
-- [ ] **Step 2: Run the complete test suite**
+- [x] **Step 2: Run the complete test suite**
 
 ```bash
 pnpm test
@@ -697,7 +709,7 @@ pnpm test
 
 Expected: all projects PASS.
 
-- [ ] **Step 3: Run static and production checks**
+- [x] **Step 3: Run static and production checks**
 
 ```bash
 pnpm typecheck
@@ -725,7 +737,7 @@ Expected: probe results are stable enough to meet the spec, no persistent FPS dr
 
 At the manual checkpoint, change the production controller construction in `meeting-room-page.tsx` from `cloudflareTurnControlMode: 'observe'` to `cloudflareTurnControlMode: 'control'`. Keep the dependency injectable so tests can cover both modes. Re-run Steps 2–4. Do not enable control if probe credibility or cleanup failed.
 
-- [ ] **Step 6: Update architecture and acceptance docs**
+- [x] **Step 6: Update architecture and acceptance docs**
 
 Describe the final selected topology, fixed-target/dynamic-cap terminology, state machine gates, UI labels, and rollback behavior. If Task 1 failed, this step belongs to the separate Pion plan instead.
 

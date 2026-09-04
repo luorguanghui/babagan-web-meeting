@@ -33,7 +33,7 @@
 - React + TypeScript 构建网页界面。
 - Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
-- 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，无法直连时经自托管 coturn TURN 中继，仍失败再回退 LiveKit SFU；云端不承载直连屏幕媒体。
+- 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，无法直连时经 coturn 或 Cloudflare TURN 中继。初始协商彻底失败或已建立的直连失效时可回退 LiveKit；已确认的 TURN relay 不会自动切换 SFU，但观看者仍可手动选择 SFU。
 - P2P 屏幕共享使用可切换的 TURN provider：共享者在每次开始共享前可选“自动 / 服务器 coturn / Cloudflare TURN”，该选择保存在当前浏览器的 `babagan.screen-turn-provider`，并只作用于下一次共享。
 - API 默认保留 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），也支持服务端调用 Cloudflare Realtime TURN 生成短期凭据；`/api/v1/meetings/:slug/ice-servers` 会返回 `availableTurnProviders`、本次实际 `turnProvider` 和到期时间，Cloudflare 暂时不可用时回退 coturn。
 - 共享者发给观看者的 P2P `offer` 会携带实际 `turnProvider` metadata；观看者会据此重新拉取匹配 provider 的 ICE 配置，保证同一轮共享双方使用同一 provider。旧的无 metadata `offer` 仍按 coturn 兼容处理。

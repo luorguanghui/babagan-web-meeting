@@ -129,7 +129,7 @@ meter { height: .9rem; width: 100%; }
 .meeting-stage-column { display: grid; gap: .75rem; min-width: 0; }
 .meeting-sharing-label { align-items: center; color: var(--meeting-muted); display: flex; flex-wrap: wrap; gap: .5rem; margin: 0; padding-inline: .75rem; }
 .meeting-sharing-label svg { color: #45e2a0; }
-.meeting-uplink-badge { align-items: center; background: #121b20; border: 1px solid rgba(69, 226, 160, .38); border-radius: 999px; box-sizing: border-box; color: #8ce8bd; display: inline-flex; font-size: .75rem; font-variant-numeric: tabular-nums; line-height: 1.2; margin-inline-start: auto; min-height: 24px; padding: .25rem .55rem; white-space: nowrap; }
+.meeting-turn-probe-badge { align-items: center; background: #121b20; border: 1px solid rgba(69, 226, 160, .38); border-radius: 999px; box-sizing: border-box; color: #8ce8bd; display: inline-flex; font-size: .75rem; font-variant-numeric: tabular-nums; line-height: 1.2; margin-inline-start: auto; min-height: 24px; padding: .25rem .55rem; white-space: nowrap; }
 .meeting-stage-shell { align-items: center; animation: meeting-stage-in .45s cubic-bezier(.16, 1, .3, 1) both; background: #080f13; border: 1px solid var(--meeting-border); border-radius: 16px; box-shadow: 0 1.25rem 3rem rgba(2, 8, 11, .25); display: flex; justify-content: center; min-width: 0; overflow: hidden; padding: .45rem; position: relative; }
 .meeting-room-sharing .meeting-stage-shell { box-shadow: inset 3px 0 var(--meeting-accent), 0 1.25rem 3rem rgba(2, 8, 11, .25); }
 .screen-stage { align-items: center; aspect-ratio: var(--stage-aspect-ratio, 16 / 9); background: #0b1317; border: 1px solid rgba(220, 241, 244, .14); border-radius: 11px; display: flex; flex: 0 1 auto; justify-content: center; max-height: 100%; max-width: 100%; min-height: 11rem; overflow: hidden; position: relative; width: 100%; }
@@ -158,6 +158,8 @@ meter { height: .9rem; width: 100%; }
 .webrtc-stats-grid dl div { display: flex; gap: .5rem; justify-content: space-between; padding: .16rem 0; }
 .webrtc-stats-grid dt { color: var(--meeting-muted); }
 .webrtc-stats-grid dd { font-variant-numeric: tabular-nums; font-weight: 650; text-align: right; }
+.webrtc-stats-detail { border-top: 1px solid rgba(196, 231, 236, .12); grid-column: 1 / -1; padding-top: .65rem; }
+.webrtc-stats-detail h4 { color: var(--meeting-muted); font-size: .72rem; margin: .55rem 0 .25rem; }
 .meeting-controls { background: rgba(30, 41, 48, .96); border: 1px solid rgba(220, 241, 244, .2); border-radius: 20px; display: grid; gap: .75rem 1rem; grid-template-columns: minmax(0, 1fr); padding: .65rem; }
 .meeting-control-dock { bottom: .75rem; box-shadow: 0 1rem 2.75rem rgba(2, 8, 11, .35), inset 0 1px 0 rgba(255, 255, 255, .05); justify-self: center; position: sticky; width: min(58rem, calc(100vw - 3rem)); z-index: 10; }
 .meeting-control-dock .meeting-control-status { display: none; }

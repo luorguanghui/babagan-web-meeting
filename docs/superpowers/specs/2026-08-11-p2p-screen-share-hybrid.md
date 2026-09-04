@@ -1,7 +1,7 @@
 # P2P 屏幕共享混合模式设计
 
 日期：2026-08-11
-状态：已确认（在 2026-08-07 总体设计基础上增补，替代其"屏幕媒体全部经 LiveKit SFU 转发"的决策）
+状态：历史基线；传输 provider、TURN 路径探测及“已建立 TURN 不自动转 SFU”以当前 `docs/02`、`docs/03`、`docs/05`、`docs/07` 为准
 
 ## 背景
 
@@ -16,7 +16,7 @@
 - 云端 Fastify 新增 P2P 信令 WebSocket（`wss://meet.babagan.cloud/api/v1/meetings/:slug/p2p`，复用 `/api` 反代，不新增端口），只做鉴权、在线名单与 SDP/ICE 转发，零媒体可见性。
 - ICE 配置经 `GET /api/v1/meetings/:slug/ice-servers` 获取；当前 LiveKit Server v1.11.0 不提供可复用的通用 ICE 凭据接口，服务端返回启动时校验的 `P2P_STUN_URLS`。
 - 共享者对每名观看者各建一条 `RTCPeerConnection`，同一连接发布屏幕视频 + 屏幕音频（音画同步硬约束）。
-- 共享者先发布并全程保留 LiveKit 屏幕安全网，再启动 P2P。观看者确认直连 RTP 与解码帧后发送 `media-ready`，渲染 P2P 首帧后取消本地 LiveKit 订阅；协商超时 8 秒、ICE failed 或 RTP 5 秒无进展时重新订阅 LiveKit，保留旧源至新源首帧。
+- 共享者先发布并全程保留 LiveKit 屏幕安全网，再启动 P2P。观看者确认 RTP 与解码帧后发送 `media-ready`。协商或已建立直连失败时可重新订阅 LiveKit；已确认 TURN relay 不自动交接，用户仍可显式选择 SFU。
 - P2P 码率档位 5/8/10 Mbps（默认 8），按在线观看人数联动建议；SFU 回退档位 10/13/15 Mbps 不变。
 
 ## 权限与安全

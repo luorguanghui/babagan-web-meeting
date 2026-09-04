@@ -17,6 +17,7 @@ import {
   type P2pShareSignaling,
   type ViewerSessionState
 } from './p2p-share-controller.js';
+import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import type { Peer, P2pSignalingClient, P2pSignalingEvents } from './p2p-signaling.js';
 import {
   createRoomController,
@@ -151,6 +152,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('main')).toHaveClass('meeting-room-sharing');
     expect(remoteTrack.attach).toHaveBeenCalledWith(video);
     expect(video).toHaveProperty('srcObject', stream);
+    expect(document.querySelector('.meeting-turn-probe-badge')).toBeNull();
   });
 
   it('groups the presentation workspace, control dock, and side panel around an active share', async () => {
@@ -808,6 +810,27 @@ describe('controlled browser screen sharing', () => {
     }));
   });
 
+  it.each([
+    [{ width: 3840, height: 2160 }, { width: { max: 1280 }, height: { max: 720 } }],
+    [{ width: 1080, height: 1920 }, { width: { max: 720 }, height: { max: 1280 } }]
+  ] as const)('bounds a flow capture to an orientation-aware 720p box', async (source, bounds) => {
+    const { stream, video } = displayStream({ audio: false, ...source });
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => undefined),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream),
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('h264', 8_000_000, 'flow');
+
+    expect(video.applyConstraints).toHaveBeenCalledWith({
+      ...bounds,
+      frameRate: { ideal: 30 }
+    });
+  });
+
   it('defaults to the standard 1080p30 preset with frame-rate-first degradation', async () => {
     const { stream } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => stream);
@@ -834,8 +857,8 @@ describe('controlled browser screen sharing', () => {
     }));
   });
 
-  it('does not override the captured aspect ratio with fixed 16:9 constraints', async () => {
-    const { stream, video } = displayStream({ audio: false });
+  it('uses orientation-aware max bounds rather than fixed 16:9 dimensions', async () => {
+    const { stream, video } = displayStream({ audio: false, width: 1600, height: 1200 });
     const applyConstraints = vi.fn(async () => undefined);
     Object.assign(video, { applyConstraints });
     const publish = vi.fn(async () => undefined);
@@ -848,7 +871,11 @@ describe('controlled browser screen sharing', () => {
 
     await controller.start('h264', 8_000_000, 'standard');
 
-    expect(applyConstraints).toHaveBeenCalledWith({ frameRate: { ideal: 30 } });
+    expect(applyConstraints).toHaveBeenCalledWith({
+      width: { max: 1920 },
+      height: { max: 1080 },
+      frameRate: { ideal: 30 }
+    });
   });
 
   it.each([
@@ -1346,6 +1373,157 @@ describe('screen stage', () => {
     expect(screen.getByText('TURN 中继 · Cloudflare')).toBeVisible();
   });
 
+  it('keeps TURN capacity separate from profile, cap, encoder, and RTC diagnostics', () => {
+    const StatsPanelWithDiagnostics = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264';
+      mode: 'turn';
+      turnProvider: 'cloudflare';
+      embedded: true;
+      turnProbe: TurnPathProbeSnapshot;
+      encodingDiagnostics: ReadonlyMap<string, {
+        profileTargetBitrateBps: number;
+        transportBitrateCapBps: number;
+        scaleResolutionDownBy: number;
+        provider: 'cloudflare';
+      }>;
+      snapshot: {
+        sampledAt: number;
+        sender: {
+          bitrateMbps: number;
+          encoderTargetBitrateMbps: number;
+          availableOutgoingBitrateMbps: number;
+          selectedCandidateType: string;
+          selectedCandidateUrl: string;
+          relayProtocol: string;
+        };
+        counters: Record<string, never>;
+      };
+    }>;
+    render(<StatsPanelWithDiagnostics
+      requestedCodec="h264"
+      mode="turn"
+      turnProvider="cloudflare"
+      embedded
+      turnProbe={{
+        status: 'ready',
+        probeTargetBps: 4_000_000,
+        stableCapacityBps: 12_400_000,
+        selectedProtocol: 'tcp',
+        sampledAt: 1_000
+      }}
+      encodingDiagnostics={new Map([['viewer-1', {
+        profileTargetBitrateBps: 8_000_000,
+        transportBitrateCapBps: 9_200_000,
+        scaleResolutionDownBy: 1.1,
+        provider: 'cloudflare'
+      }]])}
+      snapshot={{
+        sampledAt: 1_000,
+        sender: {
+          bitrateMbps: 6.2,
+          encoderTargetBitrateMbps: 7.5,
+          availableOutgoingBitrateMbps: 12,
+          selectedCandidateType: 'relay',
+          selectedCandidateUrl: 'turn:turn.cloudflare.com:443?transport=tcp',
+          relayProtocol: 'tcp'
+        },
+        counters: {}
+      }}
+    />);
+
+    expect(screen.getByText('TURN path diagnostics')).toBeVisible();
+    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+    expect(screen.getByText('1970-01-01T00:00:01.000Z')).toBeVisible();
+    expect(screen.getByText('12.4 Mbps')).toBeVisible();
+    expect(screen.getByText('Fixed profile target')).toBeVisible();
+    expect(screen.getByText('8 Mbps')).toBeVisible();
+    expect(screen.getByText('Dynamic transport cap')).toBeVisible();
+    expect(screen.getByText('9.2 Mbps')).toBeVisible();
+    expect(screen.getByText('Selected provider')).toBeVisible();
+    expect(screen.getByText('cloudflare')).toBeVisible();
+    expect(screen.getByText('Encoder target bitrate')).toBeVisible();
+    expect(screen.getByText('7.5 Mbps')).toBeVisible();
+    expect(screen.getByText('RTC available estimate')).toBeVisible();
+    expect(screen.getByText('Selected candidate')).toBeVisible();
+    expect(screen.getByText('relay')).toBeVisible();
+    expect(screen.getAllByText('Relay protocol')).toHaveLength(2);
+    expect(screen.getAllByText('tcp')).toHaveLength(2);
+  });
+
+  it('does not label a calibration-only measurement as verified TURN capacity', () => {
+    render(<WebRtcStatsPanel
+      requestedCodec="h264"
+      mode="turn"
+      turnProvider="cloudflare"
+      embedded
+      turnProbe={{
+        status: 'probing',
+        probeTargetBps: 4_000_000,
+        offeredBps: 2_000_000,
+        measuredCapacityBps: 1_800_000,
+        sampledAt: 1_000
+      }}
+    />);
+
+    expect(screen.getByText('Probe status')).toBeVisible();
+    expect(screen.queryByText('Verified TURN capacity')).not.toBeInTheDocument();
+    expect(screen.queryByText('1.8 Mbps')).not.toBeInTheDocument();
+  });
+
+  it('keeps Cloudflare probe diagnostics visible for mixed TURN shares', () => {
+    const MixedStatsPanel = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264';
+      mode: 'mixed';
+      turnProvider: 'mixed';
+      embedded: true;
+      turnProbe: TurnPathProbeSnapshot;
+      snapshot: { sampledAt: number; sender: Record<string, never>; counters: Record<string, never> };
+    }>;
+    render(<MixedStatsPanel
+      requestedCodec="h264"
+      mode="mixed"
+      turnProvider="mixed"
+      embedded
+      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
+      snapshot={{ sampledAt: 1_000, sender: {}, counters: {} }}
+    />);
+
+    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+  });
+
+  it('shows independent TURN diagnostics when media stats are unavailable', () => {
+    const StatsPanelWithoutMedia = WebRtcStatsPanel as ComponentType<{
+      requestedCodec: 'h264';
+      mode: 'turn';
+      turnProvider: 'cloudflare';
+      embedded: true;
+      turnProbe: TurnPathProbeSnapshot;
+      encodingDiagnostics: ReadonlyMap<string, {
+        profileTargetBitrateBps: number;
+        transportBitrateCapBps: number;
+        scaleResolutionDownBy: number;
+        provider: 'cloudflare';
+      }>;
+    }>;
+    render(<StatsPanelWithoutMedia
+      requestedCodec="h264"
+      mode="turn"
+      turnProvider="cloudflare"
+      embedded
+      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
+      encodingDiagnostics={new Map([['viewer-1', {
+        profileTargetBitrateBps: 8_000_000,
+        transportBitrateCapBps: 8_000_000,
+        scaleResolutionDownBy: 1,
+        provider: 'cloudflare'
+      }]])}
+    />);
+
+    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
+    expect(screen.getByText('Fixed profile target')).toBeVisible();
+    expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
+  });
+
   it('reports the replacement source ready only after its probe renders a frame', () => {
     const first = displayStream({ audio: false }).stream;
     const second = displayStream({ audio: false }).stream;
@@ -1796,21 +1974,16 @@ describe('P2P-first screen sharing in the room', () => {
     expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
   });
 
-  it('shows the independent Cloudflare upload test in the meeting-room sharing label', async () => {
+  it('shows the verified TURN path probe capacity in the meeting-room sharing label', async () => {
     const { stream } = displayStream({ audio: true });
     const signaling = fakeSignalingClient();
     const share = fakeShareController();
     share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
-    const probeCloudflareUplink = vi.fn(async () => ({
-      bitrateBps: 10_400_000,
-      sampleCount: 2
-    }));
 
     renderP2pRoom({
       getDisplayMedia: async () => stream,
       createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; },
-      probeCloudflareUplink
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
     });
     act(() => signaling.welcome([p2pViewers[0]]));
 
@@ -1818,9 +1991,160 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(shareButton).toBeEnabled());
     await userEvent.click(shareButton);
     act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 12_400_000,
+      sampledAt: 1_000
+    }));
 
-    expect(await screen.findByText('Cloudflare available uplink: 10.4 Mbps (tested)')).toBeVisible();
-    expect(probeCloudflareUplink).toHaveBeenCalledOnce();
+    expect(await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
+  });
+
+  it('keeps the sharing label in measuring state until TURN capacity is stable', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({
+      status: 'probing',
+      probeTargetBps: 4_000_000,
+      offeredBps: 2_000_000,
+      measuredCapacityBps: 1_800_000,
+      sampledAt: 1_000
+    }));
+
+    expect(await screen.findByText(
+      'Cloudflare TURN path probe: measuring…',
+      { selector: '.meeting-turn-probe-badge' }
+    )).toBeVisible();
+    expect(screen.queryByText(/last 1\.8 Mbps/)).not.toBeInTheDocument();
+  });
+
+  it('shows remeasuring copy while the probe revalidates a previous result', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 12_400_000,
+      sampledAt: 1_000
+    }));
+    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
+    act(() => share.triggerProbeSnapshot({
+      status: 'stale',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 12_400_000,
+      sampledAt: 61_000
+    }));
+
+    expect(await screen.findByText('Cloudflare TURN path probe: remeasuring (last 12.4 Mbps)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
+  });
+
+  it('shows the unavailable probe copy without blaming the TURN connection', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({ status: 'error', probeTargetBps: 2_000_000 }));
+
+    expect(await screen.findByText('Cloudflare TURN path probe unavailable (does not affect the TURN connection)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
+  });
+
+  it('never requests speed.cloudflare.com from the room page', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 12_400_000,
+      sampledAt: 1_000
+    }));
+    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
+
+    const requestedUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
+    expect(requestedUrls.some((url) => url.includes('speed.cloudflare.com'))).toBe(false);
+    fetchSpy.mockRestore();
+  });
+
+  it('hides the probe badge for coturn relays and while watching a remote share', async () => {
+    const { stream } = displayStream({ audio: true });
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'coturn']]);
+
+    renderP2pRoom({
+      getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+    });
+    act(() => signaling.welcome([p2pViewers[0]]));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    act(() => share.triggerProbeSnapshot({
+      status: 'ready',
+      probeTargetBps: 4_000_000,
+      stableCapacityBps: 12_400_000,
+      sampledAt: 1_000
+    }));
+
+    expect(document.querySelector('.meeting-turn-probe-badge')).toBeNull();
   });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
@@ -2553,10 +2877,21 @@ describe('private P2P quality stats in the room', () => {
   });
 });
 
-function displayStream(options: { audio: boolean; displaySurface?: string }) {
+function displayStream(options: {
+  audio: boolean;
+  displaySurface?: string;
+  width?: number;
+  height?: number;
+}) {
   const video = eventTrack('video');
-  if (options.displaySurface) {
-    Object.assign(video, { getSettings: () => ({ displaySurface: options.displaySurface }) });
+  if (options.displaySurface || options.width || options.height) {
+    Object.assign(video, {
+      getSettings: () => ({
+        ...(options.displaySurface ? { displaySurface: options.displaySurface } : {}),
+        ...(options.width ? { width: options.width } : {}),
+        ...(options.height ? { height: options.height } : {})
+      })
+    });
   }
   const audio = options.audio ? [eventTrack('audio')] : [];
   const tracks = [video, ...audio];
@@ -2662,12 +2997,15 @@ interface FakeShareController {
   triggerFallback(identity: string): void;
   triggerAllViewersClosed(): void;
   triggerStates(states: Array<[string, ViewerSessionState]>): void;
+  triggerProbeSnapshot(snapshot: TurnPathProbeSnapshot): void;
 }
 
 function fakeShareController(): FakeShareController {
   let fallback: ((identity: string) => void) | undefined;
   let allClosed: (() => void) | undefined;
   const subscribers = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
+  const probeSubscribers = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
+  let probeSnapshot: TurnPathProbeSnapshot = { status: 'idle', probeTargetBps: 2_000_000 };
   const start = vi.fn(async () => undefined);
   const stop = vi.fn(async () => undefined);
   const handleAnswer = vi.fn(async () => undefined);
@@ -2691,6 +3029,12 @@ function fakeShareController(): FakeShareController {
       subscribers.add(listener);
       listener(new Map());
       return () => { subscribers.delete(listener); };
+    },
+    getTurnPathProbeSnapshot: () => probeSnapshot,
+    subscribeTurnPathProbe: (listener) => {
+      probeSubscribers.add(listener);
+      listener(probeSnapshot);
+      return () => { probeSubscribers.delete(listener); };
     }
   };
   return {
@@ -2707,6 +3051,10 @@ function fakeShareController(): FakeShareController {
     triggerStates: (states) => {
       const snapshot = new Map(states);
       for (const subscriber of subscribers) subscriber(snapshot);
+    },
+    triggerProbeSnapshot: (snapshot) => {
+      probeSnapshot = snapshot;
+      for (const subscriber of [...probeSubscribers]) subscriber(snapshot);
     }
   };
 }
@@ -2899,7 +3247,6 @@ function renderP2pRoom(props: {
     onAllViewersClosed: () => void;
   }) => P2pShareController;
   createStatsCollector?: () => P2pStatsCollector;
-  probeCloudflareUplink?: (signal?: AbortSignal) => Promise<{ bitrateBps: number; sampleCount: number }>;
   leaveMeeting?: (slug: string) => Promise<void>;
 }) {
   const P2pRoomPage = MeetingRoomPage as ComponentType<MeetingRoomPageProps>;
@@ -2917,7 +3264,6 @@ function renderP2pRoom(props: {
     shareControllerFactory={props.shareControllerFactory}
     listDevices={async () => []}
     {...(props.createStatsCollector ? { createStatsCollector: props.createStatsCollector } : {})}
-    {...(props.probeCloudflareUplink ? { probeCloudflareUplink: props.probeCloudflareUplink } : {})}
     {...(props.leaveMeeting ? { leaveMeeting: props.leaveMeeting } : {})}
   />);
 }

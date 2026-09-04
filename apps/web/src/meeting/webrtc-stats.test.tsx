@@ -24,17 +24,28 @@ describe('WebRTC screen-share statistics', () => {
         bytesSent: 2_250_000, frameWidth: 1920, frameHeight: 1080, framesPerSecond: 60,
         framesEncoded: 120, framesSent: 118, totalEncodeTime: 1.2,
         qualityLimitationReason: 'bandwidth', nackCount: 4, pliCount: 2, firCount: 1,
-        retransmittedBytesSent: 20_000
+        retransmittedBytesSent: 20_000, targetBitrate: 6_500_000
       },
       remote: { id: 'remote', type: 'remote-inbound-rtp', kind: 'video', packetsLost: 6, roundTripTime: 0.08 },
-      pair: { id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded', availableOutgoingBitrate: 12_000_000 }
+      pair: {
+        id: 'pair', type: 'candidate-pair', nominated: true, state: 'succeeded',
+        availableOutgoingBitrate: 12_000_000, packetsDiscardedOnSend: 3, localCandidateId: 'local'
+      },
+      local: {
+        id: 'local', type: 'local-candidate', candidateType: 'relay',
+        url: 'turn:turn.cloudflare.com:443?transport=tcp', relayProtocol: 'tcp'
+      }
     })], previous, 2_000);
 
     expect(current.sender).toMatchObject({
       codec: 'H264', width: 1920, height: 1080, framesPerSecond: 60,
       bitrateMbps: 10, framesEncoded: 120, framesSent: 118, averageEncodeTimeMs: 10,
       qualityLimitationReason: 'bandwidth', packetsLost: 6, roundTripTimeMs: 80,
-      availableOutgoingBitrateMbps: 12, nackCount: 4, pliCount: 2, firCount: 1
+      // The RTC estimate and the encoder's own target stay distinct fields.
+      availableOutgoingBitrateMbps: 12, encoderTargetBitrateMbps: 6.5,
+      selectedCandidateType: 'relay', selectedCandidateUrl: 'turn:turn.cloudflare.com:443?transport=tcp',
+      relayProtocol: 'tcp', packetsDiscardedOnSend: 3,
+      nackCount: 4, pliCount: 2, firCount: 1
     });
   });
 
@@ -58,5 +69,47 @@ describe('WebRTC screen-share statistics', () => {
       framesDecoded: 100, framesDropped: 3, freezeCount: 2, jitterMs: 12,
       averageJitterBufferDelayMs: 15, packetsLost: 5, nackCount: 7, pliCount: 3
     });
+  });
+
+  it('keeps media and candidate-pair diagnostics on the same peer connection', () => {
+    const first = report({
+      outbound: {
+        id: 'outbound', type: 'outbound-rtp', kind: 'video',
+        timestamp: 2_000, bytesSent: 1_000_000
+      },
+      transport: {
+        id: 'transport', type: 'transport', selectedCandidatePairId: 'pair'
+      },
+      pair: {
+        id: 'pair', type: 'candidate-pair', state: 'succeeded',
+        localCandidateId: 'local', availableOutgoingBitrate: 3_000_000
+      },
+      local: {
+        id: 'local', type: 'local-candidate', candidateType: 'relay',
+        url: 'turn:turn.cloudflare.com:3478?transport=udp'
+      }
+    });
+    const second = report({
+      outbound: {
+        id: 'outbound', type: 'outbound-rtp', kind: 'video',
+        timestamp: 2_000, bytesSent: 9_000_000
+      },
+      transport: {
+        id: 'transport', type: 'transport', selectedCandidatePairId: 'pair'
+      },
+      pair: {
+        id: 'pair', type: 'candidate-pair', state: 'succeeded',
+        localCandidateId: 'local', availableOutgoingBitrate: 20_000_000
+      },
+      local: {
+        id: 'local', type: 'local-candidate', candidateType: 'host'
+      }
+    });
+
+    const current = summarizeWebRtcStats([first, second], undefined, 2_000);
+
+    expect(current.sender?.availableOutgoingBitrateMbps).toBe(3);
+    expect(current.sender?.selectedCandidateType).toBe('relay');
+    expect(current.sender?.selectedCandidateUrl).toBe('turn:turn.cloudflare.com:3478?transport=udp');
   });
 });

@@ -59,13 +59,20 @@
 | AT-015 | 创建满 24 小时 | 无法继续签发 Token |
 | AT-016 | P2P 直连共享（双方可穿透） | 屏幕经直连传输，云端不出现对应屏幕流量；画面 3 秒内出现 |
 | AT-017 | P2P 不可达（如 CGNAT 观看者） | 8 秒内自动回退 LiveKit，观看者画面中断不超过 2 秒，语音全程不受影响 |
-| AT-018 | 共享中 P2P 断线 | 该观看者自动切换 LiveKit 源，不黑屏超过 2 秒，其他观看者不受影响 |
+| AT-018 | 共享中直连 P2P 断线 | 该观看者自动切换 LiveKit 源，不黑屏超过 2 秒，其他观看者不受影响 |
 | AT-019 | 屏幕音画同步 | P2P 直连下屏幕画面与电脑声音同步，无感知错位（主观 ≤100ms）；回退模式同样验证 |
 | AT-020 | 非共享者发起 P2P offer | 信令服务拒绝，目标端不建立连接 |
 | AT-021 | 无 Cookie 访问 P2P 信令 | 升级被拒绝，不进入房间名单 |
 | AT-022 | 接收端独立调节音量 | 通话音量同时作用于全部远端麦克风；共享音量只作用于远端屏幕音频，0% 完全静音，P2P、TURN 和 LiveKit 回退下结果一致，且不改变共享音频动态与音色 |
 | AT-023 | 共享者显式选择 Cloudflare TURN | 共享开始前可见 `Cloudflare TURN` 选项；共享者 `offer` 携带 `turnProvider=cloudflare`；观看者重新拉取 Cloudflare ICE 配置并显示实际 provider 为 Cloudflare |
 | AT-024 | Cloudflare 未配置或临时失败 | 页面隐藏或无法实际使用 Cloudflare 时，`auto`/显式请求都得到可用 coturn 配置；共享双方标签显示实际 provider 为 coturn，不显示错误的 Cloudflare 状态 |
+| AT-025 | Cloudflare TURN 路径探测 | 只有本地共享者实际使用 Cloudflare relay 时创建 probe；两条探测连接均为 relay，页面显示已验证容量、重测中或“不影响 TURN 连接”的不可用状态 |
+| AT-026 | Cloudflare probe 资源隔离 | 一个共享最多一组 probe；增加观看者不创建第二组；共享停止或 Cloudflare 凭据刷新后旧连接、DataChannel 和定时器均关闭 |
+| AT-027 | Cloudflare 自适应码率 | 固定画质目标保持不变；稳定探测只逐步提高动态传输上限；低 RTC 估值、低实际码率、静态内容或单个低 probe 窗口不能单独触发下降 |
+| AT-028 | Cloudflare 弱观看者隔离 | 只有持续承压的观看者降低自身 cap/采样；其他观看者和 40 Mbps 非 Cloudflare 预算不被该观看者改变 |
+| AT-029 | Cloudflare 分辨率底线 | 正常调整保持源短边至少 720p，严重持续压力最多进入 540p；浏览器输出低于 540p 时启用分辨率保护，自动控制永不稳定在 270p |
+| AT-030 | 已建立 TURN 不自动转 SFU | coturn/Cloudflare relay 在高丢包、RTP 停滞、ICE `disconnected`/`failed` 下仍保持 `turn`，不发 `bye(fallback)`；观看者显式选择 SFU 仍立即交接 |
+| AT-031 | 质量预设尺寸边界 | 横屏和竖屏源均按方向限制在所选 720p/1080p bounding box 内，不拉伸、不裁成固定 16:9；TURN 保留手动重试入口 |
 
 ## 4. 媒体质量测试
 
@@ -110,9 +117,11 @@
 | 禁止媒体 UDP 范围 | 仅 UDP 443 可用 | 经 TURN/UDP 建立连接 |
 | 禁止全部 UDP | TCP 7881 可用 | 使用 RTC/TCP 回退或明确失败提示 |
 | P2P 协商超时 | 观看者 8 秒未收敛 | 自动回退 LiveKit，画面中断 ≤2 秒 |
-| P2P 中继降级 | 共享者到观看者 5% 丢包 | 仅该路码率自动下降，其他观看者不受影响 |
+| TURN 中继弱网 | 共享者到观看者 5% 丢包 | 保持 TURN，不自动切 SFU；由浏览器拥塞控制调整实际发送，用户可手动重试或选 SFU |
 | 信令 WS 中断 | P2P 信令断开 | 已建立的 P2P 连接继续工作；共享状态不受影响 |
 | Cloudflare TURN API 不可用 | 服务端无法取到 Cloudflare 短期凭据 | API 回退 coturn，显式 Cloudflare 自动化 smoke 失败，手工共享验证显示实际 provider 为 coturn |
+| Cloudflare probe 暂时失败 | relay-to-relay probe 无法建立或窗口无效 | 共享媒体继续按当前 TURN 连接运行；页面只显示探测不可用，不降低媒体 cap，不误报 TURN 连接失败 |
+| Cloudflare 共享者高延迟/丢包 | probe 结果与 sender pressure 同时恶化 | `observe` 只记录，不改 sender；未来 `control` 需至少两个足以覆盖当前 cap 的低 probe 窗口及该观看者三次压力确认才允许单路下降 |
 
 ## 6. 负载与稳定性
 
@@ -137,6 +146,7 @@
 - 外部端口扫描只看到批准的端口。
 - TLS 配置通过现代浏览器和自动化 TLS 检查。
 - Cloudflare TURN 长期 Key ID/API Token 只存在服务器 mode 600 env，不出现在浏览器响应、日志、测试报告或 Git。
+- Cloudflare relay-to-relay probe 只在同一 offered target 下取三个有效窗口，且（最大值−最小值）/中位数不超过 25% 才发布稳定容量；记录 provider/protocol、状态、容量、profile target、transport cap、实际码率、FPS、分辨率和 scale，但不记录凭据、参与者身份或媒体内容。
 
 ## 8. 发布门禁
 
@@ -148,5 +158,6 @@
 - 出现高危安全问题、权限提升或敏感信息泄露。
 - 部署、备份恢复或回滚未在目标环境演练。
 - 本地完整门禁未通过：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`bash scripts/http-headers.test.sh`、`bash scripts/deployment-smoke.test.sh`、`bash scripts/deployment-scripts.test.sh`、`bash scripts/smoke-test.provider.test.sh`、`git diff --check` 任一失败都不得发布。
+- Cloudflare probe 的真实 Edge/Chrome observation acceptance 未完成，或 probe 可信度、清理、FPS/分辨率底线不满足时，不得开启 control mode；先发布 observation-only 构建并保留回滚路径。
 
 测试报告记录构建版本、浏览器版本、网络条件、服务器指标、失败证据和最终批准人，不记录会议媒体。

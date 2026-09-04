@@ -19,6 +19,12 @@ export interface WebRtcMediaStats {
   jitterMs?: number;
   averageJitterBufferDelayMs?: number;
   availableOutgoingBitrateMbps?: number;
+  /** Encoder-reported instantaneous target; distinct from the RTC estimate. */
+  encoderTargetBitrateMbps?: number;
+  packetsDiscardedOnSend?: number;
+  selectedCandidateType?: string;
+  selectedCandidateUrl?: string;
+  relayProtocol?: string;
   nackCount?: number;
   pliCount?: number;
   firCount?: number;
@@ -40,14 +46,32 @@ export function summarizeWebRtcStats(
   previous?: WebRtcStatsSnapshot,
   sampledAt = Date.now()
 ): WebRtcStatsSnapshot {
-  const entries: StatsRecord[] = [];
-  for (const report of reports) report.forEach((value) => entries.push(value as unknown as StatsRecord));
+  const reportsEntries: StatsRecord[][] = reports.map((report) => {
+    const values: StatsRecord[] = [];
+    report.forEach((value) => values.push(value as unknown as StatsRecord));
+    return values;
+  });
+  // Stats ids are scoped to one RTCPeerConnection and commonly repeat across
+  // the sharer's per-viewer reports. Mixing reports lets a video stream from
+  // one viewer accidentally resolve the candidate pair of another. Present
+  // one complete representative connection so every row has one provenance.
+  const entries = reportsEntries.find((values) => values.some((value) =>
+    (value.type === 'outbound-rtp' || value.type === 'inbound-rtp')
+      && mediaKind(value) === 'video'
+  )) ?? reportsEntries[0] ?? [];
   const byId = new Map(entries.filter((value) => value.id).map((value) => [value.id!, value]));
   const outbound = entries.find((value) => value.type === 'outbound-rtp' && mediaKind(value) === 'video');
   const inbound = entries.find((value) => value.type === 'inbound-rtp' && mediaKind(value) === 'video');
   const remoteInbound = entries.find((value) => value.type === 'remote-inbound-rtp' && mediaKind(value) === 'video');
-  const candidatePair = entries.find((value) => value.type === 'candidate-pair'
+  const transport = entries.find((value) => value.type === 'transport');
+  const selectedCandidatePairId = stringValue(transport?.selectedCandidatePairId);
+  const candidatePair = (selectedCandidatePairId === undefined
+    ? undefined
+    : byId.get(selectedCandidatePairId)) ?? entries.find((value) => value.type === 'candidate-pair'
     && value.state === 'succeeded' && (value.nominated === true || value.selected === true));
+  const localCandidate = typeof candidatePair?.localCandidateId === 'string'
+    ? byId.get(candidatePair.localCandidateId)
+    : undefined;
   const counters: WebRtcStatsSnapshot['counters'] = {};
 
   let sender: WebRtcMediaStats | undefined;
@@ -68,6 +92,12 @@ export function summarizeWebRtcStats(
       packetsLost: numberValue(remoteInbound?.packetsLost),
       packetsReceived: numberValue(remoteInbound?.packetsReceived),
       roundTripTimeMs: secondsToMilliseconds(remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime),
+      // The encoder's own instantaneous target, kept separate from the RTC estimate.
+      encoderTargetBitrateMbps: toMbps(outbound.targetBitrate),
+      packetsDiscardedOnSend: numberValue(candidatePair?.packetsDiscardedOnSend),
+      selectedCandidateType: stringValue(localCandidate?.candidateType),
+      selectedCandidateUrl: stringValue(localCandidate?.url),
+      relayProtocol: stringValue(localCandidate?.relayProtocol),
       availableOutgoingBitrateMbps: toMbps(candidatePair?.availableOutgoingBitrate),
       nackCount: numberValue(outbound.nackCount),
       pliCount: numberValue(outbound.pliCount),

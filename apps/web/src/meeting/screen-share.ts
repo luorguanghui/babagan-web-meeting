@@ -199,13 +199,19 @@ class BrowserScreenShareController implements ScreenShareController {
         await this.cancelStart(stream, grantAcquired);
         return;
       }
-      // Keep the dimensions selected by the display source. Applying fixed
-      // width/height constraints here makes non-16:9 captures converge on a
-      // 16:9 size (or a much smaller nearest supported size). The P2P sender
-      // applies an aspect-preserving cap from the actual track settings; the
-      // SFU publisher receives the same unmodified source.
+      // Bound the captured source to the selected quality profile without
+      // forcing a 16:9 shape. Maximum constraints let the browser preserve the
+      // source aspect ratio; portrait sources use the rotated bounding box.
+      // This makes the 720p/1080p labels real for both P2P and the cloned SFU
+      // safety publication instead of mere picker hints.
+      const sourceSettings = videoTrack.getSettings?.() ?? {};
+      const portrait = (sourceSettings.height ?? 0) > (sourceSettings.width ?? 0);
+      const maximumWidth = portrait ? settings.height : settings.width;
+      const maximumHeight = portrait ? settings.width : settings.height;
       await (typeof videoTrack.applyConstraints === 'function'
         ? videoTrack.applyConstraints({
+          width: { max: maximumWidth },
+          height: { max: maximumHeight },
           frameRate: { ideal: settings.frameRate }
         }).catch(() => undefined)
         : undefined);

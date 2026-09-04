@@ -49,7 +49,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 
 以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
 
-启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为 contracts/服务端中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
+启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为版本化常量。ICE/RTP 阈值可对协商中或已建立直连触发 SFU 安全网，但已确认 TURN relay 只作诊断，不自动切 SFU。
 
 ## 3. 数据模型
 
@@ -213,7 +213,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 **传输模式（P2P 优先，LiveKit 回退）**：
 
 - **P2P 直连模式**：共享者对每名观看者各建一条 `RTCPeerConnection`，同一条连接上发布屏幕视频与屏幕音频两条轨道（音画同步硬约束，禁止拆到两条连接）。观看者端若在 8 秒内未收到媒体，通知共享者回退。
-- **LiveKit 安全网模式**：共享者先发布 LiveKit 再启动 P2P，并保持发布至共享结束。观看者只有在直连候选对、视频字节与解码帧均确认后才发送 `media-ready` 并切到 P2P；连续检查 RTP，协商超时（8 秒）、ICE `failed` 或 5 秒无 RTP 进展时重新订阅 LiveKit。旧源保留到新源首帧后才关闭，双源可短暂并行用于无黑屏交接，但不会长期双重接收。
+- **LiveKit 安全网模式**：共享者先发布 LiveKit 再启动 P2P，并保持发布至共享结束。协商超时或已建立的 host/srflx 直连出现 ICE `failed`/5 秒无 RTP 进展时重新订阅 LiveKit；已确认 TURN relay 不自动交接。用户显式选择 SFU 时仍保留旧源到 LiveKit 首帧后再关闭。
 
 **码率**：
 
@@ -223,10 +223,10 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 
 **编码与自适应**：
 
-- 三档质量预设：`flow` 1280×720@30fps（弱网优先，保分辨率）、`standard` 1920×1080@30fps（默认，帧率优先）、`motion` 1920×1080@60fps（高动态，帧率优先）；1080p 档位在受限链路上允许降低分辨率以保持帧率。
+- 三档质量预设：`flow` 1280×720@30fps（弱网优先，保分辨率）、`standard` 1920×1080@30fps（默认，帧率优先）、`motion` 1920×1080@60fps（高动态，帧率优先）。捕获后按源方向应用仅含 `max` 的宽高边界（竖屏旋转边界），保留原始宽高比并让 P2P/SFU 使用同一受限源；1080p 档位在受限链路上允许进一步降低分辨率以保持帧率。
 - 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
 - `flow` 使用 `degradationPreference: maintain-resolution`；1080p 档位使用 `maintain-framerate`，优先保持目标帧率。
-- Cloudflare TURN 实际 relay 会话是显式例外：不参与 40 Mbps P2P 总上行预算，也不受 5/8/10 Mbps UI 档位上限约束；发送端按每条连接的 `availableOutgoingBitrate` 与实际 RTP 发送速率做 EWMA 平滑，以 15% 余量逐步调整码率和连续 `scaleResolutionDownBy`，源画面短边不主动降到 720p 以下，浏览器仍报告极低编码层时切换为 `maintain-resolution`，单会话技术上限为 50 Mbps。直连、coturn relay 与 LiveKit 回退继续使用现有档位和预算策略。
+- Cloudflare TURN relay 不参与 40 Mbps P2P 总上行预算。共享者仅在实际选中 Cloudflare relay 时创建一组独立、强制 relay 的浏览器内 DataChannel 回环探测；它不请求 `speed.cloudflare.com`，也不是媒体 PC 的同一 allocation。只有同一目标下三个有效窗口的离散度不超过 25% 才发布稳定容量。生产当前为 `observe`：探测、RTC `availableOutgoingBitrate`、实际 RTP 码率和 profile/transport cap 分列显示，探测不改 sender；真实共享验收通过后才可开启每观看者的 `control`。
 - 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。

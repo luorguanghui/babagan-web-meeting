@@ -70,17 +70,20 @@ interface ViewerPcSession {
 /**
  * Viewer-side P2P session controller for the screen share: one `RTCPeerConnection`
  * against the current sharer, with the fallback state machine
- * (`idle -> negotiating -> p2p`, `negotiating|p2p -> livekit`).
+ * (`idle -> negotiating -> p2p|turn`; only negotiating/direct sessions
+ * automatically move to `livekit`).
  *
  * The controller never sends offers; it answers the sharer's offer, trickle-ICEs
  * over the signaling channel, and collects the incoming screen audio/video into
- * one `MediaStream`. It falls back to `livekit` (a `bye` with reason `fallback`
- * to the sharer, PC closed, `onFallback` fired) when:
+ * one `MediaStream`. Negotiating/direct sessions fall back to `livekit`
+ * (a `bye` with reason `fallback` to the sharer, PC closed,
+ * `onFallback` fired) when:
  * - no video RTP arrives within `P2P_ICE_NEGOTIATION_TIMEOUT_MS` of the answer,
  * - ICE stays `disconnected` for `P2P_ICE_DISCONNECT_TIMEOUT_MS`, or
- * - ICE reaches `failed` (covers a crashed/disconnected sharer and a dead link
- *   after media was already flowing — otherwise the viewer would freeze on a
- *   dead P2P stream while the sharer already moved it to the SFU).
+ * - ICE reaches `failed`.
+ *
+ * Once the actual selected path is TURN, these automatic checks retain TURN;
+ * an explicit user SFU selection still performs the handover.
  *
  * A fresh offer from the same sharer is treated as renegotiation (the sharer
  * re-drives offers after a signaling reconnect): the old session is torn down
@@ -232,7 +235,7 @@ export class P2pViewerController {
     const session = this.session;
     if (session !== undefined
       && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
-      this.fallback(session);
+      this.fallback(session, true);
       return;
     }
     this.transition('livekit');
@@ -525,10 +528,14 @@ export class P2pViewerController {
     }
   }
 
-  private fallback(session: ViewerPcSession): void {
+  private fallback(session: ViewerPcSession, allowFromTurn = false): void {
     if (!this.ownsSession(session)
       || this.closed
       || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
+    // A selected TURN relay is a deliberate, valid transport. Automatic
+    // quality/ICE/stall checks must not silently move it to the SFU; the user
+    // can still choose SFU explicitly (requestSfu passes allowFromTurn=true).
+    if (this.state === 'turn' && !allowFromTurn) return;
     session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);

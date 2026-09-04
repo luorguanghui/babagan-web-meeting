@@ -5,6 +5,10 @@ import type { P2pTurnProvider } from '@meeting/contracts';
 export type ScreenTransportMode = 'negotiating' | 'p2p' | 'turn' | 'sfu' | 'mixed' | 'waiting';
 export type ScreenTurnProvider = P2pTurnProvider | 'mixed';
 
+export function canRetryViewerScreenTransport(state: ViewerP2pState): boolean {
+  return state === 'negotiating' || state === 'turn' || state === 'livekit';
+}
+
 export function deriveViewerScreenTransportMode(state: ViewerP2pState): ScreenTransportMode {
   if (state === 'negotiating') return 'negotiating';
   if (state === 'p2p' || state === 'turn') return state;

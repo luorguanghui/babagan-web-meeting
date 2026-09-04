@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  canRetryViewerScreenTransport,
   deriveSharerScreenTransportMode,
   deriveSharerTurnProvider,
   deriveViewerScreenTransportMode,
@@ -8,6 +9,16 @@ import {
 } from './screen-transport-mode.js';
 
 describe('screen transport mode', () => {
+  it.each([
+    ['idle', false],
+    ['p2p', false],
+    ['negotiating', true],
+    ['turn', true],
+    ['livekit', true]
+  ] as const)('derives manual retry visibility for viewer state %s', (state, expected) => {
+    expect(canRetryViewerScreenTransport(state)).toBe(expected);
+  });
+
   it.each([
     ['idle', 'sfu'],
     ['negotiating', 'negotiating'],
