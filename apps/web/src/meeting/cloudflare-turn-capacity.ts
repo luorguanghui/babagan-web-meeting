@@ -17,11 +17,15 @@ export interface TurnProbeWindow {
   /** Unacked bytes still queued when the window ended; omitted means drained. */
   pendingBytesAtEnd?: number;
   selectedProtocol?: string;
+  /** True for a changing-rate calibration rung; it never becomes stable history. */
+  calibration?: boolean;
 }
 
 export interface TurnPathProbeSnapshot {
   status: TurnPathProbeStatus;
   measuredCapacityBps?: number;
+  /** Offered send rate for the most recently accepted window. */
+  offeredBps?: number;
   stableCapacityBps?: number;
   probeTargetBps: number;
   roundTripTimeMs?: number;
@@ -33,6 +37,7 @@ export interface TurnPathProbeSnapshot {
 export interface TurnProbeCapacityState {
   snapshot: TurnPathProbeSnapshot;
   recentValidCapacitiesBps: readonly number[];
+  verificationTargetBps?: number;
   staleUntil?: number;
 }
 
@@ -54,24 +59,34 @@ export function reduceTurnProbeWindow(
   if (!isValidWindow(window) || isBackwardSample(previous, window.sampledAt)) return previous;
 
   const capacityBps = (window.confirmedBytes * 8_000) / window.durationMs;
-  const history = useHistoryAfterExpiry(previous, window.sampledAt);
-  const recentValidCapacitiesBps = [...history, capacityBps].slice(-3);
-  const stableCapacityBps = recentValidCapacitiesBps.length === 3
-    ? median(recentValidCapacitiesBps)
-    : undefined;
+  const verificationTargetBps = window.calibration ? previous.verificationTargetBps : window.offeredBps;
+  const history = window.calibration ? previous.recentValidCapacitiesBps
+    : previous.verificationTargetBps === window.offeredBps
+      ? useHistoryAfterExpiry(previous, window.sampledAt)
+      : [];
+  const recentValidCapacitiesBps = window.calibration ? history : [...history, capacityBps].slice(-3);
+  const stableCandidate = recentValidCapacitiesBps.length === 3 ? median(recentValidCapacitiesBps) : undefined;
+  const verifiedStableCapacityBps = stableCandidate !== undefined && isStable(recentValidCapacitiesBps, stableCandidate)
+    ? stableCandidate : undefined;
+  const stableCapacityBps = verifiedStableCapacityBps
+    ?? (isExpired(previous, window.sampledAt) ? undefined : previous.snapshot.stableCapacityBps);
 
   return {
     snapshot: {
-      status: stableCapacityBps === undefined ? 'probing' : 'ready',
+      status: verifiedStableCapacityBps === undefined ? 'probing' : 'ready',
       measuredCapacityBps: capacityBps,
+      offeredBps: window.offeredBps,
       ...(stableCapacityBps === undefined ? {} : { stableCapacityBps }),
-      probeTargetBps: nextLadderTarget(previous, window),
+      probeTargetBps: window.calibration
+        ? nextLadderTarget(previous, window)
+        : previous.snapshot.probeTargetBps,
       ...(window.roundTripTimeMs === undefined ? {} : { roundTripTimeMs: window.roundTripTimeMs }),
       lossRatio: window.lossRatio,
       ...(window.selectedProtocol === undefined ? {} : { selectedProtocol: window.selectedProtocol }),
       sampledAt: window.sampledAt
     },
     recentValidCapacitiesBps,
+    ...(verificationTargetBps === undefined ? {} : { verificationTargetBps }),
     staleUntil: undefined
   };
 }
@@ -98,6 +113,7 @@ export function markTurnProbeFailure(
       stableCapacityBps: retained ? previous.snapshot.stableCapacityBps : undefined
     },
     recentValidCapacitiesBps: retained ? previous.recentValidCapacitiesBps : [],
+    ...(retained && previous.verificationTargetBps !== undefined ? { verificationTargetBps: previous.verificationTargetBps } : {}),
     staleUntil
   };
 }
@@ -112,7 +128,8 @@ function isValidWindow(window: TurnProbeWindow): boolean {
     && Number.isFinite(window.lossRatio)
     && window.lossRatio >= 0
     && window.lossRatio <= 1
-    && Number.isFinite(window.sampledAt);
+    && Number.isFinite(window.sampledAt)
+    && (window.pendingBytesAtEnd ?? 0) === 0;
 }
 
 function isBackwardSample(previous: TurnProbeCapacityState, sampledAt: number): boolean {
@@ -143,4 +160,9 @@ function nextLadderTarget(previous: TurnProbeCapacityState, window: TurnProbeWin
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[Math.floor(sorted.length / 2)];
+}
+
+function isStable(values: readonly number[], midpoint: number): boolean {
+  if (midpoint <= 0) return false;
+  return (Math.max(...values) - Math.min(...values)) / midpoint <= 0.25;
 }

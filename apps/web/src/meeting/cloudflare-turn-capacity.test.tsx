@@ -21,15 +21,14 @@ function window(overrides: Partial<TurnProbeWindow> = {}): TurnProbeWindow {
   };
 }
 
-/** Confirms the full ladder so a test can reach a stable, fully-rung state quickly. */
+/** Feeds same-target verification windows so tests can reach a stable state quickly. */
 function probingState(capacitiesBps: number[], startAt = 1_000): TurnProbeCapacityState {
   let state = createTurnProbeCapacityState();
   capacitiesBps.forEach((capacityBps, index) => {
-    const offeredBps = TURN_PROBE_LADDER_BPS[Math.min(index, TURN_PROBE_LADDER_BPS.length - 1)];
     state = reduceTurnProbeWindow(
       state,
       window({
-        offeredBps,
+        offeredBps: 20_000_000,
         confirmedBytes: (capacityBps * 1_000) / 8_000,
         sampledAt: startAt + (index + 1) * 1_000
       })
@@ -46,6 +45,60 @@ describe('TURN probe capacity reducer', () => {
     );
 
     expect(state.snapshot.measuredCapacityBps).toBe(2_000_000);
+    expect(state.snapshot.offeredBps).toBe(8_000_000);
+  });
+
+  it('discards queued windows rather than treating their short interval as capacity', () => {
+    const initial = createTurnProbeCapacityState();
+    const result = reduceTurnProbeWindow(initial, window({
+      confirmedBytes: 500_000,
+      durationMs: 500,
+      pendingBytesAtEnd: 65_536
+    }));
+
+    expect(result).toBe(initial);
+  });
+
+  it('keeps calibration rungs out of stable history until three same-target verification windows agree', () => {
+    let state = createTurnProbeCapacityState();
+    for (const [index, offeredBps] of TURN_PROBE_LADDER_BPS.slice(0, 3).entries()) {
+      state = reduceTurnProbeWindow(state, window({
+        offeredBps,
+        confirmedBytes: (offeredBps * 500) / 8_000,
+        durationMs: 500,
+        sampledAt: 1_000 + index * 1_000,
+        calibration: true
+      }));
+    }
+    expect(state.snapshot.status).toBe('probing');
+    expect(state.recentValidCapacitiesBps).toEqual([]);
+
+    const target = 8_000_000;
+    for (const sampledAt of [5_000, 6_000, 7_000]) {
+      state = reduceTurnProbeWindow(state, window({
+        offeredBps: target,
+        confirmedBytes: (target * 500) / 8_000,
+        durationMs: 500,
+        sampledAt
+      }));
+    }
+    expect(state.snapshot.status).toBe('ready');
+    expect(state.snapshot.stableCapacityBps).toBe(target);
+  });
+
+  it('keeps probing when same-target verification capacity varies by more than 25 percent', () => {
+    let state = createTurnProbeCapacityState();
+    const target = 8_000_000;
+    for (const [index, capacityBps] of [2_000_000, 2_000_000, 2_600_000].entries()) {
+      state = reduceTurnProbeWindow(state, window({
+        offeredBps: target,
+        confirmedBytes: (capacityBps * 1_000) / 8_000,
+        sampledAt: 1_000 + index * 1_000
+      }));
+    }
+
+    expect(state.snapshot.status).toBe('probing');
+    expect(state.snapshot.stableCapacityBps).toBeUndefined();
   });
 
   it('requires three valid windows before publishing stable capacity', () => {
@@ -63,20 +116,20 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('uses the median of the latest three valid capacities', () => {
-    const state = probingState([4_000_000, 6_000_000, 8_000_000, 20_000_000]);
+    const state = probingState([5_000_000, 6_000_000, 7_000_000, 6_500_000]);
 
-    expect(state.recentValidCapacitiesBps).toEqual([6_000_000, 8_000_000, 20_000_000]);
-    expect(state.snapshot.stableCapacityBps).toBe(8_000_000);
+    expect(state.recentValidCapacitiesBps).toEqual([6_000_000, 7_000_000, 6_500_000]);
+    expect(state.snapshot.stableCapacityBps).toBe(6_500_000);
   });
 
   it('does not replace stable capacity with one low window', () => {
-    let state = probingState([4_000_000, 6_000_000, 8_000_000]);
+    let state = probingState([5_500_000, 6_000_000, 6_500_000]);
     expect(state.snapshot.stableCapacityBps).toBe(6_000_000);
 
     state = reduceTurnProbeWindow(
       state,
       window({
-        offeredBps: 16_000_000,
+        offeredBps: 20_000_000,
         confirmedBytes: (500_000 * 1_000) / 8_000,
         sampledAt: 4_000
       })
@@ -87,7 +140,7 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('marks a recent result stale for 60 seconds after failure', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
     const failed = markTurnProbeFailure(ready, 5_000);
 
     expect(failed.snapshot.status).toBe('stale');
@@ -96,7 +149,7 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('does not extend stale retention on repeated failures', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
     const stale = markTurnProbeFailure(ready, 5_000);
     const repeated = markTurnProbeFailure(stale, 10_000);
 
@@ -105,7 +158,7 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('expires retained capacity at the retention boundary', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
     const stale = markTurnProbeFailure(ready, 5_000);
     const expired = markTurnProbeFailure(stale, stale.staleUntil!);
 
@@ -114,7 +167,7 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('drops expired stable capacity without reporting zero', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
     const stale = markTurnProbeFailure(ready, 5_000);
     const expired = markTurnProbeFailure(stale, 5_000 + TURN_PROBE_STALE_RETENTION_MS + 1);
 
@@ -132,13 +185,13 @@ describe('TURN probe capacity reducer', () => {
 
     state = reduceTurnProbeWindow(
       state,
-      window({ offeredBps: 2_000_000, confirmedBytes: 425_000, durationMs: 500, sampledAt: 1_000 })
+      window({ offeredBps: 2_000_000, confirmedBytes: 425_000, durationMs: 500, sampledAt: 1_000, calibration: true })
     );
     expect(state.snapshot.probeTargetBps).toBe(4_000_000);
 
     state = reduceTurnProbeWindow(
       state,
-      window({ offeredBps: 4_000_000, confirmedBytes: 500_000, durationMs: 500, sampledAt: 2_000 })
+      window({ offeredBps: 4_000_000, confirmedBytes: 500_000, durationMs: 500, sampledAt: 2_000, calibration: true })
     );
     expect(state.snapshot.probeTargetBps).toBe(8_000_000);
   });
@@ -174,7 +227,8 @@ describe('TURN probe capacity reducer', () => {
           offeredBps: rungBps,
           confirmedBytes: (rungBps * 1_000) / 8_000,
           durationMs: 1_000,
-          sampledAt: 1_000 + index * 1_000
+          sampledAt: 1_000 + index * 1_000,
+          calibration: true
         })
       );
     });
@@ -182,13 +236,13 @@ describe('TURN probe capacity reducer', () => {
 
     state = reduceTurnProbeWindow(
       state,
-      window({ offeredBps: 50_000_000, confirmedBytes: 6_250_000, durationMs: 1_000, sampledAt: 8_000 })
+      window({ offeredBps: 50_000_000, confirmedBytes: 6_250_000, durationMs: 1_000, sampledAt: 8_000, calibration: true })
     );
     expect(state.snapshot.probeTargetBps).toBe(50_000_000);
   });
 
   it('rejects invalid windows without changing state', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
 
     expect(reduceTurnProbeWindow(ready, window({ durationMs: 0, sampledAt: 4_000 }))).toBe(ready);
     expect(reduceTurnProbeWindow(ready, window({ durationMs: Number.NaN, sampledAt: 4_000 }))).toBe(ready);
@@ -197,7 +251,7 @@ describe('TURN probe capacity reducer', () => {
   });
 
   it('restarts sampling from one window after capacity expires', () => {
-    const ready = probingState([4_000_000, 6_000_000, 8_000_000]);
+    const ready = probingState([5_500_000, 6_000_000, 6_500_000]);
     const stale = markTurnProbeFailure(ready, 5_000);
     const recovered = reduceTurnProbeWindow(
       stale,

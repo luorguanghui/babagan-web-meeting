@@ -102,7 +102,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   const probeWindow = readNewProbeWindow(previous, measurement.turnProbe);
   let lowProbeSamples = probeWindow === undefined
     ? previous.lowProbeSamples
-    : probeWindow < currentCap
+    : probeWindow.measuredBps < currentCap && probeWindow.offeredBps >= currentCap
       ? previous.lowProbeSamples + 1
       : 0;
 
@@ -159,7 +159,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   let transportBitrateCapBps = currentCap;
   let lastStableBitrateBps = previous.lastStableBitrateBps;
   const corroborated = lowProbeSamples >= CLOUDFLARE_LOW_PROBE_SAMPLE_LIMIT
-    && (bandwidthPressureSamples >= CLOUDFLARE_PRESSURE_SAMPLE_LIMIT || severe);
+    && bandwidthPressureSamples >= CLOUDFLARE_PRESSURE_SAMPLE_LIMIT;
 
   if (corroborated && currentCap > CLOUDFLARE_TRANSPORT_MIN_BITRATE_BPS) {
     if (severe) emergencyResolution = true;
@@ -279,12 +279,13 @@ function nextScale(
 function readNewProbeWindow(
   previous: CloudflareEncodingState,
   turnProbe: TurnPathProbeSnapshot
-): number | undefined {
+): { measuredBps: number; offeredBps: number } | undefined {
   if (turnProbe.status !== 'ready' && turnProbe.status !== 'probing') return undefined;
   const sampledAt = finite(turnProbe.sampledAt);
   if (sampledAt === undefined || sampledAt === previous.lastProbeSampledAt) return undefined;
-  const measured = finite(turnProbe.measuredCapacityBps) ?? finite(turnProbe.stableCapacityBps);
-  return measured;
+  const measuredBps = finite(turnProbe.measuredCapacityBps) ?? finite(turnProbe.stableCapacityBps);
+  const offeredBps = finite(turnProbe.offeredBps);
+  return measuredBps === undefined || offeredBps === undefined ? undefined : { measuredBps, offeredBps };
 }
 
 function positive(value: number | undefined): number | undefined {

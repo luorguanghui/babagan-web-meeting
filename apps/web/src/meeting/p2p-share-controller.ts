@@ -828,7 +828,7 @@ class P2pShareControllerImpl implements P2pShareController {
     const encodingChanged = next.transportBitrateCapBps !== previous.transportBitrateCapBps
       || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
       || next.hardResolutionProtection !== previous.hardResolutionProtection;
-    if (created || encodingChanged) await this.applySenderParameters(session);
+    if (controlMode && (created || encodingChanged)) await this.applySenderParameters(session);
   }
 
   private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
@@ -864,7 +864,8 @@ class P2pShareControllerImpl implements P2pShareController {
       if (session.videoSender === undefined || session.pcClosed) return;
       try {
         const { options } = session;
-        const cloudflareAdaptive = session.state === 'turn'
+        const cloudflareAdaptive = this.cloudflareTurnControlMode === 'control'
+          && session.state === 'turn'
           && session.turnProvider === 'cloudflare'
           && session.cloudflareEncodingState !== undefined;
         const scale = cloudflareAdaptive

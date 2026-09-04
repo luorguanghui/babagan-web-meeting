@@ -33,4 +33,3 @@ Do not record ICE credentials, participant identities, candidate addresses, SDP,
 screen content, or cookies. Control mode may be enabled only after these
 checks pass; until then a probe error must leave the TURN media connection and
 the selected profile untouched.
-

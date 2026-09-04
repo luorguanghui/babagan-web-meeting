@@ -165,11 +165,13 @@ class FakePeerConnection {
 
 function relayStats(
   url = 'turn:turn.cloudflare.com:3478?transport=udp',
-  candidateType = 'relay'
+  candidateType = 'relay',
+  pairId = 'pair-1'
 ): Map<string, StatsValue> {
   return new Map<string, StatsValue>([
-    ['transport', { type: 'transport', selectedCandidatePairId: 'pair-1' }],
-    ['pair-1', {
+    ['transport', { type: 'transport', selectedCandidatePairId: pairId }],
+    [pairId, {
+      id: pairId,
       type: 'candidate-pair',
       state: 'succeeded',
       nominated: true,
@@ -361,14 +363,27 @@ describe('Cloudflare TURN path probe', () => {
     const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
 
     probe.requestVerification();
-    probe.requestVerification();
     await clock.settleUntil(
-      () => startMessages(control).length === TURN_PROBE_LADDER_BPS.length + 2
+      () => startMessages(control).length === TURN_PROBE_LADDER_BPS.length + 3
     );
     await clock.advance(1_500);
 
-    // Two coalesced requests yield exactly two verification windows after the ladder.
-    expect(startMessages(control)).toHaveLength(TURN_PROBE_LADDER_BPS.length + 2);
+    // Startup stabilization owns three serial verification windows. A request
+    // made during calibration coalesces into that queue rather than overlapping it.
+    expect(startMessages(control)).toHaveLength(TURN_PROBE_LADDER_BPS.length + 3);
+  });
+
+  it('schedules two serial windows for one verification request after startup settles', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+    await clock.settleUntil(() => probe.getSnapshot().status === 'ready');
+    const before = startMessages(control).length;
+
+    probe.requestVerification();
+    await clock.settleUntil(() => startMessages(control).length === before + 2);
+
+    expect(startMessages(control)).toHaveLength(before + 2);
   });
 
   it('starts a queued verification immediately after an active recovery window', async () => {
@@ -376,9 +391,9 @@ describe('Cloudflare TURN path probe', () => {
     wireNetwork(left, right);
     const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
 
-    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length);
+    await clock.settleUntil(() => probe.getSnapshot().status === 'ready');
     probe.requestVerification();
-    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length + 1);
+    await clock.settleUntil(() => startMessages(control).length >= TURN_PROBE_LADDER_BPS.length + 4);
     probe.requestVerification();
     const activeWindowCount = startMessages(control).length;
     await clock.settleUntil(() => startMessages(control).length === activeWindowCount + 1, 1_000);
@@ -413,6 +428,21 @@ describe('Cloudflare TURN path probe', () => {
 
     expect(probe.getSnapshot().status).toBe('error');
     expect(probe.getSnapshot().sampledAt).toBe(before);
+  });
+
+  it('invalidates old capacity when either selected relay pair identity changes', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    await clock.settleUntil(() => probe.getSnapshot().measuredCapacityBps !== undefined);
+    const before = probe.getSnapshot().sampledAt;
+
+    right.stats = relayStats('turn:turn.cloudflare.com:3478?transport=udp', 'relay', 'pair-2');
+    probe.requestVerification();
+    await clock.settleUntil(() => probe.getSnapshot().status === 'error', 1_000);
+
+    expect(probe.getSnapshot().sampledAt).toBe(before);
+    expect(left.closed).toBe(true);
+    expect(right.closed).toBe(true);
   });
 
   it('publishes an unavailable status when a DataChannel send fails', async () => {
@@ -523,5 +553,22 @@ describe('Cloudflare TURN path probe', () => {
     const offered = startMessages(control).map((message) => message.offeredBps);
     expect(offered.slice(0, TURN_PROBE_LADDER_BPS.length)).toEqual([...TURN_PROBE_LADDER_BPS]);
     expect(probe.getSnapshot().selectedProtocol).toBe('udp');
+  });
+
+  it('publishes ready only after three same-target post-ladder windows', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    wireNetwork(left, right);
+    const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+
+    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length);
+    expect(probe.getSnapshot().status).toBe('probing');
+    expect(probe.getSnapshot().stableCapacityBps).toBeUndefined();
+
+    await clock.settleUntil(() => startMessages(control).length === TURN_PROBE_LADDER_BPS.length + 3);
+    await clock.settleUntil(() => probe.getSnapshot().status === 'ready');
+    const verificationTargets = startMessages(control)
+      .slice(TURN_PROBE_LADDER_BPS.length)
+      .map((message) => message.offeredBps);
+    expect(new Set(verificationTargets).size).toBe(1);
   });
 });

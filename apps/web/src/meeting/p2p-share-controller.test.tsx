@@ -43,6 +43,9 @@ class FakeRtpSender {
     encodings: [{ maxBitrate: 0 }]
   };
   readonly getParameters = vi.fn(() => this.parameters);
+  seedParameters(parameters: RTCRtpSendParameters): void {
+    this.parameters = parameters;
+  }
   readonly setParameters = vi.fn(async (parameters: RTCRtpSendParameters) => {
     if (this.activeParameterWrites > 0) {
       this.concurrentParameterWrites += 1;
@@ -289,6 +292,7 @@ function createFakeTurnPathProbe(): FakeTurnPathProbe {
   let current: TurnPathProbeSnapshot = {
     status: 'ready',
     probeTargetBps: 2_000_000,
+    offeredBps: 8_000_000,
     stableCapacityBps: 4_000_000,
     sampledAt: 1_234
   };
@@ -970,6 +974,11 @@ describe('p2p share controller', () => {
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     controller.subscribeTurnPathProbe?.((snapshot) => snapshots.push(snapshot));
     const pc = FakeRTCPeerConnection.instances[0];
+    videoSender(pc).seedParameters({
+      ...videoSender(pc).getParameters(),
+      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 4 }],
+      degradationPreference: 'maintain-resolution'
+    });
     pc.statsCandidateType = 'relay';
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
@@ -998,7 +1007,8 @@ describe('p2p share controller', () => {
     expect(snapshots).toContain(published);
     // Observation mode: the published snapshot alone never touches the sender.
     expect(senderMaxBitrate(pc)).toBe(8_000_000);
-    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1).toBeLessThanOrEqual(1.1);
+    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy).toBe(4);
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('raises maxBitrate without changing the profile target when probe capacity is high', async () => {
@@ -1121,6 +1131,7 @@ describe('p2p share controller', () => {
     probes.items[0].setSnapshot({
       status: 'probing',
       probeTargetBps: 2_000_000,
+      offeredBps: 500_000,
       measuredCapacityBps: 500_000,
       sampledAt: 1_000
     });
@@ -1153,6 +1164,7 @@ describe('p2p share controller', () => {
       probes.items[0].setSnapshot({
         status: 'ready',
         probeTargetBps: 2_000_000,
+        offeredBps: 8_000_000,
         measuredCapacityBps: 1_500_000,
         stableCapacityBps: 1_500_000,
         sampledAt: 1_000 + sample * 1_000
@@ -1261,6 +1273,7 @@ describe('p2p share controller', () => {
       probes.items[0].setSnapshot({
         status: 'ready',
         probeTargetBps: 2_000_000,
+        offeredBps: 8_000_000,
         measuredCapacityBps: 1_500_000,
         stableCapacityBps: 1_500_000,
         sampledAt: 1_000 + sample * 1_000
@@ -1293,6 +1306,7 @@ describe('p2p share controller', () => {
       probes.items[0].setSnapshot({
         status: 'ready',
         probeTargetBps: 2_000_000,
+        offeredBps: 8_000_000,
         measuredCapacityBps: 1_500_000,
         stableCapacityBps: 1_500_000,
         sampledAt: 1_000 + sample * 1_000

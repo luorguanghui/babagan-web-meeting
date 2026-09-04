@@ -13,7 +13,7 @@ import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 const PROFILE_TARGET_BPS = 8_000_000;
 
 function probeSnapshot(overrides: Partial<TurnPathProbeSnapshot> = {}): TurnPathProbeSnapshot {
-  return { status: 'ready', probeTargetBps: 2_000_000, ...overrides };
+  return { status: 'ready', probeTargetBps: 2_000_000, offeredBps: 8_000_000, ...overrides };
 }
 
 function measurement(overrides: Partial<CloudflareEncodingMeasurement> = {}): CloudflareEncodingMeasurement {
@@ -182,6 +182,37 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
 
     state = step(state, pressureMeasurement({}, 3_000));
     expect(state.transportBitrateCapBps).toBe(6_400_000);
+  });
+
+  it('counts a low probe only when that window offered enough rate to test the current cap', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    for (const [sampledAt, offeredBps] of [[1_000, 2_000_000], [2_000, 4_000_000], [3_000, 8_000_000]] as const) {
+      state = step(state, pressureMeasurement({ offeredBps } as unknown as Partial<TurnPathProbeSnapshot>, sampledAt));
+    }
+
+    expect(state.lowProbeSamples).toBe(1);
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+  });
+
+  it('does not let one severe sample bypass three sustained media-pressure samples', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    const severe = measurement({
+      turnProbe: probeSnapshot({ offeredBps: 8_000_000, measuredCapacityBps: 1_500_000, sampledAt: 1_000 } as unknown as Partial<TurnPathProbeSnapshot>),
+      qualityLimitationReason: 'bandwidth',
+      framesPerSecond: 5,
+      packetLossRatio: 0.08,
+      targetFrameRate: 30
+    });
+    const low = pressureMeasurement({ offeredBps: 8_000_000 } as unknown as Partial<TurnPathProbeSnapshot>, 2_000);
+    state = step(state, low);
+    state = step(state, severe);
+
+    expect(state.bandwidthPressureSamples).toBe(2);
+    expect(state.lowProbeSamples).toBe(2);
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+
+    state = step(state, pressureMeasurement({ offeredBps: 8_000_000 } as unknown as Partial<TurnPathProbeSnapshot>, 3_000));
+    expect(state.transportBitrateCapBps).toBeLessThan(PROFILE_TARGET_BPS);
   });
 
   it('backs off between 5 and 20 percent and never increases in the down branch', () => {

@@ -23,7 +23,9 @@ const RESULT_GRACE_MS = 200;
 const RESULT_TIMEOUT_MS = 3_000;
 const RETRY_DELAYS_MS = [5_000, 15_000, 30_000];
 const PACE_TICK_MS = 20;
-const MAX_PENDING_VERIFICATIONS = 2;
+const VERIFICATION_WINDOWS_PER_REQUEST = 2;
+const STARTUP_STABILITY_WINDOWS = 3;
+const MAX_PENDING_VERIFICATIONS = 3;
 const MAX_REMOTE_PENDING_DATA_BYTES = 2 * 1024 * 1024;
 
 type ProbeControlMessage =
@@ -61,6 +63,13 @@ interface RemoteWindowCounters {
   highestSequence: number;
 }
 
+interface SelectedRelayPath {
+  pairId: string;
+  localCandidateId: string;
+  remoteCandidateId: string;
+  localCandidate: Record<string, unknown>;
+}
+
 /**
  * Measures the shared uplink path to Cloudflare's TURN network with a
  * relay-to-relay loopback inside the sharer's browser. The probe owns two
@@ -94,6 +103,7 @@ export function createCloudflareTurnPathProbe(
   let dataChannel: RTCDataChannel | undefined;
   let controlChannel: RTCDataChannel | undefined;
   let selectedProtocol: string | undefined;
+  let selectedPathIdentity: string | undefined;
   let relayValidated = false;
 
   let ladderIndex = 0;
@@ -135,7 +145,10 @@ export function createCloudflareTurnPathProbe(
     },
     requestVerification(): void {
       if (stopped || !started) return;
-      pendingVerifications = Math.min(pendingVerifications + 1, MAX_PENDING_VERIFICATIONS);
+      pendingVerifications = Math.min(
+        pendingVerifications + VERIFICATION_WINDOWS_PER_REQUEST,
+        MAX_PENDING_VERIFICATIONS
+      );
       scheduleDriver(0);
     },
     getSnapshot(): TurnPathProbeSnapshot {
@@ -190,6 +203,7 @@ export function createCloudflareTurnPathProbe(
     }
     left = undefined;
     right = undefined;
+    selectedPathIdentity = undefined;
     relayValidated = false;
     windowActive = false;
     remoteCounters = undefined;
@@ -309,7 +323,13 @@ export function createCloudflareTurnPathProbe(
     ]);
     const local = localCandidates[0];
     if (!localCandidates.every(Boolean) || !local) return false;
-    selectedProtocol = (local.relayProtocol ?? local.protocol) as string | undefined;
+    const pathIdentity = localCandidates.map((candidate) => candidate === undefined
+      ? ''
+      : `${candidate.pairId}:${candidate.localCandidateId}:${candidate.remoteCandidateId}`
+    ).join('|');
+    if (selectedPathIdentity !== undefined && pathIdentity !== selectedPathIdentity) return false;
+    selectedPathIdentity = pathIdentity;
+    selectedProtocol = (local.localCandidate.relayProtocol ?? local.localCandidate.protocol) as string | undefined;
     relayValidated = true;
     return true;
   }
@@ -317,29 +337,38 @@ export function createCloudflareTurnPathProbe(
   async function selectedRelayCandidate(
     peer: RTCPeerConnection,
     configCloudflareOnly: boolean
-  ): Promise<Record<string, unknown> | undefined> {
+  ): Promise<SelectedRelayPath | undefined> {
     const stats = (await peer.getStats()) as unknown as Map<string, Record<string, unknown>>;
     const pair = findSelectedPair(stats);
     if (!pair) return undefined;
-    const local = stats.get(String(pair.localCandidateId));
-    const remote = stats.get(String(pair.remoteCandidateId));
+    const localCandidateId = String(pair.value.localCandidateId);
+    const remoteCandidateId = String(pair.value.remoteCandidateId);
+    const local = stats.get(localCandidateId);
+    const remote = stats.get(remoteCandidateId);
     if (!local || local.candidateType !== 'relay' || remote?.candidateType !== 'relay') return undefined;
     const url = typeof local.url === 'string' ? local.url : undefined;
     if (url !== undefined && !url.includes('turn.cloudflare.com')) return undefined;
     if (url === undefined && !configCloudflareOnly) return undefined;
-    return local;
+    return {
+      pairId: pair.id,
+      localCandidateId,
+      remoteCandidateId,
+      localCandidate: local
+    };
   }
 
-  function findSelectedPair(stats: Map<string, Record<string, unknown>>): Record<string, unknown> | undefined {
+  function findSelectedPair(
+    stats: Map<string, Record<string, unknown>>
+  ): { id: string; value: Record<string, unknown> } | undefined {
     for (const stat of stats.values()) {
       if (stat.type === 'transport' && typeof stat.selectedCandidatePairId === 'string') {
         const pair = stats.get(stat.selectedCandidatePairId);
-        if (pair) return pair;
+        if (pair) return { id: stat.selectedCandidatePairId, value: pair };
       }
     }
-    for (const stat of stats.values()) {
+    for (const [id, stat] of stats) {
       if (stat.type === 'candidate-pair' && stat.state === 'succeeded' && (stat.nominated || stat.selected)) {
-        return stat;
+        return { id, value: stat };
       }
     }
     return undefined;
@@ -381,6 +410,11 @@ export function createCloudflareTurnPathProbe(
       return;
     }
     scheduleDriver(RECOVERY_INTERVAL_MS);
+  }
+
+  function finishLadder(): void {
+    ladderIndex = TURN_PROBE_LADDER_BPS.length;
+    pendingVerifications = Math.max(pendingVerifications, STARTUP_STABILITY_WINDOWS);
   }
 
   async function runWindow(offeredBps: number, isLadder: boolean): Promise<void> {
@@ -464,7 +498,8 @@ export function createCloudflareTurnPathProbe(
       lossRatio,
       pendingBytesAtEnd,
       sampledAt: now(),
-      selectedProtocol
+      selectedProtocol,
+      calibration: isLadder
     };
     capacityState = reduceTurnProbeWindow(capacityState, window);
     publish(capacityState.snapshot);
@@ -474,9 +509,10 @@ export function createCloudflareTurnPathProbe(
     }
     if (capacityState.snapshot.probeTargetBps <= offeredBps) {
       // The path did not confirm this rung; stop climbing, keep light recovery.
-      ladderIndex = TURN_PROBE_LADDER_BPS.length;
+      finishLadder();
     } else {
       ladderIndex += 1;
+      if (ladderIndex >= TURN_PROBE_LADDER_BPS.length) finishLadder();
     }
     scheduleDriver(0);
   }
