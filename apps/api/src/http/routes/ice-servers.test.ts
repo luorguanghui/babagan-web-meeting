@@ -13,7 +13,7 @@ import type {
   IssueTokenInput,
   MediaService
 } from '../../livekit/media-service.js';
-import type { WebhookHandler } from '../../livekit/webhook-handler.js';
+import type { WebhookHandleResult, WebhookHandler } from '../../livekit/webhook-handler.js';
 import { SqliteMeetingRepository } from '../../repositories/sqlite-meeting-repository.js';
 import { KeyedMutex } from '../../services/keyed-mutex.js';
 import { HostApplicationService } from '../../services/host-application-service.js';
@@ -366,7 +366,7 @@ class RouteMediaFake implements MediaService {
 }
 
 class StubWebhookHandler implements WebhookHandler {
-  async handle(): Promise<void> {}
+  async handle(): Promise<WebhookHandleResult> { return {}; }
 }
 
 class LiteralPasswordHasher implements PasswordHasher {

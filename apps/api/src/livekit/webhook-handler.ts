@@ -11,8 +11,22 @@ type PostCommitMediaAction =
   | { kind: 'remove'; roomName: string; identity: string }
   | { kind: 'sources'; roomName: string; identity: string };
 
+export interface WebhookShareGoneNotice {
+  slug: string;
+  reason: string;
+}
+
+export interface WebhookHandleResult {
+  shareGone?: WebhookShareGoneNotice;
+}
+
 export interface WebhookHandler {
-  handle(rawBody: Uint8Array, authorization?: string): Promise<void>;
+  handle(rawBody: Uint8Array, authorization?: string): Promise<WebhookHandleResult>;
+}
+
+interface WebhookApplyResult {
+  mediaAction?: PostCommitMediaAction;
+  shareGone?: WebhookShareGoneNotice;
 }
 
 export class InvalidLiveKitWebhookError extends Error {
@@ -35,26 +49,26 @@ export class LiveKitWebhookHandler implements WebhookHandler {
     this.receiver = new WebhookReceiver(dependencies.apiKey, dependencies.apiSecret);
   }
 
-  async handle(rawBody: Uint8Array, authorization?: string): Promise<void> {
+  async handle(rawBody: Uint8Array, authorization?: string): Promise<WebhookHandleResult> {
     const event = await this.receive(rawBody, authorization);
     validateEvent(event);
 
-    let mediaAction: PostCommitMediaAction | undefined;
-    const inserted = this.dependencies.database.transaction(() => {
+    const applied = this.dependencies.database.transaction(() => {
       const marked = this.dependencies.database.prepare(`
         INSERT INTO processed_webhooks (event_id, processed_at)
         VALUES (?, ?)
         ON CONFLICT(event_id) DO NOTHING
       `).run(event.id, this.dependencies.clock.now());
-      if (marked.changes === 0) return false;
+      if (marked.changes === 0) return undefined;
 
-      mediaAction = this.applyEvent(event);
-      return true;
+      return this.applyEvent(event);
     })();
 
-    if (inserted && mediaAction) {
+    if (!applied) return {};
+
+    if (applied.mediaAction) {
       try {
-        await this.runMediaAction(mediaAction);
+        await this.runMediaAction(applied.mediaAction);
       } catch (error) {
         this.dependencies.database.prepare(`
           DELETE FROM processed_webhooks
@@ -63,6 +77,8 @@ export class LiveKitWebhookHandler implements WebhookHandler {
         throw error;
       }
     }
+
+    return applied.shareGone ? { shareGone: applied.shareGone } : {};
   }
 
   private async runMediaAction(action: PostCommitMediaAction): Promise<void> {
@@ -86,19 +102,18 @@ export class LiveKitWebhookHandler implements WebhookHandler {
     }
   }
 
-  private applyEvent(event: WebhookEvent): PostCommitMediaAction | undefined {
+  private applyEvent(event: WebhookEvent): WebhookApplyResult {
     switch (event.event) {
-      case 'participant_joined': return this.participantJoined(event);
+      case 'participant_joined': return { mediaAction: this.participantJoined(event) };
       case 'participant_left':
       case 'participant_connection_aborted':
-        this.participantLeft(event);
-        return undefined;
+        return this.participantLeft(event);
       case 'track_unpublished':
         return this.trackUnpublished(event);
       case 'room_finished':
         this.roomFinished(event);
-        return undefined;
-      default: return undefined;
+        return {};
+      default: return {};
     }
   }
 
@@ -133,7 +148,7 @@ export class LiveKitWebhookHandler implements WebhookHandler {
     return undefined;
   }
 
-  private participantLeft(event: WebhookEvent): void {
+  private participantLeft(event: WebhookEvent): WebhookApplyResult {
     const roomName = requireRoomName(event);
     const identity = requireParticipantIdentity(event);
     const now = this.dependencies.clock.now();
@@ -142,11 +157,11 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       DELETE FROM join_reservations
       WHERE meeting_id = ? AND identity = ?
     `).run(roomName, identity);
-    this.dependencies.database.prepare(`
+    const cleared = this.dependencies.database.prepare(`
       UPDATE meetings
       SET share_identity = NULL, version = version + 1
       WHERE id = ? AND share_identity = ?
-    `).run(roomName, identity);
+    `).run(roomName, identity).changes === 1;
 
     if ((event.room?.numParticipants ?? 0) === 0) {
       this.dependencies.database.prepare(`
@@ -154,7 +169,7 @@ export class LiveKitWebhookHandler implements WebhookHandler {
         SET status = 'grace', empty_since = COALESCE(empty_since, ?), version = version + 1
         WHERE id = ? AND status IN ('created', 'active', 'grace')
       `).run(now, roomName);
-      return;
+      return cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {};
     }
 
     this.dependencies.database.prepare(`
@@ -162,20 +177,25 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       SET status = 'active', empty_since = NULL, version = version + 1
       WHERE id = ? AND status = 'grace'
     `).run(roomName);
+
+    return cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {};
   }
 
-  private trackUnpublished(event: WebhookEvent): PostCommitMediaAction | undefined {
+  private trackUnpublished(event: WebhookEvent): WebhookApplyResult {
     if (event.track?.source !== TrackSource.SCREEN_SHARE
-      && event.track?.source !== TrackSource.SCREEN_SHARE_AUDIO) return undefined;
+      && event.track?.source !== TrackSource.SCREEN_SHARE_AUDIO) return {};
 
     const roomName = requireRoomName(event);
     const identity = requireParticipantIdentity(event);
-    this.dependencies.database.prepare(`
+    const cleared = this.dependencies.database.prepare(`
       UPDATE meetings
       SET share_identity = NULL, version = version + 1
       WHERE id = ? AND share_identity = ?
-    `).run(roomName, identity);
-    return { kind: 'sources', roomName, identity };
+    `).run(roomName, identity).changes === 1;
+    return {
+      mediaAction: { kind: 'sources', roomName, identity },
+      ...(cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {})
+    };
   }
 
   private roomFinished(event: WebhookEvent): void {

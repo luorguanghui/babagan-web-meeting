@@ -13,7 +13,8 @@ import { DomainError } from '../src/domain/errors.js';
 import { buildApp } from '../src/app.js';
 import { apiErrorDetails } from '../src/http/error-handler.js';
 import type { MediaService, PublishSource } from '../src/livekit/media-service.js';
-import type { WebhookHandler } from '../src/livekit/webhook-handler.js';
+import type { WebhookHandleResult, WebhookHandler } from '../src/livekit/webhook-handler.js';
+import { P2pRoomRegistry } from '../src/p2p/room-registry.js';
 import { SqliteMeetingRepository } from '../src/repositories/sqlite-meeting-repository.js';
 import type { IdGenerator, PasswordHasher } from '../src/services/meeting-service.js';
 import { MeetingService } from '../src/services/meeting-service.js';
@@ -302,6 +303,36 @@ describe('meeting HTTP API', () => {
     expect((await fixture.app.inject('/api/v1/internal/livekit/webhook')).statusCode).toBe(404);
   });
 
+  it('broadcasts a post-commit share release outcome to the P2P room', async () => {
+    fixture.webhooks.result = { shareGone: { slug: 'meeting-1', reason: 'share released' } };
+    const broadcast = vi.spyOn(fixture.p2p, 'broadcastShareGone');
+    const body = '{"event":"track_unpublished"}';
+
+    const response = await fixture.app.inject({
+      method: 'POST', url: '/internal/livekit/webhook',
+      headers: {
+        authorization: 'Bearer signed',
+        'content-type': 'application/webhook+json'
+      },
+      payload: body
+    });
+
+    expect(response.statusCode).toBe(204);
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith('meeting-1', 'share released');
+
+    fixture.webhooks.result = {};
+    await fixture.app.inject({
+      method: 'POST', url: '/internal/livekit/webhook',
+      headers: {
+        authorization: 'Bearer signed',
+        'content-type': 'application/webhook+json'
+      },
+      payload: body
+    });
+    expect(broadcast).toHaveBeenCalledOnce();
+  });
+
   it('keeps liveness dependency-free and makes readiness depend on SQLite and LiveKit', async () => {
     const live = await fixture.app.inject('/health/live');
     const ready = await fixture.app.inject('/health/ready');
@@ -426,6 +457,7 @@ interface ApiFixture {
   db: Database.Database;
   directory: string;
   media: ApiMediaFake;
+  p2p: P2pRoomRegistry;
   webhooks: CapturingWebhookHandler;
   createMeeting(): Promise<{ slug: string; setCookie: string | string[] | undefined }>;
   join(slug: string, nickname: string): ReturnType<ApiFixture['app']['inject']>;
@@ -461,10 +493,11 @@ async function createFixture(options: { meetingSummaryError?: Error } = {}): Pro
   });
   const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   const webhooks = new CapturingWebhookHandler();
-  const app = await buildApp({ config, meetings, hosts, participants, media, webhooks });
+  const p2p = new P2pRoomRegistry();
+  const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p });
 
   const fixture: ApiFixture = {
-    app, db, directory, media, webhooks,
+    app, db, directory, media, p2p, webhooks,
     async createMeeting() {
       const response = await app.inject({
         method: 'POST', url: '/api/v1/meetings', headers: { origin: config.publicBaseUrl.origin },
@@ -544,9 +577,11 @@ class ApiMediaFake implements MediaService {
 class CapturingWebhookHandler implements WebhookHandler {
   body = new Uint8Array();
   authorization?: string;
-  async handle(rawBody: Uint8Array, authorization?: string): Promise<void> {
+  result: WebhookHandleResult = {};
+  async handle(rawBody: Uint8Array, authorization?: string): Promise<WebhookHandleResult> {
     this.body = rawBody;
     this.authorization = authorization;
+    return this.result;
   }
 }
 

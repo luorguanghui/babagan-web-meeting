@@ -61,7 +61,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   registerParticipantRoutes(app, appDependencies);
   registerP2pStatsRoutes(app, appDependencies);
   registerIceServersRoutes(app, dependencies);
-  registerLiveKitWebhookRoute(app, dependencies.webhooks);
+  registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p);
   registerP2pSignalingRoute(app, appDependencies);
   registerHealthRoutes(app, dependencies);
   await app.ready();

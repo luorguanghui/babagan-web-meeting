@@ -117,7 +117,7 @@ async function main(): Promise<void> {
   const hosts = new HostApplicationService({ repository, meetings, media, passwords, clock, ids, config, mutex });
   const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   // The webhook route (/internal/livekit/webhook) is not exercised locally.
-  const webhooks = { handle: async () => undefined } as unknown as import('../src/livekit/webhook-handler.js').WebhookHandler;
+  const webhooks = { handle: async () => ({}) } as unknown as import('../src/livekit/webhook-handler.js').WebhookHandler;
 
   const app = await buildApp({ config, meetings, hosts, participants, media, webhooks });
   await app.listen({ host: API_HOST, port: API_PORT });

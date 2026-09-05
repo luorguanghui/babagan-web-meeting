@@ -297,7 +297,9 @@ describe('LiveKit webhook handler', () => {
       participant: { identity: 'participant-1' }
     });
 
-    await handler.handle(delivery.rawBody, delivery.authorization);
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({
+      shareGone: { slug: 'meeting-1', reason: 'share released' }
+    });
 
     expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
   });
@@ -314,8 +316,10 @@ describe('LiveKit webhook handler', () => {
       track: { source: 'SCREEN_SHARE' }
     });
 
-    await handler.handle(delivery.rawBody, delivery.authorization);
-    await handler.handle(delivery.rawBody, delivery.authorization);
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({
+      shareGone: { slug: 'meeting-1', reason: 'share released' }
+    });
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
 
     expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
     expect(media.sourceUpdates).toEqual([{
@@ -323,6 +327,22 @@ describe('LiveKit webhook handler', () => {
       identity: 'participant-1',
       sources: ['microphone']
     }]);
+  });
+
+  it('does not return share-gone for a stale unpublish identity', async () => {
+    const meeting = repo.findBySlug('meeting-one');
+    if (!meeting) throw new Error('meeting fixture missing');
+    repo.trySetShareIdentity(meeting.id, meeting.version, 'participant-2');
+    const delivery = await signedWebhook({
+      id: 'event-stale-share-unpublish',
+      event: 'track_unpublished',
+      room: { name: 'meeting-1' },
+      participant: { identity: 'participant-1' },
+      track: { source: 'SCREEN_SHARE' }
+    });
+
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
+    expect(repo.findBySlug('meeting-one')?.shareIdentity).toBe('participant-2');
   });
 
   it('makes room-finished terminal cleanup complete and revokes every participant session', async () => {
