@@ -7,7 +7,10 @@ import type {
   ActiveParticipantSession,
   ParticipantApplicationService
 } from '../../services/participant-application-service.js';
-import { fetchCloudflareTurnIceServers } from '../../services/cloudflare-turn.js';
+import {
+  describeCloudflareTurnFailure,
+  fetchCloudflareTurnIceServers
+} from '../../services/cloudflare-turn.js';
 import { createTurnCredentials } from '../../services/turn-credentials.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { generalApiRateLimit } from '../rate-limit.js';
@@ -78,9 +81,13 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
         ttlSeconds: dependencies.config.cloudflareTurnTtlSeconds ?? 600,
         connectIps: dependencies.config.cloudflareTurnConnectIps
       }).then((response) => ({ ...response, availableTurnProviders }));
-    } catch {
+    } catch (error) {
       // Keep the existing coturn path as an availability fallback while the
       // managed provider is being rolled out or temporarily unavailable.
+      request.log.warn(
+        describeCloudflareTurnFailure(error),
+        'Cloudflare TURN credentials unavailable; using coturn fallback'
+      );
       return coturn;
     }
   });

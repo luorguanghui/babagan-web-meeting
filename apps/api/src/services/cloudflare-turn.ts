@@ -14,6 +14,25 @@ export interface TurnIceServerConfiguration {
   turnCredentialsExpiresAt: number;
 }
 
+export type CloudflareTurnErrorClass =
+  | 'network-timeout'
+  | 'network-unreachable'
+  | 'http-error'
+  | 'invalid-response'
+  | 'unknown';
+
+export function describeCloudflareTurnFailure(error: unknown): {
+  provider: 'cloudflare';
+  host: 'rtc.live.cloudflare.com';
+  errorClass: CloudflareTurnErrorClass;
+} {
+  return {
+    provider: 'cloudflare',
+    host: 'rtc.live.cloudflare.com',
+    errorClass: classifyCloudflareTurnError(error)
+  };
+}
+
 interface CloudflareIceServersResponse {
   iceServers?: unknown;
 }
@@ -147,6 +166,42 @@ export function normalizeCloudflareIceServers(value: unknown): IceServer[] {
   });
   if (servers.length === 0) throw new Error('Cloudflare TURN response contains no usable ICE servers');
   return servers;
+}
+
+function classifyCloudflareTurnError(error: unknown): CloudflareTurnErrorClass {
+  const codes = errorCodes(error);
+  if (codes.includes('ETIMEDOUT')) return 'network-timeout';
+  if (codes.some((code) => ['EAI_AGAIN', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH'].includes(code))) {
+    return 'network-unreachable';
+  }
+  const message = error instanceof Error ? error.message : '';
+  if (/Cloudflare TURN credentials request failed with \d{3}/.test(message)) return 'http-error';
+  if (/Cloudflare TURN response contains no (iceServers|usable ICE servers)/.test(message)) {
+    return 'invalid-response';
+  }
+  return 'unknown';
+}
+
+function errorCodes(value: unknown): string[] {
+  const codes: string[] = [];
+  const seen = new Set<object>();
+  const visit = (candidate: unknown, depth: number): void => {
+    if (depth > 4 || candidate === null || typeof candidate !== 'object') return;
+    if (seen.has(candidate)) return;
+    seen.add(candidate);
+    const record = candidate as {
+      code?: unknown;
+      cause?: unknown;
+      errors?: unknown;
+    };
+    if (typeof record.code === 'string') codes.push(record.code);
+    visit(record.cause, depth + 1);
+    if (Array.isArray(record.errors)) {
+      for (const nested of record.errors) visit(nested, depth + 1);
+    }
+  };
+  visit(value, 0);
+  return codes;
 }
 
 function isBrowserBlockedPort(url: string): boolean {

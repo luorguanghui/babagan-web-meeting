@@ -1,8 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { fetchCloudflareTurnIceServers } from './cloudflare-turn.js';
+import {
+  describeCloudflareTurnFailure,
+  fetchCloudflareTurnIceServers
+} from './cloudflare-turn.js';
 
 describe('Cloudflare TURN credentials', () => {
+  it.each([
+    [Object.assign(new Error('fetch failed'), { cause: { code: 'ETIMEDOUT' } }), 'network-timeout'],
+    [Object.assign(new Error('fetch failed'), { cause: { code: 'ENETUNREACH' } }), 'network-unreachable'],
+    [new Error('Cloudflare TURN credentials request failed with 503'), 'http-error'],
+    [new Error('Cloudflare TURN response contains no usable ICE servers'), 'invalid-response']
+  ] as const)('classifies an error as %s', (error, expected) => {
+    expect(describeCloudflareTurnFailure(error)).toEqual({
+      provider: 'cloudflare',
+      host: 'rtc.live.cloudflare.com',
+      errorClass: expected
+    });
+  });
+
+  it('does not include original error text in fallback details', () => {
+    expect(describeCloudflareTurnFailure(new Error('Bearer super-secret-token'))).toEqual({
+      provider: 'cloudflare',
+      host: 'rtc.live.cloudflare.com',
+      errorClass: 'unknown'
+    });
+  });
+
   it('uses configured edge connect IPs while keeping the Cloudflare API hostname', async () => {
     const requestImpl = vi.fn(async (request: {
       url: URL;
