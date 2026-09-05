@@ -79,7 +79,8 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
         keyId: dependencies.config.cloudflareTurnKeyId!,
         apiToken: dependencies.config.cloudflareTurnApiToken!,
         ttlSeconds: dependencies.config.cloudflareTurnTtlSeconds ?? 600,
-        connectIps: dependencies.config.cloudflareTurnConnectIps
+        connectIps: dependencies.config.cloudflareTurnConnectIps,
+        proxyUrl: dependencies.config.cloudflareTurnProxyUrl
       }).then((response) => ({ ...response, availableTurnProviders }));
     } catch (error) {
       // Keep the existing coturn path as an availability fallback while the

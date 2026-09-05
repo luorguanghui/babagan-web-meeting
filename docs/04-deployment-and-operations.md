@@ -170,6 +170,8 @@ done
 
 若宿主机和 API 容器都无法连接，保留 `CLOUDFLARE_TURN_CONNECT_IPS` 为空并记录为服务器到 Cloudflare 的出网问题；不得凭猜测写入 Cloudflare IP。编辑生产 env 前先执行 `sudo cp -p infra/.env.production /root/babagan-protected/env.production.before-cloudflare-<UTC>`，并保持 env 与备份 mode 600。
 
+如果目标主机已有经过授权且可访问 Cloudflare 的 HTTP/HTTPS 代理，可只把 Cloudflare 凭据生成请求送入代理：将代理核心和配置保存在服务器受保护目录，代理端口只绑定 Docker host-gateway 或内部网络，不发布到公网；在生产 env 中设置 `CLOUDFLARE_TURN_HTTPS_PROXY=http://host.docker.internal:<proxy-port>`。API 使用独立的代理 dispatcher，LiveKit、coturn、Caddy、镜像拉取和浏览器媒体不经过该代理。代理配置、订阅和节点凭据不得进入 Git、聊天或日志；启用前必须从 API 容器验证 `rtc.live.cloudflare.com` 的 2xx/4xx HTTP 响应，并再运行显式 Cloudflare ICE smoke。
+
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
 ~~~bash

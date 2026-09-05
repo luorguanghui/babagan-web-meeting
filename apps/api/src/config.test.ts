@@ -87,19 +87,30 @@ describe('loadConfig', () => {
       CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
       CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
       CLOUDFLARE_TURN_TTL_SECONDS: '600',
+      CLOUDFLARE_TURN_HTTPS_PROXY: 'http://mihomo:7890',
       CLOUDFLARE_TURN_CONNECT_IPS: '172.64.150.1, 188.114.96.1'
     })) as ReturnType<typeof loadConfig> & {
       p2pTurnProvider?: string;
       cloudflareTurnKeyId?: string;
       cloudflareTurnApiToken?: string;
       cloudflareTurnTtlSeconds?: number;
+      cloudflareTurnProxyUrl?: string;
     };
 
     expect(config.p2pTurnProvider).toBe('cloudflare');
     expect(config.cloudflareTurnKeyId).toBe('turn-key-id');
     expect(config.cloudflareTurnApiToken).toBe('turn-api-token');
     expect(config.cloudflareTurnTtlSeconds).toBe(600);
+    expect(config.cloudflareTurnProxyUrl).toBe('http://mihomo:7890');
     expect(config.cloudflareTurnConnectIps).toEqual(['172.64.150.1', '188.114.96.1']);
+  });
+
+  it('rejects a Cloudflare HTTPS proxy with an unsafe protocol', () => {
+    expect(() => loadConfig(validEnv({
+      CLOUDFLARE_TURN_KEY_ID: 'turn-key-id',
+      CLOUDFLARE_TURN_API_TOKEN: 'turn-api-token',
+      CLOUDFLARE_TURN_HTTPS_PROXY: 'file:///tmp/mihomo.sock'
+    }))).toThrow(/CLOUDFLARE_TURN_HTTPS_PROXY/);
   });
 
   it('keeps optional Cloudflare credentials when coturn is the auto default', () => {

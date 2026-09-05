@@ -50,6 +50,7 @@ export function assertProductionComposeConfig(config) {
     'coturn must mount Caddy certificate storage read-only'
   );
   assert.equal(services.api.environment.P2P_TURN_TTL_SECONDS, '600');
+  assert.equal(services.api.environment.CLOUDFLARE_TURN_HTTPS_PROXY, '');
   assert.match(services.api.environment.P2P_TURN_URLS, /turns:turn\.babagan\.cloud:5349\?transport=tcp/);
   const livekitVersionMatch = services.livekit.image.match(/:v?(\d+)\.(\d+)\.(\d+)(?:@sha256:[0-9a-f]{64})?$/);
   assert.ok(livekitVersionMatch, 'LiveKit image must use a semantic version tag');

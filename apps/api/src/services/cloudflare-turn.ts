@@ -1,4 +1,5 @@
 import { request as httpsRequest } from 'node:https';
+import { fetch as undiciFetch, ProxyAgent } from 'undici';
 
 import type { P2pTurnProvider } from '@meeting/contracts';
 
@@ -40,6 +41,7 @@ interface CloudflareIceServersResponse {
 export interface CloudflareTurnHttpRequest {
   url: URL;
   connectIp?: string;
+  proxyUrl?: string;
   headers: Record<string, string>;
   body: string;
 }
@@ -58,6 +60,7 @@ export async function fetchCloudflareTurnIceServers(input: {
   apiToken: string;
   ttlSeconds: number;
   connectIps?: readonly string[];
+  proxyUrl?: string;
   requestImpl?: CloudflareTurnRequest;
   fetchImpl?: typeof fetch;
   nowSeconds?: () => number;
@@ -70,7 +73,11 @@ export async function fetchCloudflareTurnIceServers(input: {
     'content-type': 'application/json'
   };
   const fetchImpl = input.fetchImpl ?? fetch;
-  const response = input.connectIps?.length
+  const response = input.proxyUrl
+    ? await (input.requestImpl
+      ? input.requestImpl({ url: requestUrl, headers, body, proxyUrl: input.proxyUrl })
+      : requestOverProxy({ url: requestUrl, headers, body }, input.proxyUrl))
+    : input.connectIps?.length
     ? await requestWithConnectIps(
       input.requestImpl ?? requestOverPinnedHttps,
       { url: requestUrl, headers, body },
@@ -95,6 +102,28 @@ export async function fetchCloudflareTurnIceServers(input: {
     turnProvider: 'cloudflare',
     turnCredentialsExpiresAt: Math.floor(nowSeconds()) + input.ttlSeconds
   };
+}
+
+async function requestOverProxy(
+  request: Omit<CloudflareTurnHttpRequest, 'connectIp' | 'proxyUrl'>,
+  proxyUrl: string
+): Promise<CloudflareTurnHttpResponse> {
+  const dispatcher = new ProxyAgent(proxyUrl);
+  try {
+    const response = await undiciFetch(request.url, {
+      method: 'POST',
+      headers: request.headers,
+      body: request.body,
+      dispatcher
+    });
+    const body = await response.text();
+    return {
+      status: response.status,
+      json: async () => JSON.parse(body) as unknown
+    };
+  } finally {
+    await dispatcher.close();
+  }
 }
 
 async function requestWithConnectIps(

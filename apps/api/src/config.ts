@@ -21,6 +21,7 @@ export interface AppConfig {
   cloudflareTurnApiToken?: string;
   cloudflareTurnTtlSeconds?: number;
   cloudflareTurnConnectIps?: string[];
+  cloudflareTurnProxyUrl?: string;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -113,6 +114,21 @@ function parseCloudflareTurnConnectIps(env: Environment): string[] | undefined {
   return values;
 }
 
+function parseCloudflareTurnProxyUrl(env: Environment): string | undefined {
+  const raw = env.CLOUDFLARE_TURN_HTTPS_PROXY?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('CLOUDFLARE_TURN_HTTPS_PROXY must be a valid URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('CLOUDFLARE_TURN_HTTPS_PROXY must use http or https');
+  }
+  return raw;
+}
+
 function parseCloudflareTurnCredentials(env: Environment): {
   keyId?: string;
   apiToken?: string;
@@ -162,6 +178,7 @@ export function loadConfig(env: Environment): AppConfig {
   const cloudflareTurnApiToken = cloudflareEnabled ? cloudflareCredentials.apiToken : undefined;
   const cloudflareTurnTtlSeconds = cloudflareEnabled ? parseCloudflareTurnTtlSeconds(env) : undefined;
   const cloudflareTurnConnectIps = cloudflareEnabled ? parseCloudflareTurnConnectIps(env) : undefined;
+  const cloudflareTurnProxyUrl = cloudflareEnabled ? parseCloudflareTurnProxyUrl(env) : undefined;
 
   return {
     nodeEnv,
@@ -182,6 +199,7 @@ export function loadConfig(env: Environment): AppConfig {
     cloudflareTurnApiToken,
     cloudflareTurnTtlSeconds,
     cloudflareTurnConnectIps,
+    cloudflareTurnProxyUrl,
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

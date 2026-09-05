@@ -4,6 +4,7 @@ import {
   describeCloudflareTurnFailure,
   fetchCloudflareTurnIceServers
 } from './cloudflare-turn.js';
+import type { CloudflareTurnHttpRequest } from './cloudflare-turn.js';
 
 describe('Cloudflare TURN credentials', () => {
   it.each([
@@ -62,6 +63,38 @@ describe('Cloudflare TURN credentials', () => {
 
     expect(result.turnProvider).toBe('cloudflare');
     expect(result.iceServers[0].username).toBe('cloudflare-user');
+    expect(requestImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured HTTPS proxy for credential generation', async () => {
+    const requestImpl = vi.fn(async (request: CloudflareTurnHttpRequest) => {
+      expect(request.url.hostname).toBe('rtc.live.cloudflare.com');
+      expect(request.proxyUrl).toBe('http://mihomo:7890');
+      expect(request.connectIp).toBeUndefined();
+      return {
+        status: 201,
+        json: async () => ({
+          iceServers: [{
+            urls: ['turn:turn.cloudflare.com:3478?transport=udp'],
+            username: 'cloudflare-user',
+            credential: 'cloudflare-credential'
+          }]
+        })
+      };
+    });
+    const fetchImpl = vi.fn(async () => { throw new Error('direct DNS path used'); });
+
+    const result = await fetchCloudflareTurnIceServers({
+      keyId: 'turn-key-id',
+      apiToken: 'turn-api-token',
+      ttlSeconds: 600,
+      proxyUrl: 'http://mihomo:7890',
+      requestImpl,
+      fetchImpl
+    });
+
+    expect(result.turnProvider).toBe('cloudflare');
     expect(requestImpl).toHaveBeenCalledTimes(1);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
