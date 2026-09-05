@@ -155,6 +155,21 @@ sudoedit infra/.env.production
 
 这样部署后，API 会把 `availableTurnProviders` 暴露给浏览器；共享者只有在服务端同时存在 Cloudflare Key ID 与 API Token 时，才会在设置里看到 `Cloudflare TURN` 选项。共享者每次开始共享前可选 `auto`、`coturn` 或 `cloudflare`；选择持久化在浏览器本地，但不修改服务器默认 env。
 
+如果显式 `turnProvider=cloudflare` 请求实际返回 `turnProvider=coturn`，先不要轮换凭据或把 coturn 当作 Cloudflare。用不带 Token 的请求分别从宿主机和 API 容器探测 `rtc.live.cloudflare.com:443`；只有收到任意 HTTP 响应（不是状态码 000、超时或 `ENETUNREACH`）的 IPv4 地址才可以写入 `CLOUDFLARE_TURN_CONNECT_IPS`。应用会继续使用 `rtc.live.cloudflare.com` 作为 TLS SNI 和 HTTP Host：
+
+~~~bash
+getent ahostsv4 rtc.live.cloudflare.com www.cloudflare.com api.cloudflare.com | awk '{print $1}' | sort -u
+for ip in $(getent ahostsv4 rtc.live.cloudflare.com www.cloudflare.com api.cloudflare.com | awk '{print $1}' | sort -u); do
+  printf '%s ' "$ip"
+  timeout 8 curl -4 --resolve "rtc.live.cloudflare.com:443:$ip" \
+    --silent --show-error --output /dev/null \
+    --write-out 'http=%{http_code} remote=%{remote_ip}\n' \
+    https://rtc.live.cloudflare.com/ || true
+done
+~~~
+
+若宿主机和 API 容器都无法连接，保留 `CLOUDFLARE_TURN_CONNECT_IPS` 为空并记录为服务器到 Cloudflare 的出网问题；不得凭猜测写入 Cloudflare IP。编辑生产 env 前先执行 `sudo cp -p infra/.env.production /root/babagan-protected/env.production.before-cloudflare-<UTC>`，并保持 env 与备份 mode 600。
+
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
 ~~~bash
@@ -336,7 +351,7 @@ sudo bash scripts/deploy.sh \
 
 若使用公网 SSH 证据，追加 --allow-public-ssh；非默认 env 文件追加 --env-file /受保护路径/infra.env.production。
 
-deploy.sh 顺序固定为：只读预检 → SQLite 在线备份和 checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像 tag → 启动并等待五服务 healthy → deployment-smoke。smoke 会创建临时会议并现场签发 LiveKit Token，检查健康端点、认证 ICE、Cache-Control: no-store、P2P 跨站 403、RTC WebSocket 和公网 3000/7880 阻断。若生产 env 同时包含 `CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN`，还会追加显式 `SMOKE_REQUESTED_TURN_PROVIDER=coturn` 与 `SMOKE_REQUESTED_TURN_PROVIDER=cloudflare` 两轮检查；显式 Cloudflare 请求若服务端实际回退 coturn，则 smoke 应失败。成功后写 release record、更新 current-release.env，并保存 completed pending record。
+deploy.sh 顺序固定为：只读预检 → SQLite 在线备份和 checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像 tag → 启动并等待五服务 healthy → deployment-smoke。smoke 会创建临时会议并现场签发 LiveKit Token，检查健康端点、认证 ICE、Cache-Control: no-store、P2P 跨站 403、RTC WebSocket 和公网 3000/7880 阻断。若生产 env 同时包含 `CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN`，还会追加显式 `SMOKE_REQUESTED_TURN_PROVIDER=coturn` 与 `SMOKE_REQUESTED_TURN_PROVIDER=cloudflare` 两轮检查；显式 Cloudflare 请求若服务端实际回退 coturn，则 smoke 应失败。成功后写 release record、更新 current-release.env，并保存 completed pending record。Cloudflare fallback 日志只保留 provider、目标 host 和固定 error class，不保留原始错误文本或请求凭据。
 
 ### 4.4 更新后验收
 
