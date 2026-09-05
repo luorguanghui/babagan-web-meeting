@@ -170,7 +170,7 @@ done
 
 若宿主机和 API 容器都无法连接，保留 `CLOUDFLARE_TURN_CONNECT_IPS` 为空并记录为服务器到 Cloudflare 的出网问题；不得凭猜测写入 Cloudflare IP。编辑生产 env 前先执行 `sudo cp -p infra/.env.production /root/babagan-protected/env.production.before-cloudflare-<UTC>`，并保持 env 与备份 mode 600。
 
-如果目标主机已有经过授权且可访问 Cloudflare 的 HTTP/HTTPS 代理，可只把 Cloudflare 凭据生成请求送入代理：将代理核心和配置保存在服务器受保护目录，代理端口只绑定 Docker edge 网关 `172.20.0.1` 或内部网络，不发布到公网；在生产 env 中设置 `CLOUDFLARE_TURN_HTTPS_PROXY=http://host.docker.internal:<proxy-port>`。Compose 将 edge 网段固定为 `172.20.0.0/16`，API 和 Caddy 的 `host.docker.internal` 固定解析到该网关，以匹配仅允许 edge 网段访问宿主机 LiveKit 7880 的防火墙规则。API 使用独立的代理 dispatcher，LiveKit、coturn、Caddy、镜像拉取和浏览器媒体不经过该代理。代理配置、订阅和节点凭据不得进入 Git、聊天或日志；启用前必须从 API 容器验证 `rtc.live.cloudflare.com` 的 2xx/4xx HTTP 响应，并再运行显式 Cloudflare ICE smoke。
+如果目标主机已有经过授权且可访问 Cloudflare 的 HTTP/HTTPS 代理，可只把 Cloudflare 凭据生成请求送入代理：将代理核心和配置保存在服务器受保护目录，代理端口只绑定 Docker edge 网关 `172.30.0.1` 或内部网络，不发布到公网；在生产 env 中设置 `CLOUDFLARE_TURN_HTTPS_PROXY=http://host.docker.internal:<proxy-port>`。Compose 将 edge 网段固定为 `172.30.0.0/16`、backend 网段固定为 `172.31.0.0/16`，API 和 Caddy 的 `host.docker.internal` 固定解析到 edge 网关，以匹配仅允许 edge 网段访问宿主机 LiveKit 7880 的防火墙规则。API 使用独立的代理 dispatcher，LiveKit、coturn、Caddy、镜像拉取和浏览器媒体不经过该代理。代理配置、订阅和节点凭据不得进入 Git、聊天或日志；启用前必须从 API 容器验证 `rtc.live.cloudflare.com` 的 2xx/4xx HTTP 响应，并再运行显式 Cloudflare ICE smoke。
 
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
@@ -228,7 +228,7 @@ sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml
 sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml rm -f caddy
 ~~~
 
-预启动 Caddy 会创建 Compose network。edge 网段固定为 `172.20.0.0/16`，`host.docker.internal` 使用 edge 网关 `172.20.0.1`；只允许 edge bridge 访问宿主机 7880：
+预启动 Caddy 会创建 Compose network。edge 网段固定为 `172.30.0.0/16`，`host.docker.internal` 使用 edge 网关 `172.30.0.1`；只允许 edge bridge 访问宿主机 7880：
 
 ~~~bash
 EDGE_BRIDGE=$(sudo docker network inspect --format '{{index .Options "com.docker.network.bridge.name"}}' babagan-meeting_edge)

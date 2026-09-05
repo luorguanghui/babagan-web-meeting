@@ -30,7 +30,7 @@ services:
       - edge
       - backend
     extra_hosts:
-      - "host.docker.internal:172.20.0.1"
+      - "host.docker.internal:172.30.0.1"
     depends_on:
       api:
         condition: service_healthy
@@ -86,7 +86,7 @@ services:
       - edge
       - backend
     extra_hosts:
-      - "host.docker.internal:172.20.0.1"
+      - "host.docker.internal:172.30.0.1"
     depends_on:
       livekit:
         condition: service_healthy
@@ -172,10 +172,14 @@ networks:
   edge:
     ipam:
       config:
-        - subnet: 172.20.0.0/16
-          gateway: 172.20.0.1
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
   backend:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16
+          gateway: 172.31.0.1
 
 volumes:
   api-data:
