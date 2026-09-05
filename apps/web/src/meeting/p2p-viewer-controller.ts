@@ -1,5 +1,6 @@
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_MAX_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
   P2P_RTP_STALL_TIMEOUT_MS,
   type P2pTurnProvider
@@ -51,6 +52,8 @@ interface ViewerPcSession {
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
   mediaTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
+  recoveryTimer?: ReturnType<typeof setTimeout>;
+  recoveringTurn?: boolean;
   videoTrack?: MediaStreamTrack;
   stopHealthMonitor?: () => void;
   lastBytesReceived: number;
@@ -82,8 +85,8 @@ interface ViewerPcSession {
  * - ICE stays `disconnected` for `P2P_ICE_DISCONNECT_TIMEOUT_MS`, or
  * - ICE reaches `failed`.
  *
- * Once the actual selected path is TURN, these automatic checks retain TURN;
- * an explicit user SFU selection still performs the handover.
+ * Failed or stalled TURN paths request a fresh offer, retaining the transport
+ * preference. An explicit user SFU selection still performs the handover.
  *
  * A fresh offer from the same sharer is treated as renegotiation (the sharer
  * re-drives offers after a signaling reconnect): the old session is torn down
@@ -104,6 +107,7 @@ export class P2pViewerController {
   private session?: ViewerPcSession;
   private stream: MediaStream | null = null;
   private earlyIce?: { from: string; generation?: string; candidates: Array<string | null> };
+  private lastRecoveryRequestAt?: number;
   private closed = false;
 
   constructor(
@@ -136,8 +140,10 @@ export class P2pViewerController {
     if (this.closed) return;
     if (this.sharerIdentity === undefined) this.sharerIdentity = from;
     if (from !== this.sharerIdentity) return;
+    const recoveringTurn = this.state === 'turn' || this.session?.recoveringTurn === true;
     this.teardownSession();
     const session = this.createSession(generation);
+    session.recoveringTurn = recoveringTurn;
     if (this.earlyIce?.from === from
       && (generation === undefined || this.earlyIce.generation === undefined || this.earlyIce.generation === generation)) {
       session.queuedCandidates.push(...this.earlyIce.candidates.map((candidate) =>
@@ -313,6 +319,7 @@ export class P2pViewerController {
     if (session !== undefined) {
       this.clearMediaTimer(session);
       this.clearDisconnectTimer(session);
+      this.clearRecoveryTimer(session);
       this.clearHealthMonitor(session);
       if (session.videoTrack) session.videoTrack.onunmute = null;
       this.closePc(session);
@@ -352,12 +359,17 @@ export class P2pViewerController {
     try {
       const health = inspectP2pMediaHealth(await session.pc.getStats());
       if (!this.ownsSession(session) || session.fallbackPending) return;
-      const progressed = health.bytesReceived > session.lastBytesReceived
-        || health.framesDecoded > session.lastFramesDecoded;
+      // Receiving undecodable packets does not mean the picture is moving.
+      const progressed = health.framesDecoded > session.lastFramesDecoded;
+      session.lastBytesReceived = health.bytesReceived;
+      session.lastFramesDecoded = health.framesDecoded;
       if (progressed) {
-        session.lastBytesReceived = health.bytesReceived;
-        session.lastFramesDecoded = health.framesDecoded;
         session.lastProgressAt = this.now();
+        if (session.pc.iceConnectionState !== 'failed'
+          && session.pc.iceConnectionState !== 'disconnected') {
+          this.clearRecoveryTimer(session);
+          this.lastRecoveryRequestAt = undefined;
+        }
       }
 
       // Media that actually decodes is the success signal; the path is only a
@@ -370,6 +382,7 @@ export class P2pViewerController {
         && health.bytesReceived > 0
         && health.framesDecoded > 0;
       if (this.state === 'negotiating' && hasDecodedVideo) {
+        session.recoveringTurn = false;
         this.clearMediaTimer(session);
         if (!session.mediaReadySent && this.sharerIdentity !== undefined) {
           session.mediaReadySent = true;
@@ -387,7 +400,7 @@ export class P2pViewerController {
         if (classifiedState !== this.state) this.transition(classifiedState);
       }
       if (this.observeQuality(session, health)
-        && (this.state === 'p2p' || this.state === 'turn')) {
+        && this.state === 'p2p') {
         this.fallback(session);
         return;
       }
@@ -398,7 +411,11 @@ export class P2pViewerController {
         this.fallback(session);
       }
     } catch {
-      // A transient getStats failure is handled by the negotiation/stall timers.
+      // Once negotiation has completed there is no media timer left. Repeated
+      // stats errors must still be covered by the last decoded-frame deadline.
+      if (session.mediaReadySent && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
+        this.fallback(session);
+      }
     }
   }
 
@@ -532,13 +549,14 @@ export class P2pViewerController {
     if (!this.ownsSession(session)
       || this.closed
       || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
-    // A selected TURN relay is a deliberate, valid transport. Automatic
-    // quality/ICE/stall checks must not silently move it to the SFU; the user
-    // can still choose SFU explicitly (requestSfu passes allowFromTurn=true).
-    if (this.state === 'turn' && !allowFromTurn) return;
+    if ((this.state === 'turn' || session.recoveringTurn) && !allowFromTurn) {
+      this.requestTurnRecovery(session);
+      return;
+    }
     session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);
+    this.clearRecoveryTimer(session);
     this.clearHealthMonitor(session);
     if (this.sharerIdentity !== undefined) this.signaling.sendBye(this.sharerIdentity, 'fallback');
     this.transition('livekit');
@@ -562,6 +580,29 @@ export class P2pViewerController {
       clearTimeout(session.mediaTimer);
       session.mediaTimer = undefined;
     }
+  }
+
+  private requestTurnRecovery(session: ViewerPcSession): void {
+    if (!this.ownsSession(session) || session.recoveryTimer !== undefined) return;
+    // Allow the sharer's full negotiation window before repeating a request.
+    // Keep retrying if signaling/credential refresh was unavailable during the
+    // outage; a new offer, decoded media, explicit SFU or close cancels this.
+    const remainingCooldown = this.lastRecoveryRequestAt === undefined ? 0
+      : Math.max(0, P2P_ICE_NEGOTIATION_MAX_MS - (this.now() - this.lastRecoveryRequestAt));
+    session.recoveryTimer = setTimeout(() => {
+      session.recoveryTimer = undefined;
+      if (this.ownsSession(session) && (this.state === 'turn' || session.recoveringTurn)) this.requestTurnRecovery(session);
+    }, remainingCooldown || P2P_ICE_NEGOTIATION_MAX_MS);
+    if (remainingCooldown === 0) {
+      this.lastRecoveryRequestAt = this.now();
+      this.requestRetry();
+    }
+  }
+
+  private clearRecoveryTimer(session: ViewerPcSession): void {
+    if (session.recoveryTimer === undefined) return;
+    clearTimeout(session.recoveryTimer);
+    session.recoveryTimer = undefined;
   }
 
   private clearDisconnectTimer(session: ViewerPcSession): void {

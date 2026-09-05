@@ -121,6 +121,7 @@ export function createCloudflareTurnPathProbe(
   let paceBudgetBytes = 0;
   let remoteCounters: RemoteWindowCounters | undefined;
   let resolveResult: ((message: ResultMessage) => void) | undefined;
+  let pendingResult: ResultMessage | undefined;
   let rejectResult: ((reason: Error) => void) | undefined;
   let cancelResultWait: (() => void) | undefined;
   let cancelRemoteResultTimer: (() => void) | undefined;
@@ -219,6 +220,7 @@ export function createCloudflareTurnPathProbe(
     cancelRemoteResultTimer?.();
     cancelRemoteResultTimer = undefined;
     resolveResult = undefined;
+    pendingResult = undefined;
     rejectResult?.(new Error('probe stopped'));
     rejectResult = undefined;
     resolvePaceTick?.();
@@ -271,9 +273,7 @@ export function createCloudflareTurnPathProbe(
     await left.setRemoteDescription(right.localDescription as RTCSessionDescriptionInit);
     for (const candidate of rightPending.splice(0)) await left.addIceCandidate(candidate);
 
-    await waitForOpenChannels();
-    if (stopped) return;
-    const validated = await validateRelaySelection();
+    const validated = await waitForOpenChannels();
     if (stopped) return;
     if (!validated) {
       // A non-relay or non-Cloudflare selected pair is a topology verdict, not a
@@ -289,11 +289,11 @@ export function createCloudflareTurnPathProbe(
     scheduleDriver(0);
   }
 
-  function waitForOpenChannels(): Promise<void> {
+  function waitForOpenChannels(): Promise<boolean> {
     const deadline = now() + NEGOTIATION_TIMEOUT_MS;
     return new Promise((resolve, reject) => {
       rejectChannelPoll = reject;
-      const poll = () => {
+      const poll = async () => {
         cancelChannelPoll = undefined;
         if (stopped) {
           rejectChannelPoll = undefined;
@@ -302,18 +302,26 @@ export function createCloudflareTurnPathProbe(
         }
         const open = (channel?: RTCDataChannel) => channel?.readyState === 'open';
         if (open(dataChannel) && open(controlChannel)) {
-          rejectChannelPoll = undefined;
-          resolve();
-          return;
+          try {
+            // Data channels can open before getStats publishes their selected
+            // pair. Give this same connection time to expose its statistics.
+            const validated = await validateRelaySelection();
+            if (stopped) return;
+            rejectChannelPoll = undefined;
+            resolve(validated);
+            return;
+          } catch {
+            if (stopped) return;
+          }
         }
         if (now() >= deadline) {
           rejectChannelPoll = undefined;
-          reject(new Error('probe data channels did not open'));
+          reject(new Error('probe channels or selected-pair stats did not become ready'));
           return;
         }
-        cancelChannelPoll = schedule(poll, CHANNEL_POLL_MS);
+        cancelChannelPoll = schedule(() => { void poll(); }, CHANNEL_POLL_MS);
       };
-      poll();
+      void poll();
     });
   }
 
@@ -342,12 +350,15 @@ export function createCloudflareTurnPathProbe(
   ): Promise<SelectedRelayPath | undefined> {
     const stats = (await peer.getStats()) as unknown as Map<string, Record<string, unknown>>;
     const pair = findSelectedPair(stats);
-    if (!pair) return undefined;
+    if (!pair) throw new Error('probe selected-pair stats not available yet');
     const localCandidateId = String(pair.value.localCandidateId);
     const remoteCandidateId = String(pair.value.remoteCandidateId);
     const local = stats.get(localCandidateId);
     const remote = stats.get(remoteCandidateId);
-    if (!local || local.candidateType !== 'relay' || remote?.candidateType !== 'relay') return undefined;
+    if (!local || !remote || local.candidateType === undefined || remote.candidateType === undefined) {
+      throw new Error('probe candidate stats not available yet');
+    }
+    if (local.candidateType !== 'relay' || remote.candidateType !== 'relay') return undefined;
     const url = typeof local.url === 'string' ? local.url : undefined;
     if (url !== undefined && !url.includes('turn.cloudflare.com')) return undefined;
     if (url === undefined && !configCloudflareOnly) return undefined;
@@ -434,6 +445,7 @@ export function createCloudflareTurnPathProbe(
       return;
     }
     windowId += 1;
+    pendingResult = undefined;
     sentMessages = 0;
     paceBudgetBytes = 0;
 
@@ -557,6 +569,13 @@ export function createCloudflareTurnPathProbe(
   }
 
   function awaitResult(): Promise<ResultMessage> {
+    // A busy event loop can deliver the control result before the pacing
+    // continuation registers its waiter. Keep that result for this window.
+    if (pendingResult !== undefined) {
+      const result = pendingResult;
+      pendingResult = undefined;
+      return Promise.resolve(result);
+    }
     return new Promise<ResultMessage>((resolve, reject) => {
       resolveResult = resolve;
       rejectResult = reject;
@@ -665,13 +684,14 @@ export function createCloudflareTurnPathProbe(
     } catch {
       return;
     }
-    if (message.type !== 'result' || message.windowId !== windowId) return;
+    if (message.type !== 'result' || message.windowId !== windowId || !windowActive) return;
     cancelResultWait?.();
     cancelResultWait = undefined;
     const resolve = resolveResult;
     resolveResult = undefined;
     rejectResult = undefined;
-    resolve?.(message);
+    if (resolve) resolve(message);
+    else pendingResult ??= message;
   }
 
   function sendControl(message: ProbeControlMessage): boolean {

@@ -1666,7 +1666,7 @@ describe('p2p share controller', () => {
   });
 
   it.each(['coturn', 'cloudflare'] as const)(
-    'keeps an established %s TURN viewer when ICE fails automatically',
+    'rebuilds an established %s TURN viewer when ICE fails',
     async (turnProvider) => {
       const { controller, onViewerFallback } = makeHarness({ turnProvider });
       await controller.start(makeStream(), shareOptions, [viewers[0]]);
@@ -1678,13 +1678,14 @@ describe('p2p share controller', () => {
 
       pc.setIceConnectionState('failed');
 
-      expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+      await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+      expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
       expect(onViewerFallback).not.toHaveBeenCalled();
-      expect(pc.closed).toBe(false);
+      expect(pc.closed).toBe(true);
     }
   );
 
-  it('keeps an established TURN viewer after the disconnect timeout', async () => {
+  it('rebuilds an established TURN viewer after the disconnect timeout', async () => {
     const { controller, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -1696,9 +1697,10 @@ describe('p2p share controller', () => {
     pc.setIceConnectionState('disconnected');
     await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
 
-    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
     expect(onViewerFallback).not.toHaveBeenCalled();
-    expect(pc.closed).toBe(false);
+    expect(pc.closed).toBe(true);
   });
 
   it('falls back when applying the remote answer fails', async () => {
@@ -1711,6 +1713,127 @@ describe('p2p share controller', () => {
 
     expect(controller.getViewerStates().get('viewer-1')).toBe('livekit-fallback');
     expect(onViewerFallback).toHaveBeenCalledWith('viewer-1');
+  });
+
+  it('retries TURN recovery after a failed credential refresh and resumes decoded media', async () => {
+    const { controller, signaling, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    pc.setIceConnectionState('failed');
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(fetchIceServers).toHaveBeenCalledTimes(3);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    const replacement = FakeRTCPeerConnection.instances[1];
+    replacement.statsCandidateType = 'relay';
+    replacement.setIceConnectionState('connected');
+    const generation = vi.mocked(signaling.sendOffer).mock.calls.at(-1)![2];
+    controller.handleMediaReady('viewer-1', generation);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+
+  it.each(['leave', 'stop'] as const)('does not revive TURN recovery after %s', async (action) => {
+    const { controller, signaling, fetchIceServers } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    let resolveCredentials!: (servers: RTCIceServer[]) => void;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
+    pc.setIceConnectionState('failed');
+    if (action === 'leave') controller.handleViewerLeft('viewer-1');
+    else await controller.stop();
+    resolveCredentials(iceServers);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps TURN recovery active when the replacement ICE connection also fails', async () => {
+    const { controller, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+
+  it('restores normal fallback after a TURN recovery negotiates a direct path', async () => {
+    const { controller, onViewerFallback } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    const replacement = FakeRTCPeerConnection.instances[1];
+    replacement.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    replacement.setIceConnectionState('failed');
+    expect(onViewerFallback).toHaveBeenCalledExactlyOnceWith('viewer-1');
+    await controller.stop();
+  });
+
+  it('retains TURN recovery intent across a failed viewer-requested credential refresh', async () => {
+    const { controller, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+
+  it('keeps transport monitoring when the old TURN connection heals after credential refresh fails', async () => {
+    const { controller, fetchIceServers, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('connected');
+    pc.statsCandidateType = 'srflx';
+    await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    await controller.stop();
   });
 
   it('marks a departed viewer closed without sending a bye and notifies when all viewers are gone', async () => {

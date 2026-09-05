@@ -73,7 +73,7 @@ export interface P2pShareOptions {
  * Sharer-side P2P session controller for the screen share: one `RTCPeerConnection`
  * per viewer (star topology), with a per-viewer fallback state machine.
  * Negotiating/direct sessions may enter `livekit-fallback`; an established
- * TURN relay stays on TURN until a manual choice, retry, leave, or share stop.
+ * failed TURN relay is automatically rebuilt with fresh ICE credentials.
  *
  * The controller never publishes media itself: a `livekit-fallback` state is
  * surfaced via `onViewerFallback` and the subscription, and the caller (Task 7)
@@ -202,6 +202,8 @@ interface ViewerSession {
   stopTransportMonitor?: () => void;
   negotiationTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
+  recoveryPending?: boolean;
+  recoveringTurn?: boolean;
   /** First-offer timestamp of this negotiation; caps progress extensions and the auto retry. */
   negotiationStartedAt: number;
   /** One bounded automatic re-drive with fresh ICE credentials before falling back. */
@@ -326,6 +328,7 @@ class P2pShareControllerImpl implements P2pShareController {
   private confirmMediaReady(session: ViewerSession): void {
     if (!session.transportConnected || !session.mediaReadyReceived || session.mediaReadyConfirmed) return;
     session.mediaReadyConfirmed = true;
+    session.recoveringTurn = false;
     this.clearTimers(session);
     this.armTransportMonitor(session);
     void this.queueTransportStateUpdate(session);
@@ -346,7 +349,9 @@ class P2pShareControllerImpl implements P2pShareController {
   handleRetry(from: string): void {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
     const existing = this.sessions.get(from);
+    const recoveringTurn = existing?.state === 'turn' || existing?.recoveringTurn === true;
     if (existing) {
+      existing.recoveringTurn = recoveringTurn;
       this.closeSession(existing);
       if (existing.state !== 'closed') this.transition(existing, 'closed');
     }
@@ -354,10 +359,10 @@ class P2pShareControllerImpl implements P2pShareController {
     this.pendingRetryTokens.set(from, retryToken);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
     // so stale candidates from a failed attempt can never poison the retry.
-    void this.retryViewer(from, retryToken);
+    void this.retryViewer(from, retryToken, recoveringTurn);
   }
 
-  private async retryViewer(from: string, retryToken: number): Promise<void> {
+  private async retryViewer(from: string, retryToken: number, recoveringTurn: boolean): Promise<void> {
     const iceConfiguration = await this.resolveIceServers(true).catch(() => undefined);
     if (this.pendingRetryTokens.get(from) !== retryToken) return;
     this.pendingRetryTokens.delete(from);
@@ -366,6 +371,7 @@ class P2pShareControllerImpl implements P2pShareController {
     const current = this.sessions.get(from);
     if (current) this.closeSession(current);
     const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
+    session.recoveringTurn = recoveringTurn;
     await this.rebalanceBitrates();
     await this.establishSession(session);
   }
@@ -694,6 +700,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.closeSession(session);
     const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, iceConfiguration);
     replacement.autoRetried = true;
+    replacement.recoveringTurn = session.recoveringTurn;
     await this.rebalanceBitrates();
     await this.establishSession(replacement);
   }
@@ -1037,15 +1044,52 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   private fallback(session: ViewerSession): void {
-    if (session.state === 'closed' || session.state === 'livekit-fallback') return;
-    // Once the selected pair is a TURN relay, automatic ICE failures must not
-    // silently change the viewer to SFU. The viewer retains an explicit SFU
-    // choice and may request a fresh TURN/P2P offer manually.
-    if (session.state === 'turn') return;
+    if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') return;
+    if (session.state === 'turn' || session.recoveringTurn) {
+      if (session.state === 'negotiating') {
+        this.clearNegotiationTimer(session);
+        if (session.disconnectTimer === undefined) {
+          session.disconnectTimer = setTimeout(() => {
+            session.disconnectTimer = undefined;
+            void this.recoverTurnSession(session);
+          }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
+        }
+        return;
+      }
+      void this.recoverTurnSession(session);
+      return;
+    }
     this.clearTimers(session);
     this.closePc(session);
     this.transition(session, 'livekit-fallback');
     this.deps.onViewerFallback?.(session.identity);
+  }
+
+  private async recoverTurnSession(session: ViewerSession): Promise<void> {
+    const ownsRecoveringSession = () => this.sessions.get(session.identity) === session && !session.pcClosed
+      && (session.state === 'turn' || (session.state === 'negotiating' && session.recoveringTurn));
+    if (session.recoveryPending || !ownsRecoveringSession()) return;
+    session.recoveryPending = true;
+    this.clearNegotiationTimer(session);
+    this.clearDisconnectTimer(session);
+    const configuration = await this.resolveIceServers(true).catch(() => undefined);
+    session.recoveryPending = false;
+    if (!ownsRecoveringSession() || !this.activeStream || !this.activeOptions) return;
+    if (configuration === undefined) {
+      // The API can be unreachable during the same outage as ICE. Do not
+      // strand the viewer just because the first credential refresh failed.
+      session.disconnectTimer = setTimeout(() => {
+        session.disconnectTimer = undefined;
+        if (ownsRecoveringSession()) void this.recoverTurnSession(session);
+      }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
+      return;
+    }
+    this.closeSession(session);
+    const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, configuration);
+    replacement.recoveringTurn = true;
+    this.emit();
+    await this.rebalanceBitrates();
+    await this.establishSession(replacement);
   }
 
   private closeSession(session: ViewerSession): void {

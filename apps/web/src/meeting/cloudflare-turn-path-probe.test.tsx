@@ -268,6 +268,42 @@ function startMessages(control: FakeDataChannel): Array<Record<string, number | 
 }
 
 describe('Cloudflare TURN path probe', () => {
+  it('waits for selected-pair stats on the same open connection', async () => {
+    const clock = new FakeClock();
+    const first = relayPair();
+    first.left.stats.clear();
+    let statsReads = 0;
+    first.left.getStats = async () => { statsReads += 1; return first.left.stats; };
+    const { probe, configurations } = probeFixture(clock, first.left, first.right);
+    const started = probe.start(cloudflareIceServers);
+    await clock.settleUntil(() => statsReads > 0);
+    await clock.advance(250);
+    expect(probe.getSnapshot().status).toBe('negotiating');
+    first.left.stats = relayStats();
+    await clock.settleUntil(() => probe.getSnapshot().status === 'probing', 1_000);
+    await started;
+    expect(configurations).toHaveLength(2);
+    expect(first.left.closed).toBe(false);
+    wireNetwork(first.left, first.right);
+    await clock.settleUntil(() => probe.getSnapshot().measuredCapacityBps !== undefined);
+    await probe.stop();
+  });
+
+  it('accepts a result that arrives before a delayed pacing callback finishes the window', async () => {
+    const clock = new FakeClock();
+    const { left, right } = relayPair();
+    let paceTicks = 0;
+    const { probe } = probeFixture(clock, left, right, {
+      schedule: (callback, delay) => clock.schedule(callback,
+        delay === 20 && ++paceTicks === 10 ? 1_000 : delay)
+    });
+    await probe.start(cloudflareIceServers);
+    wireNetwork(left, right);
+    await clock.settleUntil(() => probe.getSnapshot().measuredCapacityBps !== undefined, 3_000);
+    expect(probe.getSnapshot().status).not.toBe('error');
+    await probe.stop();
+  });
+
   it('forces relay policy on both peer connections', async () => {
     const { configurations } = await startedProbe();
 
