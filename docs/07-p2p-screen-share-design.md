@@ -204,7 +204,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 **总上行预算**：所有活跃会话的码率上限之和不得超过 40 Mbps（`P2P_TOTAL_UPLINK_BUDGET_BPS`）。观看者加入/离开/回退时按 `min(档位, ⌊预算 ÷ 活跃会话数⌋)` 重分配。40 Mbps 允许最多四名观看者在 10 Mbps 档位下运行，同时仍为 100 Mbps 级上行保留协议和语音余量；四名及以上观看者默认建议 5 Mbps，避免把总预算用满。
 
-**Cloudflare TURN 探测例外**：实际 Cloudflare relay 会话不参与 40 Mbps 预算。共享者浏览器创建一组独立、强制 relay 的 DataChannel 回环，验证两端 selected candidate 均为 Cloudflare relay；变速阶梯不写入稳定历史，只有同一 offered target 下三个无排队窗口的（最大值−最小值）/中位数 ≤ 25% 才发布稳定容量。该结果不是媒体 PeerConnection 的同一 allocation。生产当前为 `observe`，不改 sender 参数；真实共享观察验收通过后才可开启独立 probe + sender pressure 双门禁的逐观看者 `control`。
+**Cloudflare TURN 探测例外**：实际 Cloudflare relay 会话不参与 40 Mbps 预算。共享者浏览器创建一组独立、强制 relay 的 DataChannel 回环，验证两端 selected candidate 均为 Cloudflare relay；变速阶梯不写入稳定历史，只有同一 offered target 下三个无排队窗口的（最大值−最小值）/中位数 ≤ 25% 才发布稳定容量。该结果不是媒体 PeerConnection 的同一 allocation。生产构造当前启用独立 probe + sender pressure 双门禁的逐观看者 `control`；任何单一或过期证据都不能改 sender，回滚开关为 `observe`。
 
 ### 7.3 自适应
 

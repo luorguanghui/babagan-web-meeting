@@ -89,6 +89,7 @@ export interface MeetingRoomPageProps {
   shareControllerFactory?: (deps: {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
+    cloudflareTurnControlMode: 'observe' | 'control';
   }) => P2pShareController;
   /** Test seam: anonymous quality-stats collector factory, defaults to `createP2pStatsCollector({ slug })`. */
   createStatsCollector?: () => P2pStatsCollector;
@@ -305,7 +306,10 @@ export function MeetingRoomPage({
   }): P2pShareController => {
     let share: P2pShareController;
     if (shareControllerFactory) {
-      share = shareControllerFactory(deps);
+      share = shareControllerFactory({
+        ...deps,
+        cloudflareTurnControlMode: 'control'
+      });
     } else {
       const signaling = signalingRef.current;
       if (!signaling) throw new Error('P2P signaling is not connected.');
@@ -313,7 +317,7 @@ export function MeetingRoomPage({
         slug,
         signaling,
         fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
-        cloudflareTurnControlMode: 'observe',
+        cloudflareTurnControlMode: 'control',
         ...deps
       });
     }

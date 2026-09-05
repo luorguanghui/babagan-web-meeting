@@ -549,7 +549,11 @@ Add private `reconcileTurnPathProbe()` called after state/provider transitions, 
 
 - [x] **Step 4: Keep observation mode non-mutating**
 
-Feed probe snapshots to listeners but do not pass them into `updateCloudflareEncoding` when `cloudflareTurnControlMode` is omitted or `'observe'`. Tests may construct the controller with `'control'` starting in Task 7. Production remains observation-only until Task 9.
+Feed probe snapshots to listeners but do not pass them into
+`updateCloudflareEncoding` when `cloudflareTurnControlMode` is omitted or
+`'observe'`. Tests may construct the controller with `'control'` starting
+in Task 7. The production constructor was subsequently switched to `control`
+by explicit operator direction on 2026-09-05.
 
 - [x] **Step 5: Run tests to verify GREEN**
 
@@ -733,9 +737,15 @@ Use a real Cloudflare TURN share and record, without credentials:
 
 Expected: probe results are stable enough to meet the spec, no persistent FPS drop during 500ms windows, and no 270p output.
 
-- [ ] **Step 5: Enable control only after observation acceptance**
+- [x] **Step 5: Enable control by explicit operator override**
 
-At the manual checkpoint, change the production controller construction in `meeting-room-page.tsx` from `cloudflareTurnControlMode: 'observe'` to `cloudflareTurnControlMode: 'control'`. Keep the dependency injectable so tests can cover both modes. Re-run Steps 2–4. Do not enable control if probe credibility or cleanup failed.
+The 2026-09-05 operator instruction explicitly overrides the pending manual
+observation gate. Change the production controller construction in
+`meeting-room-page.tsx` from `cloudflareTurnControlMode: 'observe'` to
+`cloudflareTurnControlMode: 'control'`. Keep the dependency injectable so
+tests cover both modes. This task does not claim the real observation passed
+and does not deploy; failed live validation must revert the switch to
+`observe`.
 
 - [x] **Step 6: Update architecture and acceptance docs**
 

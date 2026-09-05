@@ -121,7 +121,7 @@
 | 信令 WS 中断 | P2P 信令断开 | 已建立的 P2P 连接继续工作；共享状态不受影响 |
 | Cloudflare TURN API 不可用 | 服务端无法取到 Cloudflare 短期凭据 | API 回退 coturn，显式 Cloudflare 自动化 smoke 失败，手工共享验证显示实际 provider 为 coturn |
 | Cloudflare probe 暂时失败 | relay-to-relay probe 无法建立或窗口无效 | 共享媒体继续按当前 TURN 连接运行；页面只显示探测不可用，不降低媒体 cap，不误报 TURN 连接失败 |
-| Cloudflare 共享者高延迟/丢包 | probe 结果与 sender pressure 同时恶化 | `observe` 只记录，不改 sender；未来 `control` 需至少两个足以覆盖当前 cap 的低 probe 窗口及该观看者三次压力确认才允许单路下降 |
+| Cloudflare 共享者高延迟/丢包 | probe 结果与 sender pressure 同时恶化 | `control` 需至少两个足以覆盖当前 cap 的低 verification 窗口及该观看者三次压力确认才允许单路下降；校准窗口、单次严重样本、低 RTC 估值或静态内容不得触发 |
 
 ## 6. 负载与稳定性
 
@@ -158,6 +158,6 @@
 - 出现高危安全问题、权限提升或敏感信息泄露。
 - 部署、备份恢复或回滚未在目标环境演练。
 - 本地完整门禁未通过：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`bash scripts/http-headers.test.sh`、`bash scripts/deployment-smoke.test.sh`、`bash scripts/deployment-scripts.test.sh`、`bash scripts/smoke-test.provider.test.sh`、`git diff --check` 任一失败都不得发布。
-- Cloudflare probe 的真实 Edge/Chrome observation acceptance 未完成，或 probe 可信度、清理、FPS/分辨率底线不满足时，不得开启 control mode；先发布 observation-only 构建并保留回滚路径。
+- Cloudflare control 已按 2026-09-05 的明确操作决定写入生产构造，但尚未部署；部署前仍需完成真实 Edge/Chrome 双端验收。若 probe 可信度、资源清理或 FPS/分辨率底线不满足，立即把构造切回 `observe`。
 
 测试报告记录构建版本、浏览器版本、网络条件、服务器指标、失败证据和最终批准人，不记录会议媒体。

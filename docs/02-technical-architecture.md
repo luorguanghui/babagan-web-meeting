@@ -127,7 +127,7 @@ Token 允许所有成员发布 `microphone`，禁止 `camera` 和数据轨道。
 4. 共享者先发布 LiveKit 屏幕安全网，再通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。共享者选择了显式 provider 时，`offer` 会携带实际 `turnProvider` metadata。
 5. 观看者验证候选对、RTP 增长和视频解码，必要时按 `offer.turnProvider` 重新获取 ICE 配置。协商阶段 8 秒未收到媒体，或已建立的 host/srflx 直连出现 ICE 失败、5 秒无 RTP 进展时，可恢复 LiveKit 订阅；已建立 TURN relay 不执行该自动交接。
 6. 共享停止、断线或撤销时，关闭全部 P2P 连接与 LiveKit 屏幕轨道，API/LiveKit 释放共享锁。
-7. 当至少一名观看者实际选中 Cloudflare relay 时，共享者创建一组 relay-only probe；连续窗口结果稳定后发布容量快照。生产默认先处于 observation mode，快照不会改变 sender 参数；通过真实浏览器观察门禁后才允许 control mode。
+7. 当至少一名观看者实际选中 Cloudflare relay 时，共享者创建一组 relay-only probe；连续窗口结果稳定后发布容量快照。生产构造当前启用 control mode：稳定 probe 与逐观看者 sender pressure 共同驱动 cap/采样，任一证据不足时保持原参数。
 
 ## 5. 状态模型
 
@@ -156,7 +156,7 @@ stateDiagram-v2
 - P2P 信令为控制面消息（SDP/ICE），每连接数 KB，对 API 进程可忽略。
 - 云端带宽告警阈值相应下调（见 `04` 文档 §9 变更）。
 - Cloudflare relay probe 是共享者浏览器内的短时、独立 DataChannel 测量，窗口上限 50 Mbps、500 ms，并限制总载荷；它用于估计客户端到 Cloudflare relay 的保守路径容量，不代表媒体 PeerConnection 的同一 allocation，也不绕过浏览器自身拥塞控制。
-- Cloudflare relay 的 per-viewer cap 不加入 40 Mbps 的 aggregate P2P uplink budget；生产当前是 observation-only，探测不改 sender。真实浏览器门禁通过后才可开启逐观看者 cap/采样控制。
+- Cloudflare relay 的 per-viewer cap 不加入 40 Mbps 的 aggregate P2P uplink budget；生产构造当前启用逐观看者 control。升档需要稳定高容量和健康媒体样本；降档需要至少两个足以覆盖当前 cap 的低验证窗口及三个连续压力样本。
 
 内存预算：LiveKit 900–1200 MiB、Node/Web 200–350 MiB、Caddy 50–100 MiB、系统及页缓存保留 400 MiB 左右。超过 1.8 GiB 或发生交换应告警。P2P 信令在线名单与转发缓冲在内存中，规模恒为单会议 ≤5 人，无额外内存压力。
 
@@ -170,7 +170,7 @@ stateDiagram-v2
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
 | TURN | LiveKit 内置 UDP 443 + 独立 coturn 3478/5349 + 可选 Cloudflare Realtime TURN | LiveKit 的 TURN/UDP 443 服务语音与回退屏幕；coturn 为 P2P 屏幕共享提供默认 TURN 中继；Cloudflare 由服务端按需生成短期凭据，供共享级别显式切换 |
-| Cloudflare TURN 容量 | 浏览器 relay-to-relay probe | 不把普通 HTTPS 上传误称为 TURN 容量；用独立、可停止的 DataChannel 窗口提供保守路径测量，生产控制受真实浏览器观察门禁约束 |
+| Cloudflare TURN 容量 | 浏览器 relay-to-relay probe | 不把普通 HTTPS 上传误称为 TURN 容量；独立、可停止的 DataChannel 窗口提供保守路径测量，并通过双重证据门槛控制逐观看者 sender |
 | Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
 | P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 信令不新增域名；参与者 Cookie + 同源 Origin 鉴权；服务器不接触媒体内容 |

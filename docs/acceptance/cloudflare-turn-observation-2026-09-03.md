@@ -2,11 +2,16 @@
 
 ## Decision
 
-**Pending manual observation.** The real-provider loopback feasibility gate is
-recorded in [the loopback report](./cloudflare-turn-loop-probe-2026-09-03.md),
-but this run did not have an authenticated live meeting with an active
-Cloudflare screen share. The production controller therefore remains in
-`observe` mode.
+**Manual observation remains pending.** The real-provider loopback feasibility
+gate is recorded in
+[the loopback report](./cloudflare-turn-loop-probe-2026-09-03.md), but this run
+did not have an authenticated live meeting with an active Cloudflare screen
+share.
+
+On 2026-09-05 the operator explicitly selected `control` despite the pending
+observation gate. The production constructor now enables control, but this
+change has not been deployed by this task. The rollback is the single
+`cloudflareTurnControlMode: 'observe'` setting.
 
 ## Why the observation gate is pending
 
@@ -29,7 +34,7 @@ sanitized values:
 - closed state for both probe connections, both DataChannels, timers, and TURN
   allocations after the share stops.
 
-Do not record ICE credentials, participant identities, candidate addresses, SDP,
-screen content, or cookies. Control mode may be enabled only after these
-checks pass; until then a probe error must leave the TURN media connection and
-the selected profile untouched.
+Do not record ICE credentials, participant identities, candidate addresses,
+SDP, screen content, or cookies. A probe error must leave the TURN media
+connection and the current sender parameters untouched. If any check fails,
+restore observation mode before deployment.

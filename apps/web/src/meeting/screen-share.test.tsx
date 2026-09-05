@@ -1941,6 +1941,7 @@ describe('P2P-first screen sharing in the room', () => {
     controller.publishScreenShare = publishScreenShare;
     const signaling = fakeSignalingClient();
     const share = fakeShareController();
+    let productionControlMode: unknown;
     share.start.mockImplementation(async () => { order.push('p2p'); });
     const meetingApi = {
       authorizeHost: vi.fn(async () => undefined),
@@ -1957,7 +1958,13 @@ describe('P2P-first screen sharing in the room', () => {
       meetingApi,
       getDisplayMedia: async () => { order.push('capture'); return stream; },
       createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
+      shareControllerFactory: (deps) => {
+        productionControlMode = (deps as typeof deps & {
+          cloudflareTurnControlMode?: 'observe' | 'control';
+        }).cloudflareTurnControlMode;
+        share.installHooks(deps);
+        return share.controller;
+      }
     });
     act(() => signaling.welcome(p2pViewers));
 
@@ -1966,6 +1973,7 @@ describe('P2P-first screen sharing in the room', () => {
     await userEvent.click(shareButton);
 
     await waitFor(() => expect(order).toEqual(['grant', 'capture', 'sfu', 'p2p']));
+    expect(productionControlMode).toBe('control');
     expect(publishScreenShare).toHaveBeenCalledOnce();
 
     act(() => share.triggerStates([['viewer-1', 'turn']]));

@@ -226,7 +226,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 - 三档质量预设：`flow` 1280×720@30fps（弱网优先，保分辨率）、`standard` 1920×1080@30fps（默认，帧率优先）、`motion` 1920×1080@60fps（高动态，帧率优先）。捕获后按源方向应用仅含 `max` 的宽高边界（竖屏旋转边界），保留原始宽高比并让 P2P/SFU 使用同一受限源；1080p 档位在受限链路上允许进一步降低分辨率以保持帧率。
 - 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
 - `flow` 使用 `degradationPreference: maintain-resolution`；1080p 档位使用 `maintain-framerate`，优先保持目标帧率。
-- Cloudflare TURN relay 不参与 40 Mbps P2P 总上行预算。共享者仅在实际选中 Cloudflare relay 时创建一组独立、强制 relay 的浏览器内 DataChannel 回环探测；它不请求 `speed.cloudflare.com`，也不是媒体 PC 的同一 allocation。只有同一目标下三个有效窗口的离散度不超过 25% 才发布稳定容量。生产当前为 `observe`：探测、RTC `availableOutgoingBitrate`、实际 RTP 码率和 profile/transport cap 分列显示，探测不改 sender；真实共享验收通过后才可开启每观看者的 `control`。
+- Cloudflare TURN relay 不参与 40 Mbps P2P 总上行预算。共享者仅在实际选中 Cloudflare relay 时创建一组独立、强制 relay 的浏览器内 DataChannel 回环探测；它不请求 `speed.cloudflare.com`，也不是媒体 PC 的同一 allocation。只有同一目标下三个有效窗口的离散度不超过 25% 才发布稳定容量。生产当前为 `control`：稳定高容量与健康样本允许逐步升 cap；只有至少两个足以覆盖当前 cap 的低验证窗口和三个连续 sender 压力样本才允许降 cap/采样。RTC 估值、实际 RTP 码率和静态内容均不能单独驱动控制。
 - 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。
