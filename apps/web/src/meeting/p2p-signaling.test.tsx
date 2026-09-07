@@ -98,6 +98,43 @@ afterEach(() => {
 });
 
 describe('p2p signaling client', () => {
+  it.each([false, true])('reconnects a socket that never receives welcome (open: %s)', async (opened) => {
+    const client = createClient();
+    const connected = client.connect();
+    const rejected = expect(connected).rejects.toThrow('timed out');
+    const first = lastSocket();
+    if (opened) first.open();
+    // A broken network path may never deliver close, even after the server
+    // has expired this participant from its P2P roster.
+    first.close = vi.fn();
+    vi.advanceTimersByTime(10_000);
+    await rejected;
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const recovered = lastSocket();
+    recovered.open();
+    recovered.message({ type: 'welcome', peers: [] });
+    vi.advanceTimersByTime(10_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('allows an explicit viewer retry after automatic reconnect attempts are exhausted', async () => {
+    const client = createClient();
+    await connectClient(client);
+    for (let i = 0; i < 6; i += 1) {
+      lastSocket().fail();
+      vi.advanceTimersByTime(30_000);
+    }
+    const count = FakeWebSocket.instances.length;
+    client.sendRetry('sharer');
+    expect(FakeWebSocket.instances).toHaveLength(count);
+    client.retryConnection();
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    lastSocket().open();
+    lastSocket().message({ type: 'welcome', peers: [] });
+    expect(lastSocket().sent).toContainEqual({ type: 'retry', to: 'sharer' });
+  });
+
   it('builds the wss endpoint from the current page origin', async () => {
     const client = createClient();
     const connected = client.connect();

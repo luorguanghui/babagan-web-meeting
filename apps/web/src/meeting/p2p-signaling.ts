@@ -3,6 +3,8 @@ import type { P2pClientMessage } from '@meeting/contracts';
 
 /** Interval at which the client pings the server to keep the connection alive. */
 export const P2P_HEARTBEAT_INTERVAL_MS = 25_000;
+/** A stalled HTTP upgrade or missing welcome must not disable P2P forever. */
+export const P2P_CONNECT_TIMEOUT_MS = 10_000;
 /** First reconnect delay; doubles on every consecutive failure. */
 export const P2P_RECONNECT_BACKOFF_BASE_MS = 1_000;
 /** Ceiling for the exponential reconnect backoff. */
@@ -100,6 +102,7 @@ export class P2pSignalingClient {
   private resolveConnect?: () => void;
   private rejectConnect?: (reason: Error) => void;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private connectTimer?: ReturnType<typeof setTimeout>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   /** Consecutive failed connections since the last `welcome`; reset on success. */
   private backoff = 0;
@@ -171,6 +174,14 @@ export class P2pSignalingClient {
     this.sendOrQueue({ type: 'retry', to });
   }
 
+  retryConnection(): void {
+    // A deliberate user retry can resume after the bounded automatic attempts.
+    if (!this.closed && this.socket === undefined) {
+      this.backoff = 0;
+      void this.connect().catch(() => undefined);
+    }
+  }
+
   sendBye(to: string, reason?: string): void {
     this.sendOrQueue(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
   }
@@ -184,6 +195,7 @@ export class P2pSignalingClient {
     this.outboundQueue.length = 0;
     this.removeVisibilityListener();
     this.cancelReconnect();
+    this.disarmConnectTimeout();
     this.disarmHeartbeat();
     if (this.socket) {
       const socket = this.socket;
@@ -211,6 +223,7 @@ export class P2pSignalingClient {
     };
     socket.onclose = () => {
       if (!this.ownsSocket(socket)) return;
+      this.disarmConnectTimeout();
       this.socket = undefined;
       this.socketOpen = false;
       this.ready = false;
@@ -219,6 +232,18 @@ export class P2pSignalingClient {
       if (this.closed) return;
       this.scheduleReconnect();
     };
+    this.connectTimer = setTimeout(() => {
+      if (!this.ownsSocket(socket) || this.ready) return;
+      this.connectTimer = undefined;
+      this.socket = undefined;
+      this.socketOpen = false;
+      this.ready = false;
+      this.disarmHeartbeat();
+      this.rejectPendingConnect(new Error('P2P signaling connection timed out before the server welcome'));
+      // Do not depend on close arriving across the same broken network path.
+      try { socket.close(); } catch { /* the replacement owns recovery */ }
+      this.scheduleReconnect();
+    }, P2P_CONNECT_TIMEOUT_MS);
   }
 
   private ownsSocket(socket: P2pWebSocket): boolean {
@@ -238,6 +263,7 @@ export class P2pSignalingClient {
     const from = typeof message.from === 'string' ? message.from : undefined;
     switch (message.type) {
       case 'welcome': {
+        this.disarmConnectTimeout();
         const peers = message.peers;
         this.backoff = 0;
         this.ready = true;
@@ -364,6 +390,11 @@ export class P2pSignalingClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+  }
+
+  private disarmConnectTimeout(): void {
+    if (this.connectTimer !== undefined) clearTimeout(this.connectTimer);
+    this.connectTimer = undefined;
   }
 
   private scheduleReconnect(): void {

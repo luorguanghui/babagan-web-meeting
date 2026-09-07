@@ -2706,6 +2706,39 @@ describe('P2P-first screen sharing in the room', () => {
     expect(PageFakePc.instances[0]?.closed).toBe(true);
   });
 
+  it.each([
+    { preference: 'auto', receiveOffer: true },
+    { preference: 'turn', receiveOffer: true },
+    { preference: 'auto', receiveOffer: false },
+    { preference: 'turn', receiveOffer: false }
+  ] as const)('retries from persisted SFU to $preference before a P2P session exists (offer: $receiveOffer)', async ({ preference, receiveOffer }) => {
+    window.localStorage.setItem('babagan.viewer-transport', 'sfu');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      iceServers: [{ urls: ['stun:stun.example.test:3478'] }], turnProvider: 'coturn'
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } })));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    const controller = meetingController({ remoteScreenShare: {
+      track: { kind: 'video', attach: (element = document.createElement('video')) => element, detach: () => [] },
+      sharerIdentity: 'sharer-1', sharerName: 'Ben'
+    } });
+    try {
+      renderP2pRoom({ controller, createSignalingClient: signaling.factory,
+        shareControllerFactory: fakeShareControllerFactory });
+      await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
+      if (receiveOffer) await act(async () => signaling.offer('sharer-1', 'ignored-offer'));
+      expect(PageFakePc.instances).toHaveLength(0);
+      await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+      await userEvent.selectOptions(screen.getByLabelText('Viewer screen transport'), preference);
+      expect(signaling.client.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+      await act(async () => signaling.offer('sharer-1', 'fresh-offer'));
+      await waitFor(() => expect(signaling.client.sendAnswer).toHaveBeenCalledWith('sharer-1', 'answer-sdp'));
+      expect(PageFakePc.instances[0]?.config?.iceTransportPolicy).toBe(preference === 'turn' ? 'relay' : 'all');
+    } finally {
+      window.localStorage.removeItem('babagan.viewer-transport');
+    }
+  });
+
   it('unsubscribes LiveKit only after P2P renders and retains P2P until LiveKit renders on fallback', async () => {
     PageFakePc.instances = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -3205,6 +3238,8 @@ function fakeSignalingClient() {
     sendAnswer: vi.fn(),
     sendIce: vi.fn(),
     sendMediaReady: vi.fn(),
+    sendRetry: vi.fn(),
+    retryConnection: vi.fn(),
     sendBye: vi.fn()
   } as unknown as P2pSignalingClient;
   return {

@@ -512,9 +512,9 @@ export function MeetingRoomPage({
           pendingViewerSignals.push(signal);
           return;
         }
-        if (signal.type === 'offer' && viewerTransportPreferenceRef.current === 'sfu') return;
         if (signal.type === 'offer') {
           viewerSharerIdentityRef.current = signal.from;
+          if (viewerTransportPreferenceRef.current === 'sfu') return;
           const requestedProvider: RequestedIceTurnProvider = signal.turnProvider ?? 'coturn';
           const shouldRefreshIceServers = signal.turnProvider !== undefined
             ? iceConfiguration === undefined
@@ -797,11 +797,14 @@ export function MeetingRoomPage({
     }
 
     viewerController?.setIceTransportPolicy(viewerTransportPreferenceToIcePolicy(preference));
-    if (viewerController) viewerController.requestRetry();
-    else if (viewerSharerIdentityRef.current) {
-      signalingRef.current?.sendRetry(viewerSharerIdentityRef.current);
+    const sharerIdentity = state.remoteScreenShare?.sharerIdentity
+      ?? viewerSharerIdentityRef.current
+      ?? viewerController?.getSharerIdentity();
+    if (sharerIdentity) {
+      signalingRef.current?.retryConnection();
+      signalingRef.current?.sendRetry(sharerIdentity);
     }
-  }, [controller]);
+  }, [controller, state.remoteScreenShare?.sharerIdentity]);
   const handleScreenShareTurnProviderChange = useCallback((preference: ScreenShareTurnProviderPreference) => {
     screenTurnProviderPreferenceRef.current = preference;
     setScreenShareTurnProvider(preference);
@@ -969,6 +972,7 @@ export function MeetingRoomPage({
       || (hasActiveScreenShare && canRetryViewerScreenTransport(viewerP2pState))
     ),
     onP2pRetry: () => {
+      signalingRef.current?.retryConnection();
       if (screenState.status === 'sharing') void p2pShareRef.current?.retryAll(viewerRosterRef.current);
       else viewerP2pRef.current?.requestRetry();
     },
