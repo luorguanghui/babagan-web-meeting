@@ -7,7 +7,7 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 WORKDIR /workspace
 
 RUN corepack enable \
-  && corepack prepare pnpm@10.34.5 --activate \
+  && COREPACK_NPM_REGISTRY="$NPM_REGISTRY" corepack prepare pnpm@10.34.5 --activate \
   && pnpm config set registry "$NPM_REGISTRY"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./
