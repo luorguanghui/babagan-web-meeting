@@ -191,7 +191,8 @@ afterEach(async () => {
             ],
             username: 'cloudflare-user',
             credential: 'cloudflare-credential'
-          }
+          },
+          { urls: ['stun:turn.example.test:3478', 'stun:stun1.example.test:3478'] }
         ]
       });
       expect(response.json().turnCredentialsExpiresAt).toEqual(expect.any(Number));
@@ -202,6 +203,35 @@ afterEach(async () => {
     } finally {
       await cloudflareFixture.close();
     }
+  });
+
+  it('preserves numeric STUN discovery when Cloudflare TURN is selected', async () => {
+    const customFixture = await createFixture({
+      p2pStunUrls: ['stun:203.0.113.10:3478'],
+      p2pTurnProvider: 'cloudflare',
+      cloudflareTurnKeyId: 'turn-key-id',
+      cloudflareTurnApiToken: 'turn-api-token'
+    });
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      iceServers: [
+        { urls: ['stun:stun.cloudflare.com:3478'] },
+        { urls: ['turn:turn.cloudflare.com:3478?transport=udp'], username: 'user', credential: 'credential' }
+      ]
+    }), { status: 201 })));
+    try {
+      const created = await customFixture.createMeeting();
+      const joined = await customFixture.join(created.slug, 'Ada');
+      const response = await customFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().turnProvider).toBe('cloudflare');
+      expect(response.json().iceServers).toContainEqual({
+        urls: ['stun:turn.example.test:3478', 'stun:203.0.113.10:3478']
+      });
+      expect(response.headers['cache-control']).toBe('no-store');
+    } finally { await customFixture.close(); }
   });
 
   it('falls back to coturn when Cloudflare credential generation fails', async () => {

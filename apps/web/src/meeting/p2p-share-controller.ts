@@ -360,11 +360,9 @@ class P2pShareControllerImpl implements P2pShareController {
     if (this.activeStream === undefined || this.activeOptions === undefined) return;
     const existing = this.sessions.get(from);
     const recoveringTurn = existing?.state === 'turn' || existing?.recoveringTurn === true;
-    if (existing) {
-      existing.recoveringTurn = recoveringTurn;
-      this.closeSession(existing);
-      if (existing.state !== 'closed') this.transition(existing, 'closed');
-    }
+    // Keep media, candidate checks and transport monitoring alive while the
+    // credential API is in flight. A failed refresh must not close the only
+    // working connection; retryViewer replaces it once credentials are ready.
     const retryToken = ++this.nextRetryToken;
     this.pendingRetryTokens.set(from, retryToken);
     // A fresh PC and offer: the viewer rebuilds its session on the new offer,
@@ -373,15 +371,21 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   private async retryViewer(from: string, retryToken: number, recoveringTurn: boolean): Promise<void> {
+    const previous = this.sessions.get(from);
     const iceConfiguration = await this.resolveIceServers(true).catch(() => undefined);
     if (this.pendingRetryTokens.get(from) !== retryToken) return;
     this.pendingRetryTokens.delete(from);
     // The share may have stopped while the credentials were in flight.
     if (iceConfiguration === undefined || this.activeStream === undefined || this.activeOptions === undefined) return;
     const current = this.sessions.get(from);
+    // Another recovery may have replaced the connection while this request
+    // waited. Do not tear down the newer negotiation or healthy media.
+    if (current !== previous) return;
     if (current) this.closeSession(current);
     const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
     session.recoveringTurn = recoveringTurn;
+    this.reconcileTurnPathProbe();
+    this.emit();
     await this.rebalanceBitrates();
     await this.establishSession(session);
   }
@@ -502,14 +506,10 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   private async resolveIceServers(forceRefresh = false): Promise<P2pIceServerConfiguration> {
-    if (forceRefresh) this.iceConfiguration = undefined;
-    else if (this.iceConfiguration !== undefined
-      && iceConfigurationExpiresSoon(this.iceConfiguration, this.nowMs() / 1_000)) {
-      // The cached TURN credentials are about to expire: a session built on
-      // them would silently gather no relay candidates. Refresh before use.
-      this.iceConfiguration = undefined;
-    }
-    if (this.iceConfiguration === undefined) {
+    if (forceRefresh || this.iceConfiguration === undefined
+      || iceConfigurationExpiresSoon(this.iceConfiguration, this.nowMs() / 1_000)) {
+      // Refresh before creating a PC, but retain the current configuration
+      // until the request succeeds so an outage cannot erase active ICE state.
       this.refreshIceServers(normalizeP2pIceServerConfiguration(await this.fetchIceServers()));
     }
     return this.iceConfiguration!;

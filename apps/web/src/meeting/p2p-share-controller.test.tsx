@@ -1159,7 +1159,7 @@ describe('p2p share controller', () => {
     expect(probes.items[1].probe.start).toHaveBeenCalledWith([{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }]);
   });
 
-  it('stops the probe when a Cloudflare viewer closes before a retry can replace it', async () => {
+  it('keeps the Cloudflare probe running when retry credentials fail and the viewer stays connected', async () => {
     const { controller, fetchIceServers, probes } = makeHarness({ turnProvider: 'cloudflare', probes: true });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -1172,7 +1172,32 @@ describe('p2p share controller', () => {
     fetchIceServers.mockRejectedValueOnce(new Error('retry credentials unavailable'));
     controller.handleRetry('viewer-1');
 
-    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.closed).toBe(false);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(probes.items[0].probe.stop).not.toHaveBeenCalled();
+    await controller.stop();
+    expect(probes.items[0].probe.stop).toHaveBeenCalled();
+  });
+
+  it('stops the Cloudflare probe and emits negotiation when a viewer retry replaces the last relay', async () => {
+    const { controller, probes } = makeHarness({ turnProvider: 'cloudflare', probes: true });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(probes.created).toBe(1);
+    const states: ViewerSessionState[] = [];
+    controller.subscribe((snapshot) => { states.push(snapshot.get('viewer-1')!); });
+
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.closed).toBe(true);
+    expect(states.at(-1)).toBe('negotiating');
+    expect(probes.items.every((item) => vi.mocked(item.probe.stop).mock.calls.length > 0)).toBe(true);
+    await controller.stop();
   });
 
   it('does not bind a Cloudflare probe to refreshed coturn credentials', async () => {
@@ -2233,6 +2258,93 @@ describe('p2p share controller', () => {
     expect(FakeRTCPeerConnection.instances).toHaveLength(2);
     expect(signaling.sendOffer).toHaveBeenCalledTimes(2);
     expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+  });
+
+  it('keeps the active TURN connection alive while a viewer retry waits for ICE credentials', async () => {
+    const { controller, signaling, fetchIceServers } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    let resolveCredentials!: (servers: RTCIceServer[]) => void;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
+
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(pc.closed).toBe(false);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
+
+    resolveCredentials(iceServers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.closed).toBe(true);
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(2);
+    await controller.stop();
+  });
+
+  it('preserves candidate checks and transport monitoring when a viewer retry cannot refresh credentials', async () => {
+    const { controller, fetchIceServers, runTransportChecks, onViewerFallback } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(pc.closed).toBe(false);
+    pc.statsCandidateType = 'srflx';
+    await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    pc.setIceConnectionState('failed');
+    expect(onViewerFallback).toHaveBeenCalledExactlyOnceWith('viewer-1');
+    await controller.stop();
+  });
+
+  it.each(['leave', 'stop'] as const)('does not revive a viewer retry after %s while credentials are pending', async (action) => {
+    const { controller, signaling, fetchIceServers } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    let resolveCredentials!: (servers: RTCIceServer[]) => void;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
+    controller.handleRetry('viewer-1');
+    if (action === 'leave') controller.handleViewerLeft('viewer-1');
+    else await controller.stop();
+    resolveCredentials(iceServers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
+    await controller.stop();
+  });
+
+  it('does not replace a newer TURN recovery when an older viewer retry finally refreshes credentials', async () => {
+    const { controller, signaling, fetchIceServers } = makeHarness();
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    let resolveCredentials!: (servers: RTCIceServer[]) => void;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
+    controller.handleRetry('viewer-1');
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    const recovered = FakeRTCPeerConnection.instances[1];
+    recovered.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+
+    resolveCredentials(iceServers);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(recovered.closed).toBe(false);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(2);
+    await controller.stop();
   });
 
   it('rebuilds a fallen-back viewer session with fresh credentials and offer on handleRetry', async () => {

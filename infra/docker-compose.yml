@@ -67,7 +67,8 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
-      P2P_STUN_URLS: ${P2P_STUN_URLS:?P2P_STUN_URLS is required}
+      # A numeric UDP STUN entry also works when client DNS returns fake IPs.
+      P2P_STUN_URLS: "stun:${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP is required}:3478,${P2P_STUN_URLS:?P2P_STUN_URLS is required}"
       P2P_TURN_URLS: ${P2P_TURN_URLS:?P2P_TURN_URLS is required}
       P2P_TURN_SECRET: ${P2P_TURN_SECRET:?P2P_TURN_SECRET is required}
       P2P_TURN_TTL_SECONDS: ${P2P_TURN_TTL_SECONDS:-600}

@@ -81,7 +81,20 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
         ttlSeconds: dependencies.config.cloudflareTurnTtlSeconds ?? 600,
         connectIps: dependencies.config.cloudflareTurnConnectIps,
         proxyUrl: dependencies.config.cloudflareTurnProxyUrl
-      }).then((response) => ({ ...response, availableTurnProviders }));
+      }).then((response) => {
+        // STUN discovery is independent of the selected TURN provider. In
+        // particular, retain configured numeric STUN entries when client DNS
+        // cannot resolve a usable address for the provider's STUN hostname.
+        const providerUrls = new Set(response.iceServers.flatMap((server) => server.urls));
+        const extraStunUrls = coturnStunUrls(dependencies.config).filter((url) => !providerUrls.has(url));
+        return {
+          ...response,
+          iceServers: extraStunUrls.length === 0
+            ? response.iceServers
+            : [...response.iceServers, { urls: extraStunUrls }],
+          availableTurnProviders
+        };
+      });
     } catch (error) {
       // Keep the existing coturn path as an availability fallback while the
       // managed provider is being rolled out or temporarily unavailable.
