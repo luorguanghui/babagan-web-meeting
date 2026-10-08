@@ -336,8 +336,28 @@ describe('p2p viewer controller', () => {
     pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
     await runHealthCheck();
     expect(controller.getState()).toBe('turn');
-    await vi.advanceTimersByTimeAsync(2_000);
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_MAX_MS);
     expect(signaling.sendRetry).toHaveBeenCalledTimes(policy === 'all' ? 1 : 0);
+    controller.close();
+  });
+
+  it('lets a late direct candidate replace early TURN without restarting the ICE generation', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    expect(controller.getState()).toBe('turn');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
+    pc.statsCandidateType = 'srflx';
+    await runHealthCheck();
+    expect(controller.getState()).toBe('p2p');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
     controller.close();
   });
 

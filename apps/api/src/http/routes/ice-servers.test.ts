@@ -58,7 +58,7 @@ afterEach(async () => {
     const body = response.json() as { iceServers: Array<{
       urls: string[]; username?: string; credential?: string;
     }> };
-    expect(body.iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+    expect(body.iceServers[0]).toEqual({ urls: ['stun:turn.example.test:3478', 'stun:stun1.example.test:3478'] });
     expect(body.iceServers[1]).toMatchObject({
       urls: ['turn:turn.example.test:3478?transport=udp', 'turns:turn.example.test:5349?transport=tcp']
     });
@@ -89,6 +89,48 @@ afterEach(async () => {
 
     expect(response.statusCode, response.body).toBe(404);
     expect(response.json()).toMatchObject({ error: { code: 'MEETING_NOT_FOUND' } });
+  });
+
+  it('deduplicates UDP coturn STUN endpoints and preserves IPv6 addresses', async () => {
+    const customFixture = await createFixture({
+      p2pStunUrls: ['stun:turn.example.test:3478', 'stun:other.example.test:3478'],
+      p2pTurnUrls: [
+        'turn:turn.example.test:3478?transport=udp',
+        'turn:turn.example.test:3478',
+        'turn:[2001:db8::1]:3478?transport=udp',
+        'turn:tcp-only.example.test:3478?transport=tcp',
+        'turns:tls-only.example.test:5349?transport=tcp'
+      ]
+    });
+    try {
+      const created = await customFixture.createMeeting();
+      const joined = await customFixture.join(created.slug, 'Ada');
+      const response = await customFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().iceServers[0]).toEqual({
+        urls: ['stun:turn.example.test:3478', 'stun:[2001:db8::1]:3478', 'stun:other.example.test:3478']
+      });
+      expect(response.json().iceServers[0]).not.toHaveProperty('credential');
+    } finally { await customFixture.close(); }
+  });
+
+  it('keeps configured STUN when coturn only has TCP and TLS listeners', async () => {
+    const customFixture = await createFixture({
+      p2pTurnUrls: ['turn:tcp-only.example.test:3478?transport=tcp', 'turns:tls-only.example.test:5349?transport=tcp']
+    });
+    try {
+      const created = await customFixture.createMeeting();
+      const joined = await customFixture.join(created.slug, 'Ada');
+      const response = await customFixture.app.inject({
+        url: `/api/v1/meetings/${created.slug}/ice-servers`,
+        headers: { cookie: cookiePair(joined.headers['set-cookie']) }
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+    } finally { await customFixture.close(); }
   });
 
   it('does not depend on LiveKit availability', async () => {
@@ -181,7 +223,9 @@ afterEach(async () => {
 
       expect(response.statusCode, response.body).toBe(200);
       expect(response.json().turnProvider).toBe('coturn');
-      expect(response.json().iceServers[0]).toEqual({ urls: ['stun:stun1.example.test:3478'] });
+      expect(response.json().iceServers[0]).toEqual({
+        urls: ['stun:turn.example.test:3478', 'stun:stun.cloudflare.com:3478', 'stun:stun1.example.test:3478']
+      });
     } finally {
       await cloudflareFixture.close();
     }

@@ -677,7 +677,11 @@ export class P2pViewerController {
     if (this.closed || this.explicitSfu || this.iceTransportPolicy !== 'all'
       || this.sharerIdentity === undefined || this.autoRetryTimer !== undefined
       || (this.state !== 'livekit' && this.state !== 'turn')) return;
-    const delay = P2P_AUTO_RETRY_DELAYS_MS[Math.min(this.autoRetryAttempt, P2P_AUTO_RETRY_DELAYS_MS.length - 1)];
+    const backoffDelay = P2P_AUTO_RETRY_DELAYS_MS[Math.min(this.autoRetryAttempt, P2P_AUTO_RETRY_DELAYS_MS.length - 1)];
+    // Early relay media can arrive while STUN/direct candidate checks are
+    // still converging. Rebuilding after two seconds destroys those checks
+    // and lets the fast relay win the same race again on the replacement PC.
+    const delay = this.state === 'turn' ? Math.max(P2P_ICE_NEGOTIATION_MAX_MS, backoffDelay) : backoffDelay;
     this.autoRetryTimer = setTimeout(() => {
       this.autoRetryTimer = undefined;
       this.autoRetryAttempt = Math.min(this.autoRetryAttempt + 1, P2P_AUTO_RETRY_DELAYS_MS.length - 1);

@@ -62,7 +62,7 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
 
     const coturn = {
       iceServers: [
-        { urls: dependencies.config.p2pStunUrls },
+        { urls: coturnStunUrls(dependencies.config) },
         { urls: dependencies.config.p2pTurnUrls, ...turn }
       ],
       availableTurnProviders,
@@ -92,6 +92,20 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
       return coturn;
     }
   });
+}
+
+/** The configured UDP TURN listener also answers unauthenticated STUN Binding. */
+function coturnStunUrls(config: AppConfig): string[] {
+  const ownStunUrls = config.p2pTurnUrls.flatMap((url) => {
+    // Do not invent UDP listeners for TLS/TCP-only TURN endpoints.
+    const match = /^turn:([^?]+)(?:\?transport=udp)?$/i.exec(url);
+    return match ? [`stun:${match[1]}`] : [];
+  });
+  // Public STUN does not require TURN credentials. A failed credential API
+  // must not also remove the provider's independent address-discovery path.
+  const providerStunUrls = resolveAvailableTurnProviders(config).includes('cloudflare')
+    ? ['stun:stun.cloudflare.com:3478'] : [];
+  return [...new Set([...ownStunUrls, ...providerStunUrls, ...config.p2pStunUrls])];
 }
 
 function participantSession(
