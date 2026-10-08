@@ -27,4 +27,21 @@
 - 浏览器生产 controller 的严格 TypeScript 检查通过。本地 API完整类型检查仍有依赖/既有类型问题；用同一编译器虚拟载入 HEAD源码对照，基线与当前均 43 项错误，新增错误 0。没有声明完整 API生产构建通过。
 - 此次未做真实多设备 NAT/ICE直连验收；单元测试注入的候选统计只证明重试时序和状态取消行为。需要后续部署后的实际会话验证恢复效果。
 
-修复仅在本地，生产会议继续运行原版本。
+## 后续部署：2026-10-08
+
+用户随后明确授权更新部署。2026-10-08 16:35:13（香港时间，08:35:13 UTC）通过内置浏览器服务器终端完成更新与验收。
+
+- 修复已推送到 `codex/no-sfu-backup`；生产检出与部署源码为 `ec993e78b0ef6c8e973dd37bc86948865f9a9b58`。
+- 切换前检查没有活动会议，API/web 健康、无 pending 发布事务；磁盘剩余约 32 GiB，可用内存约 883 MiB。
+- 在线 SQLite 备份通过完整性检查，文件为 `var/releases/p2p-stun-recovery-20261008/database-backup/meetings-20261008T083244Z.sqlite`，同时保留 SHA256 文件。
+- API、contracts、web 的 Docker生产构建全部通过，包括完整 TypeScript 编译和 Vite打包。干净依赖环境没有出现本地 43 项类型问题；本地依赖状态未因此被修改。
+- API 镜像 `babagan-meeting-api:p2p-stun-recovery-20261008`，ID `sha256:0b40310dc20004f8fd92fa54bfbe7a5dd445e799f31d245ee31ca8c78f278b74`。
+- web 镜像 `babagan-meeting-web:p2p-stun-recovery-20261008`，ID `sha256:3d51b5a17163b4b71dfe6c4da5ada6cfbfdcf4d1fe38dba7b96367679c3b4019`。
+- 在现有五层 Compose配置后追加 `var/releases/p2p-stun-recovery-20261008/override.yml`，仅替换 API/web；Caddy、LiveKit、coturn 保留原实例。五个服务均健康，运行镜像 ID与候选一致。
+- HTTPS 首页和新资源 `/assets/index-D4gFcdxg.js` 可用，JS SHA256为 `7f13d8c556eb77ed676a5ef93cc6b4a564521e00b3cb897907d13b3b7eb7955f`；live/ready 健康接口正常，内置浏览器创建会议表单可用。
+- 默认 ICE与显式 coturn 的真实认证请求均返回有效短期 TURN凭据，包含 `stun:turn.babagan.cloud:3478`、`stun:stun.cloudflare.com:3478`、原 Google STUN，并保持 `Cache-Control: no-store`。
+- 显式 coturn 的完整核心冒烟通过：认证 ICE、跨站 P2P WebSocket 403、RTC认证 open及首条响应、公网 3000/7880不可达；临时测试会议已清理。RTC验证仍使用等待首条响应后关闭的验证副本。
+- Cloudflare凭据接口仍按先前用户授权暂时排除，不声称 Cloudflare TURN媒体传输已通过；已确认它不会移除公共 STUN地址。
+- 没有新的真实多设备直连或长时共享验收。现有页面需两端刷新并重新开始共享，才载入新的重试逻辑。
+
+服务器保护目录 `var/releases/p2p-stun-recovery-20261008/` 保留 source、构建/验收日志、发布 JSON、overlay和回退脚本。回退执行 `sudo bash var/releases/p2p-stun-recovery-20261008/rollback.sh`，恢复 `no-sfu-backup-20261008` 的 API/web组合；没有数据库迁移，不需恢复数据库。本次未执行回退。
