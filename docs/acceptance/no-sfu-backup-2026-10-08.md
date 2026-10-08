@@ -15,9 +15,29 @@
 
 ## 验证与发布状态
 
-本地全量回归已通过 45 个测试文件、834 项测试；相关 lint、两轮独立审查通过。生产镜像构建结果在发布时补充。
+本地全量回归已通过 45 个测试文件、834 项测试；相关 lint、两轮独立审查通过。2026-10-08 15:55:42（香港时间，07:55:42 UTC）完成核心线上验收，通过用户已登录的 Codex 内置浏览器服务器终端部署。
 
-用户已授权 GitHub 推送与服务器部署。本记录初稿不代表已部署；最终提交、镜像、回退信息和线上验收证据由发布操作补充。
+## GitHub 与部署执行结果
+
+- 功能提交：`06dac592c3fa71df7897c8138f95b21c11fe2a0d`。实际部署源码：`4b6d2d071cfb69fe7c54012e15a7f23c69a359a8`，已推送到 `codex/no-sfu-backup`。
+- 最终回归：45 个测试文件、834 项全部通过；审查发现的 Webhook、默认订阅、请求重申及旧请求竞态均补充回归并修复，复审没有重要问题。
+- 首次生产构建发现两个新增测试文件的 4 处 TypeScript 类型错误；修正测试 fixture 返回类型及缺失的工厂参数后，相关 115 项测试和 lint 通过。重建的 API、contracts、web TypeScript 和 Vite 全部通过。
+- API 镜像：`babagan-meeting-api:no-sfu-backup-20261008`，ID `sha256:feb78fd8045be4f47ccf877239643496b815c47b068fbd1bcc25643edce5167d`。
+- web 镜像：`babagan-meeting-web:no-sfu-backup-20261008`，ID `sha256:48a5975c3a6ce70d52aa5369c3a70d213e5d6120a7d3b4d0c8944b17c269c0ad`。
+- 公网资源：`/assets/index-BrhHhAUZ.js`，SHA256 `a549c0b565b58955d73c968bbb8b69d935ba8cf12a5aa92e67eb76a091f6eda7`，包含 `screen-transport` 新协议。
+- SQLite 在线完整备份：`var/releases/no-sfu-backup-20261008/database-backup/meetings-20261008T074811Z.sqlite`，完整性与校验文件生成成功。
+- 沿用现有四层 Compose 配置，追加 `var/releases/no-sfu-backup-20261008/override.yml`，仅使用 `up -d --no-deps --no-build --pull never api web` 更新 API/web；Caddy、LiveKit、coturn 保持原实例。
+- API、web、Caddy、LiveKit、coturn 均健康，候选镜像 ID 与实际运行容器匹配，无 pending 事务。
+- HTTPS 首页、新 JS、live/ready 健康接口及内置浏览器创建会议表单通过。
+- 默认 ICE 的实际 coturn 回退、显式 coturn ICE、`Cache-Control: no-store`、跨站 P2P WebSocket 403、公网 TCP 3000/7880 不可达、认证 RTC WebSocket open 和首条响应检查通过；临时测试会议已清理。
+- RTC 验证使用发布目录中的验证副本，等待首条响应后关闭连接，避免旧脚本在 open 时立即关闭产生误报；不声称原有完整脚本未经修改通过。显式 coturn 的首次 RTC 探测失败，其内置重试随后成功。
+- Cloudflare 凭据接口在现有代理上报 `ECONNRESET`，旧 API 镜像的对照请求也超时。严格 Cloudflare 冒烟没有通过；用户明确允许暂时忽略。已单独确认请求会返回有效 coturn 回退，不推断 Cloudflare TURN 媒体通道本身不可达。
+- 服务器受保护记录、构建/验收日志、overlay 和回退脚本保存在 `var/releases/no-sfu-backup-20261008/`；本地操作脚本在 `output/no-sfu-backup-release-20261008/`。
+- 没有执行新的真实多设备长时屏幕共享验收，因此线上恢复效果仍需实际会话验证。
+
+## 回退
+
+保留旧 API 与 `bandwidth-recovery-20261007` web 镜像。服务器执行 `sudo bash var/releases/no-sfu-backup-20261008/rollback.sh` 会省略本次 overlay，恢复前一 API/web 组合；没有数据库迁移，不需要还原数据库。本次没有执行回退。
 
 ## 兼容性
 
