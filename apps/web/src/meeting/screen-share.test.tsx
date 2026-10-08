@@ -1774,7 +1774,7 @@ describe('P2P-first screen sharing in the room', () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ iceServers: [] }), { status: 200 })));
     const signaling = fakeSignalingClient();
     try {
-      await act(async () => { renderP2pRoom({ createSignalingClient: signaling.factory, controller: meetingController() }); });
+      await act(async () => { renderP2pRoom({ createSignalingClient: signaling.factory, controller: meetingController(), shareControllerFactory: fakeShareControllerFactory }); });
       act(() => signaling.welcome([]));
       vi.mocked(signaling.client.sendScreenTransport).mockClear();
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });

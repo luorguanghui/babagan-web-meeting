@@ -5,7 +5,7 @@ import type { P2pShareController } from './p2p-share-controller.js';
 const stream = {} as MediaStream;
 const options = { maxBitrate: 8_000_000, frameRate: 30, degradationPreference: 'maintain-resolution' as const, codec: 'h264' as const };
 function fixture() {
-  const publish = vi.fn(async () => undefined), release = vi.fn(async () => undefined);
+  const publish = vi.fn(async (): Promise<void> => undefined), release = vi.fn(async (): Promise<void> => undefined);
   const start = vi.fn(async () => undefined), stop = vi.fn(async () => undefined), left = vi.fn(), retry = vi.fn();
   let viewers = [{ identity: 'a', nickname: 'A' }, { identity: 'b', nickname: 'B' }];
   const controller = { start, stop, handleViewerLeft: left, handleRetry: retry, subscribe: () => () => {}, getViewerStates: () => new Map() } as unknown as P2pShareController;
