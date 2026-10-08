@@ -620,6 +620,27 @@ describe('Cloudflare TURN path probe', () => {
     expect(startMessages(control)).toHaveLength(before + 1);
   });
 
+  it('restarts calibration after a low startup rung recovers instead of staying pinned', async () => {
+    const { clock, left, right, probe } = await startedProbe();
+    const data = wireNetwork(left, right);
+    data.dropEveryNth = 2;
+    await clock.settleUntil(() => probe.getSnapshot().status === 'ready');
+    expect(probe.getSnapshot().probeTargetBps).toBe(2_000_000);
+    expect(probe.getSnapshot().stableCapacityBps).toBeLessThan(2_000_000);
+    const control = left.localDataChannels.find((channel) => channel.label === 'probe-control')!;
+    const before = startMessages(control).length;
+
+    data.dropEveryNth = 0;
+    await clock.settleUntil(() => startMessages(control).length > before, 11_000);
+    for (let tick = 0; tick < 400; tick += 1) await clock.advance(25);
+
+    const recoveryTargets = startMessages(control).slice(before).map((message) => message.offeredBps);
+    expect(recoveryTargets).toContain(4_000_000);
+    expect(recoveryTargets).toContain(8_000_000);
+    expect(probe.getSnapshot().stableCapacityBps).toBeGreaterThan(8_000_000);
+    await probe.stop();
+  });
+
   it('invalidates stable capacity when a periodic check sees a new relay pair', async () => {
     const { clock, left, right, probe } = await startedProbe();
     wireNetwork(left, right);

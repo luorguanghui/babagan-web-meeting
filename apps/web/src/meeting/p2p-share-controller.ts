@@ -44,7 +44,7 @@ export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallb
 export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
 
 /**
- * Non-Cloudflare sender-side pressure adaptation: when the encoder reports
+ * Coturn sender-side pressure adaptation: when the encoder reports
  * `bandwidth` limitation (with a collapsed frame rate) for this many
  * consecutive samples, the session switches from the user's degradation
  * preference to `balanced` so motion stays smooth and the picture avoids
@@ -56,6 +56,9 @@ export const P2P_SENDER_PRESSURE_SAMPLE_LIMIT = 3;
 export const P2P_SENDER_RECOVER_SAMPLE_LIMIT = 5;
 /** Frame-rate collapse ratio that counts as "motion is starving" under a bandwidth limit. */
 export const P2P_SENDER_FPS_PRESSURE_RATIO = 0.7;
+/** Allow an in-place write to settle before one bounded encoder re-drive. */
+const P2P_RESOLUTION_RECOVERY_SAMPLES = 5;
+const P2P_RESOLUTION_RECOVERY_RETRY_MS = 30_000;
 
 /**
  * Per-viewer encoding settings applied to each P2P `RTCPeerConnection`.
@@ -198,6 +201,8 @@ interface ViewerSession {
   mediaReadyReceived: boolean;
   mediaReadyConfirmed: boolean;
   senderParameterTail: Promise<void>;
+  /** A rejected browser write must be retried after SDP or by the monitor. */
+  senderParametersPending: boolean;
   transportSampleTail: Promise<void>;
   stopTransportMonitor?: () => void;
   negotiationTimer?: ReturnType<typeof setTimeout>;
@@ -214,6 +219,11 @@ interface ViewerSession {
   recoveredSamples: number;
   /** Keeps non-Cloudflare P2P/TURN sessions from staying on a tiny browser layer. */
   resolutionProtected: boolean;
+  directLowResolutionSamples: number;
+  directHealthyResolutionSamples: number;
+  directEncoderRecoveryAttempted: boolean;
+  directEncoderRecoveryPending: boolean;
+  directEncoderRecoveryRetryAt?: number;
   /** Smoothed per-connection Cloudflare relay encoding state. */
   cloudflareEncodingState?: CloudflareEncodingState;
   /** Smoothed per-connection P2P / direct encoding state for dynamic resolution scaling. */
@@ -553,13 +563,18 @@ class P2pShareControllerImpl implements P2pShareController {
       mediaReadyReceived: false,
       mediaReadyConfirmed: false,
       senderParameterTail: Promise.resolve(),
+      senderParametersPending: false,
       transportSampleTail: Promise.resolve(),
       negotiationStartedAt: 0,
       autoRetried: false,
       degradationRelaxed: false,
       bandwidthLimitedSamples: 0,
       recoveredSamples: 0,
-      resolutionProtected: false
+      resolutionProtected: false,
+      directLowResolutionSamples: 0,
+      directHealthyResolutionSamples: 0,
+      directEncoderRecoveryAttempted: false,
+      directEncoderRecoveryPending: false
     };
     for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
@@ -591,6 +606,10 @@ class P2pShareControllerImpl implements P2pShareController {
       const offerWithSdp = sdp !== undefined ? { ...offer, sdp } : offer;
       await session.pc.setLocalDescription(offerWithSdp);
       if (session.state === 'closed' || session.state === 'livekit-fallback') return; // left or fell back mid-establish
+      // Some browsers cannot accept encoding parameters before local SDP
+      // creates the encodings. Retry before the remote can start receiving.
+      if (session.senderParametersPending) await this.applySenderParameters(session);
+      if (session.pcClosed || this.sessions.get(session.identity) !== session) return;
       if (offerWithSdp.sdp === undefined) throw new Error('createOffer returned no SDP');
       this.deps.signaling.sendOffer(session.identity, offerWithSdp.sdp, session.generation, session.turnProvider);
       session.offerSent = true;
@@ -701,6 +720,8 @@ class P2pShareControllerImpl implements P2pShareController {
     const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, iceConfiguration);
     replacement.autoRetried = true;
     replacement.recoveringTurn = session.recoveringTurn;
+    replacement.directEncoderRecoveryAttempted = session.directEncoderRecoveryAttempted;
+    replacement.directEncoderRecoveryRetryAt = session.directEncoderRecoveryRetryAt;
     await this.rebalanceBitrates();
     await this.establishSession(replacement);
   }
@@ -746,8 +767,8 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   /**
-   * Watches the sender's encoder limitation and switches this session between
-   * the user's degradation preference and `balanced`:
+   * Direct sessions enforce their spatial layer; coturn sessions watch the
+   * encoder limitation and switch between the user's preference and `balanced`:
    * - sustained `bandwidth` limitation with a collapsed frame rate (the exact
    *   "stable 1080p but ~10 fps under motion" failure) relaxes to `balanced`,
    *   which sheds resolution before quantization blows up into blocks/blur;
@@ -765,6 +786,43 @@ class P2pShareControllerImpl implements P2pShareController {
       } else if (!isCollapsed && session.resolutionProtected) {
         session.resolutionProtected = false;
         await this.applySenderParameters(session);
+      }
+      return;
+    }
+
+    if (session.state === 'p2p') {
+      // Repair the requested direct layer regardless of bitrate, frame rate
+      // or limitation label, before considering a bounded encoder re-drive.
+      session.degradationRelaxed = false;
+      session.bandwidthLimitedSamples = 0;
+      session.recoveredSamples = 0;
+      session.p2pEncodingState = undefined;
+      const parameters = session.videoSender?.getParameters();
+      const encoding = parameters?.encodings[0];
+      const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
+      const collapsed = this.hasCollapsedResolution(session, sender);
+      const needsRepair = session.senderParametersPending
+        || parameters?.degradationPreference !== 'maintain-resolution'
+        || encoding?.scaleResolutionDownBy !== sourceScale
+        || encoding?.maxBitrate !== session.options.maxBitrate
+        || encoding?.maxFramerate !== session.options.frameRate;
+      if (needsRepair || collapsed !== session.resolutionProtected) {
+        session.resolutionProtected = collapsed;
+        await this.applySenderParameters(session);
+      }
+      const hasOutput = sender.frameWidth !== undefined && sender.frameHeight !== undefined
+        && sender.frameWidth > 0 && sender.frameHeight > 0;
+      session.directLowResolutionSamples = collapsed && !session.senderParametersPending && this.directOutputCanRecover(session, sender)
+        ? session.directLowResolutionSamples + 1 : 0;
+      session.directHealthyResolutionSamples = hasOutput && !collapsed
+        ? session.directHealthyResolutionSamples + 1 : 0;
+      if (session.directHealthyResolutionSamples >= P2P_RESOLUTION_RECOVERY_SAMPLES && !session.directEncoderRecoveryPending) {
+        session.directEncoderRecoveryAttempted = false;
+      }
+      if (session.directLowResolutionSamples >= P2P_RESOLUTION_RECOVERY_SAMPLES
+        && !session.directEncoderRecoveryAttempted && !session.directEncoderRecoveryPending
+        && this.nowMs() >= (session.directEncoderRecoveryRetryAt ?? 0)) {
+        void this.recoverDirectResolution(session);
       }
       return;
     }
@@ -810,7 +868,7 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 
   /**
-   * Direct P2P and coturn sessions dynamically adjust resolution sampling scale
+   * Coturn sessions dynamically adjust resolution sampling scale
    * (scaleResolutionDownBy) to preserve target frame rate when bandwidth pressure
    * occurs, without artificially lowering the maxBitrate cap or causing low-bitrate lock-in.
    */
@@ -893,6 +951,7 @@ class P2pShareControllerImpl implements P2pShareController {
     }
     const encodingChanged = next.transportBitrateCapBps !== previous.transportBitrateCapBps
       || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
+      || next.resolutionRecoveryActive !== previous.resolutionRecoveryActive
       || next.hardResolutionProtection !== previous.hardResolutionProtection;
     if (controlMode && (created || encodingChanged)) await this.applySenderParameters(session);
   }
@@ -920,8 +979,52 @@ class P2pShareControllerImpl implements P2pShareController {
     if (sourceWidth === undefined || sourceHeight === undefined
       || outputWidth === undefined || outputHeight === undefined
       || sourceWidth <= 0 || sourceHeight <= 0 || outputWidth <= 0 || outputHeight <= 0) return false;
-    const minimumSourceShortSide = Math.min(720, Math.min(sourceWidth, sourceHeight));
-    return Math.min(outputWidth, outputHeight) < minimumSourceShortSide * 0.8;
+    const direct = session.state === 'p2p';
+    const minimumSourceShortSide = Math.min(direct ? 1080 : 720, Math.min(sourceWidth, sourceHeight));
+    return Math.min(outputWidth, outputHeight) < minimumSourceShortSide * (direct ? 0.95 : 0.8);
+  }
+
+  private directOutputCanRecover(session: ViewerSession, sender: SenderVideoStats): boolean {
+    if (sender.qualityLimitationReason === 'cpu' || !(sender.framesPerSecond !== undefined && sender.framesPerSecond > 0)) return false;
+    const captureFps = session.videoSender?.track?.getSettings?.().frameRate ?? session.options.frameRate;
+    return sender.qualityLimitationReason === 'none'
+      || sender.framesPerSecond >= Math.min(captureFps, session.options.frameRate) * 0.85
+      || (sender.availableOutgoingBitrateBps ?? 0) >= session.options.maxBitrate;
+  }
+
+  /** Equivalent to the useful part of a manual transport toggle, for one viewer. */
+  private async recoverDirectResolution(session: ViewerSession): Promise<void> {
+    session.directEncoderRecoveryPending = true;
+    let replaced = false;
+    try {
+      // Keep the existing stream alive until fresh credentials are available.
+      const configuration = await this.resolveIceServers(true).catch(() => undefined);
+      if (!configuration || this.sessions.get(session.identity) !== session || session.pcClosed
+        || session.state !== 'p2p' || !this.activeStream || !this.activeOptions) return;
+      const latestReport = await session.pc.getStats();
+      if (inspectP2pMediaHealth(latestReport).path !== 'direct') return;
+      const latest = inspectSenderVideoStats(latestReport);
+      if (!this.hasCollapsedResolution(session, latest) || !this.directOutputCanRecover(session, latest)) return;
+      if (this.sessions.get(session.identity) !== session || session.pcClosed || session.state !== 'p2p'
+        || !this.activeStream || !this.activeOptions) return;
+      this.closeSession(session);
+      const replacement = this.createSession(session.identity, this.activeStream, this.activeOptions, configuration);
+      replaced = true;
+      // A persistent hardware/codec limit must not cause endless renegotiation.
+      replacement.directEncoderRecoveryAttempted = true;
+      this.emit();
+      await this.rebalanceBitrates();
+      await this.establishSession(replacement);
+    } catch {
+      // A failed probe/write keeps the usable old stream whenever possible.
+    } finally {
+      session.directEncoderRecoveryPending = false;
+      if (!replaced && this.sessions.get(session.identity) === session && !session.pcClosed) {
+        // Preparing a rebuild is not a completed recovery attempt. Back off
+        // while keeping the old stream, then allow a fresh attempt.
+        session.directEncoderRecoveryRetryAt = this.nowMs() + P2P_RESOLUTION_RECOVERY_RETRY_MS;
+      }
+    }
   }
 
   /** Applies this active viewer's fair share without disturbing other sessions. */
@@ -938,10 +1041,13 @@ class P2pShareControllerImpl implements P2pShareController {
         const cloudflareObserved = this.cloudflareTurnControlMode === 'observe'
           && session.state === 'turn'
           && session.turnProvider === 'cloudflare';
-        const p2pAdaptive = (session.state === 'p2p' || (session.state === 'turn' && session.turnProvider !== 'cloudflare'))
+        const p2pAdaptive = session.state === 'turn' && session.turnProvider !== 'cloudflare'
           && session.p2pEncodingState !== undefined;
         const baseScale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
-        const scale = cloudflareAdaptive
+        const resolutionFirst = session.state === 'negotiating' || session.state === 'p2p';
+        const scale = resolutionFirst
+          ? baseScale ?? 1
+          : cloudflareAdaptive
           ? session.cloudflareEncodingState!.scaleResolutionDownBy
           : p2pAdaptive
             ? session.p2pEncodingState!.scaleResolutionDownBy
@@ -950,17 +1056,21 @@ class P2pShareControllerImpl implements P2pShareController {
         await session.videoSender.setParameters({
           ...currentParameters,
           encodings: [{
-            ...(cloudflareObserved ? currentParameters.encodings[0] : {}),
+            // Keep negotiated rid/active/priority and browser-specific fields;
+            // dropping them can make setParameters reject the entire update.
+            ...currentParameters.encodings[0],
             maxBitrate: cloudflareAdaptive
               ? session.cloudflareEncodingState!.transportBitrateCapBps
               : options.maxBitrate,
             maxFramerate: options.frameRate,
             ...(cloudflareObserved || scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
-          degradationPreference: cloudflareObserved
+          degradationPreference: resolutionFirst
+            ? 'maintain-resolution'
+            : cloudflareObserved
             ? currentParameters.degradationPreference ?? options.degradationPreference
             : cloudflareAdaptive
-            ? (session.cloudflareEncodingState!.hardResolutionProtection
+            ? (session.cloudflareEncodingState!.hardResolutionProtection || session.cloudflareEncodingState!.resolutionRecoveryActive
               ? 'maintain-resolution'
               : 'maintain-framerate')
             : session.resolutionProtected
@@ -971,7 +1081,9 @@ class P2pShareControllerImpl implements P2pShareController {
                   ? pressureDegradationPreference(options.degradationPreference)
                   : options.degradationPreference
         });
+        session.senderParametersPending = false;
       } catch {
+        session.senderParametersPending = true;
         // Bitrate tuning is best-effort; a failure must not kill the session or
         // poison the tail, so a later rebalance can retry with fresh parameters.
       }
@@ -1280,28 +1392,14 @@ export function createP2pShareController(dependencies: P2pShareControllerDepende
 
 /**
  * Computes an aspect-preserving `scaleResolutionDownBy` for a captured track.
- * The tier is selected by the source's shorter side, so 4:3 and portrait
- * captures can still use the 1080p tier when they have enough detail. The
- * target is an orientation-aware bounding box and the larger fit ratio is used
- * so neither output dimension exceeds that box. A source below 720p is kept
- * native; the helper never upscales.
+ * Preserve a 1080px short side, including ultrawide and portrait captures.
+ * Smaller sources remain native; the helper never upscales.
  */
 export function computeResolutionScale(settings: { width?: number; height?: number }): number | undefined {
   const width = settings.width;
   const height = settings.height;
   if (width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
 
-  const shortSide = Math.min(width, height);
-  const target = shortSide >= 1080
-    ? { long: 1920, short: 1080 }
-    : shortSide >= 720
-      ? { long: 1280, short: 720 }
-      : undefined;
-  if (target === undefined) return undefined;
-
-  const landscape = width >= height;
-  const targetWidth = landscape ? target.long : target.short;
-  const targetHeight = landscape ? target.short : target.long;
-  const scale = Math.max(width / targetWidth, height / targetHeight);
+  const scale = Math.min(width, height) / 1080;
   return scale > 1.0 ? scale : undefined;
 }

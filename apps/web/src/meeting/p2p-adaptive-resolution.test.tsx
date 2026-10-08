@@ -7,10 +7,11 @@ import {
 } from './p2p-adaptive-resolution.js';
 
 describe('direct and coturn resolution adaptation', () => {
-  it('keeps explicit downsampling above a 720p short side', () => {
-    expect(computeP2pMaximumScale({ width: 3840, height: 2160 })).toBe(3);
+  it('keeps explicit downsampling at or above a 1080p short side', () => {
+    expect(computeP2pMaximumScale({ width: 3840, height: 2160 })).toBe(2);
+    expect(computeP2pMaximumScale({ width: 1920, height: 1080 })).toBe(1);
     expect(computeP2pMaximumScale({ width: 1280, height: 720 })).toBe(1);
-    expect(computeP2pMaximumScale({})).toBe(1.5);
+    expect(computeP2pMaximumScale({})).toBe(1);
   });
 
   it('keeps a static healthy desktop at its profile scale', () => {

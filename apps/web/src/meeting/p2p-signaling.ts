@@ -21,7 +21,7 @@ export const P2P_MAX_CONSECUTIVE_RECONNECTS = 5;
 /** Maximum application signaling messages retained across a temporary socket outage. */
 const P2P_OUTBOUND_QUEUE_MAX_MESSAGES = 96;
 
-type QueuedP2pMessage = Extract<P2pClientMessage, { to: string }>;
+type QueuedP2pMessage = Extract<P2pClientMessage, { to: string } | { type: 'screen-transport' }>;
 
 export interface Peer {
   identity: string;
@@ -38,6 +38,8 @@ export interface P2pSignalingEvents {
   onMediaReady(from: string, generation?: string): void;
   /** A viewer asked the sharer to re-drive a fresh offer for them. */
   onRetry(from: string): void;
+  /** A viewer requested a transport for the current screen share. */
+  onScreenTransport?(from: string, transport: 'peer' | 'sfu'): void;
   onBye(from: string, reason?: string): void;
   onShareGone(): void;
   onError(code: string): void;
@@ -172,6 +174,10 @@ export class P2pSignalingClient {
 
   sendRetry(to: string): void {
     this.sendOrQueue({ type: 'retry', to });
+  }
+
+  sendScreenTransport(transport: 'peer' | 'sfu'): void {
+    this.sendOrQueue({ type: 'screen-transport', transport });
   }
 
   retryConnection(): void {
@@ -326,6 +332,13 @@ export class P2pSignalingClient {
       case 'retry':
         if (from !== undefined) this.events.onRetry(from);
         break;
+      case 'screen-transport':
+        if (from !== undefined && from.length > 0 && from.length <= 256
+          && (message.transport === 'peer' || message.transport === 'sfu')
+          && Object.keys(message).length === 3) {
+          this.events.onScreenTransport?.(from, message.transport);
+        }
+        break;
       case 'bye':
         if (from !== undefined) {
           this.events.onBye(from, typeof message.reason === 'string' ? message.reason : undefined);
@@ -390,6 +403,15 @@ export class P2pSignalingClient {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = undefined;
     }
+  }
+
+  /** One recovery probe, paced by the media controller, after fast retries stop. */
+  resumeConnection(): void {
+    if (this.closed || this.socket !== undefined || this.reconnectTimer !== undefined
+      || this.backoff < this.maxReconnectAttempts) return;
+    // Preserve the exhausted budget: a failed probe must not start another
+    // burst of fast reconnects. The next media retry will probe again.
+    void this.connect().catch(() => undefined);
   }
 
   private disarmConnectTimeout(): void {

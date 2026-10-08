@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { P2pViewerController } from './p2p-viewer-controller.js';
 
 import {
   buildP2pSignalingUrl,
@@ -98,6 +99,52 @@ afterEach(() => {
 });
 
 describe('p2p signaling client', () => {
+  it('sends a screen transport request without selecting or trusting a sharer identity', async () => {
+    const client = createClient();
+    const socket = await connectClient(client);
+    client.sendScreenTransport('sfu');
+    client.sendScreenTransport('peer');
+    expect(socket.sent.slice(1)).toEqual([
+      { type: 'screen-transport', transport: 'sfu' },
+      { type: 'screen-transport', transport: 'peer' }
+    ]);
+  });
+
+  it('queues screen transport changes across reconnect until the new welcome', async () => {
+    const client = createClient();
+    const first = await connectClient(client);
+    first.fail();
+    client.sendScreenTransport('sfu');
+    client.sendScreenTransport('peer');
+    vi.advanceTimersByTime(1_000);
+    const second = lastSocket();
+    second.open();
+    expect(second.sent).toEqual([{ type: 'hello', participantIdentity: 'participant-1' }]);
+    second.message({ type: 'welcome', peers: [] });
+    expect(second.sent.slice(1)).toEqual([
+      { type: 'screen-transport', transport: 'sfu' },
+      { type: 'screen-transport', transport: 'peer' }
+    ]);
+  });
+
+  it('dispatches valid screen transport envelopes and ignores malformed ones', async () => {
+    const onScreenTransport = vi.fn();
+    const socket = await connectClient(createClient({ ...eventHandlers(), onScreenTransport }));
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'peer' });
+    socket.message({ type: 'screen-transport', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: '', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 1, transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'turn' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu', to: 'sharer' });
+    expect(onScreenTransport.mock.calls).toEqual([['viewer', 'sfu'], ['viewer', 'peer']]);
+  });
+
+  it('accepts screen transport envelopes when no optional callback is registered', async () => {
+    const socket = await connectClient();
+    expect(() => socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu' })).not.toThrow();
+  });
+
   it.each([false, true])('reconnects a socket that never receives welcome (open: %s)', async (opened) => {
     const client = createClient();
     const connected = client.connect();
@@ -130,6 +177,34 @@ describe('p2p signaling client', () => {
     expect(FakeWebSocket.instances).toHaveLength(count);
     client.retryConnection();
     expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    lastSocket().open();
+    lastSocket().message({ type: 'welcome', peers: [] });
+    expect(lastSocket().sent).toContainEqual({ type: 'retry', to: 'sharer' });
+  });
+
+  it('resumes exhausted signaling from auto P2P recovery without resetting its reconnect budget', async () => {
+    const client = createClient();
+    await connectClient(client);
+    for (let i = 0; i < 6; i++) {
+      lastSocket().fail();
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    const count = FakeWebSocket.instances.length;
+    const viewer = new P2pViewerController(client, [], {
+      createPeerConnection: () => ({
+        setRemoteDescription: async () => { throw new Error('negotiation failed'); },
+        close: vi.fn()
+      }) as unknown as RTCPeerConnection
+    });
+    clients.push(viewer);
+    await viewer.acceptOffer('sharer', 'offer');
+    // Peer recovery now starts immediately; later attempts retain the 30s pace.
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    lastSocket().fail();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(count + 2);
     lastSocket().open();
     lastSocket().message({ type: 'welcome', peers: [] });
     expect(lastSocket().sent).toContainEqual({ type: 'retry', to: 'sharer' });

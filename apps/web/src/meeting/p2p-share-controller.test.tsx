@@ -393,6 +393,244 @@ afterEach(() => {
 });
 
 describe('p2p share controller', () => {
+  it('preserves resolution from the first offer before the direct path is classified', async () => {
+    const { controller } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    expect(videoSender(pc).getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 }]
+    });
+  });
+
+  it('retries sender settings after SDP when the browser rejects pre-negotiation parameters', async () => {
+    const { controller } = makeHarness({ onPcCreated: (pc) => {
+      const add = pc.addTransceiver.bind(pc);
+      pc.addTransceiver = (track, options) => {
+        const transceiver = add(track, options);
+        const sender = transceiver.sender as unknown as FakeRtpSender;
+        const write = sender.setParameters.getMockImplementation()!;
+        sender.setParameters.mockImplementation(async (parameters: RTCRtpSendParameters) => {
+          if (pc.localDescriptions.length === 0) throw new Error('No negotiated encodings yet');
+          await write(parameters);
+        });
+        return transceiver;
+      };
+    } });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    expect(videoSender(FakeRTCPeerConnection.instances[0]).getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: 8_000_000, scaleResolutionDownBy: 1 }]
+    });
+  });
+
+  it('preserves negotiated encoding identity and priority when updating a sender', async () => {
+    const { controller } = makeHarness();
+    const stream = makeStream(true, false, { width: 1728, height: 1080 });
+    await controller.start(stream, shareOptions, [viewers[0]]);
+    const sender = videoSender(FakeRTCPeerConnection.instances[0]);
+    const negotiatedEncoding: RTCRtpEncodingParameters & { networkPriority: string } = {
+      ...sender.getParameters().encodings[0], rid: 'screen', active: true,
+      priority: 'high', networkPriority: 'high'
+    };
+    sender.seedParameters({
+      ...sender.getParameters(), encodings: [negotiatedEncoding]
+    });
+    await controller.start(stream, shareOptions, viewers.slice(0, 2));
+    expect(sender.getParameters().encodings[0]).toMatchObject({
+      rid: 'screen', active: true, priority: 'high', networkPriority: 'high', maxBitrate: 8_000_000
+    });
+  });
+
+  it('does not send a stale offer when stopped during the post-SDP parameter retry', async () => {
+    let enteredWrite = false;
+    let releaseWrite!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseWrite = resolve; });
+    const { controller, signaling } = makeHarness({ onPcCreated: (pc) => {
+      const add = pc.addTransceiver.bind(pc);
+      pc.addTransceiver = (track, options) => {
+        const transceiver = add(track, options);
+        const sender = transceiver.sender as unknown as FakeRtpSender;
+        const write = sender.setParameters.getMockImplementation()!;
+        sender.setParameters.mockImplementation(async (parameters: RTCRtpSendParameters) => {
+          if (pc.localDescriptions.length === 0) throw new Error('No negotiated encodings yet');
+          enteredWrite = true;
+          await gate;
+          await write(parameters);
+        });
+        return transceiver;
+      };
+    } });
+    const start = controller.start(makeStream(), shareOptions, [viewers[0]]);
+    await vi.waitFor(() => expect(enteredWrite).toBe(true));
+    await controller.stop();
+    releaseWrite();
+    await start;
+    expect(signaling.sendOffer).not.toHaveBeenCalled();
+  });
+
+  it.each(['bandwidth', 'none', 'cpu'])('repairs a direct 720p layer without waiting for a healthy limitation label (%s)', async (reason: string) => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    const sender = videoSender(pc);
+    sender.seedParameters({
+      ...sender.getParameters(), degradationPreference: 'maintain-framerate',
+      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }]
+    });
+    pc.senderStats = {
+      qualityLimitationReason: reason, framesPerSecond: 30,
+      frameWidth: 1152, frameHeight: 720, availableOutgoingBitrateBps: 20_000_000,
+      bytesSent: 420_000, timestamp: 1_000
+    };
+    await runTransportChecks();
+    expect(sender.getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 1 }]
+    });
+  });
+
+  it('detects a direct 720p output even when parameters already request native 1080p', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    const sender = videoSender(pc);
+    const writesBefore = sender.setParameters.mock.calls.length;
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    await runTransportChecks();
+    expect(sender.setParameters.mock.calls.length).toBeGreaterThan(writesBefore);
+    expect(sender.getParameters().encodings[0]?.scaleResolutionDownBy).toBe(1);
+  });
+
+  it('automatically rebuilds a stuck direct encoder once without switching transport', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const first = FakeRTCPeerConnection.instances[0];
+    first.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    first.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    await runTransportChecks();
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+    expect(first.closed).toBe(true);
+    const replacement = FakeRTCPeerConnection.instances[1];
+    expect(videoSender(replacement).getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution', encodings: [{ maxBitrate: 8_000_000, scaleResolutionDownBy: 1 }]
+    });
+    replacement.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    replacement.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 12; sample += 1) await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+  });
+
+  it('does not rebuild a direct encoder while CPU pressure or missing output stats explains the layer', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    pc.senderStats = { qualityLimitationReason: 'cpu', framesPerSecond: 10, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 8; sample += 1) await runTransportChecks();
+    pc.senderStats = {};
+    for (let sample = 0; sample < 8; sample += 1) await runTransportChecks();
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+  });
+
+  it('preserves the bounded resolution attempt across an automatic negotiation retry', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const first = FakeRTCPeerConnection.instances[0];
+    first.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    first.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 5; sample += 1) await runTransportChecks();
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+    const replacement = FakeRTCPeerConnection.instances[2];
+    replacement.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    replacement.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 10; sample += 1) await runTransportChecks();
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+  });
+
+  it('keeps usable low-resolution media and retries recovery after a temporary credential failure', async () => {
+    const { controller, fetchIceServers, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const first = FakeRTCPeerConnection.instances[0];
+    first.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    fetchIceServers.mockRejectedValueOnce(new Error('temporary unavailable'));
+    first.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    for (let sample = 0; sample < 5; sample += 1) await runTransportChecks();
+    await vi.waitFor(() => expect(fetchIceServers).toHaveBeenCalledTimes(2));
+    expect(first.closed).toBe(false);
+    for (let sample = 0; sample < 8; sample += 1) await runTransportChecks();
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await runTransportChecks();
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+    expect(fetchIceServers).toHaveBeenCalledTimes(3);
+  });
+
+  it('retries a failed direct resolution repair on the next sample', async () => {
+    const { controller, runTransportChecks } = makeHarness();
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    const sender = videoSender(pc);
+    sender.seedParameters({
+      ...sender.getParameters(), degradationPreference: 'maintain-framerate',
+      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }]
+    });
+    sender.rejectNextParameterWrite = true;
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    await runTransportChecks();
+    expect(sender.getParameters().encodings[0]?.scaleResolutionDownBy).toBe(1.5);
+    await runTransportChecks();
+    expect(sender.getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution', encodings: [{ scaleResolutionDownBy: 1 }]
+    });
+  });
+
+  it.each(['coturn', 'cloudflare'] as const)('clears relay sampling when the connection returns to direct P2P (%s)', async (provider: 'coturn' | 'cloudflare') => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: provider, control: true });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    const sender = videoSender(pc);
+    sender.seedParameters({
+      ...sender.getParameters(), degradationPreference: 'maintain-framerate',
+      encodings: [{ maxBitrate: 4_000_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }]
+    });
+    pc.statsCandidateType = 'srflx';
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    expect(sender.getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: 8_000_000, scaleResolutionDownBy: 1 }]
+    });
+  });
+
   it('creates one PC per viewer with video and audio on the same connection and sends offers', async () => {
     const { controller, signaling, fetchIceServers } = makeHarness();
     const stream = makeStream();
@@ -456,8 +694,8 @@ describe('p2p share controller', () => {
     const videoSender = pc.senders.find((sender) => sender.track.kind === 'video')!;
     const audioSender = pc.senders.find((sender) => sender.track.kind === 'audio')!;
     expect(videoSender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
-      encodings: [{ maxBitrate: bitrate, maxFramerate: 30 }],
-      degradationPreference: 'maintain-framerate'
+      encodings: [{ maxBitrate: bitrate, maxFramerate: 30, scaleResolutionDownBy: 1 }],
+      degradationPreference: 'maintain-resolution'
     }));
     expect(audioSender.setParameters).not.toHaveBeenCalled();
   });
@@ -1317,6 +1555,37 @@ describe('p2p share controller', () => {
     expect(senderMaxBitrate(pc)).toBe(8_000_000);
   });
 
+  it('recovers browser-downscaled resolution above the hard floor when capacity returns', async () => {
+    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
+    await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    probes.items[0].setSnapshot({
+      status: 'ready', probeTargetBps: 32_000_000, stableCapacityBps: 40_000_000,
+      sampledAt: 1_000
+    });
+    pc.senderStats = {
+      qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+      frameWidth: 1280, frameHeight: 720
+    };
+    for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy).toBe(1);
+
+    // Restored output releases recovery protection; later congestion can adapt again.
+    pc.senderStats = {
+      qualityLimitationReason: 'none', framesPerSecond: 30,
+      frameWidth: 1920, frameHeight: 1080
+    };
+    await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+  });
+
   it('applies continuous scale and 540p hard protection', async () => {
     const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
     await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
@@ -1379,7 +1648,7 @@ describe('p2p share controller', () => {
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
   });
 
-  it('smoothly adjusts resolution scale in direct P2P mode under bandwidth and frame-rate pressure', async () => {
+  it('preserves 1080p in direct P2P mode under bandwidth and frame-rate pressure', async () => {
     const { controller, runTransportChecks } = makeHarness();
     await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -1412,10 +1681,10 @@ describe('p2p share controller', () => {
       await runTransportChecks();
     }
 
-    // Scale should have increased to protect frame rate
+    // Congestion must not reduce a 1080p source below native resolution.
     const adaptedScale = videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1;
-    expect(adaptedScale).toBeGreaterThan(1);
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    expect(adaptedScale).toBe(1);
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('updates the provider when a direct viewer later migrates to relay', async () => {
@@ -1516,7 +1785,7 @@ describe('p2p share controller', () => {
     expect(await controller.getStatsReports()).toEqual([]);
   });
 
-  it('keeps a frame-rate-first session on frame-rate-first degradation under pressure', async () => {
+  it('keeps direct P2P resolution protected during and after pressure', async () => {
     const { controller, runTransportChecks } = makeHarness();
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
@@ -1527,17 +1796,17 @@ describe('p2p share controller', () => {
     pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 12 };
     await runTransportChecks();
     await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
 
-    await runTransportChecks(); // third consecutive starved sample keeps frame rate first
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    await runTransportChecks(); // third consecutive starved sample still preserves detail
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
 
     pc.senderStats = { qualityLimitationReason: 'none', framesPerSecond: 30 };
     for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
 
-    await runTransportChecks(); // fifth unconstrained sample → restored
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    await runTransportChecks(); // fifth unconstrained sample still preserves detail
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('protects resolution when a direct P2P sender reports a 432x270 layer', async () => {
@@ -1592,7 +1861,7 @@ describe('p2p share controller', () => {
     await runTransportChecks();
     await runTransportChecks();
 
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
   it('refreshes cached ICE credentials before use when their TURN expiry is near', async () => {
@@ -2060,15 +2329,15 @@ describe('computeResolutionScale', () => {
   });
 
   it('fits a wide capture to the 1080p bound without forcing a 16:9 output', () => {
-    expect(computeResolutionScale({ width: 2560, height: 1080 })).toBeCloseTo(4 / 3, 5);
+    expect(computeResolutionScale({ width: 2560, height: 1080 })).toBeUndefined();
   });
 
   it('handles portrait captures using portrait bounds', () => {
     expect(computeResolutionScale({ width: 1440, height: 2560 })).toBeCloseTo(4 / 3, 5);
   });
 
-  it('normalizes display-scaled 1080p captures to 720p', () => {
-    expect(computeResolutionScale({ width: 1536, height: 864 })).toBeCloseTo(1536 / 1280, 5);
+  it('keeps a source below 1080p at its native resolution', () => {
+    expect(computeResolutionScale({ width: 1536, height: 864 })).toBeUndefined();
   });
 
   it('leaves native 1080p and 720p captures unscaled', () => {
@@ -2078,9 +2347,8 @@ describe('computeResolutionScale', () => {
 
   it('never scales up and tolerates missing dimensions', () => {
     expect(computeResolutionScale({ width: 800, height: 600 })).toBeUndefined();
-    // 1366x768 is not exactly 16:9; the larger fit ratio binds, and the output
-    // still preserves the capture's own aspect.
-    expect(computeResolutionScale({ width: 1366, height: 768 })).toBeCloseTo(Math.max(1366 / 1280, 768 / 720), 5);
+    // Smaller sources keep all available detail without upscaling.
+    expect(computeResolutionScale({ width: 1366, height: 768 })).toBeUndefined();
     expect(computeResolutionScale({})).toBeUndefined();
     expect(computeResolutionScale({ width: 1920 })).toBeUndefined();
   });

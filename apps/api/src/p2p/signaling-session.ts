@@ -23,8 +23,8 @@ export const P2P_CLOSE_POLICY_VIOLATION = 1008;
 /**
  * Forwarded offer/answer/ice/bye envelope: the server injects the sender
  * identity into the client message so the target knows who it is talking to.
- * The contracts P2pServerMessage schema covers only server-originated control
- * messages, so forwarded signaling is passed through as-is with `from` added.
+ * The contracts P2pServerMessage schema covers control messages and screen
+ * transport requests; SDP signaling is passed through as-is with `from` added.
  */
 type ForwardedP2pMessage = P2pSignalMessage & { from: string };
 
@@ -153,6 +153,19 @@ export class P2pSignalingSession {
       case 'ping':
         this.send({ type: 'pong' });
         return;
+      case 'screen-transport': {
+        // Route against the current share lock rather than a client-selected target.
+        const shareIdentity = this.getShareIdentity();
+        if (shareIdentity === null) return;
+        if (shareIdentity === this.identity) {
+          this.sendError('P2P_FORBIDDEN', 'Only a viewer may request a screen transport');
+          return;
+        }
+        if (!this.registry.sendTo(this.slug, shareIdentity, { ...message, from: this.identity })) {
+          this.sendError('P2P_PEER_NOT_FOUND', 'The target peer is not online');
+        }
+        return;
+      }
       case 'offer':
         if (this.getShareIdentity() !== this.identity) {
           this.sendError('P2P_FORBIDDEN', 'Only the current screen sharer may send offers');

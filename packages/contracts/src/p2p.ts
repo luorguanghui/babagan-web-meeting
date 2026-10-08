@@ -26,6 +26,7 @@ export const P2P_TURN_PROVIDERS = ['coturn', 'cloudflare'] as const;
 export type P2pTurnProvider = typeof P2P_TURN_PROVIDERS[number];
 
 const IdentitySchema = Type.String({ minLength: 1, maxLength: 256 });
+const ScreenTransportSchema = Type.Union([Type.Literal('peer'), Type.Literal('sfu')]);
 const GenerationSchema = Type.String({ minLength: 1, maxLength: 128 });
 const SdpSchema = Type.String({ minLength: 1, maxLength: P2P_MESSAGE_MAX_BYTES });
 const CandidateSchema = Type.Union([
@@ -75,6 +76,10 @@ export const P2pClientMessageSchema = Type.Union([
     reason: Type.Optional(Type.String({ minLength: 1, maxLength: 512 }))
   }, { additionalProperties: false }),
   Type.Object({
+    type: Type.Literal('screen-transport'),
+    transport: ScreenTransportSchema
+  }, { additionalProperties: false }),
+  Type.Object({
     type: Type.Literal('ping')
   }, { additionalProperties: false })
 ]);
@@ -108,6 +113,11 @@ export const P2pServerMessageSchema = Type.Union([
   Type.Object({
     type: Type.Literal('share-gone'),
     reason: Type.String({ minLength: 1 })
+  }, { additionalProperties: false }),
+  Type.Object({
+    type: Type.Literal('screen-transport'),
+    transport: ScreenTransportSchema,
+    from: IdentitySchema
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('error'),

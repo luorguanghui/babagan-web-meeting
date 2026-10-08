@@ -1,5 +1,7 @@
 import {
   TURN_PROBE_LADDER_BPS,
+  TURN_PROBE_RUNG_CONFIRM_RATIO,
+  TURN_PROBE_RUNG_MAX_LOSS_RATIO,
   createTurnProbeCapacityState,
   invalidateTurnProbePath,
   markTurnProbeFailure,
@@ -519,6 +521,18 @@ export function createCloudflareTurnPathProbe(
     capacityState = reduceTurnProbeWindow(capacityState, window);
     publish(capacityState.snapshot);
     if (!isLadder) {
+      // A startup dip must not permanently cap the probe's offered rate.
+      // Resume calibration from the recovered rung; only subsequent same-rate
+      // verification windows may publish its new stable capacity.
+      const recoveredRungIndex = TURN_PROBE_LADDER_BPS.findIndex((rung) => rung === offeredBps);
+      if (pendingVerifications === 0
+        && recoveredRungIndex >= 0 && recoveredRungIndex < TURN_PROBE_LADDER_BPS.length - 1
+        && pendingBytesAtEnd === 0 && lossRatio < TURN_PROBE_RUNG_MAX_LOSS_RATIO
+        && result.confirmedBytes * 8_000 / LADDER_WINDOW_DURATION_MS >= offeredBps * TURN_PROBE_RUNG_CONFIRM_RATIO) {
+        ladderIndex = recoveredRungIndex;
+        scheduleDriver(0);
+        return;
+      }
       scheduleDriver(pendingVerifications > 0 ? 0 : RECOVERY_INTERVAL_MS);
       return;
     }

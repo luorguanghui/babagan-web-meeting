@@ -25,6 +25,7 @@ export const CLOUDFLARE_NORMAL_SHORT_SIDE_PX = 720;
 export const CLOUDFLARE_EMERGENCY_SHORT_SIDE_PX = 540;
 export const CLOUDFLARE_MAX_SCALE_RESOLUTION_DOWN_BY = 4;
 export const CLOUDFLARE_UNKNOWN_SOURCE_MAX_SCALE = 2;
+const RESOLUTION_RECOVERY_RATIO = 0.95;
 
 /**
  * Per-viewer encoding control state. `profileTargetBitrateBps` is the user's
@@ -37,6 +38,8 @@ export interface CloudflareEncodingState {
   scaleResolutionDownBy: number;
   emergencyResolution: boolean;
   hardResolutionProtection: boolean;
+  /** Temporarily prevents further browser downscaling while pixels recover. */
+  resolutionRecoveryActive: boolean;
   bandwidthPressureSamples: number;
   healthySamples: number;
   healthyRecoverySamples: number;
@@ -81,6 +84,7 @@ export function createCloudflareEncodingState(profileTargetBitrateBps: number): 
     scaleResolutionDownBy: 1,
     emergencyResolution: false,
     hardResolutionProtection: false,
+    resolutionRecoveryActive: false,
     bandwidthPressureSamples: 0,
     healthySamples: 0,
     healthyRecoverySamples: 0,
@@ -130,11 +134,30 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   const frameRateAffected = fps !== undefined && targetFps !== undefined
     && fps < targetFps * CLOUDFLARE_HEALTHY_FPS_RATIO;
   const encoderTargetBps = positive(measurement.encoderTargetBitrateBps);
+  // Our own reduced cap is an intentional limit, not evidence of congestion.
+  const effectiveBudgetBps = Math.min(previous.profileTargetBitrateBps, currentCap);
   const encoderTargetAffected = encoderTargetBps !== undefined
-    && encoderTargetBps < previous.profileTargetBitrateBps * CLOUDFLARE_ENCODER_PRESSURE_RATIO;
+    && encoderTargetBps < effectiveBudgetBps * CLOUDFLARE_ENCODER_PRESSURE_RATIO;
   const outputAffected = frameRateAffected || encoderTargetAffected;
   const pressure = outputAffected && (bandwidthLimited || lossBad || discardsBad || rttBad);
-  const healthy = !pressure && !bandwidthLimited && !cpuLimited
+  const stableCapacityBps = measurement.turnProbe.status === 'ready'
+    ? positive(measurement.turnProbe.stableCapacityBps)
+    : undefined;
+  const probeHasHeadroom = stableCapacityBps !== undefined
+    && stableCapacityBps >= currentCap * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO
+    && (finite(measurement.turnProbe.measuredCapacityBps) ?? stableCapacityBps) >= currentCap;
+  // Recovering the profile's pixels needs its effective budget, not more
+  // headroom above an already raised transport ceiling.
+  const probeSupportsRecovery = stableCapacityBps !== undefined
+    && stableCapacityBps >= effectiveBudgetBps * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO
+    && (finite(measurement.turnProbe.measuredCapacityBps) ?? stableCapacityBps) >= effectiveBudgetBps;
+  const fpsHealthy = fps !== undefined && targetFps !== undefined
+    && fps >= targetFps * CLOUDFLARE_HEALTHY_FPS_RATIO;
+  // A lingering browser bandwidth label must not veto independently verified
+  // recovery. Missing stats or an actually struggling output still cannot pass.
+  const healthy = !pressure
+    && (!bandwidthLimited || (probeSupportsRecovery && fpsHealthy && !encoderTargetAffected))
+    && !cpuLimited
     && !rttBad
     && measurement.qualityLimitationReason !== undefined
     && !lossBad && !discardsBad;
@@ -180,11 +203,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     lowProbeSamples = 0;
     healthySamples = 0;
   } else {
-    const stableCapacityBps = measurement.turnProbe.status === 'ready'
-      ? positive(measurement.turnProbe.stableCapacityBps)
-      : undefined;
-    if (stableCapacityBps !== undefined
-      && stableCapacityBps >= currentCap * CLOUDFLARE_TRANSPORT_RAISE_CAPACITY_RATIO
+    if (stableCapacityBps !== undefined && probeHasHeadroom
       && healthySamples >= CLOUDFLARE_HEALTHY_RAISE_SAMPLES) {
       transportBitrateCapBps = clamp(
         Math.min(
@@ -201,6 +220,20 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
   }
 
   const scaleResolutionDownBy = nextScale(input, previous, transportBitrateCapBps, emergencyResolution, healthyRecoverySamples);
+  const sourceShortSide = positive(input.sourceShortSide);
+  const expectedOutputShortSide = sourceShortSide === undefined ? undefined : sourceShortSide / scaleResolutionDownBy;
+  let resolutionRecoveryActive = previous.resolutionRecoveryActive;
+  if (pathChanged || !healthy || !fpsHealthy || !probeSupportsRecovery) {
+    resolutionRecoveryActive = false;
+  } else if (outputShortSide !== undefined && expectedOutputShortSide !== undefined) {
+    if (outputShortSide >= expectedOutputShortSide * RESOLUTION_RECOVERY_RATIO) {
+      resolutionRecoveryActive = false;
+    } else if (healthyRecoverySamples >= CLOUDFLARE_RECOVERY_HEALTHY_SAMPLES) {
+      // Explicit sampling is only one layer. Stop the browser independently
+      // discarding pixels once sustained health supports the requested layer.
+      resolutionRecoveryActive = true;
+    }
+  }
 
   return {
     profileTargetBitrateBps: previous.profileTargetBitrateBps,
@@ -208,6 +241,7 @@ export function updateCloudflareEncoding(input: CloudflareEncodingUpdate): Cloud
     scaleResolutionDownBy,
     emergencyResolution,
     hardResolutionProtection,
+    resolutionRecoveryActive,
     bandwidthPressureSamples,
     healthySamples,
     healthyRecoverySamples,

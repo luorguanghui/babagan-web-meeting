@@ -15,6 +15,7 @@ const P2P_QUALITY_MIN_INTERVAL_PACKETS = 20;
 const P2P_QUALITY_LOSS_THRESHOLD = 0.15;
 const P2P_QUALITY_BAD_SAMPLE_LIMIT = 8;
 const P2P_EARLY_ICE_MAX_CANDIDATES = 32;
+const P2P_AUTO_RETRY_DELAYS_MS = [2_000, 30_000, 60_000] as const;
 
 /**
  * Minimal signaling surface the viewer controller needs. `P2pSignalingClient`
@@ -25,6 +26,7 @@ export interface P2pViewerSignaling {
   sendIce(to: string, candidate: string | null, generation?: string): void;
   sendMediaReady(to: string, generation?: string): void;
   sendRetry(to: string): void;
+  resumeConnection?(): void;
   sendBye(to: string, reason?: string): void;
 }
 
@@ -53,7 +55,8 @@ interface ViewerPcSession {
   mediaTimer?: ReturnType<typeof setTimeout>;
   disconnectTimer?: ReturnType<typeof setTimeout>;
   recoveryTimer?: ReturnType<typeof setTimeout>;
-  recoveringTurn?: boolean;
+  recoveringPeer?: boolean;
+  stream?: MediaStream;
   videoTrack?: MediaStreamTrack;
   stopHealthMonitor?: () => void;
   lastBytesReceived: number;
@@ -72,21 +75,19 @@ interface ViewerPcSession {
 
 /**
  * Viewer-side P2P session controller for the screen share: one `RTCPeerConnection`
- * against the current sharer, with the fallback state machine
- * (`idle -> negotiating -> p2p|turn`; only negotiating/direct sessions
- * automatically move to `livekit`).
+ * against the current sharer (`idle -> negotiating -> p2p|turn`). Only an
+ * explicit user SFU selection moves the viewer to `livekit`.
  *
  * The controller never sends offers; it answers the sharer's offer, trickle-ICEs
  * over the signaling channel, and collects the incoming screen audio/video into
- * one `MediaStream`. Negotiating/direct sessions fall back to `livekit`
- * (a `bye` with reason `fallback` to the sharer, PC closed,
- * `onFallback` fired) when:
+ * one `MediaStream`. Peer sessions request a fresh offer when:
  * - no video RTP arrives within `P2P_ICE_NEGOTIATION_TIMEOUT_MS` of the answer,
  * - ICE stays `disconnected` for `P2P_ICE_DISCONNECT_TIMEOUT_MS`, or
  * - ICE reaches `failed`.
  *
- * Failed or stalled TURN paths request a fresh offer, retaining the transport
- * preference. An explicit user SFU selection still performs the handover.
+ * Recovery retains the transport preference and last picture while retrying
+ * at a bounded rate. Explicit SFU selection sends `bye` and keeps the old peer
+ * connection until the SFU first-frame handover completes.
  *
  * A fresh offer from the same sharer is treated as renegotiation (the sharer
  * re-drives offers after a signaling reconnect): the old session is torn down
@@ -108,6 +109,10 @@ export class P2pViewerController {
   private stream: MediaStream | null = null;
   private earlyIce?: { from: string; generation?: string; candidates: Array<string | null> };
   private lastRecoveryRequestAt?: number;
+  private autoRetryTimer?: ReturnType<typeof setTimeout>;
+  private autoRetryAttempt = 0;
+  private directStableSince?: number;
+  private explicitSfu = false;
   private closed = false;
 
   constructor(
@@ -140,10 +145,14 @@ export class P2pViewerController {
     if (this.closed) return;
     if (this.sharerIdentity === undefined) this.sharerIdentity = from;
     if (from !== this.sharerIdentity) return;
-    const recoveringTurn = this.state === 'turn' || this.session?.recoveringTurn === true;
+    if (this.explicitSfu) return;
+    this.clearAutoRetry();
+    const recoveringPeer = this.session?.recoveringPeer === true;
+    const previousStream = this.stream;
     this.teardownSession();
+    this.stream = previousStream;
     const session = this.createSession(generation);
-    session.recoveringTurn = recoveringTurn;
+    session.recoveringPeer = recoveringPeer;
     if (this.earlyIce?.from === from
       && (generation === undefined || this.earlyIce.generation === undefined || this.earlyIce.generation === generation)) {
       session.queuedCandidates.push(...this.earlyIce.candidates.map((candidate) =>
@@ -169,7 +178,7 @@ export class P2pViewerController {
       this.armMediaTimer(session);
       this.armHealthMonitor(session);
     } catch {
-      if (this.ownsSession(session)) this.fallback(session);
+      if (this.ownsSession(session)) this.recoverPeer(session);
     }
   }
 
@@ -233,15 +242,24 @@ export class P2pViewerController {
   /** Sets the policy used by the next peer connection. */
   setIceTransportPolicy(policy: RTCIceTransportPolicy): void {
     this.iceTransportPolicy = policy;
+    this.explicitSfu = false;
+    this.clearAutoRetry();
+    if (this.session) {
+      this.clearRecoveryTimer(this.session);
+      this.session.recoveringPeer = false;
+    }
+    this.armAutoRetry();
   }
 
   /** Requests an immediate handover to the LiveKit SFU path. */
   requestSfu(): void {
     if (this.closed) return;
+    this.explicitSfu = true;
+    this.clearAutoRetry();
     const session = this.session;
     if (session !== undefined
       && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
-      this.fallback(session, true);
+      this.handoverToSfu(session);
       return;
     }
     this.transition('livekit');
@@ -269,6 +287,7 @@ export class P2pViewerController {
    */
   requestRetry(): void {
     if (this.closed || this.sharerIdentity === undefined) return;
+    if (this.iceTransportPolicy === 'all' && !this.explicitSfu) this.signaling.resumeConnection?.();
     this.signaling.sendRetry(this.sharerIdentity);
   }
 
@@ -282,6 +301,7 @@ export class P2pViewerController {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    this.clearAutoRetry();
     this.teardownSession();
     this.sharerIdentity = undefined;
     this.earlyIce = undefined;
@@ -334,12 +354,13 @@ export class P2pViewerController {
     if (!this.ownsSession(session)) return;
     const { track } = event;
     if (event.streams.length > 0) {
-      this.stream = event.streams[0];
+      session.stream = event.streams[0];
     } else {
       // The sharer adds tracks without explicit streams; assemble our own stream.
-      if (this.stream === null) this.stream = new MediaStream();
-      this.stream.addTrack(track);
+      session.stream ??= new MediaStream();
+      session.stream.addTrack(track);
     }
+    if (this.stream === null || session.mediaReadySent) this.stream = session.stream;
     if (track.kind === 'video') this.watchVideoMedia(session, track);
   }
 
@@ -361,28 +382,37 @@ export class P2pViewerController {
       if (!this.ownsSession(session) || session.fallbackPending) return;
       // Receiving undecodable packets does not mean the picture is moving.
       const progressed = health.framesDecoded > session.lastFramesDecoded;
+      const poorQuality = this.observeQuality(session, health);
       session.lastBytesReceived = health.bytesReceived;
       session.lastFramesDecoded = health.framesDecoded;
       if (progressed) {
         session.lastProgressAt = this.now();
+        if (this.directStableSince !== undefined
+          && this.now() - this.directStableSince >= P2P_ICE_NEGOTIATION_MAX_MS) this.autoRetryAttempt = 0;
         if (session.pc.iceConnectionState !== 'failed'
-          && session.pc.iceConnectionState !== 'disconnected') {
+          && session.pc.iceConnectionState !== 'disconnected'
+          && !poorQuality) {
+          session.recoveringPeer = false;
           this.clearRecoveryTimer(session);
           this.lastRecoveryRequestAt = undefined;
+          this.armAutoRetry();
         }
       }
 
       // Media that actually decodes is the success signal; the path is only a
       // classification. `getStats` may transiently lack the selected pair or
       // its candidate stats (path 'unknown') even while RTP is flowing — that
-      // must not be mistaken for a failed negotiation, or the viewer falls
-      // back to the SFU at the 8s mark despite a working direct stream.
+      // must not be mistaken for a failed negotiation while the picture moves.
       const hasDecodedVideo = session.videoTrack !== undefined
         && !session.videoTrack.muted
         && health.bytesReceived > 0
         && health.framesDecoded > 0;
       if (this.state === 'negotiating' && hasDecodedVideo) {
-        session.recoveringTurn = false;
+        if (session.stream && this.stream !== session.stream) {
+          this.stream = session.stream;
+          this.emit();
+        }
+        session.recoveringPeer = false;
         this.clearMediaTimer(session);
         if (!session.mediaReadySent && this.sharerIdentity !== undefined) {
           session.mediaReadySent = true;
@@ -399,22 +429,21 @@ export class P2pViewerController {
         const classifiedState: ViewerP2pState = health.path === 'relay' ? 'turn' : 'p2p';
         if (classifiedState !== this.state) this.transition(classifiedState);
       }
-      if (this.observeQuality(session, health)
-        && this.state === 'p2p') {
-        this.fallback(session);
+      if (poorQuality && this.state === 'p2p') {
+        this.recoverPeer(session);
         return;
       }
       const stallEligible = this.state === 'p2p' || this.state === 'turn'
         || (this.state === 'negotiating' && session.mediaReadySent);
       if (stallEligible
         && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
-        this.fallback(session);
+        this.recoverPeer(session);
       }
     } catch {
       // Once negotiation has completed there is no media timer left. Repeated
       // stats errors must still be covered by the last decoded-frame deadline.
       if (session.mediaReadySent && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
-        this.fallback(session);
+        this.recoverPeer(session);
       }
     }
   }
@@ -515,7 +544,7 @@ export class P2pViewerController {
         this.armMediaTimer(session);
         return;
       }
-      this.fallback(session);
+      this.recoverPeer(session);
     }, P2P_ICE_NEGOTIATION_TIMEOUT_MS);
   }
 
@@ -534,25 +563,30 @@ export class P2pViewerController {
           session.disconnectTimer = undefined;
           if (this.ownsSession(session)
             && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
-            this.fallback(session);
+            this.recoverPeer(session);
           }
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
-      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.fallback(session);
+      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.recoverPeer(session);
     } else if (state === 'closed') {
       this.clearDisconnectTimer(session);
     }
   }
 
-  private fallback(session: ViewerPcSession, allowFromTurn = false): void {
+  private recoverPeer(session: ViewerPcSession): void {
     if (!this.ownsSession(session)
       || this.closed
       || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
-    if ((this.state === 'turn' || session.recoveringTurn) && !allowFromTurn) {
-      this.requestTurnRecovery(session);
-      return;
-    }
+    session.recoveringPeer = true;
+    this.clearMediaTimer(session);
+    this.clearDisconnectTimer(session);
+    this.clearAutoRetry();
+    this.requestPeerRecovery(session);
+  }
+
+  private handoverToSfu(session: ViewerPcSession): void {
+    if (!this.ownsSession(session) || session.fallbackPending) return;
     session.fallbackPending = true;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);
@@ -582,7 +616,7 @@ export class P2pViewerController {
     }
   }
 
-  private requestTurnRecovery(session: ViewerPcSession): void {
+  private requestPeerRecovery(session: ViewerPcSession): void {
     if (!this.ownsSession(session) || session.recoveryTimer !== undefined) return;
     // Allow the sharer's full negotiation window before repeating a request.
     // Keep retrying if signaling/credential refresh was unavailable during the
@@ -591,7 +625,7 @@ export class P2pViewerController {
       : Math.max(0, P2P_ICE_NEGOTIATION_MAX_MS - (this.now() - this.lastRecoveryRequestAt));
     session.recoveryTimer = setTimeout(() => {
       session.recoveryTimer = undefined;
-      if (this.ownsSession(session) && (this.state === 'turn' || session.recoveringTurn)) this.requestTurnRecovery(session);
+      if (this.ownsSession(session) && session.recoveringPeer) this.requestPeerRecovery(session);
     }, remainingCooldown || P2P_ICE_NEGOTIATION_MAX_MS);
     if (remainingCooldown === 0) {
       this.lastRecoveryRequestAt = this.now();
@@ -630,8 +664,35 @@ export class P2pViewerController {
   }
 
   private transition(state: ViewerP2pState): void {
+    if (state === 'p2p' && this.state !== 'p2p') this.directStableSince = this.now();
+    else if (state !== 'p2p') this.directStableSince = undefined;
     this.state = state;
+    if (state === 'p2p' || state === 'idle' || state === 'negotiating') this.clearAutoRetry();
+    // Preserve backoff across short-lived recoveries to avoid mode flapping.
+    this.armAutoRetry();
     this.emit();
+  }
+
+  private armAutoRetry(): void {
+    if (this.closed || this.explicitSfu || this.iceTransportPolicy !== 'all'
+      || this.sharerIdentity === undefined || this.autoRetryTimer !== undefined
+      || (this.state !== 'livekit' && this.state !== 'turn')) return;
+    const delay = P2P_AUTO_RETRY_DELAYS_MS[Math.min(this.autoRetryAttempt, P2P_AUTO_RETRY_DELAYS_MS.length - 1)];
+    this.autoRetryTimer = setTimeout(() => {
+      this.autoRetryTimer = undefined;
+      this.autoRetryAttempt = Math.min(this.autoRetryAttempt + 1, P2P_AUTO_RETRY_DELAYS_MS.length - 1);
+      this.lastRecoveryRequestAt = this.now();
+      this.requestRetry();
+      // Signaling or credential refresh may fail without producing an offer.
+      // Keep the existing picture and retry even if no state change arrives.
+      this.armAutoRetry();
+    }, delay);
+  }
+
+  private clearAutoRetry(): void {
+    if (this.autoRetryTimer === undefined) return;
+    clearTimeout(this.autoRetryTimer);
+    this.autoRetryTimer = undefined;
   }
 
   private emit(): void {

@@ -27,6 +27,7 @@ describe('P2P signaling contract types', () => {
       | { type: 'ice'; to: string; candidate: string | null; generation?: string } // null = end-of-candidates
       | { type: 'media-ready'; to: string; generation?: string }
       | { type: 'retry'; to: string }
+      | { type: 'screen-transport'; transport: 'peer' | 'sfu' }
       | { type: 'bye'; to: string; reason?: string }
       | { type: 'ping' }
     >();
@@ -40,6 +41,7 @@ describe('P2P signaling contract types', () => {
       | { type: 'pong' }
       | { type: 'share-gone'; reason: string }
       | { type: 'error'; code: string; message: string }
+      | { type: 'screen-transport'; from: string; transport: 'peer' | 'sfu' }
     >();
   });
 
@@ -57,6 +59,21 @@ describe('P2P signaling contract types', () => {
 });
 
 describe('P2P client message schema', () => {
+  it.each(['peer', 'sfu'])('accepts a screen transport request for %s without a target', (transport: string) => {
+    expect(parseP2pClientMessage({ type: 'screen-transport', transport })).toEqual({
+      type: 'screen-transport', transport
+    });
+  });
+
+  it.each([
+    { type: 'screen-transport', transport: 'turn' },
+    { type: 'screen-transport' },
+    { type: 'screen-transport', transport: 'sfu', to: 'sharer' },
+    { type: 'screen-transport', transport: 'peer', from: 'viewer' },
+    { type: 'screen-transport', transport: 'sfu', extra: true }
+  ])('rejects a malformed screen transport request %j', (message: unknown) => {
+    expect(() => parseP2pClientMessage(message)).toThrow(SchemaError);
+  });
   it('accepts every documented client message', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'hello', participantIdentity: 'participant-1' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'offer', to: 'viewer-1', sdp: 'v=0 ...' })).toBe(true);
@@ -173,6 +190,18 @@ describe('SchemaError', () => {
 });
 
 describe('P2P server message schema', () => {
+  it.each(['peer', 'sfu'])('accepts a screen transport envelope for %s', (transport: string) => {
+    expect(Value.Check(P2pServerMessageSchema, { type: 'screen-transport', from: 'viewer', transport })).toBe(true);
+  });
+
+  it.each([
+    { type: 'screen-transport', transport: 'sfu' },
+    { type: 'screen-transport', transport: 'sfu', from: '' },
+    { type: 'screen-transport', transport: 'turn', from: 'viewer' },
+    { type: 'screen-transport', transport: 'peer', from: 'viewer', to: 'sharer' }
+  ])('rejects a malformed screen transport envelope %j', (message: unknown) => {
+    expect(Value.Check(P2pServerMessageSchema, message)).toBe(false);
+  });
   it('accepts every documented server message', () => {
     expect(Value.Check(P2pServerMessageSchema, {
       type: 'welcome', peers: [{ identity: 'participant-1', nickname: 'Ada' }]

@@ -37,12 +37,12 @@ export function createP2pAdaptiveResolutionState(
   };
 }
 
-/** Keeps a known source at or above a 720px short side; never upscales it. */
+/** Keeps a known source at or above a 1080px short side; never upscales it. */
 export function computeP2pMaximumScale(settings: { width?: number; height?: number }): number {
   const width = positive(settings.width);
   const height = positive(settings.height);
-  if (width === undefined || height === undefined) return 1.5;
-  return Math.max(1, Math.min(width, height) / 720);
+  if (width === undefined || height === undefined) return 1;
+  return Math.max(1, Math.min(width, height) / 1080);
 }
 
 /**

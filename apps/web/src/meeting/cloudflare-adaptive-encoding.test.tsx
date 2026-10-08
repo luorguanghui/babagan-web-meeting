@@ -64,6 +64,92 @@ function step(state: CloudflareEncodingMeasurement | CloudflareEncodingState, ne
 }
 
 describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => {
+  it('recovers sampling despite a bandwidth label when independent capacity and media are healthy', () => {
+    let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
+    for (let index = 0; index < 3; index += 1) {
+      state = step(state, pressureMeasurement({}, 1_000 + index * 1_000), 1080);
+    }
+    expect(state.scaleResolutionDownBy).toBeGreaterThan(1);
+
+    for (let index = 0; index < 12; index += 1) {
+      state = step(state, measurement({
+        turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000 }),
+        qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+        encoderTargetBitrateBps: 8_000_000, actualOutgoingBitrateBps: 8_000_000,
+        packetLossRatio: 0
+      }), 1080);
+    }
+    expect(state.scaleResolutionDownBy).toBe(1);
+    expect(state.transportBitrateCapBps).toBeGreaterThanOrEqual(8_000_000);
+  });
+
+  it('does not mistake the reduced transport cap for continuing encoder pressure', () => {
+    let state = {
+      ...createCloudflareEncodingState(PROFILE_TARGET_BPS),
+      transportBitrateCapBps: 4_000_000,
+      scaleResolutionDownBy: Math.SQRT2
+    };
+    for (let index = 0; index < 5; index += 1) {
+      state = step(state, measurement({
+        turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000 }),
+        qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+        encoderTargetBitrateBps: state.transportBitrateCapBps,
+        packetLossRatio: 0
+      }), 1080);
+    }
+    expect(state.transportBitrateCapBps).toBeGreaterThan(4_000_000);
+    expect(state.scaleResolutionDownBy).toBeLessThan(Math.SQRT2);
+    expect(state.bandwidthPressureSamples).toBe(0);
+  });
+
+  it('keeps pixel recovery active when the transport cap has already reached probe headroom', () => {
+    let state = {
+      ...createCloudflareEncodingState(PROFILE_TARGET_BPS),
+      transportBitrateCapBps: 18_000_000,
+      scaleResolutionDownBy: 1.2,
+      resolutionRecoveryActive: true
+    };
+    for (let index = 0; index < 10; index += 1) {
+      state = step(state, measurement({
+        turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000 }),
+        qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+        encoderTargetBitrateBps: 8_000_000,
+        frameWidth: 1280, frameHeight: 720, packetLossRatio: 0
+      }), 1080);
+    }
+    expect(state.scaleResolutionDownBy).toBe(1);
+    expect(state.resolutionRecoveryActive).toBe(true);
+    expect(state.transportBitrateCapBps).toBe(18_000_000);
+  });
+
+  it.each([
+    { qualityLimitationReason: 'cpu' },
+    { framesPerSecond: 10 },
+    { framesPerSecond: undefined },
+    { encoderTargetBitrateBps: 1_000_000 },
+    { packetLossRatio: 0.05 },
+    { packetsDiscardedOnSendDelta: 1 },
+    { turnProbe: probeSnapshot({ status: 'stale', stableCapacityBps: 20_000_000 }) },
+    { turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000, measuredCapacityBps: 1_000_000 }) }
+  ])('does not bypass real pressure or unavailable capacity during pixel recovery (%j)', (overrides: Partial<CloudflareEncodingMeasurement>) => {
+    let state = {
+      ...createCloudflareEncodingState(PROFILE_TARGET_BPS),
+      scaleResolutionDownBy: 1.2,
+      resolutionRecoveryActive: true
+    };
+    for (let index = 0; index < 6; index += 1) {
+      state = step(state, measurement({
+        turnProbe: probeSnapshot({ stableCapacityBps: 20_000_000 }),
+        qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
+        encoderTargetBitrateBps: 8_000_000,
+        frameWidth: 1280, frameHeight: 720, ...overrides
+      }), 1080);
+    }
+    expect(state.scaleResolutionDownBy).toBe(1.2);
+    expect(state.resolutionRecoveryActive).toBe(false);
+    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+  });
+
   it('never mutates the profile target', () => {
     let state = createCloudflareEncodingState(PROFILE_TARGET_BPS);
     state = step(state, healthyMeasurement({ stableCapacityBps: 40_000_000 }));
@@ -162,7 +248,8 @@ describe('Cloudflare TURN adaptive encoding (fixed target, dynamic cap)', () => 
     }));
 
     expect(state.bandwidthPressureSamples).toBe(0);
-    expect(state.transportBitrateCapBps).toBe(PROFILE_TARGET_BPS);
+    // Healthy output and independent headroom can now raise despite the label.
+    expect(state.transportBitrateCapBps).toBe(9_200_000);
   });
 
   it('does not raise the cap while RTT has materially increased', () => {

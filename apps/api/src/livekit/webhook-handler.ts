@@ -187,15 +187,15 @@ export class LiveKitWebhookHandler implements WebhookHandler {
 
     const roomName = requireRoomName(event);
     const identity = requireParticipantIdentity(event);
-    const cleared = this.dependencies.database.prepare(`
-      UPDATE meetings
-      SET share_identity = NULL, version = version + 1
-      WHERE id = ? AND share_identity = ?
-    `).run(roomName, identity).changes === 1;
-    return {
-      mediaAction: { kind: 'sources', roomName, identity },
-      ...(cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {})
-    };
+    const meeting = this.dependencies.database.prepare(`
+      SELECT share_identity FROM meetings WHERE id = ?
+    `).get(roomName) as { share_identity: string | null } | undefined;
+    // Removing an on-demand SFU track leaves the P2P share active. The share
+    // lock and screen grant belong to the whole share, not its SFU publication.
+    if (meeting?.share_identity === identity) return {};
+
+    // A stale publisher no longer owns the lock and retains microphone only.
+    return { mediaAction: { kind: 'sources', roomName, identity } };
   }
 
   private roomFinished(event: WebhookEvent): void {
