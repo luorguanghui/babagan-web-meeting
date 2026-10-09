@@ -1,0 +1,2 @@
+# Preserve exact measured manifest bytes, including the recorded digest.
+docs/benchmarks/*-build.json -text

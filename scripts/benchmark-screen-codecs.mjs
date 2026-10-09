@@ -4,13 +4,18 @@ import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { extname, resolve, sep } from 'node:path';
+import { verifyCodecArtifacts, sha256 } from '../media/codec-artifacts.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const routes = [
   ['/screen-codecs/', resolve(root, 'artifacts/screen-codecs')],
-  ['/libav/', resolve(root, 'apps/web/node_modules/@libav.js/variant-vp8-opus/dist')],
   ['/fixtures/', resolve(root, 'scripts/fixtures')]
 ];
+const verifiedFiles = new Map();
+for (const name of ['openh264-2.6.0', 'libav-6.10.9']) {
+  const verified = await verifyCodecArtifacts(resolve(root, 'artifacts/screen-codecs', name));
+  for (const [path, hash] of verified.files) verifiedFiles.set(path, hash);
+}
 const mime = { '.mjs': 'text/javascript', '.js': 'text/javascript', '.wasm': 'application/wasm', '.html': 'text/html', '.json': 'application/json' };
 const server = createServer(async (request, response) => {
   response.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
@@ -23,6 +28,11 @@ const server = createServer(async (request, response) => {
   if (!path.startsWith(route[1] + sep)) { response.writeHead(403).end(); return; }
   try {
     const bytes = await readFile(path);
+    if (route[0] === '/screen-codecs/') {
+      const expected = verifiedFiles.get(path);
+      if (!expected) { response.writeHead(404).end(); return; }
+      if (sha256(bytes) !== expected) { response.writeHead(409).end('Codec changed; restart verified benchmark'); return; }
+    }
     response.setHeader('Content-Type', mime[extname(path)] ?? 'application/octet-stream');
     response.writeHead(200).end(bytes);
   } catch { response.writeHead(404).end(); }

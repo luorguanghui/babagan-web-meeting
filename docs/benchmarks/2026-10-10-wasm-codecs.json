@@ -9,6 +9,80 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "cbec9c1778e04dc78a22d75cbeb6a4d68069cadd4f8755525c9bedd3e7c550fe",
+      "manifest": {
+        "source": {
+          "openh264": {
+            "version": "2.6.0",
+            "repository": "https://github.com/cisco/openh264.git",
+            "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+          },
+          "emsdk": {
+            "version": "4.0.23",
+            "repository": "https://github.com/emscripten-core/emsdk.git",
+            "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+            "release": "aaa43392544d695232b70eda706d751f18980c2a"
+          },
+          "libav": {
+            "package": "@libav.js/variant-vp8-opus",
+            "version": "6.10.9"
+          }
+        },
+        "flags": [
+          "-O3",
+          "-flto",
+          "-msimd128",
+          "-std=c++17",
+          "-DNDEBUG",
+          "-fno-rtti"
+        ],
+        "includePaths": [
+          "codec/api/wels",
+          "codec/common/inc",
+          "codec/encoder/core/inc",
+          "codec/encoder/plus/inc",
+          "codec/processing/interface",
+          "codec/processing/src/common",
+          "codec/processing/src/adaptivequantization",
+          "codec/processing/src/downsample",
+          "codec/processing/src/scrolldetection",
+          "codec/processing/src/vaacalc"
+        ],
+        "wrapperSha256": "05aa881edfb61ae1abb98275fa9e77113efb4214f278d362ebaa1586f51fc2ff",
+        "toolchain": {
+          "version": "4.0.23",
+          "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+          "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+          "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+        },
+        "releaseReady": false,
+        "artifacts": {
+          "encoder-single.mjs": {
+            "bytes": 11792,
+            "sha256": "ae31aba89b66df6b1f7be4b3c7e0b72789f7c4411c7fbeca08bcb34f3c248648"
+          },
+          "encoder-single.wasm": {
+            "bytes": 449246,
+            "sha256": "17d02c7c3d8d9523b6392172af45e0b7c2932bb58f133626a353f4a8ffe94168"
+          },
+          "encoder-threads.mjs": {
+            "bytes": 26413,
+            "sha256": "6c93c48b5ebc8d93cf79d714b72776489d97ef944216bd34f6ed6be9139eefc1"
+          },
+          "encoder-threads.wasm": {
+            "bytes": 466356,
+            "sha256": "2793095ec2669c53962a98d1da29668c912945f33b1ff32a2f4fe81eac227279"
+          },
+          "LICENSE": {
+            "bytes": 1317,
+            "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -16,24 +90,26 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "avc1.42c02a",
-    "elapsedMs": 1178.8250000029802,
-    "pipelineThroughputFps": 152.69442029100583,
-    "encodeOnlyThroughputFps": 190.35532994443906,
+    "elapsedMs": 1121.6699999943376,
+    "pipelineThroughputFps": 160.47500601862285,
+    "encodeOnlyThroughputFps": 189.1183407950652,
     "encodeMs": {
-      "mean": 5.253333333465788,
+      "mean": 5.287694444631537,
       "p50": 4.125,
-      "p95": 8.754999995231628
+      "p95": 7.920000001788139
     },
     "copyMs": {
-      "p50": 0.9800000041723251,
-      "p95": 1.4549999982118607
+      "p50": 0.6600000038743019,
+      "p95": 0.9849999994039536
     },
     "decodeMs": {
-      "p50": 56.70500000566244,
-      "p95": 82.32499999552965
+      "p50": 52.855000004172325,
+      "p95": 80.62000000476837
     },
-    "meanFrameBytes": 18160.505555555555,
+    "meanFrameBytes": 18161.505555555555,
     "maxFrameBytes": 852944,
+    "encodedBpsAtInputTimebase": 8717522.666666666,
+    "encodedBpsDuringProbe": 23315741.70668024,
     "wasmHeapBytes": 67108864,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
@@ -49,6 +125,80 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "cbec9c1778e04dc78a22d75cbeb6a4d68069cadd4f8755525c9bedd3e7c550fe",
+      "manifest": {
+        "source": {
+          "openh264": {
+            "version": "2.6.0",
+            "repository": "https://github.com/cisco/openh264.git",
+            "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+          },
+          "emsdk": {
+            "version": "4.0.23",
+            "repository": "https://github.com/emscripten-core/emsdk.git",
+            "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+            "release": "aaa43392544d695232b70eda706d751f18980c2a"
+          },
+          "libav": {
+            "package": "@libav.js/variant-vp8-opus",
+            "version": "6.10.9"
+          }
+        },
+        "flags": [
+          "-O3",
+          "-flto",
+          "-msimd128",
+          "-std=c++17",
+          "-DNDEBUG",
+          "-fno-rtti"
+        ],
+        "includePaths": [
+          "codec/api/wels",
+          "codec/common/inc",
+          "codec/encoder/core/inc",
+          "codec/encoder/plus/inc",
+          "codec/processing/interface",
+          "codec/processing/src/common",
+          "codec/processing/src/adaptivequantization",
+          "codec/processing/src/downsample",
+          "codec/processing/src/scrolldetection",
+          "codec/processing/src/vaacalc"
+        ],
+        "wrapperSha256": "05aa881edfb61ae1abb98275fa9e77113efb4214f278d362ebaa1586f51fc2ff",
+        "toolchain": {
+          "version": "4.0.23",
+          "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+          "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+          "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+        },
+        "releaseReady": false,
+        "artifacts": {
+          "encoder-single.mjs": {
+            "bytes": 11792,
+            "sha256": "ae31aba89b66df6b1f7be4b3c7e0b72789f7c4411c7fbeca08bcb34f3c248648"
+          },
+          "encoder-single.wasm": {
+            "bytes": 449246,
+            "sha256": "17d02c7c3d8d9523b6392172af45e0b7c2932bb58f133626a353f4a8ffe94168"
+          },
+          "encoder-threads.mjs": {
+            "bytes": 26413,
+            "sha256": "6c93c48b5ebc8d93cf79d714b72776489d97ef944216bd34f6ed6be9139eefc1"
+          },
+          "encoder-threads.wasm": {
+            "bytes": 466356,
+            "sha256": "2793095ec2669c53962a98d1da29668c912945f33b1ff32a2f4fe81eac227279"
+          },
+          "LICENSE": {
+            "bytes": 1317,
+            "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -56,24 +206,26 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "avc1.42c02a",
-    "elapsedMs": 4495.865000002086,
-    "pipelineThroughputFps": 40.03678936087193,
-    "encodeOnlyThroughputFps": 42.15515908876292,
+    "elapsedMs": 4357.030000001192,
+    "pipelineThroughputFps": 41.312545472477986,
+    "encodeOnlyThroughputFps": 43.18804554852572,
     "encodeMs": {
-      "mean": 23.72188888895843,
-      "p50": 23.114999994635582,
-      "p95": 29.28999999910593
+      "mean": 23.154555555805565,
+      "p50": 22.86999999731779,
+      "p95": 26.075000002980232
     },
     "copyMs": {
-      "p50": 0.9650000035762787,
-      "p95": 1.3350000008940697
+      "p50": 0.6700000017881393,
+      "p95": 1.0599999949336052
     },
     "decodeMs": {
-      "p50": 226.10499999672174,
-      "p95": 275.72999999672174
+      "p50": 219.7199999988079,
+      "p95": 268.66499999910593
     },
-    "meanFrameBytes": 260213.95555555556,
+    "meanFrameBytes": 260189.33333333334,
     "maxFrameBytes": 852944,
+    "encodedBpsAtInputTimebase": 124890880,
+    "encodedBpsDuringProbe": 85992669.31829652,
     "wasmHeapBytes": 67108864,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
@@ -89,6 +241,80 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "cbec9c1778e04dc78a22d75cbeb6a4d68069cadd4f8755525c9bedd3e7c550fe",
+      "manifest": {
+        "source": {
+          "openh264": {
+            "version": "2.6.0",
+            "repository": "https://github.com/cisco/openh264.git",
+            "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+          },
+          "emsdk": {
+            "version": "4.0.23",
+            "repository": "https://github.com/emscripten-core/emsdk.git",
+            "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+            "release": "aaa43392544d695232b70eda706d751f18980c2a"
+          },
+          "libav": {
+            "package": "@libav.js/variant-vp8-opus",
+            "version": "6.10.9"
+          }
+        },
+        "flags": [
+          "-O3",
+          "-flto",
+          "-msimd128",
+          "-std=c++17",
+          "-DNDEBUG",
+          "-fno-rtti"
+        ],
+        "includePaths": [
+          "codec/api/wels",
+          "codec/common/inc",
+          "codec/encoder/core/inc",
+          "codec/encoder/plus/inc",
+          "codec/processing/interface",
+          "codec/processing/src/common",
+          "codec/processing/src/adaptivequantization",
+          "codec/processing/src/downsample",
+          "codec/processing/src/scrolldetection",
+          "codec/processing/src/vaacalc"
+        ],
+        "wrapperSha256": "05aa881edfb61ae1abb98275fa9e77113efb4214f278d362ebaa1586f51fc2ff",
+        "toolchain": {
+          "version": "4.0.23",
+          "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+          "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+          "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+        },
+        "releaseReady": false,
+        "artifacts": {
+          "encoder-single.mjs": {
+            "bytes": 11792,
+            "sha256": "ae31aba89b66df6b1f7be4b3c7e0b72789f7c4411c7fbeca08bcb34f3c248648"
+          },
+          "encoder-single.wasm": {
+            "bytes": 449246,
+            "sha256": "17d02c7c3d8d9523b6392172af45e0b7c2932bb58f133626a353f4a8ffe94168"
+          },
+          "encoder-threads.mjs": {
+            "bytes": 26413,
+            "sha256": "6c93c48b5ebc8d93cf79d714b72776489d97ef944216bd34f6ed6be9139eefc1"
+          },
+          "encoder-threads.wasm": {
+            "bytes": 466356,
+            "sha256": "2793095ec2669c53962a98d1da29668c912945f33b1ff32a2f4fe81eac227279"
+          },
+          "LICENSE": {
+            "bytes": 1317,
+            "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -96,24 +322,139 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "avc1.42c02a",
-    "elapsedMs": 4603.454999998212,
-    "pipelineThroughputFps": 39.101066481603475,
-    "encodeOnlyThroughputFps": 40.83535524995199,
+    "elapsedMs": 4381.060000002384,
+    "pipelineThroughputFps": 41.08594723649118,
+    "encodeOnlyThroughputFps": 42.856734698382105,
     "encodeMs": {
-      "mean": 24.488583333707517,
-      "p50": 23.980000004172325,
-      "p95": 28.524999998509884
+      "mean": 23.33355555521945,
+      "p50": 23.139999993145466,
+      "p95": 27.075000002980232
     },
     "copyMs": {
-      "p50": 0.7250000014901161,
-      "p95": 1.0799999982118607
+      "p50": 0.6750000044703484,
+      "p95": 1.1000000014901161
     },
     "decodeMs": {
-      "p50": 234.64999999850988,
-      "p95": 296.4399999976158
+      "p50": 223.3399999961257,
+      "p95": 275.19999999552965
     },
-    "meanFrameBytes": 300090.14444444445,
-    "maxFrameBytes": 854635,
+    "meanFrameBytes": 300023.6722222222,
+    "maxFrameBytes": 854319,
+    "encodedBpsAtInputTimebase": 144011362.66666666,
+    "encodedBpsDuringProbe": 98614054.13296436,
+    "wasmHeapBytes": 67108864,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "h264",
+    "scene": "high-motion",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "cbec9c1778e04dc78a22d75cbeb6a4d68069cadd4f8755525c9bedd3e7c550fe",
+      "manifest": {
+        "source": {
+          "openh264": {
+            "version": "2.6.0",
+            "repository": "https://github.com/cisco/openh264.git",
+            "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+          },
+          "emsdk": {
+            "version": "4.0.23",
+            "repository": "https://github.com/emscripten-core/emsdk.git",
+            "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+            "release": "aaa43392544d695232b70eda706d751f18980c2a"
+          },
+          "libav": {
+            "package": "@libav.js/variant-vp8-opus",
+            "version": "6.10.9"
+          }
+        },
+        "flags": [
+          "-O3",
+          "-flto",
+          "-msimd128",
+          "-std=c++17",
+          "-DNDEBUG",
+          "-fno-rtti"
+        ],
+        "includePaths": [
+          "codec/api/wels",
+          "codec/common/inc",
+          "codec/encoder/core/inc",
+          "codec/encoder/plus/inc",
+          "codec/processing/interface",
+          "codec/processing/src/common",
+          "codec/processing/src/adaptivequantization",
+          "codec/processing/src/downsample",
+          "codec/processing/src/scrolldetection",
+          "codec/processing/src/vaacalc"
+        ],
+        "wrapperSha256": "05aa881edfb61ae1abb98275fa9e77113efb4214f278d362ebaa1586f51fc2ff",
+        "toolchain": {
+          "version": "4.0.23",
+          "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+          "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+          "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+          "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+        },
+        "releaseReady": false,
+        "artifacts": {
+          "encoder-single.mjs": {
+            "bytes": 11792,
+            "sha256": "ae31aba89b66df6b1f7be4b3c7e0b72789f7c4411c7fbeca08bcb34f3c248648"
+          },
+          "encoder-single.wasm": {
+            "bytes": 449246,
+            "sha256": "17d02c7c3d8d9523b6392172af45e0b7c2932bb58f133626a353f4a8ffe94168"
+          },
+          "encoder-threads.mjs": {
+            "bytes": 26413,
+            "sha256": "6c93c48b5ebc8d93cf79d714b72776489d97ef944216bd34f6ed6be9139eefc1"
+          },
+          "encoder-threads.wasm": {
+            "bytes": 466356,
+            "sha256": "2793095ec2669c53962a98d1da29668c912945f33b1ff32a2f4fe81eac227279"
+          },
+          "LICENSE": {
+            "bytes": 1317,
+            "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+          }
+        }
+      }
+    },
+    "decodingEnabled": false,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 0,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "avc1.42c02a",
+    "elapsedMs": 4302.52499999851,
+    "pipelineThroughputFps": 41.83589868741317,
+    "encodeOnlyThroughputFps": 43.417696329645274,
+    "encodeMs": {
+      "mean": 23.03208333320088,
+      "p50": 22.924999997019768,
+      "p95": 25.844999998807907
+    },
+    "copyMs": {
+      "p50": 0.6700000017881393,
+      "p95": 1.5850000008940697
+    },
+    "decodeMs": {},
+    "meanFrameBytes": 300116.72222222225,
+    "maxFrameBytes": 854319,
+    "encodedBpsAtInputTimebase": 144056026.66666666,
+    "encodedBpsDuringProbe": 100445222.28229928,
     "wasmHeapBytes": 67108864,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
@@ -129,6 +470,40 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "5f52fa390e3c94de9cd51c7ac446659f2148976a8abcf70e8e88f23496f55522",
+      "manifest": {
+        "package": "@libav.js/variant-vp8-opus",
+        "version": "6.10.9",
+        "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+        "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+        "releaseReady": false,
+        "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+        "artifacts": {
+          "libav-6.10.9.0-vp8-opus.mjs": {
+            "bytes": 27615,
+            "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+            "bytes": 276896,
+            "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+            "bytes": 1436660,
+            "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.mjs": {
+            "bytes": 292386,
+            "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.wasm": {
+            "bytes": 1564494,
+            "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -136,24 +511,26 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "vp8",
-    "elapsedMs": 2762.664999999106,
-    "pipelineThroughputFps": 65.15447946097636,
-    "encodeOnlyThroughputFps": 70.72302506261414,
+    "elapsedMs": 2823.804999999702,
+    "pipelineThroughputFps": 63.74377834164151,
+    "encodeOnlyThroughputFps": 67.789460998433,
     "encodeMs": {
-      "mean": 14.139666666049097,
-      "p50": 11.450000002980232,
-      "p95": 18.765000000596046
+      "mean": 14.75155555556218,
+      "p50": 12.549999997019768,
+      "p95": 19.83000000566244
     },
     "copyMs": {
-      "p50": 1.0200000032782555,
-      "p95": 1.3650000020861626
+      "p50": 0.7199999988079071,
+      "p95": 1.0249999985098839
     },
     "decodeMs": {
-      "p50": 2.024999998509884,
-      "p95": 17.934999994933605
+      "p50": 2.869999997317791,
+      "p95": 14.284999996423721
     },
     "meanFrameBytes": 20695.7,
     "maxFrameBytes": 1433510,
+    "encodedBpsAtInputTimebase": 9933936,
+    "encodedBpsDuringProbe": 10553776.90740088,
     "wasmHeapBytes": null,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
@@ -169,6 +546,40 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "5f52fa390e3c94de9cd51c7ac446659f2148976a8abcf70e8e88f23496f55522",
+      "manifest": {
+        "package": "@libav.js/variant-vp8-opus",
+        "version": "6.10.9",
+        "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+        "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+        "releaseReady": false,
+        "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+        "artifacts": {
+          "libav-6.10.9.0-vp8-opus.mjs": {
+            "bytes": 27615,
+            "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+            "bytes": 276896,
+            "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+            "bytes": 1436660,
+            "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.mjs": {
+            "bytes": 292386,
+            "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.wasm": {
+            "bytes": 1564494,
+            "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -176,24 +587,26 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "vp8",
-    "elapsedMs": 5505.905000001192,
-    "pipelineThroughputFps": 32.69217322128897,
-    "encodeOnlyThroughputFps": 34.12338447071763,
+    "elapsedMs": 5418.405000001192,
+    "pipelineThroughputFps": 33.22010813144466,
+    "encodeOnlyThroughputFps": 34.33620485732304,
     "encodeMs": {
-      "mean": 29.305416666923296,
-      "p50": 26.719999998807907,
-      "p95": 34.04500000178814
+      "mean": 29.123777777867186,
+      "p50": 26.969999998807907,
+      "p95": 32.599999994039536
     },
     "copyMs": {
-      "p50": 1.0249999985098839,
-      "p95": 1.3599999994039536
+      "p50": 0.7050000056624413,
+      "p95": 1.035000003874302
     },
     "decodeMs": {
-      "p50": 11.315000005066395,
-      "p95": 14.765000000596046
+      "p50": 11.215000003576279,
+      "p95": 13.924999997019768
     },
     "meanFrameBytes": 158940.18333333332,
     "maxFrameBytes": 1433510,
+    "encodedBpsAtInputTimebase": 76291288,
+    "encodedBpsDuringProbe": 42240080.614119776,
     "wasmHeapBytes": null,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
@@ -209,6 +622,40 @@
     "threads": 4,
     "fps": 60,
     "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "5f52fa390e3c94de9cd51c7ac446659f2148976a8abcf70e8e88f23496f55522",
+      "manifest": {
+        "package": "@libav.js/variant-vp8-opus",
+        "version": "6.10.9",
+        "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+        "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+        "releaseReady": false,
+        "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+        "artifacts": {
+          "libav-6.10.9.0-vp8-opus.mjs": {
+            "bytes": 27615,
+            "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+            "bytes": 276896,
+            "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+            "bytes": 1436660,
+            "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.mjs": {
+            "bytes": 292386,
+            "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.wasm": {
+            "bytes": 1564494,
+            "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+          }
+        }
+      }
+    },
+    "decodingEnabled": true,
     "inputs": 180,
     "submitted": 180,
     "decoded": 180,
@@ -216,24 +663,99 @@
     "firstKeyframe": true,
     "recoveryKeyframe": true,
     "decoderCodec": "vp8",
-    "elapsedMs": 5369.030000001192,
-    "pipelineThroughputFps": 33.52560890886436,
-    "encodeOnlyThroughputFps": 34.70986888347827,
+    "elapsedMs": 5372.354999996722,
+    "pipelineThroughputFps": 33.50485960069836,
+    "encodeOnlyThroughputFps": 34.6128219358088,
     "encodeMs": {
-      "mean": 28.810249999993378,
-      "p50": 26.46000000089407,
-      "p95": 30.66499999910593
+      "mean": 28.891027777352267,
+      "p50": 27.070000000298023,
+      "p95": 30.484999999403954
     },
     "copyMs": {
-      "p50": 0.7350000068545341,
-      "p95": 1.0799999982118607
+      "p50": 0.6800000071525574,
+      "p95": 0.9800000041723251
     },
     "decodeMs": {
-      "p50": 11.239999994635582,
-      "p95": 13.910000003874302
+      "p50": 11.019999995827675,
+      "p95": 13.484999999403954
     },
     "meanFrameBytes": 157769.98333333334,
     "maxFrameBytes": 1433510,
+    "encodedBpsAtInputTimebase": 75729592,
+    "encodedBpsDuringProbe": 42288489.12630283,
+    "wasmHeapBytes": null,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "vp8",
+    "scene": "high-motion",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "build": {
+      "manifestSha256": "5f52fa390e3c94de9cd51c7ac446659f2148976a8abcf70e8e88f23496f55522",
+      "manifest": {
+        "package": "@libav.js/variant-vp8-opus",
+        "version": "6.10.9",
+        "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+        "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+        "releaseReady": false,
+        "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+        "artifacts": {
+          "libav-6.10.9.0-vp8-opus.mjs": {
+            "bytes": 27615,
+            "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+            "bytes": 276896,
+            "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+          },
+          "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+            "bytes": 1436660,
+            "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.mjs": {
+            "bytes": 292386,
+            "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+          },
+          "libav-6.10.9.0-vp8-opus.thr.wasm": {
+            "bytes": 1564494,
+            "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+          }
+        }
+      }
+    },
+    "decodingEnabled": false,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 0,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "vp8",
+    "elapsedMs": 5316.490000002086,
+    "pipelineThroughputFps": 33.85692439935547,
+    "encodeOnlyThroughputFps": 34.852616995699684,
+    "encodeMs": {
+      "mean": 28.692250000147357,
+      "p50": 26.739999994635582,
+      "p95": 31.28999999910593
+    },
+    "copyMs": {
+      "p50": 0.6899999976158142,
+      "p95": 0.9849999994039536
+    },
+    "decodeMs": {},
+    "meanFrameBytes": 157769.98333333334,
+    "maxFrameBytes": 1433510,
+    "encodedBpsAtInputTimebase": 75729592,
+    "encodedBpsDuringProbe": 42732851.18563391,
     "wasmHeapBytes": null,
     "isolated": true,
     "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",

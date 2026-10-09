@@ -31,9 +31,17 @@ def build(source, emsdk, output, jobs):
     if subprocess.check_output(["git", "-C", str(source), "status", "--porcelain"], text=True).strip():
         raise ValueError("OpenH264 checkout must be clean; apply patches explicitly through this build")
     emcc = emsdk / "upstream/emscripten/em++.py"
+    sdk_commit = subprocess.check_output(['git', '-C', str(emsdk), 'rev-parse', 'HEAD'], text=True).strip()
+    sdk_release = (emsdk / 'upstream/.emsdk_version').read_text().strip()
+    if sdk_commit != LOCK['emsdk']['commit'] or not sdk_release.startswith(f"releases-{LOCK['emsdk']['release']}-"):
+        raise ValueError('Installed emsdk commit/release does not match codecs.lock.json')
+    run(['git', '-C', emsdk, 'diff', '--quiet', 'HEAD'])
     version = subprocess.check_output([sys.executable, str(emcc), "--version"], text=True)
     if f" {LOCK['emsdk']['version']} " not in version:
         raise ValueError("Emscripten version does not match codecs.lock.json")
+    observed_toolchain = {'version': LOCK['emsdk']['version'], 'versionOutput': version.strip(),
+                          'emsdkCommit': sdk_commit, 'sdkRelease': sdk_release,
+                          'emccSha256': hashlib.sha256((emcc.parent / 'emcc.py').read_bytes()).hexdigest()}
     sources = []
     for unit in ["common", "encoder", "processing"]:
         targets = (source / f"codec/{unit}/targets.mk").read_text()
@@ -74,7 +82,7 @@ def build(source, emsdk, output, jobs):
     manifest = {"source": LOCK, "flags": [flag for flag in flags if not flag.startswith('-I')],
                 "includePaths": [f"codec/{path}" for path in includes],
                 "wrapperSha256": hashlib.sha256((ROOT / 'media/openh264/encoder.cpp').read_bytes()).hexdigest(),
-                "releaseReady": False, "artifacts": {}}
+                "toolchain": observed_toolchain, "releaseReady": False, "artifacts": {}}
     for file in sorted(output.iterdir()):
         if file.is_file() and file.name != "manifest.json":
             manifest["artifacts"][file.name] = {"bytes": file.stat().st_size, "sha256": hashlib.sha256(file.read_bytes()).hexdigest()}

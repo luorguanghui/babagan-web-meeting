@@ -1,4 +1,4 @@
-/* global self, VideoFrame, VideoDecoder, EncodedVideoChunk, crossOriginIsolated, performance, navigator, setTimeout */
+/* global self, VideoFrame, VideoDecoder, EncodedVideoChunk, crossOriginIsolated, performance, navigator, setTimeout, fetch, crypto, TextDecoder */
 // No browser video encoder is used; VideoFrame copy and VideoDecoder are allowed.
 self.VideoEncoder = class { constructor() { throw new Error('Browser video encoder prohibited in benchmark'); } };
 self.MediaRecorder = class { constructor() { throw new Error('Browser recorder prohibited in benchmark'); } };
@@ -35,10 +35,17 @@ self.onmessage = async ({ data: options }) => {
   const codec = options.codec ?? 'h264', scene = options.scene ?? 'high-motion';
   const threads = Number(options.threads ?? 1), frames = Number(options.frames ?? 180);
   const fps = Number(options.fps ?? 60), bitrate = Number(options.bitrate ?? 8000000);
+  const decodingEnabled = options.decode !== '0';
   const times = [], copyTimes = [], decodeTimes = [], bytesPerFrame = [];
   let decoded = 0, submitted = 0, skipped = 0, decoderCodec, firstKeyframe = false, lastKeyframe = false;
   try {
     if (!crossOriginIsolated) throw new Error('Benchmark needs isolation headers');
+    const manifestResponse = await fetch(`/screen-codecs/${codec === 'h264' ? 'openh264-2.6.0' : 'libav-6.10.9'}/manifest.json`);
+    if (!manifestResponse.ok) throw new Error('Verified codec manifest is unavailable');
+    const manifestBytes = await manifestResponse.arrayBuffer();
+    const manifest = JSON.parse(new TextDecoder().decode(manifestBytes));
+    const digest = await crypto.subtle.digest('SHA-256', manifestBytes);
+    const build = { manifestSha256: [...new Uint8Array(digest)].map(value => value.toString(16).padStart(2, '0')).join(''), manifest };
     const inputs = Array.from({ length: scene === 'static' ? 1 : 16 }, (_, index) => makeInput(width, height, scene, index));
     if (codec === 'h264') {
       const { default: factory } = await import(`/screen-codecs/openh264-2.6.0/encoder-${threads === 1 ? 'single' : 'threads'}.mjs`);
@@ -55,7 +62,7 @@ self.onmessage = async ({ data: options }) => {
     }
     let decodeError;
     const decodeStart = new Map();
-    decoder = new VideoDecoder({ output(frame) {
+    if (decodingEnabled) decoder = new VideoDecoder({ output(frame) {
       decoded++;
       decodeTimes.push(performance.now() - decodeStart.get(frame.timestamp));
       decodeStart.delete(frame.timestamp);
@@ -96,32 +103,38 @@ self.onmessage = async ({ data: options }) => {
       if (!configured) {
         decoderCodec = codec === 'h264' ? h264Codec(packet) : 'vp8';
         const config = { codec: decoderCodec, codedWidth: width, codedHeight: height, optimizeForLatency: true };
-        const support = await VideoDecoder.isConfigSupported(config);
-        if (!support.supported) throw new Error(`Decoder unsupported: ${decoderCodec}`);
-        decoder.configure(config);
+        if (decodingEnabled) {
+          const support = await VideoDecoder.isConfigSupported(config);
+          if (!support.supported) throw new Error(`Decoder unsupported: ${decoderCodec}`);
+          decoder.configure(config);
+        }
         configured = true;
       }
       if (decodeError) throw new Error(decodeError);
-      decodeStart.set(timestamp, performance.now());
-      decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp, data: packet }));
+      if (decodingEnabled) {
+        decodeStart.set(timestamp, performance.now());
+        decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp, data: packet }));
+      }
       submitted++;
       // Keep the decoder queue bounded; benchmark is not a live 60fps source.
-      if (decoder.decodeQueueSize >= 8) await new Promise(resolve => decoder.addEventListener('dequeue', resolve, { once: true }));
+      if (decoder?.decodeQueueSize >= 8) await new Promise(resolve => decoder.addEventListener('dequeue', resolve, { once: true }));
       if (index % 30 === 29) {
         self.postMessage({ status: 'running', codec, threads, scene, submitted, decoded, skipped });
         await new Promise(resolve => setTimeout(resolve, 0));
       }
     }
-    await decoder.flush();
+    if (decodingEnabled) await decoder.flush();
     if (decodeError) throw new Error(decodeError);
     const elapsed = performance.now() - start;
     const percentile = (values, fraction) => [...values].sort((a, b) => a - b)[Math.floor((values.length - 1) * fraction)];
     const meanEncode = times.reduce((a, b) => a + b, 0) / times.length;
-    self.postMessage({ status: 'done', codec, scene, preset: options.preset ?? 'screen', width, height, threads, fps, bitrate, inputs: frames, submitted, decoded, skipped,
+    self.postMessage({ status: 'done', codec, scene, preset: options.preset ?? 'screen', width, height, threads, fps, bitrate, build, decodingEnabled, inputs: frames, submitted, decoded, skipped,
       firstKeyframe, recoveryKeyframe: lastKeyframe, decoderCodec, elapsedMs: elapsed, pipelineThroughputFps: submitted * 1000 / elapsed,
       encodeOnlyThroughputFps: 1000 / meanEncode, encodeMs: { mean: meanEncode, p50: percentile(times, .5), p95: percentile(times, .95) },
       copyMs: { p50: percentile(copyTimes, .5), p95: percentile(copyTimes, .95) }, decodeMs: { p50: percentile(decodeTimes, .5), p95: percentile(decodeTimes, .95) },
       meanFrameBytes: bytesPerFrame.reduce((a, b) => a + b, 0) / submitted, maxFrameBytes: Math.max(...bytesPerFrame),
+      encodedBpsAtInputTimebase: bytesPerFrame.reduce((a, b) => a + b, 0) * 8 / (frames / fps),
+      encodedBpsDuringProbe: bytesPerFrame.reduce((a, b) => a + b, 0) * 8 / (elapsed / 1000),
       wasmHeapBytes: module?.HEAPU8.byteLength ?? null, isolated: crossOriginIsolated, userAgent: navigator.userAgent,
       acceptance: 'throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance' });
   } catch (error) {
