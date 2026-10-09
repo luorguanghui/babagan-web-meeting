@@ -77,7 +77,10 @@ function StatsSection({ title, stats, sender = false }: { title: string; stats: 
   const rows: Array<[string, string | undefined]> = [
     [t('stats.codec'), stats.codec],
     [t('stats.resolution'), stats.width && stats.height ? `${stats.width}×${stats.height}` : undefined],
-    [t('stats.fps'), format(stats.framesPerSecond)],
+    [t('stats.captureFps'), sender ? format(stats.sourceFramesPerSecond) : undefined],
+    [t(sender ? 'stats.encodedFps' : 'stats.decodedFps'), format(stats.framesPerSecond)],
+    [t('stats.sentFps'), sender ? format(stats.sentFramesPerSecond) : undefined],
+    [t('stats.receivedFps'), sender ? undefined : format(stats.receivedFramesPerSecond)],
     [sender ? t('stats.actualOutgoing') : t('stats.bitrate'), unit(stats.bitrateMbps, 'Mbps')],
     [sender ? t('stats.encoderTarget') : t('stats.bitrate'), unit(stats.encoderTargetBitrateMbps, 'Mbps')],
     [t('stats.packetLoss'), format(stats.packetsLost)],
@@ -85,6 +88,15 @@ function StatsSection({ title, stats, sender = false }: { title: string; stats: 
     [t('stats.droppedFrames'), format(stats.framesDropped)],
     [t('stats.freezes'), format(stats.freezeCount)],
     [t('stats.encodeTime'), unit(stats.averageEncodeTimeMs, 'ms')],
+    [t('stats.intervalEncodeTime'), unit(stats.averageIntervalEncodeTimeMs, 'ms')],
+    [t('stats.encoderImplementation'), stats.encoderImplementation],
+    [t('stats.powerEfficientEncoder'), stats.powerEfficientEncoder === undefined ? undefined
+      : t(stats.powerEfficientEncoder ? 'stats.yes' : 'stats.no')],
+    [t('stats.decodeTime'), unit(stats.averageDecodeTimeMs, 'ms')],
+    [t('stats.assemblyTime'), unit(stats.averageAssemblyTimeMs, 'ms')],
+    [t('stats.decoderImplementation'), stats.decoderImplementation],
+    [t('stats.powerEfficientDecoder'), stats.powerEfficientDecoder === undefined ? undefined
+      : t(stats.powerEfficientDecoder ? 'stats.yes' : 'stats.no')],
     [t('stats.jitter'), unit(stats.jitterMs, 'ms')],
     [t('stats.jitterBuffer'), unit(stats.averageJitterBufferDelayMs, 'ms')],
     [sender ? t('stats.rtcEstimate') : t('stats.bandwidth'), unit(stats.availableOutgoingBitrateMbps, 'Mbps')],

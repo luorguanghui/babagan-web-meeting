@@ -1,0 +1,12 @@
+{
+  "status": "deployed-and-verified",
+  "baseSha": "3b83d6fe8fba1f43e59eea40176cfddef0e68674",
+  "patchSha256": "641f35a8d47ecb79735c51cbfc5a25aa2c88adae262b3fca4a226405a6907d24",
+  "image": "babagan-meeting-web:receiver-diagnostics-20261008",
+  "publicAsset": "/assets/index-DcELtEa7.js",
+  "checks": [
+    "five healthy services",
+    "public/container asset hashes match",
+    "only web container replaced"
+  ]
+}

@@ -74,6 +74,9 @@ cleanup_on_exit() {
 trap cleanup_on_exit EXIT
 
 cloudflare_credentials_present=0
+skip_cloudflare_smoke=${SKIP_CLOUDFLARE_SMOKE:-0}
+[[ "$skip_cloudflare_smoke" == 0 || "$skip_cloudflare_smoke" == 1 ]] \
+  || { echo 'SKIP_CLOUDFLARE_SMOKE must be 0 or 1.' >&2; exit 64; }
 if grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_TURN_API_TOKEN=.+$' "$env_file"; then
   cloudflare_credentials_present=1
 fi
@@ -96,6 +99,9 @@ if (( cloudflare_credentials_present )); then
   P2P_TURN_PROVIDER="$turn_provider" \
   SMOKE_NODE_IMAGE="$api_image" \
     "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
+  if (( skip_cloudflare_smoke )); then
+    echo 'Cloudflare provider smoke explicitly skipped; no Cloudflare acceptance is claimed.'
+  else
   SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
   SMOKE_MEETING_SLUG="$smoke_slug" \
   SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
@@ -105,6 +111,7 @@ if (( cloudflare_credentials_present )); then
   P2P_TURN_PROVIDER="$turn_provider" \
   SMOKE_NODE_IMAGE="$api_image" \
     "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
+  fi
 fi
 
 cleanup_probe

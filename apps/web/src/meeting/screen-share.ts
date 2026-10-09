@@ -218,7 +218,11 @@ class BrowserScreenShareController implements ScreenShareController {
           frameRate: { ideal: settings.frameRate }
         }).catch(() => undefined)
         : undefined);
-      videoTrack.contentHint = screenShareContentHint;
+      // Set before publication so the encoder starts in the intended content
+      // mode. Detail favors sharp individual frames and can drop motion frames
+      // even while outbound qualityLimitationReason remains "none".
+      videoTrack.contentHint = settings.degradationPreference === 'maintain-framerate'
+        ? 'motion' : screenShareContentHint;
       this.activeStream = stream;
       const onEnded = () => {
         // Only the current start's ended track may stop the share; a

@@ -82,6 +82,12 @@ grep -Fc 'args=https://meet.example.com|wss://rtc.example.com' "$temp_dir/smoke.
 
 : >"$temp_dir/docker.log"
 : >"$temp_dir/smoke.log"
+output="$(SKIP_CLOUDFLARE_SMOKE=1 run_smoke)"
+grep -Fq 'explicitly skipped' <<<"$output"
+[[ "$(grep -c '^args=' "$temp_dir/smoke.log")" == 2 ]] || { echo 'waiver must retain default and explicit coturn smoke' >&2; exit 1; }
+! grep -Fqx 'requested=cloudflare' "$temp_dir/smoke.log" || { echo 'waived Cloudflare check still ran' >&2; exit 1; }
+: >"$temp_dir/docker.log"
+: >"$temp_dir/smoke.log"
 if SMOKE_SHOULD_FAIL=1 run_smoke; then
   echo 'deployment smoke wrapper ignored smoke-test failure' >&2
   exit 1

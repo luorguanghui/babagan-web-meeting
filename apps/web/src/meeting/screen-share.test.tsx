@@ -782,7 +782,7 @@ describe('controlled browser screen sharing', () => {
       degradationPreference: 'maintain-framerate',
       codec: 'h264'
     });
-    expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe('motion');
     expect(stream.getAudioTracks()[0]?.contentHint).toBe('music');
   });
 
@@ -799,6 +799,7 @@ describe('controlled browser screen sharing', () => {
 
     await controller.start('h264', 8_000_000, 'flow');
 
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
       video: {
         frameRate: { ideal: 30 }
@@ -846,6 +847,7 @@ describe('controlled browser screen sharing', () => {
 
     await controller.start('h264', 8_000_000);
 
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe('motion');
     expect(getDisplayMedia).toHaveBeenCalledWith(expect.objectContaining({
       video: {
         frameRate: { ideal: 30 }
@@ -1361,6 +1363,36 @@ describe('screen stage', () => {
 
     expect(screen.getByText('TURN 中继')).toBeVisible();
   });
+
+  it.each([
+    ['en', 'Encoded frame rate', 'Sent frame rate (latest interval)', 'Decoded frame rate',
+      'Complete frames received per second (latest interval)', 'Average decode time (latest interval)', 'No'],
+    ['zh-CN', '编码帧率', '实际发送帧率（最近采样）', '解码帧率',
+      '完整帧接收速率（最近采样）', '平均解码耗时（最近采样）', '否']
+  ] as const)('distinguishes send, receive and decode rates in %s diagnostics',
+    (locale, encoded, sent, decoded, received, decodeTime, no) => {
+      render(<LanguageProvider initialLocale={locale}>
+        <WebRtcStatsPanel requestedCodec="h264" mode="p2p" embedded snapshot={{
+          sampledAt: 2_000, counters: {},
+          sender: { framesPerSecond: 60, sentFramesPerSecond: 60, sourceFramesPerSecond: 60,
+            averageIntervalEncodeTimeMs: 3.5, encoderImplementation: 'ExternalEncoder' },
+          receiver: { framesPerSecond: 17, receivedFramesPerSecond: 60,
+            averageDecodeTimeMs: 50, decoderImplementation: 'FFmpeg', powerEfficientDecoder: false }
+        }} />
+      </LanguageProvider>);
+      const row = (label: string) => screen.getByText(label).closest('div')!;
+      expect(within(row(encoded)).getByText('60')).toBeVisible();
+      expect(within(row(sent)).getByText('60')).toBeVisible();
+      expect(within(row(locale === 'en' ? 'Actual capture frame rate' : '实际采集帧率')).getByText('60')).toBeVisible();
+      expect(screen.getByText('3.5 ms')).toBeVisible();
+      expect(screen.getByText('ExternalEncoder')).toBeVisible();
+      expect(within(row(decoded)).getByText('17')).toBeVisible();
+      expect(within(row(received)).getByText('60')).toBeVisible();
+      expect(within(row(decodeTime)).getByText('50 ms')).toBeVisible();
+      expect(screen.getByText('FFmpeg')).toBeVisible();
+      expect(screen.getByText(no)).toBeVisible();
+    }
+  );
 
   it('shows the actual Cloudflare TURN provider in WebRTC diagnostics', () => {
     const StatsPanelWithProvider = WebRtcStatsPanel as ComponentType<{

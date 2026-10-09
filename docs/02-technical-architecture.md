@@ -4,7 +4,7 @@
 
 ```mermaid
 flowchart LR
-    U[Windows Chrome / Edge] -->|HTTPS/WSS| CF[Cloudflare 橙云\nmeet.babagan.cloud]
+    U[Windows Chrome / Edge] -->|HTTPS/WSS| CF[DNS only\nmeet.babagan.cloud]
     CF -->|HTTPS/WSS| C[Caddy]
     C --> W[React 静态站点]
     C --> A[Fastify API]
@@ -25,7 +25,7 @@ flowchart LR
 **媒体拓扑（2026-08-11 变更，详见 `07-p2p-screen-share-design.md`）**：
 
 - **麦克风音频**：全部经 LiveKit SFU 转发（5 人全部音频经云端仅约 1 Mbps，保持现状）。
-- **屏幕共享（视频 + 音频）**：优先走浏览器间 **P2P 直连**（共享者 → 观看者，1:N 星型），云端只承担 SDP/ICE 信令（每连接数 KB）；不能直连时使用 coturn/Cloudflare TURN relay。初始协商失败或已建立直连失效时可自动回退 LiveKit；已建立 TURN 不自动转 SFU。
+- **屏幕共享（视频 + 音频）**：优先走浏览器间 **P2P 直连**（共享者 → 观看者，1:N 星型），云端只承担 SDP/ICE 信令（每连接数 KB）；不能直连时使用 coturn/Cloudflare TURN relay。协商或媒体失败时保留路径偏好并重试；LiveKit 屏幕仅在观看者明确选择 SFU 时发布。
 
 ## 2. 组件职责
 
@@ -60,7 +60,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 
 ### 2.4 LiveKit
 
-- SFU 转发 Opus 麦克风音频；共享开始时先发布屏幕安全网并保持到共享结束，现代观看者可在 P2P 首帧后取消自己的屏幕订阅。
+- SFU 转发 Opus 麦克风音频；屏幕仅在观看者明确选择 SFU 时按需发布，最后一名 SFU 观看者离开该路径后取消屏幕发布。
 - 管理房间、参与者、订阅、连接质量和重连。
 - 优先使用直接 UDP；提供 TURN/UDP 443 和 RTC/TCP 7881 回退，服务自身媒体（语音与回退屏幕）。
 - 不启用 Egress、Ingress、录制、转码、Agent 或 SIP 服务。
@@ -89,7 +89,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 
 | 名称/端口 | 协议 | 路径 | 用途 |
 |---|---|---|---|
-| `meet.babagan.cloud:443` | HTTPS/WSS | Cloudflare → Caddy | 网页、API 与 P2P 信令（`/api/*` 反代覆盖 WSS 升级） |
+| `meet.babagan.cloud:443` | HTTPS/WSS | 客户端直连 Caddy（DNS only） | 网页、API 与 P2P 信令（`/api/*` 反代覆盖 WSS 升级） |
 | `rtc.babagan.cloud:443` | HTTPS/WSS | 客户端 → Caddy → LiveKit | LiveKit 信令 |
 | `turn.babagan.cloud:443` | TURN/UDP | 客户端 → LiveKit | LiveKit 内置 TURN，服务语音与回退屏幕的媒体路径 |
 | `turn.babagan.cloud:3478` | TURN/UDP+TCP | 客户端 → coturn | P2P 屏幕共享的 TURN 中继（relay 候选） |
@@ -99,7 +99,7 @@ Web 不包含业务密钥，不自行判断主持人权限，不把会议密码�
 | 公网 IP `7881` | WebRTC TCP | 客户端 → LiveKit | UDP 不可用时回退 |
 | 公网 IP `80` | HTTP | ACME/Caddy | 证书验证与 HTTPS 跳转 |
 
-P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS` 与当前 TURN provider 的短期凭据。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经当前 TURN relay 中继（仍是 P2P 通道）。初始协商失败仍可使用常驻 LiveKit 安全网；已确认 TURN relay 后的质量、RTP 停滞或 ICE 状态变化不再自动切 SFU，只保留手动选择 SFU/重试连接。页面会显示实际使用的 TURN provider。
+P2P 屏幕共享的信令复用 `meet` 的 WSS 路径；ICE 使用 `P2P_STUN_URLS` 与当前 TURN provider 的短期凭据。成功直连（host/srflx）的媒体在共享者与观看者之间流动；无法直连时优先经当前 TURN relay 中继（仍是 P2P 通道）。初始协商失败时保留路径偏好并重试；观看者可明确选择按需 LiveKit 屏幕发布；已确认 TURN relay 后的质量、RTP 停滞或 ICE 状态变化不再自动切 SFU，只保留手动选择 SFU/重试连接。页面会显示实际使用的 TURN provider。
 
 Caddy 不启用占用 UDP 443 的 HTTP/3 监听，避免与 TURN/UDP 443 冲突。服务器内部的 API、SQLite 和 LiveKit 7880 只在 Docker 网络或回环地址开放。
 
@@ -124,7 +124,7 @@ Token 允许所有成员发布 `microphone`，禁止 `camera` 和数据轨道。
 1. 主持人通过 API 授权目标成员（共享锁，语义不变）。
 2. API 更新 LiveKit 参与者权限，只增加 `screen_share` 和 `screen_share_audio` 来源。
 3. 共享者客户端调用浏览器屏幕捕获接口，要求用户主动选择来源；屏幕音频轨道必须保留（P2P 音画同步硬约束）。
-4. 共享者先发布 LiveKit 屏幕安全网，再通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。共享者选择了显式 provider 时，`offer` 会携带实际 `turnProvider` metadata。
+4. 共享者获取屏幕流后直接通过 P2P 信令向每名 P2P 在线观看者发起协商，并在同一条 `RTCPeerConnection` 发送屏幕视频与音频。共享者选择了显式 provider 时，`offer` 会携带实际 `turnProvider` metadata。
 5. 观看者验证候选对、RTP 增长和视频解码，必要时按 `offer.turnProvider` 重新获取 ICE 配置。协商阶段 8 秒未收到媒体，或已建立的 host/srflx 直连出现 ICE 失败、5 秒无 RTP 进展时，可恢复 LiveKit 订阅；已建立 TURN relay 不执行该自动交接。
 6. 共享停止、断线或撤销时，关闭全部 P2P 连接与 LiveKit 屏幕轨道，API/LiveKit 释放共享锁。
 7. 当至少一名观看者实际选中 Cloudflare relay 时，共享者创建一组 relay-only probe；连续窗口结果稳定后发布容量快照。生产构造当前启用 control mode：稳定 probe 与逐观看者 sender pressure 共同驱动 cap/采样，任一证据不足时保持原参数。
@@ -152,7 +152,7 @@ stateDiagram-v2
 
 **2026-08-11 起（P2P 混合模式）**：
 
-- **现代观看者成功切到 P2P 后不再从云端接收屏幕**：共享者上行承担直连流量；LiveKit 屏幕发布仍常驻，但只有旧客户端、协商中或回退观看者保持订阅。实际节省取决于直连成功率和观看者网络，不能用单台设备的 100 Mbps 测量外推全部共享者。
+- **现代观看者成功切到 P2P 后不再从云端接收屏幕**：共享者上行承担直连流量；LiveKit 屏幕仅在至少一名观看者明确选择 SFU 时发布。实际节省取决于直连成功率和观看者网络，不能用单台设备的 100 Mbps 测量外推全部共享者。
 - P2P 信令为控制面消息（SDP/ICE），每连接数 KB，对 API 进程可忽略。
 - 云端带宽告警阈值相应下调（见 `04` 文档 §9 变更）。
 - Cloudflare relay probe 是共享者浏览器内的短时、独立 DataChannel 测量，窗口上限 50 Mbps、500 ms，并限制总载荷；它用于估计客户端到 Cloudflare relay 的保守路径容量，不代表媒体 PeerConnection 的同一 allocation，也不绕过浏览器自身拥塞控制。
@@ -165,13 +165,13 @@ stateDiagram-v2
 | 决策 | 选择 | 原因 |
 |---|---|---|
 | 媒体拓扑（音频） | SFU | 5 人音频经云端仅约 1 Mbps，保留 LiveKit 成熟能力 |
-| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + coturn/Cloudflare TURN 中继 + 常驻 SFU 安全网** | 直连（host/srflx）成功者绕开云端带宽；relay 候选经所选 provider 中继；旧客户端与最终失败者始终可使用 LiveKit。共享者实际可用上行决定可行档位 |
+| 媒体拓扑（屏幕，2026-08-11 变更） | **P2P 直连 + coturn/Cloudflare TURN 中继 + 按需 SFU** | 直连（host/srflx）成功者绕开云端带宽；relay 候选经所选 provider 中继；观看者可明确选择 LiveKit。共享者实际可用上行决定可行档位 |
 | 媒体平台 | LiveKit | 屏幕音频、权限、重连与兼容兜底成熟；P2P STUN 独立由 API 配置 |
 | 数据库 | SQLite | 单实例、低写入量，无需额外常驻服务 |
 | 部署 | Docker Compose | 可重复部署、隔离和快速回滚 |
 | TURN | LiveKit 内置 UDP 443 + 独立 coturn 3478/5349 + 可选 Cloudflare Realtime TURN | LiveKit 的 TURN/UDP 443 服务语音与回退屏幕；coturn 为 P2P 屏幕共享提供默认 TURN 中继；Cloudflare 由服务端按需生成短期凭据，供共享级别显式切换 |
 | Cloudflare TURN 容量 | 浏览器 relay-to-relay probe | 不把普通 HTTPS 上传误称为 TURN 容量；独立、可停止的 DataChannel 窗口提供保守路径测量，并通过双重证据门槛控制逐观看者 sender |
-| Cloudflare | Web 橙云、媒体灰云 | Web 获得 TLS/WAF，UDP 保持直连 |
+| Cloudflare | 全部 DNS only | HTTPS/WSS 直连 Caddy，UDP 直连媒体端点 |
 | 视频策略 | 无服务端转码 | 保护 2 核 CPU，使用浏览器编码和自适应发送 |
 | P2P 信令 | Fastify WebSocket（`/api/*` 反代） | 信令不新增域名；参与者 Cookie + 同源 Origin 鉴权；服务器不接触媒体内容 |
 

@@ -12,11 +12,12 @@
 | 项目 | 当前约定 |
 |---|---|
 | 系统 | Debian 12 或 Debian 13，推荐 2 核、2 GiB、40 GiB |
-| 网页/API | https://meet.babagan.cloud，Cloudflare Proxied |
+| 网页/API | https://meet.babagan.cloud，DNS only，直连 Caddy |
 | LiveKit 信令 | wss://rtc.babagan.cloud，DNS only |
 | TURN | turn.babagan.cloud，DNS only |
-| 应用目录示例 | /opt/babagan-meeting |
-| 发布入口 | scripts/deploy.sh |
+| 应用目录示例 | /opt/babagan-web-meeting |
+| 已有安装更新 | scripts/update.sh（独立候选、沿用现有配置） |
+| 首次／完整部署 | scripts/deploy.sh（受保护 release 事务） |
 | 数据 | Docker volume babagan-meeting_api-data 中的 SQLite |
 
 Compose 服务：caddy（80/443、ACME、反代）、api（内部 3000）、livekit（7880、7881、UDP 443、50000–60000）、coturn（3478、5349、49160–49200）和 web（内部 8080）。
@@ -26,7 +27,7 @@ Compose 服务：caddy（80/443、ACME、反代）、api（内部 3000）、live
 ## 2. 共同准备
 
 ~~~bash
-export APP_DIR=/opt/babagan-meeting
+export APP_DIR=/opt/babagan-web-meeting
 export PUBLIC_HOST=meet.babagan.cloud
 export RTC_HOST=rtc.babagan.cloud
 export TURN_HOST=turn.babagan.cloud
@@ -74,9 +75,9 @@ sudo ufw --force enable
 sudo ufw status verbose
 ~~~
 
-Cloudflare 必须是：meet Proxied；rtc DNS only；turn DNS only；SSL/TLS 使用 Full (strict)。rtc 和 turn 必须可以直连源站。如果选择公开 SSH，部署命令必须显式加入 --allow-public-ssh，并使用脚本接受的 public SSH 证据字符串。
+Cloudflare DNS 必须是：meet、rtc、turn 均为 DNS only，三者解析到目标源站，浏览器经 Caddy 的有效证书直连 HTTPS/WSS。如果选择公开 SSH，部署命令必须显式加入 --allow-public-ssh，并使用脚本接受的 public SSH 证据字符串。
 
-### 2.2 仓库同步
+### 2.2 仓库同步（完整部署）
 
 远端可达时：
 
@@ -248,7 +249,7 @@ Alibaba inbound: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000
 Host firewall: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH restricted; default deny inbound
 EOF
 sudo tee /root/babagan-protected/cloudflare.txt >/dev/null <<'EOF'
-Cloudflare: meet proxied; rtc DNS-only; turn DNS-only; SSL/TLS Full (strict)
+Cloudflare: meet DNS-only; rtc DNS-only; turn DNS-only
 EOF
 sudo chmod 600 /root/babagan-protected/network.txt /root/babagan-protected/cloudflare.txt
 ~~~
@@ -256,7 +257,7 @@ sudo chmod 600 /root/babagan-protected/network.txt /root/babagan-protected/cloud
 deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token，并在检测到 Cloudflare 长期凭据成对存在时额外执行显式 `turnProvider=coturn` 与 `turnProvider=cloudflare` 两轮 ICE smoke。准备一个 24 小时 Token：
 
 ~~~bash
-sudo bash -c 'umask 077; docker run --rm --network none --env-file /opt/babagan-meeting/infra/.env.production --entrypoint node babagan-meeting-api:bootstrap --input-type=module -e '\''import {AccessToken} from "livekit-server-sdk"; const t=new AccessToken(process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET,{identity:"deployment-rollback",ttl=86400}); t.addGrant({room:"deployment-smoke",roomJoin:true}); process.stdout.write(await t.toJwt());'\'' > /root/babagan-secrets/smoke-token; chmod 600 /root/babagan-secrets/smoke-token'
+sudo bash -c 'umask 077; docker run --rm --network none --env-file /opt/babagan-web-meeting/infra/.env.production --entrypoint node babagan-meeting-api:bootstrap --input-type=module -e '\''import {AccessToken} from "livekit-server-sdk"; const t=new AccessToken(process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET,{identity:"deployment-rollback",ttl:86400}); t.addGrant({room:"deployment-smoke",roomJoin:true}); process.stdout.write(await t.toJwt());'\'' > /root/babagan-secrets/smoke-token; chmod 600 /root/babagan-secrets/smoke-token'
 ~~~
 
 确认空白条件：
@@ -284,7 +285,51 @@ sudo bash scripts/deploy.sh \
 
 首次失败时只能使用 rollback runbook 的 --recover-pending-deploy；成功恢复结果是“没有发布”，不会猜测 predecessor。
 
-## 4. 已有服务器更新流程
+## 4. 已有服务器一键更新
+
+已有安装采用 `scripts/update.sh`。它从当前安装的 Git `origin` 获取独立候选源码，默认分支 `main`；不会对 `/opt/babagan-web-meeting` 主工作树执行 reset、checkout 或 clean，因此兼容此前的热修复及多层 Compose override。首次安装或需要重建媒体配置时仍使用 `scripts/deploy.sh`，不能混用两套发布记录。
+
+### 4.1 旧服务器首次获取更新器
+
+旧安装还没有脚本时，先下载一个 Git 快照到独立目录。下列命令不会覆盖原安装源码：
+
+~~~bash
+sudo bash -c '
+set -Eeuo pipefail
+install -d -m 700 /opt/babagan-web-meeting/var/updater
+candidate=$(mktemp -d /opt/babagan-web-meeting/var/updater/main-XXXXXX)
+git clone --depth 1 --branch main https://github.com/luorguanghui/babagan-web-meeting.git "$candidate/source"
+bash "$candidate/source/scripts/update.sh" --app-dir /opt/babagan-web-meeting --commit "$(git -C "$candidate/source" rev-parse HEAD)"
+'
+~~~
+
+此快照的更新器可再次调用。记下终端打印的 `candidate` 目录或用 `find var/updater -name update.sh` 定位；原安装更新过脚本后可直接使用根目录 `scripts/update.sh`。
+
+### 4.2 常规更新和选项
+
+~~~bash
+sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
+# 只更新静态网页，不重启 API 或媒体服务：
+sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --web-only
+# 固定一个完整、已审查的 Git 提交：
+sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --commit '<40 位小写 SHA>'
+~~~
+
+需要 Python 3、Git、Docker Compose、SQLite、curl、util-linux 的 flock，以及 mode-600 的 `infra/.env.production`。两种部署入口共享 `/run/lock/babagan-meeting-update.lock` 非阻塞事务锁，避免候选构建期间并发迁移或替换容器。更新前结束处于 created/active/grace 的会议。默认更新 API 和 web；Caddy、LiveKit、coturn 保留当前容器和配置。候选源码从 `origin` 获取，主工作树、生产 env 与历史发布均保留。构建期间若生产 env 或当前容器发生变化，候选保留但不会激活。
+
+更新过程：验证现有服务及配置 → 独立 Git 快照 → SQLite 在线备份 → 固定版本 Dockerfile 构建 → 再检查会议及当前容器 → API 更新时执行迁移 → 仅替换目标应用容器 → 等待五服务健康 → 公网 JavaScript 与容器文件 SHA-256 比对 → 新签发 Token 的鉴权 ICE/RTC 冒烟 → 写发布记录。
+
+默认检测已配置的 Cloudflare 凭据并验证 Cloudflare。只有操作人明确接受该提供方暂不可用时才追加 `--skip-cloudflare-smoke`；此选项保留默认及显式 coturn 检查，发布记录会标记未验收 Cloudflare，不修改提供方或秘密配置。
+
+### 4.3 发布记录与失败恢复
+
+更新记录位于 `var/releases/update-<UTC>-<PID>/release.json`，最新记录为 `var/releases/current-update.json`。部署前的实际镜像 ID、完整 Compose 配置链、备份及 SHA-256、构建／迁移／激活／回滚／smoke 日志和 `rollback.sh` 均保存在该发布目录，权限为 600/700。没有成功日志时不能把候选镜像当作已验收。
+
+激活或验证失败时仅恢复之前的应用镜像；不自动替换数据库、不删除镜像和备份。`var/releases/update-pending.json` 保留本次候选与备份位置，阻止再次更新。先确认旧应用健康，检查 `failure.json`、迁移及备份，再依据该记录决定恢复数据库或向前修复；处理完成后把 pending 归档到原发布目录。不要直接删除 pending 以绕过恢复。
+
+该流程的回滚使用记录目录里的 `rollback.sh`，它引用部署前真实镜像的不可变 ID。`scripts/rollback.sh` 只适用于下面完整部署流程生成的 `current-release.env`，不能用旧 `.env` 记录回滚新的一键更新。
+
+## 4A. 已有服务器完整部署流程
 
 ### 4.1 本地测试和 SHA
 
@@ -336,7 +381,7 @@ awk '/MemAvailable:/ {print $2 " KiB available"}' /proc/meminfo
 df -Pk "$APP_DIR"
 ~~~
 
-若 pending-release.env 存在，停止并诊断，不重复运行 deploy.sh。保留 pending、容器日志、当前服务状态和备份，再决定归档后向前修复还是 guarded rollback。
+若 pending-release.env 或 update-pending.json 存在，停止并诊断，不重复运行 deploy.sh。完整部署还要求实际运行镜像与受保护基线记录一致；旧记录与热修复现状不一致时使用 §4 的增量更新入口。保留 pending、容器日志、当前服务状态和备份，再决定归档后向前修复还是 guarded rollback。
 
 ### 4.3 执行更新
 
@@ -448,7 +493,7 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 
 从旧源站迁移到新主机时，只改三条业务记录的目标 IP，代理状态保持不变：
 
-- `meet.babagan.cloud`：改到新公网 IP，保持 Proxied。
+- `meet.babagan.cloud`：改到新公网 IP，保持 DNS only。
 - `rtc.babagan.cloud`：改到新公网 IP，保持 DNS only。
 - `turn.babagan.cloud`：改到新公网 IP，保持 DNS only。
 

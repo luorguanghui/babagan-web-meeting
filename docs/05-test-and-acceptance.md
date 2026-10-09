@@ -161,3 +161,15 @@
 - Cloudflare control 已按 2026-09-05 的明确操作决定写入生产构造，但尚未部署；部署前仍需完成真实 Edge/Chrome 双端验收。若 probe 可信度、资源清理或 FPS/分辨率底线不满足，立即把构造切回 `observe`。
 
 测试报告记录构建版本、浏览器版本、网络条件、服务器指标、失败证据和最终批准人，不记录会议媒体。
+
+## 2026-10-09 更新脚本与高动态回归
+
+标准／动态共享使用运动内容提示，清晰优先保留细节提示；本机合成画面真实 H.264/P2P 对照和局限见 [调查记录](acceptance/motion-content-hint-investigation-2026-10-09.md)。新更新入口验证 Compose 配置路径、真实旧镜像 ID、活动会议保护、非目标服务不变、公网资源校验与失败回滚。发布前追加：
+
+~~~bash
+python3 scripts/update-release.test.py
+node --test scripts/verify-websocket.test.mjs
+bash scripts/dns-attestation.test.sh
+~~~
+
+首次/完整部署的旧 DNS 橙云约束已改为三域名 DNS only；RTC probe 要等待第一条信令消息。Cloudflare smoke 默认保留；明确豁免必须在日志及发布记录中标注。

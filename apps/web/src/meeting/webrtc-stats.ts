@@ -1,10 +1,36 @@
 type StatsRecord = Record<string, unknown> & { id?: string; type?: string };
 
+interface VideoFrameCounters {
+  id?: string;
+  ssrc?: number;
+  timestamp: number;
+  framesSent?: number;
+  framesEncoded?: number;
+  totalEncodeTime?: number;
+  framesReceived?: number;
+  framesDecoded?: number;
+  totalDecodeTime?: number;
+  totalAssemblyTime?: number;
+  framesAssembledFromMultiplePackets?: number;
+}
+
 export interface WebRtcMediaStats {
   codec?: string;
   width?: number;
   height?: number;
   framesPerSecond?: number;
+  /** Actual media-source output, distinct from configured capture constraints. */
+  sourceFramesPerSecond?: number;
+  averageIntervalEncodeTimeMs?: number;
+  encoderImplementation?: string;
+  powerEfficientEncoder?: boolean;
+  sentFramesPerSecond?: number;
+  receivedFramesPerSecond?: number;
+  /** Averages over the latest stats interval, not the entire session. */
+  averageDecodeTimeMs?: number;
+  averageAssemblyTimeMs?: number;
+  decoderImplementation?: string;
+  powerEfficientDecoder?: boolean;
   bitrateMbps?: number;
   framesEncoded?: number;
   framesSent?: number;
@@ -38,6 +64,8 @@ export interface WebRtcStatsSnapshot {
   counters: {
     outbound?: { bytes: number; timestamp: number };
     inbound?: { bytes: number; timestamp: number };
+    outboundFrames?: VideoFrameCounters;
+    inboundFrames?: VideoFrameCounters;
   };
 }
 
@@ -79,11 +107,23 @@ export function summarizeWebRtcStats(
     const bytes = numberValue(outbound.bytesSent);
     const timestamp = numberValue(outbound.timestamp) ?? sampledAt;
     if (bytes !== undefined) counters.outbound = { bytes, timestamp };
+    const frames = frameCounters(outbound, timestamp);
+    counters.outboundFrames = frames;
+    const sourceId = stringValue(outbound.mediaSourceId);
+    const source = sourceId ? byId.get(sourceId)
+      : entries.find((value) => value.type === 'media-source' && mediaKind(value) === 'video');
     sender = compact({
       codec: codecName(byId.get(stringValue(outbound.codecId) ?? '')),
       width: numberValue(outbound.frameWidth),
       height: numberValue(outbound.frameHeight),
       framesPerSecond: numberValue(outbound.framesPerSecond),
+      sourceFramesPerSecond: numberValue(source?.framesPerSecond),
+      averageIntervalEncodeTimeMs: intervalMilliseconds(frames, previous?.counters.outboundFrames,
+        'totalEncodeTime', 'framesEncoded'),
+      encoderImplementation: stringValue(outbound.encoderImplementation),
+      powerEfficientEncoder: typeof outbound.powerEfficientEncoder === 'boolean'
+        ? outbound.powerEfficientEncoder : undefined,
+      sentFramesPerSecond: frameRate(frames, previous?.counters.outboundFrames, 'framesSent'),
       bitrateMbps: bitrate(bytes, timestamp, previous?.counters.outbound),
       framesEncoded: numberValue(outbound.framesEncoded),
       framesSent: numberValue(outbound.framesSent),
@@ -111,11 +151,21 @@ export function summarizeWebRtcStats(
     const bytes = numberValue(inbound.bytesReceived);
     const timestamp = numberValue(inbound.timestamp) ?? sampledAt;
     if (bytes !== undefined) counters.inbound = { bytes, timestamp };
+    const frames = frameCounters(inbound, timestamp);
+    counters.inboundFrames = frames;
     receiver = compact({
       codec: codecName(byId.get(stringValue(inbound.codecId) ?? '')),
       width: numberValue(inbound.frameWidth),
       height: numberValue(inbound.frameHeight),
       framesPerSecond: numberValue(inbound.framesPerSecond),
+      receivedFramesPerSecond: frameRate(frames, previous?.counters.inboundFrames, 'framesReceived'),
+      averageDecodeTimeMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
+        'totalDecodeTime', 'framesDecoded'),
+      averageAssemblyTimeMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
+        'totalAssemblyTime', 'framesAssembledFromMultiplePackets'),
+      decoderImplementation: stringValue(inbound.decoderImplementation),
+      powerEfficientDecoder: typeof inbound.powerEfficientDecoder === 'boolean'
+        ? inbound.powerEfficientDecoder : undefined,
       bitrateMbps: bitrate(bytes, timestamp, previous?.counters.inbound),
       framesDecoded: numberValue(inbound.framesDecoded),
       framesDropped: numberValue(inbound.framesDropped),
@@ -137,6 +187,46 @@ export function summarizeWebRtcStats(
 
 function mediaKind(value: StatsRecord): unknown {
   return value.kind ?? value.mediaType;
+}
+
+function frameCounters(value: StatsRecord, timestamp: number): VideoFrameCounters {
+  return {
+    id: stringValue(value.id), ssrc: numberValue(value.ssrc), timestamp,
+    framesSent: numberValue(value.framesSent),
+    framesEncoded: numberValue(value.framesEncoded),
+    totalEncodeTime: numberValue(value.totalEncodeTime),
+    framesReceived: numberValue(value.framesReceived),
+    framesDecoded: numberValue(value.framesDecoded),
+    totalDecodeTime: numberValue(value.totalDecodeTime),
+    totalAssemblyTime: numberValue(value.totalAssemblyTime),
+    framesAssembledFromMultiplePackets: numberValue(value.framesAssembledFromMultiplePackets)
+  };
+}
+
+type FrameCounterKey = Exclude<keyof VideoFrameCounters, 'id' | 'ssrc' | 'timestamp'>;
+
+function frameDelta(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
+  key: FrameCounterKey): number | undefined {
+  // A replacement stream must establish its own baseline, even if a new PC
+  // reuses the same stats id and its counters happen to be larger.
+  if (!previous || current.timestamp <= previous.timestamp
+    || current.id !== previous.id || current.ssrc !== previous.ssrc) return undefined;
+  const value = current[key];
+  const before = previous[key];
+  return value === undefined || before === undefined || value < before ? undefined : value - before;
+}
+
+function frameRate(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
+  key: 'framesSent' | 'framesReceived'): number | undefined {
+  const count = frameDelta(current, previous, key);
+  return count === undefined || !previous ? undefined
+    : round(count * 1_000 / (current.timestamp - previous.timestamp), 1);
+}
+
+function intervalMilliseconds(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
+  total: 'totalEncodeTime' | 'totalDecodeTime' | 'totalAssemblyTime',
+  count: 'framesEncoded' | 'framesDecoded' | 'framesAssembledFromMultiplePackets'): number | undefined {
+  return averageMilliseconds(frameDelta(current, previous, total), frameDelta(current, previous, count));
 }
 
 function codecName(value?: StatsRecord): string | undefined {

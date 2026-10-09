@@ -1,0 +1,24 @@
+{
+  "status": "deployed-and-verified",
+  "base": "3b83d6fe8fba1f43e59eea40176cfddef0e68674",
+  "patchSha256": "a7353986bc22c41766ce8f7790394820e6d6966e6679ca8d28feca1e7c66aecd",
+  "validation": [
+    "593 web tests passed",
+    "123 final focused tests passed",
+    "web production build passed",
+    "targeted eslint passed",
+    "real Edge H264/P2P motion replay: 1080p60 profile ~49fps; 1080p30 ~29fps"
+  ],
+  "deployment": "web only; preserve existing Compose chain; online SQLite backup; abort activation if meeting open; verify public/container bundle hash; rollback on activation failure",
+  "serverReleaseDirectory": "/opt/babagan-web-meeting/var/releases/motion-content-hint-20261009",
+  "imageId": "sha256:82cd02601498b65b7337aec007ef677299f4f38b97797f205afc55ffa20aab7f",
+  "publicAsset": "/assets/index-CRjsRjMv.js",
+  "publicAssetSha256": "f2c3a0c757a9ffcb62127ba88b42811be112bbfd27634b442babd7dbc537b2d6",
+  "serverVerification": [
+    "DEPLOY_SUCCEEDED=motion-content-hint-20261009",
+    "five healthy services",
+    "api/caddy/livekit/coturn container IDs and image IDs unchanged",
+    "public bundle diagnostic fields present",
+    "public/container bundle SHA-256 match"
+  ]
+}

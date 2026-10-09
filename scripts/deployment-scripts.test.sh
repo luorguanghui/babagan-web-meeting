@@ -23,6 +23,8 @@ done
 # Failed candidate deployments retain this protected record before any pull/build
 # or migration, and only archive it after smoke success.
 need "$deploy" 'pending-release.env'
+need "$deploy" '/run/lock/babagan-meeting-update.lock'
+need "$deploy" 'flock -n "$update_lock_fd"'
 need "$deploy" 'compose pull --policy missing caddy livekit coturn'
 need "$deploy" 'coturn_image='
 need "$deploy" 'for service in caddy api livekit web coturn'
@@ -87,6 +89,15 @@ stop_line="$(grep -nF 'compose stop api' "$rollback" | head -n1 | cut -d: -f1)"
 # binary. This proves a missing first-deploy baseline is rejected, while a
 # complete baseline and a complete pending-recovery record are accepted.
 temp_dir="$(mktemp -d)"; trap 'rm -rf "$temp_dir"' EXIT
+export BABAGAN_UPDATE_LOCK_FILE="$temp_dir/shared-update.lock"
+# Git Bash has no util-linux flock; real exclusion is covered on Linux by
+# update-release.test.py. Only mock coordination for these parser tests.
+if ! command -v flock >/dev/null; then
+  mkdir -p "$temp_dir/lock-bin"
+  printf '#!/bin/bash\nexit 0\n' >"$temp_dir/lock-bin/flock"
+  chmod 700 "$temp_dir/lock-bin/flock"
+  export PATH="$temp_dir/lock-bin:$PATH"
+fi
 mkdir -p "$temp_dir/bin"
 # Execute deploy.sh itself from an otherwise empty app root. Its baseline gate
 # must stop before Docker/host preflights and before it creates var/, backups,
