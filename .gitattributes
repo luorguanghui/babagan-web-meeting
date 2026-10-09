@@ -1,2 +1,2 @@
 # Preserve exact measured manifest bytes, including the recorded digest.
-docs/benchmarks/*-build.json -text
+docs/benchmarks/*-build.json -text whitespace=cr-at-eol
