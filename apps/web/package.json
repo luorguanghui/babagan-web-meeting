@@ -9,6 +9,7 @@
     "typecheck": "tsc -b --noEmit"
   },
   "dependencies": {
+    "@libav.js/variant-vp8-opus": "6.10.9",
     "@meeting/contracts": "workspace:*",
     "@sinclair/typebox": "^0.34.41",
     "livekit-client": "^2.21.0",

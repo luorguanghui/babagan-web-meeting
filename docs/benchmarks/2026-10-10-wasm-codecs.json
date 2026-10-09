@@ -1,0 +1,242 @@
+[
+  {
+    "status": "done",
+    "codec": "h264",
+    "scene": "static",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "avc1.42c02a",
+    "elapsedMs": 1178.8250000029802,
+    "pipelineThroughputFps": 152.69442029100583,
+    "encodeOnlyThroughputFps": 190.35532994443906,
+    "encodeMs": {
+      "mean": 5.253333333465788,
+      "p50": 4.125,
+      "p95": 8.754999995231628
+    },
+    "copyMs": {
+      "p50": 0.9800000041723251,
+      "p95": 1.4549999982118607
+    },
+    "decodeMs": {
+      "p50": 56.70500000566244,
+      "p95": 82.32499999552965
+    },
+    "meanFrameBytes": 18160.505555555555,
+    "maxFrameBytes": 852944,
+    "wasmHeapBytes": 67108864,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "h264",
+    "scene": "texture",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "avc1.42c02a",
+    "elapsedMs": 4495.865000002086,
+    "pipelineThroughputFps": 40.03678936087193,
+    "encodeOnlyThroughputFps": 42.15515908876292,
+    "encodeMs": {
+      "mean": 23.72188888895843,
+      "p50": 23.114999994635582,
+      "p95": 29.28999999910593
+    },
+    "copyMs": {
+      "p50": 0.9650000035762787,
+      "p95": 1.3350000008940697
+    },
+    "decodeMs": {
+      "p50": 226.10499999672174,
+      "p95": 275.72999999672174
+    },
+    "meanFrameBytes": 260213.95555555556,
+    "maxFrameBytes": 852944,
+    "wasmHeapBytes": 67108864,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "h264",
+    "scene": "high-motion",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "avc1.42c02a",
+    "elapsedMs": 4603.454999998212,
+    "pipelineThroughputFps": 39.101066481603475,
+    "encodeOnlyThroughputFps": 40.83535524995199,
+    "encodeMs": {
+      "mean": 24.488583333707517,
+      "p50": 23.980000004172325,
+      "p95": 28.524999998509884
+    },
+    "copyMs": {
+      "p50": 0.7250000014901161,
+      "p95": 1.0799999982118607
+    },
+    "decodeMs": {
+      "p50": 234.64999999850988,
+      "p95": 296.4399999976158
+    },
+    "meanFrameBytes": 300090.14444444445,
+    "maxFrameBytes": 854635,
+    "wasmHeapBytes": 67108864,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "vp8",
+    "scene": "static",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "vp8",
+    "elapsedMs": 2762.664999999106,
+    "pipelineThroughputFps": 65.15447946097636,
+    "encodeOnlyThroughputFps": 70.72302506261414,
+    "encodeMs": {
+      "mean": 14.139666666049097,
+      "p50": 11.450000002980232,
+      "p95": 18.765000000596046
+    },
+    "copyMs": {
+      "p50": 1.0200000032782555,
+      "p95": 1.3650000020861626
+    },
+    "decodeMs": {
+      "p50": 2.024999998509884,
+      "p95": 17.934999994933605
+    },
+    "meanFrameBytes": 20695.7,
+    "maxFrameBytes": 1433510,
+    "wasmHeapBytes": null,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "vp8",
+    "scene": "texture",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "vp8",
+    "elapsedMs": 5505.905000001192,
+    "pipelineThroughputFps": 32.69217322128897,
+    "encodeOnlyThroughputFps": 34.12338447071763,
+    "encodeMs": {
+      "mean": 29.305416666923296,
+      "p50": 26.719999998807907,
+      "p95": 34.04500000178814
+    },
+    "copyMs": {
+      "p50": 1.0249999985098839,
+      "p95": 1.3599999994039536
+    },
+    "decodeMs": {
+      "p50": 11.315000005066395,
+      "p95": 14.765000000596046
+    },
+    "meanFrameBytes": 158940.18333333332,
+    "maxFrameBytes": 1433510,
+    "wasmHeapBytes": null,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  },
+  {
+    "status": "done",
+    "codec": "vp8",
+    "scene": "high-motion",
+    "preset": "video",
+    "width": 1920,
+    "height": 1080,
+    "threads": 4,
+    "fps": 60,
+    "bitrate": 8000000,
+    "inputs": 180,
+    "submitted": 180,
+    "decoded": 180,
+    "skipped": 0,
+    "firstKeyframe": true,
+    "recoveryKeyframe": true,
+    "decoderCodec": "vp8",
+    "elapsedMs": 5369.030000001192,
+    "pipelineThroughputFps": 33.52560890886436,
+    "encodeOnlyThroughputFps": 34.70986888347827,
+    "encodeMs": {
+      "mean": 28.810249999993378,
+      "p50": 26.46000000089407,
+      "p95": 30.66499999910593
+    },
+    "copyMs": {
+      "p50": 0.7350000068545341,
+      "p95": 1.0799999982118607
+    },
+    "decodeMs": {
+      "p50": 11.239999994635582,
+      "p95": 13.910000003874302
+    },
+    "meanFrameBytes": 157769.98333333334,
+    "maxFrameBytes": 1433510,
+    "wasmHeapBytes": null,
+    "isolated": true,
+    "userAgent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0",
+    "acceptance": "throughput probe only; no claim of real capture, network, audio sync, or 180-second acceptance"
+  }
+]
