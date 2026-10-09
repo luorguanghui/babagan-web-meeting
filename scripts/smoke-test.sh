@@ -107,7 +107,10 @@ if command -v node >/dev/null; then
   }
 elif command -v docker >/dev/null && [[ -n ${SMOKE_NODE_IMAGE:-} ]]; then
   websocket_probe() {
-    docker run --rm --network host \
+    # Release directories are root-owned mode 700. The API service remains
+    # UID 10001; only this disposable, read-only probe needs access to scripts.
+    docker run --rm --network host --user 0:0 \
+      --cap-drop ALL --security-opt no-new-privileges --read-only --tmpfs /tmp \
       -v "$script_directory:/scripts:ro" \
       -e SMOKE_LIVEKIT_TOKEN \
       --entrypoint node "$SMOKE_NODE_IMAGE" \
