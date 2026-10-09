@@ -11,3 +11,7 @@ artifacts/
 .env
 .env.*
 !.env.example
+
+.playwright-cli/
+__pycache__/
+*.pyc

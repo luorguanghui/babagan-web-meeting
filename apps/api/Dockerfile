@@ -9,7 +9,7 @@ WORKDIR /workspace
 RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
   && apk add --no-cache python3 make g++ \
   && corepack enable \
-  && corepack prepare pnpm@10.34.5 --activate \
+  && COREPACK_NPM_REGISTRY="$NPM_REGISTRY" corepack prepare pnpm@10.34.5 --activate \
   && pnpm config set registry "$NPM_REGISTRY"
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc tsconfig.base.json ./

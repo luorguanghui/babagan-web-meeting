@@ -15,14 +15,18 @@ export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000] as const;
 /**
  * Sharer uplink safety cap for the whole P2P screen share: the selected tier
  * applies per viewer, but the sum of all live session caps never exceeds this
- * budget. 20 Mbps keeps a 4-viewer meeting at 5 Mbps each even on the maximum
- * tier while a measured 100 Mbps home uplink retains ample voice headroom.
+ * budget. 40 Mbps keeps a 4-viewer meeting at 10 Mbps each on the maximum
+ * tier while leaving headroom below a measured 100 Mbps uplink.
  */
-export const P2P_TOTAL_UPLINK_BUDGET_BPS = 20_000_000;
+export const P2P_TOTAL_UPLINK_BUDGET_BPS = 40_000_000;
 
 export type P2pScreenBitrate = typeof P2P_SCREEN_BITRATES[number];
 
+export const P2P_TURN_PROVIDERS = ['coturn', 'cloudflare'] as const;
+export type P2pTurnProvider = typeof P2P_TURN_PROVIDERS[number];
+
 const IdentitySchema = Type.String({ minLength: 1, maxLength: 256 });
+const ScreenTransportSchema = Type.Union([Type.Literal('peer'), Type.Literal('sfu')]);
 const GenerationSchema = Type.String({ minLength: 1, maxLength: 128 });
 const SdpSchema = Type.String({ minLength: 1, maxLength: P2P_MESSAGE_MAX_BYTES });
 const CandidateSchema = Type.Union([
@@ -39,7 +43,11 @@ export const P2pClientMessageSchema = Type.Union([
     type: Type.Literal('offer'),
     to: IdentitySchema,
     sdp: SdpSchema,
-    generation: Type.Optional(GenerationSchema)
+    generation: Type.Optional(GenerationSchema),
+    turnProvider: Type.Optional(Type.Union([
+      Type.Literal('coturn'),
+      Type.Literal('cloudflare')
+    ]))
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('answer'),
@@ -66,6 +74,10 @@ export const P2pClientMessageSchema = Type.Union([
     type: Type.Literal('bye'),
     to: IdentitySchema,
     reason: Type.Optional(Type.String({ minLength: 1, maxLength: 512 }))
+  }, { additionalProperties: false }),
+  Type.Object({
+    type: Type.Literal('screen-transport'),
+    transport: ScreenTransportSchema
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('ping')
@@ -101,6 +113,11 @@ export const P2pServerMessageSchema = Type.Union([
   Type.Object({
     type: Type.Literal('share-gone'),
     reason: Type.String({ minLength: 1 })
+  }, { additionalProperties: false }),
+  Type.Object({
+    type: Type.Literal('screen-transport'),
+    transport: ScreenTransportSchema,
+    from: IdentitySchema
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('error'),

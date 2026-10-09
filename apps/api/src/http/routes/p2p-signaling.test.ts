@@ -146,6 +146,21 @@ describe('P2P signaling websocket endpoint', () => {
     expect(await inboxB.waitFor((message) => message.type === 'offer'))
       .toEqual({ type: 'offer', to: bob.identity, sdp: 'sdp-a', from: ada.identity });
 
+    wsA.send(JSON.stringify({
+      type: 'offer',
+      to: bob.identity,
+      sdp: 'sdp-with-turn',
+      turnProvider: 'cloudflare'
+    }));
+    expect(await inboxB.waitFor((message) => message.type === 'offer' && message.sdp === 'sdp-with-turn'))
+      .toEqual({
+        type: 'offer',
+        to: bob.identity,
+        sdp: 'sdp-with-turn',
+        turnProvider: 'cloudflare',
+        from: ada.identity
+      });
+
     wsB.send(JSON.stringify({ type: 'answer', to: ada.identity, sdp: 'sdp-b' }));
     expect(await inboxA.waitFor((message) => message.type === 'answer'))
       .toEqual({ type: 'answer', to: ada.identity, sdp: 'sdp-b', from: bob.identity });

@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 
 import { ScreenStage } from './screen-stage.js';
@@ -64,6 +64,7 @@ function getProbe(): HTMLVideoElement | null {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('screen stage dual-source rendering', () => {
@@ -232,71 +233,92 @@ describe('screen stage dual-source rendering', () => {
     expect(video.muted).toBe(false);
   });
 
-  it('routes unmuted remote audio through the trim and limiter when audio dynamics are enabled', () => {
-    const stream = makeStream();
-    const audio = makeAudioContext();
-    const { container } = render(
-      <ScreenStage stream={stream} muted={false} audioDynamics createAudioContext={() => audio.context} />
-    );
+  it.each([
+    [1920, 1080, '1.7777777777777777', 'landscape'],
+    [1920, 1200, '1.6', 'landscape'],
+    [1024, 768, '1.3333333333333333', 'landscape'],
+    [1080, 1920, '0.5625', 'portrait']
+  ] as const)('uses source metadata %sx%s for the stage ratio', (width, height, ratio, orientation) => {
+    const { container } = render(<ScreenStage stream={makeStream()} muted={false} />);
     const video = getVisibleVideo(container);
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: width });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: height });
 
-    expect(audio.context.createMediaElementSource).toHaveBeenCalledWith(video);
-    expect(audio.gain.gain.value).toBe(0.5);
-    expect(audio.source.connect).toHaveBeenCalledWith(audio.gain);
-    expect(audio.gain.connect).toHaveBeenCalledWith(audio.compressor);
-    expect(audio.compressor.connect).toHaveBeenCalledWith(audio.context.destination);
+    fireEvent.loadedMetadata(video);
+
+    const stage = screen.getByRole('region', { name: 'Shared screen stage' });
+    expect(stage).toHaveStyle(`--stage-aspect-ratio: ${ratio}`);
+    expect(stage).toHaveAttribute('data-orientation', orientation);
+    expect(video).toHaveStyle({ objectFit: 'contain' });
   });
 
-  it('resumes a suspended audio context when the element starts playing', () => {
-    const stream = makeStream();
-    const audio = makeAudioContext('suspended');
-    const { container } = render(
-      <ScreenStage stream={stream} muted={false} audioDynamics createAudioContext={() => audio.context} />
-    );
-    const video = getVisibleVideo(container);
+  it('resets the preferred stage ratio after a share ends', () => {
+    const rendered = render(<ScreenStage stream={makeStream()} muted={false} />);
+    const video = getVisibleVideo(rendered.container);
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1080 });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1920 });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByRole('region', { name: 'Shared screen stage' })).toHaveAttribute('data-orientation', 'portrait');
 
-    fireEvent(video, new Event('playing'));
+    rendered.rerender(<ScreenStage />);
+    rendered.rerender(<ScreenStage stream={makeStream()} muted={false} />);
 
-    expect(audio.context.resume).toHaveBeenCalledOnce();
+    expect(screen.getByRole('region', { name: 'Shared screen stage' })).toHaveStyle('--stage-aspect-ratio: 1.7777777777777777');
   });
 
-  it('skips the audio graph for muted stages and when dynamics are disabled', () => {
-    const audio = makeAudioContext();
+  it('uses native shared-audio volume for live changes without WebAudio', () => {
+    const stream = makeStream();
+    const audioContext = vi.fn(function () { return {}; });
+    vi.stubGlobal('AudioContext', audioContext);
     const { container, rerender } = render(
-      <ScreenStage stream={makeStream()} muted audioDynamics createAudioContext={() => audio.context} />
+      <ScreenStage stream={stream} muted={false} sharedAudioVolume={1} />
     );
-    expect(audio.context.createMediaElementSource).not.toHaveBeenCalled();
+    const video = getVisibleVideo(container);
+    expect(video.volume).toBe(1);
 
-    rerender(<ScreenStage stream={makeStream()} createAudioContext={() => audio.context} />);
-    expect(audio.context.createMediaElementSource).not.toHaveBeenCalled();
-    expect(getVisibleVideo(container).muted).toBe(true); // local stream default
+    rerender(<ScreenStage stream={stream} muted={false} sharedAudioVolume={0.4} />);
+    expect(video.volume).toBe(0.4);
+    expect(audioContext).not.toHaveBeenCalled();
   });
 
-  it('disposes the audio graph when the source swaps', () => {
-    const audio = makeAudioContext();
-    const { rerender } = render(
-      <ScreenStage stream={makeStream()} muted={false} audioDynamics createAudioContext={() => audio.context} />
+  it('keeps the selected native volume through a stream-to-track handover', () => {
+    const stream = makeStream();
+    const track = makeTrack();
+    const { container, rerender } = render(
+      <ScreenStage stream={stream} muted={false} sharedAudioVolume={0.4} />
+    );
+    const video = getVisibleVideo(container);
+
+    rerender(<ScreenStage track={track} muted={false} sharedAudioVolume={0.4} />);
+    fireEvent(getProbe()!, new Event('loadedmetadata'));
+
+    expect(getVisibleVideo(container)).toBe(video);
+    expect(video.volume).toBe(0.4);
+  });
+
+  it('fully mutes shared audio at zero percent', () => {
+    const { container } = render(
+      <ScreenStage stream={makeStream()} muted={false} sharedAudioVolume={0} />
     );
 
-    rerender(<ScreenStage track={makeTrack()} muted={false} audioDynamics createAudioContext={() => audio.context} />);
+    expect(getVisibleVideo(container).volume).toBe(0);
+  });
 
-    expect(audio.context.close).toHaveBeenCalled();
+  it('applies a stored receive volume when an empty stage starts showing a remote share', () => {
+    const rendered = render(<ScreenStage sharedAudioVolume={0.4} />);
+
+    rendered.rerender(
+      <ScreenStage stream={makeStream()} muted={false} sharedAudioVolume={0.4} />
+    );
+
+    expect(getVisibleVideo(rendered.container).volume).toBe(0.4);
+  });
+
+  it('keeps the local stream preview muted regardless of the stored receive volume', () => {
+    const { container } = render(
+      <ScreenStage stream={makeStream()} sharedAudioVolume={0.4} />
+    );
+
+    expect(getVisibleVideo(container).muted).toBe(true);
   });
 });
-
-function makeAudioContext(state: string = 'running') {
-  const makeNode = () => ({ connect: vi.fn(), disconnect: vi.fn() });
-  const source = makeNode();
-  const gain = { ...makeNode(), gain: { value: 1 } };
-  const compressor = makeNode();
-  const context = {
-    state,
-    destination: makeNode(),
-    createMediaElementSource: vi.fn(() => source),
-    createGain: vi.fn(() => gain),
-    createDynamicsCompressor: vi.fn(() => compressor),
-    resume: vi.fn(async () => undefined),
-    close: vi.fn(async () => undefined)
-  };
-  return { context, source, gain, compressor };
-}

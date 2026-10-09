@@ -10,6 +10,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { CurrentMeetingCard } from '../components/current-meeting-card.js';
+import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, useI18n } from '../i18n/i18n.js';
 
 export function CreateMeetingPage() {
@@ -96,15 +97,16 @@ export function CreateMeetingPage() {
     });
   }
 
-  return <main className="shell"><section className="panel" aria-labelledby="create-heading">
-    <p className="eyebrow">{t('create.eyebrow')}</p><h1 id="create-heading">{t('create.heading')}</h1>
-    <p className="lede">{t('create.lede')}</p>
+  const context = <div className="task-context-content">
     {currentMeeting && <CurrentMeetingCard meeting={currentMeeting} onEnd={endCurrentMeeting} onEnded={() => {
       setCurrentMeeting(undefined);
       void loadCurrentMeeting();
     }} />}
     {currentError && <p className="message error" role="alert">{currentError} <button type="button" className="text-button" onClick={() => void loadCurrentMeeting()}>{t('current.retry')}</button></p>}
-    <form onSubmit={createMeeting} noValidate>
+  </div>;
+
+  return <TaskPageLayout eyebrow={t('create.eyebrow')} title={t('create.heading')} lede={t('create.lede')} context={context}>
+    <form aria-label={t('create.submit')} onSubmit={createMeeting} noValidate>
       <label>{t('create.name')}<input aria-label={t('create.name')} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} autoComplete="off" /></label>
       <label>{t('create.adminPassword')}<input aria-label={t('create.adminPassword')} type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} maxLength={256} autoComplete="new-password" /></label>
       <label>{t('create.meetingPassword')} <span className="optional">{t('common.optional')}</span><input aria-label={t('create.meetingPassword')} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="new-password" /></label>
@@ -112,5 +114,5 @@ export function CreateMeetingPage() {
       <button type="submit" disabled={isSubmitting}>{isSubmitting ? t('create.submitting') : t('create.submit')}</button>
     </form>
     {created && <section className="created-link" aria-label={t('create.linkRegion')}><p className="eyebrow">{t('create.shareLink')}</p><output>{created.joinUrl}</output><a className="host-link" href={created.joinUrl}>{t('create.enterHost')}</a><button type="button" className="secondary" onClick={copyLink}>{t('create.copyLink')}</button>{copied && <p className="message success" role="status">{t('create.copied')}</p>}</section>}
-  </section></main>;
+  </TaskPageLayout>;
 }

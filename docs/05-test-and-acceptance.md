@@ -30,7 +30,7 @@
 - 验证 Cookie、Origin、CORS、速率限制和错误响应不泄密。
 - 验证进程重启后的会议恢复和过期清理。
 - P2P 信令：无 Cookie 拒绝升级；有 Cookie 可加入房间名单并收到进退广播；仅共享者可发 `offer`，观看者只能应答共享者；非法目标与越权消息被拒绝；消息限速与 64 KiB 上限；共享锁释放后全员收到失效通知。
-- ICE 凭据端点：参与者 Cookie 可获取 STUN 与带短期 HMAC 凭据的 coturn TURN；无 Cookie 拒绝；凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；响应设置 `Cache-Control: no-store`。
+- ICE 凭据端点：参与者 Cookie 可获取 STUN 与短期 TURN 凭据；查询参数支持 `turnProvider=auto|coturn|cloudflare`；响应包含 `availableTurnProviders`、实际 `turnProvider` 和 `Cache-Control: no-store`。无 Cookie 拒绝；coturn 凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；Cloudflare 失败或未配置时显式/默认请求均应回退为有效 coturn 响应。
 
 ### 2.3 浏览器 E2E
 
@@ -59,10 +59,20 @@
 | AT-015 | 创建满 24 小时 | 无法继续签发 Token |
 | AT-016 | P2P 直连共享（双方可穿透） | 屏幕经直连传输，云端不出现对应屏幕流量；画面 3 秒内出现 |
 | AT-017 | P2P 不可达（如 CGNAT 观看者） | 8 秒内自动回退 LiveKit，观看者画面中断不超过 2 秒，语音全程不受影响 |
-| AT-018 | 共享中 P2P 断线 | 该观看者自动切换 LiveKit 源，不黑屏超过 2 秒，其他观看者不受影响 |
+| AT-018 | 共享中直连 P2P 断线 | 该观看者自动切换 LiveKit 源，不黑屏超过 2 秒，其他观看者不受影响 |
 | AT-019 | 屏幕音画同步 | P2P 直连下屏幕画面与电脑声音同步，无感知错位（主观 ≤100ms）；回退模式同样验证 |
 | AT-020 | 非共享者发起 P2P offer | 信令服务拒绝，目标端不建立连接 |
 | AT-021 | 无 Cookie 访问 P2P 信令 | 升级被拒绝，不进入房间名单 |
+| AT-022 | 接收端独立调节音量 | 通话音量同时作用于全部远端麦克风；共享音量只作用于远端屏幕音频，0% 完全静音，P2P、TURN 和 LiveKit 回退下结果一致，且不改变共享音频动态与音色 |
+| AT-023 | 共享者显式选择 Cloudflare TURN | 共享开始前可见 `Cloudflare TURN` 选项；共享者 `offer` 携带 `turnProvider=cloudflare`；观看者重新拉取 Cloudflare ICE 配置并显示实际 provider 为 Cloudflare |
+| AT-024 | Cloudflare 未配置或临时失败 | 页面隐藏或无法实际使用 Cloudflare 时，`auto`/显式请求都得到可用 coturn 配置；共享双方标签显示实际 provider 为 coturn，不显示错误的 Cloudflare 状态 |
+| AT-025 | Cloudflare TURN 路径探测 | 只有本地共享者实际使用 Cloudflare relay 时创建 probe；两条探测连接均为 relay，页面显示已验证容量、重测中或“不影响 TURN 连接”的不可用状态 |
+| AT-026 | Cloudflare probe 资源隔离 | 一个共享最多一组 probe；增加观看者不创建第二组；共享停止或 Cloudflare 凭据刷新后旧连接、DataChannel 和定时器均关闭 |
+| AT-027 | Cloudflare 自适应码率 | 固定画质目标保持不变；稳定探测只逐步提高动态传输上限；低 RTC 估值、低实际码率、静态内容或单个低 probe 窗口不能单独触发下降 |
+| AT-028 | Cloudflare 弱观看者隔离 | 只有持续承压的观看者降低自身 cap/采样；其他观看者和 40 Mbps 非 Cloudflare 预算不被该观看者改变 |
+| AT-029 | Cloudflare 分辨率底线 | 正常调整保持源短边至少 720p，严重持续压力最多进入 540p；浏览器输出低于 540p 时启用分辨率保护，自动控制永不稳定在 270p |
+| AT-030 | 已建立 TURN 不自动转 SFU | coturn/Cloudflare relay 在高丢包、RTP 停滞、ICE `disconnected`/`failed` 下仍保持 `turn`，不发 `bye(fallback)`；观看者显式选择 SFU 仍立即交接 |
+| AT-031 | 质量预设尺寸边界 | 横屏和竖屏源均按方向限制在所选 720p/1080p bounding box 内，不拉伸、不裁成固定 16:9；TURN 保留手动重试入口 |
 
 ## 4. 媒体质量测试
 
@@ -75,8 +85,8 @@
 
 ### 4.2 屏幕
 
-- 标准模式验证 1920×1080、目标 30fps，文字在 100% 显示比例下可辨认。
-- 高动态模式验证目标 60fps，并共享包含运动内容的窗口。
+- 标准模式验证 1920×1080、目标 30fps、帧率优先，文字在 100% 显示比例下可辨认。
+- 高动态模式验证目标 60fps、帧率优先，并共享包含运动内容的窗口。
 - 验证标签页音频和 Windows 可用的系统音频路径。
 - 未返回音频轨道时必须显示正确指导，不能静默失败。
 - 四名观看者同时订阅时不出现长期黑屏或宽高比错误。
@@ -107,8 +117,11 @@
 | 禁止媒体 UDP 范围 | 仅 UDP 443 可用 | 经 TURN/UDP 建立连接 |
 | 禁止全部 UDP | TCP 7881 可用 | 使用 RTC/TCP 回退或明确失败提示 |
 | P2P 协商超时 | 观看者 8 秒未收敛 | 自动回退 LiveKit，画面中断 ≤2 秒 |
-| P2P 中继降级 | 共享者到观看者 5% 丢包 | 仅该路码率自动下降，其他观看者不受影响 |
+| TURN 中继弱网 | 共享者到观看者 5% 丢包 | 保持 TURN，不自动切 SFU；由浏览器拥塞控制调整实际发送，用户可手动重试或选 SFU |
 | 信令 WS 中断 | P2P 信令断开 | 已建立的 P2P 连接继续工作；共享状态不受影响 |
+| Cloudflare TURN API 不可用 | 服务端无法取到 Cloudflare 短期凭据 | API 回退 coturn，显式 Cloudflare 自动化 smoke 失败，手工共享验证显示实际 provider 为 coturn |
+| Cloudflare probe 暂时失败 | relay-to-relay probe 无法建立或窗口无效 | 共享媒体继续按当前 TURN 连接运行；页面只显示探测不可用，不降低媒体 cap，不误报 TURN 连接失败 |
+| Cloudflare 共享者高延迟/丢包 | probe 结果与 sender pressure 同时恶化 | `control` 需至少两个足以覆盖当前 cap 的低 verification 窗口及该观看者三次压力确认才允许单路下降；校准窗口、单次严重样本、低 RTC 估值或静态内容不得触发 |
 
 ## 6. 负载与稳定性
 
@@ -132,6 +145,8 @@
 - 错误页、日志和监控不包含密码、Token、Cookie、API Secret 或数据库内容。
 - 外部端口扫描只看到批准的端口。
 - TLS 配置通过现代浏览器和自动化 TLS 检查。
+- Cloudflare TURN 长期 Key ID/API Token 只存在服务器 mode 600 env，不出现在浏览器响应、日志、测试报告或 Git。
+- Cloudflare relay-to-relay probe 只在同一 offered target 下取三个有效窗口，且（最大值−最小值）/中位数不超过 25% 才发布稳定容量；记录 provider/protocol、状态、容量、profile target、transport cap、实际码率、FPS、分辨率和 scale，但不记录凭据、参与者身份或媒体内容。
 
 ## 8. 发布门禁
 
@@ -142,5 +157,19 @@
 - 5 人 1080p60 负载或两小时稳定性失败。
 - 出现高危安全问题、权限提升或敏感信息泄露。
 - 部署、备份恢复或回滚未在目标环境演练。
+- 本地完整门禁未通过：`pnpm install --frozen-lockfile`、`pnpm lint`、`pnpm typecheck`、`pnpm test`、`pnpm build`、`bash scripts/http-headers.test.sh`、`bash scripts/deployment-smoke.test.sh`、`bash scripts/deployment-scripts.test.sh`、`bash scripts/smoke-test.provider.test.sh`、`git diff --check` 任一失败都不得发布。
+- Cloudflare control 已按 2026-09-05 的明确操作决定写入生产构造，但尚未部署；部署前仍需完成真实 Edge/Chrome 双端验收。若 probe 可信度、资源清理或 FPS/分辨率底线不满足，立即把构造切回 `observe`。
 
 测试报告记录构建版本、浏览器版本、网络条件、服务器指标、失败证据和最终批准人，不记录会议媒体。
+
+## 2026-10-09 更新脚本与高动态回归
+
+标准／动态共享使用运动内容提示，清晰优先保留细节提示；本机合成画面真实 H.264/P2P 对照和局限见 [调查记录](acceptance/motion-content-hint-investigation-2026-10-09.md)。新更新入口验证 Compose 配置路径、真实旧镜像 ID、活动会议保护、非目标服务不变、公网资源校验与失败回滚。发布前追加：
+
+~~~bash
+python3 scripts/update-release.test.py
+node --test scripts/verify-websocket.test.mjs
+bash scripts/dns-attestation.test.sh
+~~~
+
+首次/完整部署的旧 DNS 橙云约束已改为三域名 DNS only；RTC probe 要等待第一条信令消息。Cloudflare smoke 默认保留；明确豁免必须在日志及发布记录中标注。

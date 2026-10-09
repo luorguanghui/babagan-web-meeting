@@ -50,6 +50,7 @@ export function assertProductionComposeConfig(config) {
     'coturn must mount Caddy certificate storage read-only'
   );
   assert.equal(services.api.environment.P2P_TURN_TTL_SECONDS, '600');
+  assert.equal(services.api.environment.CLOUDFLARE_TURN_HTTPS_PROXY, '');
   assert.match(services.api.environment.P2P_TURN_URLS, /turns:turn\.babagan\.cloud:5349\?transport=tcp/);
   const livekitVersionMatch = services.livekit.image.match(/:v?(\d+)\.(\d+)\.(\d+)(?:@sha256:[0-9a-f]{64})?$/);
   assert.ok(livekitVersionMatch, 'LiveKit image must use a semantic version tag');
@@ -80,12 +81,16 @@ export function assertProductionComposeConfig(config) {
     ['backend', 'edge'],
     'API must keep its private application network and gain an egress route to the Docker host gateway'
   );
+  assert.equal(services.edge.ipam.config[0].subnet, '172.30.0.0/16');
+  assert.equal(services.edge.ipam.config[0].gateway, '172.30.0.1');
+  assert.equal(services.backend.ipam.config[0].subnet, '172.31.0.0/16');
+  assert.equal(services.backend.ipam.config[0].gateway, '172.31.0.1');
   for (const serviceName of ['api', 'caddy']) {
     const extraHosts = services[serviceName].extra_hosts ?? {};
-    const hostGateway = Array.isArray(extraHosts)
-      ? extraHosts.some((entry) => /^host\.docker\.internal[:=]host-gateway$/.test(entry))
-      : extraHosts['host.docker.internal'] === 'host-gateway';
-    assert.equal(hostGateway, true, `${serviceName} must resolve the Docker host gateway`);
+    const edgeGateway = Array.isArray(extraHosts)
+      ? extraHosts.some((entry) => /^host\.docker\.internal[:=]172\.30\.0\.1$/.test(entry))
+      : extraHosts['host.docker.internal'] === '172.30.0.1';
+    assert.equal(edgeGateway, true, `${serviceName} must resolve the edge network gateway`);
   }
   assert.equal(
     services.caddy.user,

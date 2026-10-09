@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -27,6 +27,7 @@ const join: JoinMeetingResponse = {
 afterEach(() => {
   cleanup();
   document.querySelectorAll('audio').forEach((element) => element.remove());
+  window.localStorage.removeItem('babagan.viewer-transport');
   vi.unstubAllGlobals();
 });
 
@@ -48,33 +49,170 @@ function roomAdapter(): LiveKitRoomAdapter {
   };
 }
 
-describe('room controller', () => {
-  it('toggles only remote LiveKit screen-share publications for P2P handover', async () => {
-    const screenVideo = { source: 'screen_share', setSubscribed: vi.fn() };
-    const screenAudio = { source: 'screen_share_audio', setSubscribed: vi.fn() };
-    const microphone = { source: 'microphone', setSubscribed: vi.fn() };
-    const room = roomAdapter();
-    room.remoteParticipants.set('participant-2', {
-      identity: 'participant-2',
-      name: 'Ben',
-      isMicrophoneEnabled: true,
-      isScreenShareEnabled: true,
-      trackPublications: new Map([
-        ['screen-video', screenVideo],
-        ['screen-audio', screenAudio],
-        ['microphone', microphone]
-      ])
-    } as never);
-    const controller = createRoomController(() => room) as MeetingRoomController & {
-      setRemoteScreenShareSubscribed(subscribed: boolean): Promise<void>;
-    };
-    await controller.connect(join);
+function remotePublications(room: LiveKitRoomAdapter) {
+  const screenVideo = { source: 'screen_share', setSubscribed: vi.fn() };
+  const screenAudio = { source: 'screen_share_audio', setSubscribed: vi.fn() };
+  const microphone = { source: 'microphone', setSubscribed: vi.fn() };
+  const camera = { source: 'camera', setSubscribed: vi.fn() };
+  room.remoteParticipants.set('participant-2', {
+    identity: 'participant-2', name: 'Ben',
+    isMicrophoneEnabled: true, isScreenShareEnabled: true,
+    trackPublications: new Map([
+      ['screen-video', screenVideo], ['screen-audio', screenAudio],
+      ['microphone', microphone], ['camera', camera]
+    ])
+  });
+  return { screenVideo, screenAudio, microphone, camera };
+}
 
-    await controller.setRemoteScreenShareSubscribed(false);
+describe('room controller', () => {
+  it('leaves remote screen publications unsubscribed while receiving voice and other tracks', async () => {
+    const room = roomAdapter();
+    const { screenVideo, screenAudio, microphone, camera } = remotePublications(room);
+    const participant = room.remoteParticipants.get('participant-2')!;
+    room.remoteParticipants.clear();
+    vi.mocked(room.connect).mockImplementation(async () => {
+      room.remoteParticipants.set('participant-2', participant);
+    });
+    const controller = createRoomController(() => room);
+    await controller.connect(join);
 
     expect(screenVideo.setSubscribed).toHaveBeenCalledWith(false);
     expect(screenAudio.setSubscribed).toHaveBeenCalledWith(false);
+    expect(microphone.setSubscribed).toHaveBeenCalledWith(true);
+    expect(camera.setSubscribed).toHaveBeenCalledWith(true);
+  });
+
+  it('toggles only remote LiveKit screen-share publications when the viewing transport changes', async () => {
+    const room = roomAdapter();
+    const { screenVideo, screenAudio, microphone } = remotePublications(room);
+    const controller = createRoomController(() => room);
+    await controller.connect(join);
+    microphone.setSubscribed.mockClear();
+
+    await controller.setRemoteScreenShareSubscribed(true);
+    expect(screenVideo.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(screenAudio.setSubscribed).toHaveBeenLastCalledWith(true);
+    await controller.setRemoteScreenShareSubscribed(false);
+
+    expect(screenVideo.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(screenAudio.setSubscribed).toHaveBeenLastCalledWith(false);
     expect(microphone.setSubscribed).not.toHaveBeenCalled();
+  });
+
+  it('keeps a screen subscription choice made before connecting across replacement rooms', async () => {
+    const firstRoom = roomAdapter();
+    const nextRoom = roomAdapter();
+    const first = remotePublications(firstRoom);
+    const next = remotePublications(nextRoom);
+    const rooms = [firstRoom, nextRoom];
+    const controller = createRoomController(() => rooms.shift()!);
+
+    await controller.setRemoteScreenShareSubscribed(true);
+    await controller.connect(join);
+    await controller.connect(join);
+
+    expect(first.screenVideo.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(first.screenAudio.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(next.screenVideo.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(next.screenAudio.setSubscribed).toHaveBeenLastCalledWith(true);
+  });
+
+  it('applies the current choice to later screen publications and subscribes later microphones', async () => {
+    const room = roomAdapter();
+    const controller = createRoomController(() => room);
+    await controller.connect(join);
+    const published = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'trackPublished')![1];
+    const screenVideo = { source: 'screen_share', setSubscribed: vi.fn() };
+    const screenAudio = { source: 'screen_share_audio', setSubscribed: vi.fn() };
+    const microphone = { source: 'microphone', setSubscribed: vi.fn() };
+
+    published(screenVideo);
+    published(screenAudio);
+    published(microphone);
+
+    expect(screenVideo.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(screenAudio.setSubscribed).toHaveBeenLastCalledWith(false);
+    expect(microphone.setSubscribed).toHaveBeenLastCalledWith(true);
+
+    await controller.setRemoteScreenShareSubscribed(true);
+    published(screenVideo);
+    published(screenAudio);
+    expect(screenVideo.setSubscribed).toHaveBeenLastCalledWith(true);
+    expect(screenAudio.setSubscribed).toHaveBeenLastCalledWith(true);
+  });
+
+  it.each([false, true])('reconciles restored publications after SDK reconnection with screen choice %s', async (subscribed: boolean) => {
+    const room = roomAdapter();
+    const controller = createRoomController(() => room);
+    await controller.setRemoteScreenShareSubscribed(subscribed);
+    await controller.connect(join);
+    const restored = remotePublications(room);
+    const reconnected = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'reconnected')![1];
+
+    reconnected();
+
+    expect(restored.screenVideo.setSubscribed).toHaveBeenLastCalledWith(subscribed);
+    expect(restored.screenAudio.setSubscribed).toHaveBeenLastCalledWith(subscribed);
+    expect(restored.microphone.setSubscribed).toHaveBeenLastCalledWith(true);
+  });
+
+  it('ignores late screen subscription events and keeps microphone audio playing', async () => {
+    const room = roomAdapter();
+    const controller = createRoomController(() => room);
+    const states: MeetingRoomState[] = [];
+    controller.subscribe((state) => states.push(state));
+    await controller.connect(join);
+    const subscribed = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'trackSubscribed')![1];
+    const participant = { identity: 'participant-2', name: 'Ben' };
+    const video = { kind: 'video', attach: vi.fn(), detach: vi.fn() };
+    const audio = { kind: 'audio', attach: vi.fn(), detach: vi.fn() };
+    const screenVideo = { source: 'screen_share', setSubscribed: vi.fn() };
+    const screenAudio = { source: 'screen_share_audio', setSubscribed: vi.fn() };
+    const voiceElement = document.createElement('audio');
+    vi.spyOn(voiceElement, 'play').mockResolvedValue(undefined);
+
+    subscribed(video, screenVideo, participant);
+    subscribed(audio, screenAudio, participant);
+    subscribed({ kind: 'audio', attach: () => voiceElement, detach: () => voiceElement }, { source: 'microphone' }, participant);
+
+    expect(states.at(-1)?.remoteScreenShare).toBeUndefined();
+    expect(screenVideo.setSubscribed).toHaveBeenCalledWith(false);
+    expect(screenAudio.setSubscribed).toHaveBeenCalledWith(false);
+    expect(audio.attach).not.toHaveBeenCalled();
+    expect(voiceElement).toBeInTheDocument();
+
+    await controller.setRemoteScreenShareSubscribed(true);
+    subscribed(video, screenVideo, participant);
+    expect(states.at(-1)?.remoteScreenShare).toMatchObject({ track: video });
+    expect(states.at(-1)?.remoteScreenShare?.audioTrack).toBeUndefined();
+
+    await controller.setRemoteScreenShareSubscribed(false);
+    expect(voiceElement).toBeInTheDocument();
+    controller.setCallAudioVolume(0.4);
+    expect(voiceElement.volume).toBe(0.4);
+  });
+
+  it('clears the current screen and shared audio immediately when screen reception is disabled', async () => {
+    const room = roomAdapter();
+    const controller = createRoomController(() => room);
+    const states: MeetingRoomState[] = [];
+    controller.subscribe((state) => states.push(state));
+    await controller.connect(join);
+    await controller.setRemoteScreenShareSubscribed(true);
+    const subscribed = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'trackSubscribed')![1];
+    const participant = { identity: 'participant-2', name: 'Ben' };
+    const video = { kind: 'video', attach: vi.fn(), detach: vi.fn() };
+    const audio = { kind: 'audio', attach: vi.fn(), detach: vi.fn() };
+    subscribed(video, { source: 'screen_share' }, participant);
+    subscribed(audio, { source: 'screen_share_audio' }, participant);
+    expect(states.at(-1)?.remoteScreenShare?.audioTrack).toBe(audio);
+
+    await controller.setRemoteScreenShareSubscribed(false);
+    expect(states.at(-1)?.remoteScreenShare).toBeUndefined();
+    await controller.setRemoteScreenShareSubscribed(true);
+    subscribed(video, { source: 'screen_share' }, participant);
+    expect(states.at(-1)?.remoteScreenShare?.audioTrack).toBeUndefined();
   });
 
   it('connects with subscription optimizations while keeping the local microphone muted', async () => {
@@ -93,7 +231,7 @@ describe('room controller', () => {
         autoGainControl: true
       })
     }));
-    expect(room.connect).toHaveBeenCalledWith(join.livekitUrl, join.token, expect.objectContaining({ autoSubscribe: true }));
+    expect(room.connect).toHaveBeenCalledWith(join.livekitUrl, join.token, expect.objectContaining({ autoSubscribe: false }));
     expect(room.localParticipant.setMicrophoneEnabled).not.toHaveBeenCalled();
   });
 
@@ -202,7 +340,7 @@ describe('room controller', () => {
     const states: MeetingRoomState[] = [];
     controller.subscribe((state) => states.push(state));
     await controller.connect(join);
-    const disconnected = vi.mocked(room.on).mock.calls.find(([event]) => event === 'disconnected')?.[1];
+    const disconnected = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'disconnected')?.[1];
 
     disconnected?.();
 
@@ -250,7 +388,7 @@ describe('room controller', () => {
     const room = roomAdapter();
     const controller = createRoomController(() => room);
     await controller.connect(join);
-    const disconnected = vi.mocked(room.on).mock.calls.find(([event]) => event === 'disconnected')?.[1];
+    const disconnected = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'disconnected')?.[1];
 
     disconnected?.();
 
@@ -268,11 +406,33 @@ describe('room controller', () => {
     await controller.connect(join);
     const element = document.createElement('audio');
     vi.spyOn(element, 'play').mockRejectedValue(new DOMException('Blocked', 'NotAllowedError'));
-    const subscribed = vi.mocked(room.on).mock.calls.find(([event]) => event === 'trackSubscribed')?.[1];
+    const subscribed = vi.mocked(room.on).mock.calls.find(([event]: [string, unknown]) => event === 'trackSubscribed')?.[1];
 
     subscribed?.({ kind: 'audio', attach: () => element, detach: () => element });
 
     await waitFor(() => expect(states.at(-1)?.audioPlaybackBlocked).toBe(true));
+  });
+
+  it('keeps the receiver call volume for microphone tracks after reconnecting', async () => {
+    const firstRoom = roomAdapter();
+    const reconnectedRoom = roomAdapter();
+    const rooms = [firstRoom, reconnectedRoom];
+    const controller = createRoomController(() => rooms.shift()!);
+    await controller.connect(join);
+    controller.setCallAudioVolume(0.4);
+    await controller.connect(join);
+    const element = document.createElement('audio');
+    vi.spyOn(element, 'play').mockResolvedValue(undefined);
+    const subscribed = vi.mocked(reconnectedRoom.on).mock.calls
+      .find(([event]: [string, unknown]) => event === 'trackSubscribed')?.[1];
+
+    subscribed?.(
+      { kind: 'audio', attach: () => element, detach: () => element },
+      { source: 'microphone' },
+      { identity: 'participant-2', name: 'Ben' }
+    );
+
+    await waitFor(() => expect(element.volume).toBe(0.4));
   });
 });
 
@@ -294,6 +454,7 @@ class FakeMeetingRoomController implements MeetingRoomController {
   };
   readonly microphoneChanges: Array<{ enabled: boolean; deviceId?: string }> = [];
   readonly outputChanges: string[] = [];
+  readonly callVolumes: number[] = [];
   disconnectCount = 0;
   private listeners = new Set<(state: MeetingRoomState) => void>();
 
@@ -308,6 +469,7 @@ class FakeMeetingRoomController implements MeetingRoomController {
     this.emit();
   }
   async switchAudioOutput(deviceId: string) { this.outputChanges.push(deviceId); return 'changed' as const; }
+  setCallAudioVolume(volume: number) { this.callVolumes.push(volume); }
   async publishScreenShare() {}
   async releaseScreenShare() {}
   async setRemoteScreenShareSubscribed() {}
@@ -331,11 +493,62 @@ function renderRoom(controller = new FakeMeetingRoomController(), leaveMeeting =
 }
 
 describe('meeting room UI', () => {
+  it('opens the participant drawer and returns focus when Escape closes it', async () => {
+    renderRoom();
+    const trigger = await screen.findByRole('button', { name: 'Participants' });
+
+    await userEvent.click(trigger);
+    const drawer = screen.getByRole('dialog', { name: 'Participants' });
+    expect(drawer).toBeVisible();
+    expect(drawer).toHaveAttribute('aria-modal', 'true');
+    expect(document.querySelector('.meeting-workspace')).toHaveAttribute('inert');
+    expect(within(drawer).getByRole('button', { name: 'Close panel' })).toHaveFocus();
+    await userEvent.keyboard('{Escape}');
+
+    expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('keeps focus inside a drawer when live meeting state rerenders the page', async () => {
+    const { controller } = renderRoom();
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const slider = screen.getByRole('slider', { name: 'Call audio volume' });
+    slider.focus();
+
+    await act(() => controller.setMicrophoneEnabled(true));
+
+    expect(slider).toHaveFocus();
+  });
+
+  it('keeps primary actions in a toolbar and opens low-frequency controls from More', async () => {
+    renderRoom();
+    const toolbar = await screen.findByRole('toolbar', { name: 'Primary meeting controls' });
+
+    expect(within(toolbar).getByRole('button', { name: 'Unmute microphone' })).toBeVisible();
+    expect(within(toolbar).getByRole('button', { name: 'Share screen' })).toBeVisible();
+    expect(within(toolbar).getByRole('button', { name: 'More' })).toBeVisible();
+    expect(screen.queryByLabelText('Screen-share codec')).not.toBeInTheDocument();
+
+    await userEvent.click(within(toolbar).getByRole('button', { name: 'More' }));
+    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    expect(screen.getByRole('dialog', { name: 'Audio and sharing settings' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Back to More' }));
+    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    expect(screen.getByRole('dialog', { name: 'WebRTC data' })).toBeVisible();
+    expect(screen.getByText('No active screen-share data.')).toBeVisible();
+  });
+
   it('uses a compact top bar and a dedicated stage shell', async () => {
     renderRoom();
 
     expect(await screen.findByRole('banner')).toHaveClass('meeting-topbar');
     expect(document.querySelector('.meeting-stage-shell')).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     expect(document.querySelector('.meeting-management')).toBeInTheDocument();
   });
 
@@ -350,7 +563,7 @@ describe('meeting room UI', () => {
       listDevices={async () => devices}
     />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await screen.findByRole('option', { name: 'USB microphone' });
 
     expect(controllerFactory).toHaveBeenCalledOnce();
@@ -360,6 +573,7 @@ describe('meeting room UI', () => {
     renderRoom();
 
     expect(screen.getByRole('main')).not.toHaveClass('meeting-room-sharing');
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     const roster = await screen.findByRole('list', { name: 'Participants' });
     expect(within(roster).getAllByRole('listitem')).toHaveLength(5);
     expect(within(roster).getByRole('listitem', { name: 'Ada, you, microphone muted' })).toBeVisible();
@@ -373,18 +587,53 @@ describe('meeting room UI', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Unmute microphone' }));
 
     expect(await screen.findByRole('button', { name: 'Mute microphone' })).toBeVisible();
+    await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
     expect(screen.getByRole('listitem', { name: 'Ada, you, microphone on' })).toBeVisible();
   });
 
   it('switches microphone and speaker devices without changing the microphone state', async () => {
     const { controller } = renderRoom();
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
     await userEvent.selectOptions(await screen.findByLabelText('Microphone device'), 'microphone-2');
     await userEvent.selectOptions(screen.getByLabelText('Speaker device'), 'speaker-2');
 
     expect(controller.microphoneChanges).toContainEqual({ enabled: false, deviceId: 'microphone-2' });
     expect(controller.outputChanges).toEqual(['speaker-2']);
+  });
+
+  it('routes the call-audio slider to the aggregate remote microphone volume', async () => {
+    const { controller } = renderRoom();
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const slider = await screen.findByRole('slider', { name: 'Call audio volume' });
+
+    fireEvent.change(slider, { target: { value: '35' } });
+
+    expect(controller.callVolumes).toEqual([0.35]);
+  });
+
+  it('routes the remote shared-audio slider into the active stage element volume', async () => {
+    window.localStorage.setItem('babagan.viewer-transport', 'sfu');
+    const attach = (element?: HTMLMediaElement) => element ?? document.createElement('video');
+    const detach = (element?: HTMLMediaElement) => element ?? [];
+    const controller = new FakeMeetingRoomController();
+    controller.state = {
+      ...controller.state,
+      remoteScreenShare: {
+        track: { kind: 'video', attach, detach },
+        audioTrack: { kind: 'audio', attach, detach },
+        sharerIdentity: 'participant-2',
+        sharerName: 'Ben'
+      }
+    };
+    renderRoom(controller);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const slider = await screen.findByRole('slider', { name: 'Shared audio volume' });
+    fireEvent.change(slider, { target: { value: '40' } });
+
+    const video = screen.getByLabelText("Ben's shared screen") as HTMLVideoElement;
+    await waitFor(() => expect(video.volume).toBe(0.4));
   });
 
   it('notifies the leave API before disconnecting gracefully', async () => {
@@ -430,6 +679,43 @@ describe('meeting room UI', () => {
 });
 
 describe('remote audio playback', () => {
+  it('clamps call volume to the safe media-element range', async () => {
+    const element = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+    await playback.add(element);
+
+    playback.setVolume(1.5);
+    expect(element.volume).toBe(1);
+
+    playback.setVolume(-0.5);
+    expect(element.volume).toBe(0);
+  });
+
+  it('applies the selected call volume to current and future remote audio', async () => {
+    const current = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const future = {
+      play: vi.fn().mockResolvedValue(undefined),
+      remove: vi.fn(),
+      volume: 1
+    } as unknown as HTMLMediaElement;
+    const playback = new AudioPlayback();
+
+    await playback.add(current);
+    (playback as AudioPlayback & { setVolume?: (volume: number) => void }).setVolume?.(0.35);
+    await playback.add(future);
+
+    expect(current.volume).toBe(0.35);
+    expect(future.volume).toBe(0.35);
+  });
+
   it('reports a rejected media play attempt and recovers from a later user gesture', async () => {
     const play = vi.fn()
       .mockRejectedValueOnce(new DOMException('Blocked', 'NotAllowedError'))

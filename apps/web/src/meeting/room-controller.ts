@@ -1,5 +1,6 @@
 import type { JoinMeetingResponse, ScreenShareCodec } from '@meeting/contracts';
 import {
+  AudioPresets,
   Room,
   RoomEvent,
   Track,
@@ -43,6 +44,7 @@ export interface MeetingRoomController {
   connect(join: JoinMeetingResponse): Promise<void>;
   setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void>;
   switchAudioOutput(deviceId: string): Promise<'changed' | 'unsupported'>;
+  setCallAudioVolume(volume: number): void;
   publishScreenShare(stream: MediaStream, options: {
     maxBitrate: number;
     frameRate: number;
@@ -116,6 +118,11 @@ const e2eFakeLiveKitPublication = import.meta.env.VITE_E2E_FAKE_LIVEKIT === 'tru
  */
 const PARTICIPANT_REFRESH_INTERVAL_MS = 5_000;
 
+function isScreenSharePublication(publication?: LiveKitTrackPublicationAdapter): boolean {
+  return publication?.source === Track.Source.ScreenShare
+    || publication?.source === Track.Source.ScreenShareAudio;
+}
+
 class RoomController implements MeetingRoomController {
   private room?: LiveKitRoomAdapter;
   private state: MeetingRoomState = {
@@ -132,6 +139,7 @@ class RoomController implements MeetingRoomController {
   private publishedScreenTracks: MediaStreamTrack[] = [];
   private localScreenStatsSources: Array<{ getRTCStatsReport?(): Promise<RTCStatsReport | undefined> }> = [];
   private readonly remoteScreenAudioTracks = new Map<string, LiveKitTrackAdapter>();
+  private remoteScreenShareSubscribed = false;
   private participantRefreshTimer?: ReturnType<typeof setInterval>;
 
   constructor(
@@ -157,8 +165,9 @@ class RoomController implements MeetingRoomController {
     this.bindRoomEvents(room);
     this.update({ connection: 'connecting' });
     try {
-      await room.connect(join.livekitUrl, join.token, { autoSubscribe: true });
+      await room.connect(join.livekitUrl, join.token, { autoSubscribe: false });
       if (!this.ownsRoom(room, generation)) return;
+      this.reconcileRemoteSubscriptions(room);
       this.refreshParticipants();
       this.startParticipantRefresh();
       this.update({ connection: 'connected' });
@@ -185,6 +194,10 @@ class RoomController implements MeetingRoomController {
     if (!this.supportsAudioOutput()) return 'unsupported';
     await this.room.switchActiveDevice('audiooutput', deviceId);
     return 'changed';
+  }
+
+  setCallAudioVolume(volume: number): void {
+    this.audioPlayback.setVolume(volume);
   }
 
   async publishScreenShare(
@@ -221,10 +234,18 @@ class RoomController implements MeetingRoomController {
         degradationPreference: options.degradationPreference,
         ...(options.codec === 'auto' ? {} : { videoCodec: options.codec })
       }
-    }, ...stream.getAudioTracks().map((track) => ({
-      track,
-      options: { source: Track.Source.ScreenShareAudio, stream: 'screen-share' }
-    }))];
+    }, ...stream.getAudioTracks().map((track) => {
+      track.contentHint = 'music';
+      return {
+        track,
+        options: {
+          source: Track.Source.ScreenShareAudio,
+          stream: 'screen-share',
+          audioPreset: AudioPresets.musicStereo,
+          dtx: false
+        }
+      };
+    })];
     const published: MediaStreamTrack[] = [];
     try {
       for (const value of tracks) {
@@ -257,12 +278,16 @@ class RoomController implements MeetingRoomController {
   }
 
   async setRemoteScreenShareSubscribed(subscribed: boolean): Promise<void> {
+    this.remoteScreenShareSubscribed = subscribed;
+    if (!subscribed) {
+      this.remoteScreenAudioTracks.clear();
+      if (this.state.remoteScreenShare) this.update({ remoteScreenShare: undefined });
+    }
     const room = this.room;
-    if (!room) throw new Error('The meeting room is not connected.');
+    if (!room) return;
     for (const participant of room.remoteParticipants.values()) {
       for (const publication of participant.trackPublications?.values() ?? []) {
-        if (publication.source === Track.Source.ScreenShare
-          || publication.source === Track.Source.ScreenShareAudio) {
+        if (isScreenSharePublication(publication)) {
           publication.setSubscribed?.(subscribed);
         }
       }
@@ -306,7 +331,10 @@ class RoomController implements MeetingRoomController {
     // published (muted or not) before it is subscribed, and dynacast can
     // pause/resume subscriptions without a mute transition, so every track
     // lifecycle signal refreshes the snapshot instead of only mute events.
-    this.listen(room, RoomEvent.TrackPublished, refresh);
+    this.listen(room, RoomEvent.TrackPublished, (publicationValue) => {
+      this.applyRemoteSubscription(publicationValue as LiveKitTrackPublicationAdapter);
+      refresh();
+    });
     this.listen(room, RoomEvent.TrackUnpublished, refresh);
     this.listen(room, RoomEvent.TrackMuted, refresh);
     this.listen(room, RoomEvent.TrackUnmuted, refresh);
@@ -316,12 +344,20 @@ class RoomController implements MeetingRoomController {
     this.listen(room, RoomEvent.LocalTrackUnpublished, refresh);
     this.listen(room, RoomEvent.ParticipantPermissionsChanged, refresh);
     this.listen(room, RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
-    this.listen(room, RoomEvent.Reconnected, () => this.update({ connection: 'connected' }));
+    this.listen(room, RoomEvent.Reconnected, () => {
+      this.reconcileRemoteSubscriptions(room);
+      this.refreshParticipants();
+      this.update({ connection: 'connected' });
+    });
     this.listen(room, RoomEvent.Disconnected, () => this.releaseRoom(room));
     this.listen(room, RoomEvent.TrackSubscribed, (value, publicationValue, participantValue) => {
       const track = value as LiveKitTrackAdapter;
       const publication = publicationValue as LiveKitTrackPublicationAdapter;
       const participant = participantValue as LiveKitParticipantAdapter;
+      if (isScreenSharePublication(publication) && !this.remoteScreenShareSubscribed) {
+        publication.setSubscribed?.(false);
+        return;
+      }
       if (track.kind === Track.Kind.Video
         && publication.source === Track.Source.ScreenShare) {
         track.setPlayoutDelay?.(screenSharePlayoutDelaySeconds);
@@ -376,6 +412,18 @@ class RoomController implements MeetingRoomController {
       const detached = track.detach();
       for (const element of Array.isArray(detached) ? detached : [detached]) this.audioPlayback.remove(element);
     });
+  }
+
+  private applyRemoteSubscription(publication: LiveKitTrackPublicationAdapter): void {
+    publication.setSubscribed?.(isScreenSharePublication(publication) ? this.remoteScreenShareSubscribed : true);
+  }
+
+  private reconcileRemoteSubscriptions(room: LiveKitRoomAdapter): void {
+    for (const participant of room.remoteParticipants.values()) {
+      for (const publication of participant.trackPublications?.values() ?? []) {
+        this.applyRemoteSubscription(publication);
+      }
+    }
   }
 
   private listen(room: LiveKitRoomAdapter, event: string, listener: (...args: unknown[]) => void): void {

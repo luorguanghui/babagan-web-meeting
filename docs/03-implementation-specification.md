@@ -39,10 +39,17 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | `P2P_TURN_URLS` | 逗号分隔的 `turn:`/`turns:` URL（3478/udp、3478/tcp、5349/tls） | 启动时严格校验协议；指向自托管 coturn |
 | `P2P_TURN_SECRET` | 与 coturn `TURN_SHARED_SECRET` 完全相同的 TURN REST 密钥 | 至少 32 字节、权限 600 |
 | `P2P_TURN_TTL_SECONDS` | TURN 凭据有效期 | 默认 600，范围 60–3600 |
+| `P2P_TURN_PROVIDER` | `coturn` 或 `cloudflare` | `auto` 请求的默认 provider；生产默认 `coturn`，Cloudflare 失败时回退 coturn |
+| `CLOUDFLARE_TURN_KEY_ID` | Cloudflare TURN Key ID | 仅服务端使用，不下发浏览器 |
+| `CLOUDFLARE_TURN_API_TOKEN` | Cloudflare TURN Key API Token/Secret（创建 TURN app 时一次性返回；不是 User API Token） | 仅服务端使用，权限 600 |
+| `CLOUDFLARE_TURN_TTL_SECONDS` | Cloudflare 短期凭据有效期 | 默认 600，范围 60–86400 |
+| `CLOUDFLARE_TURN_CONNECT_IPS` | 可选的 Cloudflare API 出站连接 IP 列表 | 逗号分隔，仅在 DNS 返回地址不可达时配置；服务端保留 `rtc.live.cloudflare.com` 的 TLS SNI/Host |
+
+Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开放共享者的显式 Cloudflare 选项；`CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN` 必须成对出现，长期凭据只放服务端 mode 600 文件。
 
 以下生命周期/容量参数不是环境变量，而是 `AppConfig` 中的版本化常量：会议 24 小时到期（`meetingTtlMs = 86_400_000`）、空房保留 10 分钟（`emptyGraceMs = 600_000`）、断线保留 30 秒（`reconnectGraceMs = 30_000`）、加入预留 60 秒（`reservationTtlMs = 60_000`）、上限 5 人（`maxParticipants = 5`）。
 
-启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为 contracts/服务端中的版本化协议常量，不伪装成尚未实现的运行时环境变量。
+启动时必须校验必需配置、密钥长度、URL 协议和目录权限；校验失败直接退出，不带默认弱密钥启动。P2P 的 8 秒协商、5 秒 ICE 失联、5 秒 RTP 停流阈值，以及 120 秒心跳超时与 120 条/60 秒消息限速，均为版本化常量。ICE/RTP 阈值可对协商中或已建立直连触发 SFU 安全网，但已确认 TURN relay 只作诊断，不自动切 SFU。
 
 ## 3. 数据模型
 
@@ -133,11 +140,11 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 | POST | `/meetings/:slug/leave` | 参与者会话 | 提前释放参与状态 |
 | DELETE | `/meetings/:slug/share` | 参与者会话 | 共享者主动释放自己的共享权限 |
 | GET | `/meetings/:slug/participants` | 房间成员 | 返回最小化成员和共享状态 |
-| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN 列表与带短期凭据的 coturn TURN 列表 |
+| GET | `/meetings/:slug/ice-servers` | 参与者会话 | 返回 P2P STUN/TURN 列表、`availableTurnProviders`、实际 `turnProvider` 与短期凭据到期时间 |
 | POST | `/meetings/:slug/p2p-stats` | 参与者会话（离会容忍） | 记录匿名 P2P 质量统计（无媒体/SDP/IP/身份） |
 | WS | `/meetings/:slug/p2p` | 参与者会话 Cookie + 可信 `Origin` | P2P 信令：房间在线名单、SDP/ICE/`media-ready`/`retry` 转发（协议见 `07` 设计 §4） |
 
-加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers: [{ urls: string[], username?, credential? }] }`：第一项为配置的 STUN URL，第二项为 coturn TURN URL 并附带 TURN REST HMAC 短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(secret, username)`），响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取。
+加入响应包含 `participantIdentity`、`participantName`、`livekitUrl`、5 分钟 `token`、`meetingExpiresAt` 和权限摘要，并设置参与者安全 Cookie。会议密码不得出现在响应中。`ice-servers` 响应为 `{ iceServers, availableTurnProviders, turnProvider, turnCredentialsExpiresAt }`；查询参数支持 `turnProvider=auto|coturn|cloudflare`，其中 `auto` 解析为服务端默认 provider。`turnProvider` 表示本次实际使用的 `coturn` 或 `cloudflare`，响应设置 `Cache-Control: no-store`；客户端在建立 P2P 控制器前获取，并在 TURN 标签中显示 provider。
 
 ### 4.3 P2P 信令端点行为
 
@@ -145,6 +152,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 连接后服务端将 WS 连接注册到会议在线表并广播 `peer-joined`；断开时注销并广播 `peer-left`。客户端发送 `hello` 声明身份，服务端校验其与 Cookie 会话一致。
 - 转发规则（服务端强制）：仅当前 `share_identity` 可发送 `offer`；`answer`/`ice`/`bye` 只能发给当前共享者（或由共享者发出）；观看者确认直连视频已解码后向共享者发送 `media-ready`；观看者可用 `retry` 请求共享者为其重建会话并重发 offer；目标必须是同会议在线成员。
 - `offer`/`answer`/`ice`/`media-ready` 携带可选 `generation` 字段，用于区分同一次会话的重协商，避免陈旧候选污染重试。
+- `offer` 还可携带可选 `turnProvider: coturn|cloudflare`。共享者发送时只在已知 provider 下附带该字段；服务端按既有权限规则原样转发；观看者收到后若当前 ICE 配置与该 provider 不一致，会先重新请求匹配 provider 的 `ice-servers` 再继续协商。无该字段的旧 `offer` 仍按 coturn 兼容处理。
 - 共享锁释放（撤销/结束/共享者离开/被移除）时服务端广播 `share-gone`，客户端据此关闭全部 P2P 连接。
 - 消息上限 64 KiB；单连接限速 120 条/60 秒；SDP、ICE 候选与凭据不写入日志。
 - 心跳：客户端每 25 秒发送 `ping`，服务端以 `pong` 应答；服务端 120 秒未收到任何帧判定失联并关闭（后台标签页计时器节流下仍足够宽松）。
@@ -169,7 +177,7 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 禁止创建其他房间或执行管理 API。
 - JWT 有效期固定为 5 分钟；完整重连通过未撤销的参与者安全会话刷新。
 
-共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**P2P 混合模式始终先发布并保留 LiveKit 屏幕轨道作为兼容与恢复安全网**。确认 P2P 首帧已经渲染的现代观看者仅在本客户端取消订阅 LiveKit 屏幕；旧客户端继续通过 LiveKit 观看。撤销时先更新服务端权限，再要求客户端停止 LiveKit 轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
+共享者通过 LiveKit Server API 的参与者权限更新获得 `screen_share` 和 `screen_share_audio` 发布来源。**屏幕共享先启动 P2P/TURN；LiveKit 屏幕轨道只在观看者明确选择 SFU 时按需发布**。确认 P2P 首帧已经渲染的现代观看者仅在本客户端取消订阅 LiveKit 屏幕；旧客户端继续通过 LiveKit 观看。撤销时先更新服务端权限，再要求客户端停止 LiveKit 轨道与全部 P2P 连接。后端状态和 LiveKit 状态不一致时，以更严格的权限为准并记录审计事件。
 
 ## 6. 前端状态与页面
 
@@ -189,7 +197,8 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 - 主区域使用 `object-fit: contain` 展示共享屏幕，不裁剪文字内容。
 - 观看者端屏幕源为双源渲染：P2P 直连流优先，LiveKit 轨道为回退；切换时不出现重复画面或黑屏超过 2 秒。
 - 成员列表显示昵称、麦克风状态、共享者和连接质量。
-- 控制栏只包含麦克风、设备、屏幕共享（含码率档位选择与在线观看人数联动建议）、离开/结束和连接状态。
+- 控制栏只包含麦克风、设备、接收音量、屏幕共享（含码率档位选择与在线观看人数联动建议）、离开/结束和连接状态；接收音量分为共享音频和聚合通话音频两路。
+- 已获共享权限的共享者在设置面板可见“自动 / 服务器 coturn / Cloudflare TURN”选择器。该选择器只影响下一次共享请求的 TURN provider，且在共享进行中禁用；Cloudflare 未配置时页面只显示 `auto` 与 `coturn`。
 - 主持人操作通过成员菜单提供，不占用普通成员界面。
 - 无共享时显示会议名称和等待状态。
 
@@ -197,31 +206,32 @@ Web 和 API 共用由 JSON Schema 生成的请求/响应类型。所有依赖在
 
 ### 7.1 音频
 
-请求浏览器启用 `echoCancellation`、`noiseSuppression` 和 `autoGainControl`。编码由 LiveKit/浏览器协商为 Opus。页面必须为远端音频提供用户手势后的播放恢复机制，以处理自动播放限制。
+请求浏览器启用 `echoCancellation`、`noiseSuppression` 和 `autoGainControl`。编码由 LiveKit/浏览器协商为 Opus。页面必须为远端音频提供用户手势后的播放恢复机制，以处理自动播放限制。接收端将全部远端 `microphone` 轨道定义为一路“通话音频”，统一应用 0–100% 音量；屏幕音频通过共享舞台媒体元素的原生 `volume` 独立应用 0–100% 音量，并在 P2P、TURN 与 LiveKit 回退之间保持相同设置。两路默认均为 100%，共享音频不做接收端压缩、限幅或固定衰减；设置仅在当前会议页面会话内保留，重新加入或刷新页面后恢复默认值。
 
 ### 7.2 屏幕
 
 **传输模式（P2P 优先，LiveKit 回退）**：
 
 - **P2P 直连模式**：共享者对每名观看者各建一条 `RTCPeerConnection`，同一条连接上发布屏幕视频与屏幕音频两条轨道（音画同步硬约束，禁止拆到两条连接）。观看者端若在 8 秒内未收到媒体，通知共享者回退。
-- **LiveKit 安全网模式**：共享者先发布 LiveKit 再启动 P2P，并保持发布至共享结束。观看者只有在直连候选对、视频字节与解码帧均确认后才发送 `media-ready` 并切到 P2P；连续检查 RTP，协商超时（8 秒）、ICE `failed` 或 5 秒无 RTP 进展时重新订阅 LiveKit。旧源保留到新源首帧后才关闭，双源可短暂并行用于无黑屏交接，但不会长期双重接收。
+- **LiveKit 按需模式**：共享者先启动 P2P/TURN，仅在至少一名观看者明确选择 SFU 时发布 LiveKit。协商超时、ICE 失败或媒体停滞时保留当前路径偏好并重试；不自动创建 LiveKit 屏幕发布。用户显式选择 SFU 时仍保留旧源到 LiveKit 首帧后再关闭。
 
 **码率**：
 
 - P2P 直连档位：5 / 8 / 10 Mbps，默认 8 Mbps（受共享者上行约束：N 人 × 档位 < 可用上行）。
-- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变；常驻 SFU 安全网固定以 10 Mbps 发布。
+- SFU 回退档位：保持 10 / 13 / 15 Mbps 不变；按需 SFU 固定以 10 Mbps 为上限发布。
 - 共享开始时按在线观看者数给出建议档位并默认选中（≥4 名观看者建议 5 Mbps，否则 8 Mbps），可手动调整。
 
 **编码与自适应**：
 
-- 三档质量预设：`flow` 1280×720@30fps（弱网优先）、`standard` 1920×1080@30fps（默认）、`motion` 1920×1080@60fps（高动态）；三者均采用 `maintain-resolution`（保分辨率、降帧率），文字可读性优先。
+- 三档质量预设：`flow` 1280×720@30fps（弱网优先，保分辨率）、`standard` 1920×1080@30fps（默认，帧率优先）、`motion` 1920×1080@60fps（高动态，帧率优先）。捕获后按源方向应用仅含 `max` 的宽高边界（竖屏旋转边界），保留原始宽高比并让 P2P/SFU 使用同一受限源；1080p 档位在受限链路上允许进一步降低分辨率以保持帧率。
 - 每条 P2P 连接独立启用拥塞控制（Transport-CC/REMB），观看者弱网仅该路降码率，不影响其他观看者。
-- `degradationPreference: maintain-resolution`（保分辨率、降帧率），文字可读性优先。
+- `flow` 使用 `degradationPreference: maintain-resolution`；1080p 档位使用 `maintain-framerate`，优先保持目标帧率。
+- Cloudflare TURN relay 不参与 40 Mbps P2P 总上行预算。共享者仅在实际选中 Cloudflare relay 时创建一组独立、强制 relay 的浏览器内 DataChannel 回环探测；它不请求 `speed.cloudflare.com`，也不是媒体 PC 的同一 allocation。只有同一目标下三个有效窗口的离散度不超过 25% 才发布稳定容量。生产当前为 `control`：稳定高容量与健康样本允许逐步升 cap；只有至少两个足以覆盖当前 cap 的低验证窗口和三个连续 sender 压力样本才允许降 cap/采样。RTC 估值、实际 RTP 码率和静态内容均不能单独驱动控制。
 - 屏幕捕获请求音频，但实际是否返回音频轨道由浏览器和所选来源决定；P2P 模式下缺失音频轨道时 UI 提示重新选择（与现状一致）。
 - 对文字类内容关闭不必要的平滑缩放；接收端保持原始宽高比。
 - 页面不可见时降低非关键渲染负载。
 
-**共享端流程**：授权 → 获取屏幕流（含音频）→ 先发布 LiveKit 安全网 → 获取显式 STUN 配置 → 对 P2P 信令在线的观看者发起协商 → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
+**共享端流程**：授权 → 读取浏览器保存的 TURN provider 偏好（默认 `auto`，键为 `babagan.screen-turn-provider`）→ 获取屏幕流（含音频）→ 按需准备 SFU 发布器 → 获取与当前偏好匹配的 ICE 配置 → 对 P2P 信令在线的观看者发起协商，并在 `offer` 中写入本次实际 `turnProvider` → 收到其 `media-ready` 后标记直连成功。共享停止/撤销时关闭全部连接、取消 LiveKit 发布并释放共享锁。
 
 ## 8. 定时任务与恢复
 
@@ -257,3 +267,7 @@ API 每 30 秒执行一次轻量清理：
 ## 10. 完成定义
 
 实现只有在以下条件全部满足时才算完成：功能需求（含 FR-015/FR-016）逐项通过、API 契约（含 P2P 信令与 ICE 凭据）有自动化测试、两种浏览器完成 E2E、P2P 直连与回退在真实公网 NAT 场景验证通过、5 人 1080p60 负载达标、两小时稳定性通过、部署和回滚在目标服务器演练成功、安全检查没有高危问题。
+
+### 2026-10-09 高动态编码提示与统计
+
+标准／动态模式在第一次发布前设置视频轨道 `contentHint=motion`；分辨率优先模式保留 `detail`。直连 P2P 的 1080p 空间分辨率保护保持不变。统计分别显示实际采集、编码、实际发送、完整帧接收和解码帧率，编码／解码／帧组装最近采样耗时，以及浏览器报告的编解码器实现。缺少浏览器字段或采样基线时不伪造指标。该修复改善高动态画面的编码前丢帧，不保证所有设备都能稳定 60 fps。

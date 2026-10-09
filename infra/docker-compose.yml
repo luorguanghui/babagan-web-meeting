@@ -30,7 +30,7 @@ services:
       - edge
       - backend
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:172.30.0.1"
     depends_on:
       api:
         condition: service_healthy
@@ -67,10 +67,17 @@ services:
       LIVEKIT_API_SECRET: ${LIVEKIT_API_SECRET:?LIVEKIT_API_SECRET is required}
       ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:?ADMIN_PASSWORD_HASH is required}
       COOKIE_SECRET: ${COOKIE_SECRET:?COOKIE_SECRET is required}
-      P2P_STUN_URLS: ${P2P_STUN_URLS:?P2P_STUN_URLS is required}
+      # A numeric UDP STUN entry also works when client DNS returns fake IPs.
+      P2P_STUN_URLS: "stun:${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP is required}:3478,${P2P_STUN_URLS:?P2P_STUN_URLS is required}"
       P2P_TURN_URLS: ${P2P_TURN_URLS:?P2P_TURN_URLS is required}
       P2P_TURN_SECRET: ${P2P_TURN_SECRET:?P2P_TURN_SECRET is required}
       P2P_TURN_TTL_SECONDS: ${P2P_TURN_TTL_SECONDS:-600}
+      P2P_TURN_PROVIDER: ${P2P_TURN_PROVIDER:-coturn}
+      CLOUDFLARE_TURN_KEY_ID: ${CLOUDFLARE_TURN_KEY_ID:-}
+      CLOUDFLARE_TURN_API_TOKEN: ${CLOUDFLARE_TURN_API_TOKEN:-}
+      CLOUDFLARE_TURN_TTL_SECONDS: ${CLOUDFLARE_TURN_TTL_SECONDS:-600}
+      CLOUDFLARE_TURN_CONNECT_IPS: ${CLOUDFLARE_TURN_CONNECT_IPS:-}
+      CLOUDFLARE_TURN_HTTPS_PROXY: ${CLOUDFLARE_TURN_HTTPS_PROXY:-}
       DATABASE_PATH: /data/meetings.sqlite
     volumes:
       - api-data:/data
@@ -80,7 +87,7 @@ services:
       - edge
       - backend
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:172.30.0.1"
     depends_on:
       livekit:
         condition: service_healthy
@@ -164,8 +171,16 @@ services:
 
 networks:
   edge:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
   backend:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16
+          gateway: 172.31.0.1
 
 volumes:
   api-data:

@@ -72,7 +72,7 @@ API 只接受 `https://meet.babagan.cloud` 的浏览器来源。修改请求验�
 
 ## 5. 传输与证书
 
-- Cloudflare 到源站使用 Full (strict)。
+- meet、rtc、turn 当前均为 DNS only，浏览器直接验证 Caddy HTTPS/WSS 证书；Full (strict) 仅适用于另行启用代理的配置。
 - `rtc` 直接连接必须使用公众信任的有效证书。
 - 禁止 TLS 1.0/1.1，启用现代 TLS；证书自动续期并监控。
 - WebRTC 媒体使用 DTLS-SRTP。P2P 屏幕媒体（视频 + 音频）在浏览器之间加密传输：直连（host/srflx）不经服务器；经 coturn TURN 中继时 coturn 只转发加密 SRTP 包、无法解密且不落盘。LiveKit 路径（麦克风音频与回退屏幕）中，LiveKit 节点是信任边界，必须限制主机管理员权限。
@@ -104,7 +104,7 @@ P2P 信令日志只允许记录事件类型（连接建立/断开、offer/answer
 
 ## 8. Cloudflare 与源站
 
-`meet` 橙云可使用 Cloudflare WAF、DDoS 防护和速率限制；`rtc` 与 `turn` 灰云会暴露源站 IP，这是 WebRTC 直连设计的已知结果。源站安全不能依赖隐藏 IP，必须依赖防火墙、服务认证、补丁和最小端口。
+`meet` 当前 DNS only，不经过 Cloudflare 代理 WAF、代理 DDoS 防护和代理速率限制；`rtc` 与 `turn` 灰云会暴露源站 IP，这是 WebRTC 直连设计的已知结果。源站安全不能依赖隐藏 IP，必须依赖防火墙、服务认证、补丁和最小端口。
 
 Cloudflare 不缓存 `/api/*`、会议页面中的个性化响应或任何 Token。静态带哈希资源可以长期缓存，入口 HTML 使用短缓存或不缓存。
 

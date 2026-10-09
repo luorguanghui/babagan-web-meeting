@@ -1,11 +1,11 @@
 # P2P 屏幕共享混合模式设计
 
 日期：2026-08-11
-状态：已确认（替代 2026-08-07 设计中的"媒体全部经 LiveKit SFU 转发"决策）
+状态：持续维护的混合模式说明（2026-09-19 按当前工作区核对；不表示所有改动均已上线）
 
 ## 1. 背景与动机
 
-现行架构（见 `02-technical-architecture.md`）中，屏幕共享经 LiveKit SFU 云端转发：
+2026-08-11 改造前的架构中，屏幕共享经 LiveKit SFU 云端转发：
 共享者 → 家庭上行 → **云端服务器**（阿里云武汉，200 Mbps 峰值带宽，无 SLA）→ 接收者下行。
 
 生产观测到的核心问题：**云端服务器带宽波动导致接收方画面不稳定**。200 Mbps 为峰值共享带宽，高峰期受邻居争抢；2 核 CPU 转发多路 1080p60 高码率时也可能成为瓶颈。单路 1080p 屏幕 4–8 Mbps（上限档 15 Mbps），4 名观看者意味着 16–60 Mbps 流量全部依赖这条不稳定链路。
@@ -26,9 +26,9 @@
 | 媒体 | 路径 | 理由 |
 |---|---|---|
 | 麦克风音频 | 保持 LiveKit SFU | 5 人全部音频经云端仅约 1 Mbps；保留 LiveKit 成熟的重连、权限、质量统计能力 |
-| **屏幕视频 + 屏幕音频** | **P2P 直连（RTCPeerConnection）**，失败自动回退 LiveKit SFU | 屏幕是带宽大头；成功直连并取消 LiveKit 订阅的现代观看者不再消耗对应云端下行 |
+| **屏幕视频 + 屏幕音频** | **P2P 直连或 TURN relay（RTCPeerConnection）**；失败时重试原接收方式 | SFU 只在观看者明确选择时按需发布 |
 | 信令 | 云端 Fastify 新增 WebSocket 信令端点 | SDP/ICE 交换，每连接仅数 KB |
-| 兜底 | 始终已发布的 LiveKit SFU 屏幕轨道 | 直连失败者按观看者重新订阅，不劣于旧客户端现状 |
+| 可选 SFU | 至少一名观看者明确选择 SFU 后才发布屏幕轨道 | 最后一名 SFU 观看者离开或返回 P2P/TURN 后停止发布 |
 
 ```mermaid
 flowchart LR
@@ -37,17 +37,17 @@ flowchart LR
     S <-->|"P2P 直连<br/>屏幕视频+音频"| V
     S -->|"Opus 麦克风"| L[LiveKit SFU]
     V -->|"Opus 麦克风"| L
-    S -.->|"回退：屏幕轨道"| L
-    V -.->|"回退：订阅屏幕"| L
-    S <-.->|"STUN/TURN 打洞与兜底"| T[turn.babagan.cloud:443]
+    S -.->|"仅明确请求 SFU 时发布屏幕"| L
+    V -.->|"明确选择 SFU：订阅屏幕"| L
+    S <-.->|"STUN/TURN 打洞与兜底"| T[coturn 3478/5349 或 Cloudflare TURN]
     V <-.->|"STUN/TURN"| T
 ```
 
 ## 3. 设计原则
 
-1. **直连优先，兜底保底**：WebRTC ICE 候选优先级 host > srflx > relay 天然优先直连；直连失败自动回退，**任何观看者的体验不劣于现状**。
+1. **直连优先，TURN 是有效传输**：WebRTC ICE 候选优先级 host > srflx > relay 天然优先直连；失败时有节奏地重试 P2P/TURN，不自动选择 SFU。
 2. **单一发布者**：屏幕只由共享者发布，观看者只收不发，沿用现有共享锁语义。
-3. **发布常驻、订阅按需**：共享者始终发布 LiveKit 安全网；现代观看者确认 P2P 首帧后取消本地 LiveKit 屏幕订阅。切换期间允许短暂双源以保留旧帧，首帧确认后立即释放旧源，避免长期带宽翻倍。
+3. **SFU 发布和订阅都按明确需求**：默认不向 SFU 发布屏幕，也不订阅他人的 SFU 屏幕；麦克风订阅保留。观看者通过鉴权信令明确请求 SFU，共享者按人数管理 publication。返回 P2P/TURN 后不再显示或读取 SFU 屏幕作为备用来源。
 4. **音画同步硬约束**：屏幕音频轨道必须与屏幕视频轨道发布在同一条 `RTCPeerConnection` 上（见 §8）。
 5. **服务器不感知媒体**：P2P 信令端点只做鉴权、在线名单和 SDP/ICE 转发，不接触媒体内容。
 
@@ -56,13 +56,13 @@ flowchart LR
 ### 4.1 端点与传输
 
 - 端点：`wss://meet.babagan.cloud/api/v1/meetings/:slug/p2p`
-- 复用现有 Caddy `/api/*` 反向代理与 Cloudflare 橙云 WSS 升级，不新增域名与端口
+- 复用现有 Caddy `/api/*` 反向代理及 WSS 升级；`meet` 当前为 DNS only，不新增域名与端口
 - 认证与来源：WebSocket 握手同时校验参与者安全 Cookie（现有 `__Host-` 参与者会话）和与 `PUBLIC_BASE_URL` 完全一致的 `Origin`；缺失、无效或跨站来源拒绝握手
 - 服务端只做**鉴权 + 转发 + 在线名单**，不存储 SDP 与 ICE 候选（日志禁用 SDP 全文）
 
 ### 4.2 消息类型
 
-客户端与客户端之间的消息由服务端转发，均携带 `to`（目标身份）。全部消息为 JSON，大小上限 64 KiB。
+客户端与客户端之间的 SDP/ICE 消息由服务端转发并携带 `to`。`screen-transport` 不接受客户端指定目标，由服务端定位当前共享者。全部消息为 JSON，大小上限 64 KiB。
 
 | 消息 | 方向 | 字段 | 作用 |
 |---|---|---|---|
@@ -70,17 +70,18 @@ flowchart LR
 | `welcome` | 服务端 → 客户端 | `peers: [{identity, nickname}]` | 房间内当前成员名单（每次重连全量下发） |
 | `peer-joined` | 服务端 → 客户端 | `peer: {identity, nickname}` | 成员加入通知 |
 | `peer-left` | 服务端 → 客户端 | `peer: {identity}` | 成员离开通知 |
-| `offer` | 共享者 → 观看者 | `to, sdp, generation?` | 发起 P2P 协商（仅共享者有权发送） |
+| `offer` | 共享者 → 观看者 | `to, sdp, generation?, turnProvider?` | 发起 P2P 协商（仅共享者有权发送） |
 | `answer` | 观看者 → 共享者 | `to, sdp, generation?` | 应答协商（仅能回给共享者） |
 | `ice` | 双方 | `to, candidate, generation?` | Trickle ICE 候选，逐条转发（`candidate` 为 JSON 序列化的 `RTCIceCandidateInit` 或 `null`） |
 | `media-ready` | 观看者 → 共享者 | `to, generation?` | 观看者确认传输已连接且视频解码后通知共享者 |
 | `retry` | 观看者 → 共享者 | `to` | 观看者请求共享者为其重建会话并重发全新 offer |
+| `screen-transport` | 观看者 → 服务端 → 当前共享者 | `transport: peer或sfu`；服务端注入 `from` | 明确选择按需 SFU 或返回 P2P/TURN；无共享者时忽略，自身请求被拒绝 |
 | `bye` | 双方 | `to, reason?` | 主动关闭与对端的 P2P 连接 |
 | `share-gone` | 服务端 → 全员 | `reason` | 共享锁释放（撤销/结束/共享者离开/被移除）通知，客户端关闭全部 P2P 连接 |
 | `ping` / `pong` | 客户端 → 服务端 / 反向 | — | 应用层心跳（客户端 25 秒间隔；服务端 120 秒无任何帧才判失联） |
 | `error` | 服务端 → 客户端 | `code, message` | 协议或权限错误 |
 
-转发的 `offer`/`answer`/`ice`/`bye` 由服务端注入 `from` 字段（`{...msg, from}`）。`generation` 字段用于区分同一次会话的重协商，陈旧候选/应答由客户端按 generation 丢弃。
+转发的 `offer`/`answer`/`ice`/`media-ready`/`retry`/`bye` 由服务端注入 `from` 字段（`{...msg, from}`）。`generation` 字段用于区分同一次会话的重协商，陈旧候选/应答由客户端按 generation 丢弃。
 
 ### 4.3 服务端强制规则
 
@@ -104,7 +105,7 @@ flowchart LR
 
 共享者对**每名观看者各建一条** `RTCPeerConnection`（1:N 星型）：
 
-- 每条连接发布两条轨道：`screen video` + `screen audio`（同一条连接，保证音画同步）
+- 每条连接发布 `screen video`，以及实际捕获到的可选 `screen audio`；有音频时必须与视频处于同一连接，纯视频共享仍受支持
 - 观看者之间不建连；观看者不向共享者发布任何轨道
 - 共享者上行预算 = 观看人数 × 单路码率，并须为 LiveKit 语音及网络波动保留余量；单点 100 Mbps 测量只说明该测试设备可承载示例中的 4 × 8 Mbps
 
@@ -113,24 +114,25 @@ flowchart LR
 共享者端为每名观看者维护独立会话状态，互不影响：
 
 ```
-idle → negotiating → p2p | turn → closed
-                 │
-                 └── 协商超时（默认 8 秒，ICE 有进展时顺延，单次上限 30 秒）
-                     → 用全新凭据自动重试一次（新 PC + 新 offer + 新 generation）
-                     → 再次超时 / ICE failed / 5 秒失联 / 5 秒无 RTP → livekit-fallback
+idle → negotiating → p2p → closed
+          │            └── ICE/5 秒失联/5 秒无 RTP → livekit-fallback
+          ├── 协商超时 → 全新凭据自动重试一次 → livekit-fallback
+          └── turn → closed（无自动 SFU 转换；仅用户显式选择 SFU）
 ```
 
 | 状态 | 说明 |
 |---|---|
 | `negotiating` | 已发送 offer，等待 answer 与 ICE 收敛。超时基准 8 秒；候选对进入 `checking`（真实进展）时顺延，单次协商自首个 offer 起不超过 30 秒 |
 | `p2p` | 已收到 `media-ready` 且 ICE 候选对为 host/srflx（直连），视频 RTP 字节与解码帧均已确认 |
-| `turn` | 已收到 `media-ready` 且 ICE 候选对为 relay（经 coturn TURN 中继），仍是 P2P 通道但媒体经 coturn 转发 |
+| `turn` | 已收到 `media-ready` 且 ICE 候选对为 relay（coturn 或 Cloudflare）；自动质量、RTP 停滞和 ICE 失败检查不把该状态切换为 SFU |
 | `livekit-fallback` | 该观看者改用 LiveKit 屏幕轨道（现有 SFU 路径） |
 | `closed` | 共享停止、对端离开或撤销 |
 
 **自动重试**：协商超时不会直接回退。共享者先用强制刷新的 ICE 凭据（见 §6.1）为同一观看者重建会话并重发全新 offer（仅一次）；观看者把新 offer 视为重协商。这修复了"锥形 NAT 下 A 共享 → B 直连成功、B 共享 → A 直连失败"的不对称：首次协商可能因过期 TURN 凭据或一次性抖动失败，而重试路径拿到全新凭据与候选。观看者端对称延长：媒体定时器在 ICE 仍处 `checking` 时顺延一次，避免在共享者的重试窗口内提前回退。
 
-观看者端对称维护，失败时通知共享者回退。共享者端每 1 秒采样候选对统计，把 `negotiating/p2p/turn` 中的会话归类为 `p2p`（非 relay）或 `turn`（relay）。
+自动模式在 TURN 或 LiveKit 状态下还会按 2 秒、30 秒、60 秒（之后保持 60 秒）的退避请求重新尝试直连；强制 TURN 或显式 SFU 不执行这条自动探测。TURN 故障恢复另有至少 30 秒的冷却，避免反复重建。
+
+观看者端对称维护：协商或直连失败时通知共享者回退；已建立 TURN 不发送 `bye(fallback)`。共享者端每 1 秒采样候选对统计，把 `negotiating/p2p/turn` 中的会话归类为 `p2p`（非 relay）或 `turn`（relay）。
 
 ### 5.3 回退状态机（共享者发布侧）
 
@@ -146,7 +148,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 共享过程中：
 
-- 某观看者 P2P 断线（ICE `disconnected` 持续 5 秒、`failed`，或连续 5 秒无视频 RTP 进展）→ 先重新订阅 LiveKit，保留 P2P 旧源到 LiveKit 首帧后再关闭 PC
+- 某观看者已建立 host/srflx 直连后断线（ICE `disconnected` 持续 5 秒、`failed`，或连续 5 秒无视频 RTP 进展）→ 先重新订阅 LiveKit，保留 P2P 旧源到 LiveKit 首帧后再关闭 PC。已建立 TURN relay 会请求重建连接（故障恢复请求间隔至少 30 秒），不自动执行 SFU 交接
 - 共享者断网重连 → 按现有 LiveKit 重连逻辑恢复身份与订阅，P2P 会话重新协商或整体回退
 - 主持人撤销 / 共享者主动停止 → 关闭全部 PC 与 LiveKit 屏幕轨道，观看者清理
 
@@ -154,14 +156,14 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 ### 6.1 ICE 服务器配置
 
-- **配置来源**：API 的 `GET /api/v1/meetings/:slug/ice-servers`（参与者 Cookie 鉴权）返回启动时严格校验的 `P2P_STUN_URLS` 与 `P2P_TURN_URLS`；TURN 项附带按参与者绑定的短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(P2P_TURN_SECRET, username)`，TTL 默认 600 秒）
+- **配置来源**：API 的 `GET /api/v1/meetings/:slug/ice-servers?turnProvider=auto|coturn|cloudflare`（参与者 Cookie 鉴权）返回 `iceServers`、`availableTurnProviders`、实际 `turnProvider` 和 `turnCredentialsExpiresAt`。coturn 使用 `P2P_STUN_URLS`、`P2P_TURN_URLS` 及参与者绑定的短期凭据（`username = <expiry>:<identity>`、`credential = HMAC-SHA1(P2P_TURN_SECRET, username)`）；其 TTL 环境变量必填，示例为 600 秒。Cloudflare 由服务端生成凭据，失败时回退 coturn。
 - TURN 由自托管 coturn 提供（`use-auth-secret`），监听 3478/UDP+TCP、5349/TLS，中继端口池 49160–49200/UDP
 - 客户端将返回的 `iceServers` 用于 P2P `RTCPeerConnection` 配置
 - 候选优先级由浏览器 ICE 处理：host（局域网/本机）> srflx（STUN 公网映射）> relay（coturn TURN）
 
-**凭据过期刷新**（2026-08 生产加固）：TURN 凭据 TTL 有限（60–3600 秒），而会议可以远长于此。凭据过期后 ICE 静默放弃 relay 候选——这正是"后共享的人直连失败"的成因之一。两端均解析 `username` 中的过期时刻并按需刷新：
+**凭据过期刷新**（2026-08 生产加固）：TURN 凭据 TTL 有限（60–3600 秒），而会议可以远长于此。凭据过期后 ICE 静默放弃 relay 候选——这正是"后共享的人直连失败"的成因之一。两端优先使用 `turnCredentialsExpiresAt` 判断到期，缺少该字段时兼容解析 coturn `username`，提前 60 秒刷新。coturn TTL 范围为 60–3600 秒，Cloudflare 为 60–86400 秒：
 
-- 观看者：每收到新 offer 前检查缓存凭据，若在 60 秒内过期则重新拉取（拉取失败沿用旧凭据，共享者的自动重试兜底）；
+- 观看者：新 offer 到达前检查临期状态及 `offer.turnProvider`，必要时获取匹配 provider 的 ICE 配置；旧 offer 缺少 provider 时按 coturn 兼容。页面对 401/403/404/410 停止当前 join effect 的凭据重试并丢弃待处理信令；临时网络错误/503 可重试。
 - 共享者：每次复用缓存的 `iceServers` 前同样检查，临期即强制刷新；自动重试与手动重试总是强制刷新。
 
 ### 6.2 直连成功条件（共享者）
@@ -169,7 +171,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 | 条件 | 说明 |
 |---|---|
 | 公网 IPv4（或 IPv6） | 一台设备在家庭公网 IPv4（已脱敏）环境实测具备；其他共享者必须按实际网络判断 |
-| 家庭路由器 NAT | 家用路由器一般支持打洞（full-cone），满足 srflx 直连 |
+| 家庭路由器 NAT | 是否可穿透须以双方实际 ICE 候选对验证，不能仅按“家用路由器”推定 full-cone |
 | UDP 出网不被代理拦截 | 见 §6.4 注意事项 |
 | 稳定上行 | 一台设备测得约 100 Mbps；实际共享者必须满足“语音预留后可用上行 > 观看人数 × 所选 P2P 档位”，否则应降低档位或依赖 LiveKit 安全网 |
 
@@ -177,12 +179,12 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 ### 6.3 动态 IP
 
-家庭 IP 随拨号变化。已建立的 P2P 连接点对点维持，不受影响；IP 变化只影响下次开会（新协商走新候选）。不在本次范围做 DDNS。
+家庭 IP 随拨号变化，可能使已建立的候选对失效并中断 P2P 媒体，需要重新协商或按传输模式恢复/回退。新协商使用新候选，不依赖 DDNS。
 
 ### 6.4 客户端网络注意事项（重要）
 
 1. **代理/TUN 软件（如 Mihomo、Clash TUN 模式）会劫持 WebRTC UDP 流量**：实测默认路由被 TUN 接管时出网绕道海外代理节点。开会前需确保媒体流直连：为会议媒体配置直连规则，或临时关闭 TUN/代理。文档与 UI 提示需注明。
-2. 公司/校园网络可能禁止 UDP：自动回退到 LiveKit（其内部已有 RTC/TCP 7881 与 TURN 回退），不影响语音。
+2. 公司/校园网络可能禁止 UDP：可尝试 coturn 的 TURN/TCP 或 TURN/TLS；初始协商失败可使用 LiveKit（其内部已有 RTC/TCP 7881 与 TURN 回退）。语音能否保持可用也取决于该网络是否允许 LiveKit 的媒体路径。
 3. 2.4 GHz Wi-Fi 干扰大的场景建议改用有线。
 
 ## 7. 码率与质量策略
@@ -191,7 +193,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 
 | 模式 | 档位（Mbps） | 默认 | 适用 |
 |---|---|---|---|
-| SFU 回退（不变） | 10 / 13 / 15 | 10 | 与现状一致，不动现有逻辑 |
+| LiveKit 常驻安全网 | 固定上限 10 | 10 | 代码保留历史 10/13/15 常量，但当前混合发布器固定使用 10 Mbps |
 | **P2P（新增）** | **5 / 8 / 10** | **8** | **档位即每名观看者的码率上限** |
 
 ### 7.2 档位联动建议与上行预算
@@ -203,13 +205,18 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 | 1–3 | 8 Mbps | 8–24 Mbps |
 | ≥4 | 5 Mbps | ≥20 Mbps |
 
-**总上行预算**：所有活跃会话的码率上限之和不得超过 20 Mbps（`P2P_TOTAL_UPLINK_BUDGET_BPS`）。观看者加入/离开/回退时按 `min(档位, ⌊预算 ÷ 活跃会话数⌋)` 重分配。早期"全体平分所选档位"的模型把 2 名观看者的每人码率压到 4 Mbps——这正是 1080p 大变动画面帧率塌到 ~10 fps、TURN 中继画面出现色块的直接原因。档位改为逐观看者生效后，3 人会议（2 名观看者）每人拿满 8 Mbps，同时预算仍保护共享者上行与语音路径。
+**总上行预算**：所有活跃会话的码率上限之和不得超过 40 Mbps（`P2P_TOTAL_UPLINK_BUDGET_BPS`）。观看者加入/离开/回退时按 `min(档位, ⌊预算 ÷ 活跃会话数⌋)` 重分配。40 Mbps 允许最多四名观看者在 10 Mbps 档位下运行，同时仍为 100 Mbps 级上行保留协议和语音余量；四名及以上观看者默认建议 5 Mbps，避免把总预算用满。
+
+**Cloudflare TURN 探测例外**：实际 Cloudflare relay 会话不参与 40 Mbps 预算。共享者浏览器创建一组独立、强制 relay 的 DataChannel 回环，验证两端 selected candidate 均为 Cloudflare relay；变速阶梯不写入稳定历史，只有同一 offered target 下三个无排队窗口的（最大值−最小值）/中位数 ≤ 25% 才发布稳定容量。该结果不是媒体 PeerConnection 的同一 allocation。生产构造当前启用独立 probe + sender pressure 双门禁的逐观看者 `control`；任何单一或过期证据都不能改 sender，回滚开关为 `observe`。
 
 ### 7.3 自适应
 
 - 每条 P2P 连接独立启用浏览器拥塞控制（Transport-CC + REMB），观看者弱网时仅该路自动降码率，**不拖累其他观看者**（相对 SFU 模式全体共享带宽池是结构性改进）
-- 编码默认保持 `degradationPreference: maintain-resolution`（保分辨率、降帧率），文字可读性优先
-- **发送端压力自适应**：共享者每 1 秒采样本会话 `outbound-rtp` 的 `qualityLimitationReason` 与帧率。连续 3 个样本处于 `bandwidth` 受限且帧率塌到目标 70% 以下时，该会话切换到 `balanced`（先降分辨率、避免量化色块与帧率塌陷）；连续 5 个不受限样本后恢复用户所选偏好。该策略按会话独立生效，弱链路观看者不会拖累健康观看者
+- 三档捕获均以 1920×1080 为最大边界（竖屏旋转边界），`flow`/`standard` 为 30fps，`motion` 为 60fps；源尺寸不足时不放大。实际直连 sender 统一使用 `maintain-resolution`。非直连路径按档位及压力策略选择，Cloudflare 使用独立控制器
+- 捕获后根据源横竖方向应用质量档位的最大宽高边界；只使用 `max` 约束，不固定宽高比，因此 4:3、超宽与竖屏源仍保持原始比例
+- **发送端压力自适应**：共享者每 1 秒采样 `outbound-rtp`。`flow` 在连续 3 个带宽压力样本后仅从 `maintain-resolution` 放宽到 `balanced`，不主动增加采样倍数；1080p `standard`/`motion` 可在持续帧率塌陷时以每次最多 10% 的步长增加 `scaleResolutionDownBy`，非 Cloudflare 路径的显式缩放以源短边 1080px 为底线，不放大本就较小的源，健康样本后逐步恢复；浏览器最终输出仍须实测。Cloudflare 的 720p/540p 策略独立。该策略按会话独立生效
+- **Cloudflare 恢复闭环**：编码器目标码率与当前有效预算（档位与 transport cap 的较小值）比较，避免自行降码率后持续误判拥塞。即使浏览器仍标记 `bandwidth`，只要有效预算有独立探测余量、帧率达到目标的 85%，且没有编码目标下降、丢包、发送丢弃、RTT 增长或 CPU 压力，也可累计健康样本。连续 5 个健康样本后渐进恢复显式缩放；实际输出短边仍不足请求缩放后短边的 95% 时，临时使用 `maintain-resolution`，输出恢复或压力重新出现时退出。初始探测停在低阶梯后，成功的验证窗口会重新开启校准；新容量仍须由三个同速率验证窗口确认，校准窗口不参与升降码率控制。
+- **直连 1080p 恢复闭环（本地修复，尚未部署）**：协商阶段即使用 `maintain-resolution`，直连显式请求源短边 1080px（小源保持原生），并保留浏览器协商的编码标识和优先级字段。每秒检查发送参数与实际输出，修正遗留缩放或错误降级偏好，不等待 `bandwidth` 标签消失；协商前被浏览器拒绝的参数在本地 SDP 建立后重试。若实际短边持续低于目标的 95%，在参数已应用、无 CPU 限制且输出有恢复依据的连续 5 个样本后，自动重建仅该观看者的屏幕连接。准备新凭据时保留旧画面，临时准备失败等待 30 秒再试；一次降级期至多成功重建一次，该限制跨自动协商重试保留，实际分辨率连续恢复 5 个样本后才重新允许下一次重建。重建可能造成该观看者短暂画面或共享音频切换，不重启其他观看者或 SFU 麦克风连接。
 - 音画同步约束见 §8；语音优先级不变（P2P 码率上限始终受档位与预算约束，语音走独立路径不受挤压）
 
 ## 8. 音画同步
@@ -221,16 +228,16 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 - 麦克风语音（LiveKit 路径）与屏幕画面（P2P 路径）允许 ≤300 ms 相对偏移，不承诺严格同步；会议场景下（说话声与屏幕内容非同一信号源）可接受，与主流视频会议产品行为一致
 - 回退到 LiveKit 时，音画同步由 LiveKit 保证（同房间同发布者，同一条 RTP 会话）
 
-### 8.1 接收端音频动态处理
+### 8.1 接收端音量处理
 
-共享电脑音频在生产中出现"共享方音量很小、接收方却很大"的间歇性过响（Windows 环回捕获发生在系统音量级之前，叠加交接/AGC 瞬态）。观看者的共享音频回放在进入扬声器前经 WebAudio 处理：-6 dB 固定衰减 + 压缩/限幅（threshold −20 dB、ratio 10:1、attack 2 ms、release 300 ms），把电脑音频压到语音附近电平并削平瞬态尖峰，不改变静音状态与声道语义。共享者本机预览（静音）不经过该链路。
+观看者的共享电脑音频不经过 WebAudio 压缩、限幅或固定衰减，避免动态被压平、音色变沉以及 WebAudio 图创建失败后滑块失效。0–100% 共享音量直接应用于共享舞台媒体元素的原生 `volume`；P2P、TURN 与 LiveKit 回退共用同一媒体元素和音量值，0% 必须完全静音，100% 对应原始共享音频。共享者本机预览始终静音。全部远端麦克风另行聚合为“通话音频”，由接收端的独立 0–100% 音量控制。
 
 ## 9. 权限与安全
 
 - 信令端点继承参与者会话鉴权（Cookie），且服务端强制"仅共享者发 offer、仅能发给共享者应答"规则（§4.3），普通成员无法诱骗他人建立 P2P 连接
 - 媒体安全沿用 DTLS-SRTP（浏览器原生），信令经 WSS（TLS 1.2+）
-- **隐私变化**：P2P 直连后屏幕内容不再经过云端服务器（服务器对媒体零可见性，强于 SFU 模式）；对端将看到彼此的直连 IP（WebRTC 直连的固有特征），与视频会议产品一致，文档与 UI 说明
-- 不引入新的业务密钥；SDP 与 ICE 候选不落日志（沿用 `06-security-and-privacy.md` §7 规则）
+- **隐私变化**：成功 P2P 后观看端媒体来自浏览器直连；但共享者仍向 LiveKit 发布同一屏幕安全网，因此不能声称云端对屏幕零可见性或端到端加密；对端将看到彼此的直连 IP（WebRTC 直连的固有特征），与视频会议产品一致，文档与 UI 说明
+- coturn 引入与 API 一致的 TURN REST 共享密钥，Cloudflare provider 另需服务端 Key ID/API Token；这些长期凭据不下发浏览器，SDP 与 ICE 候选不落日志（沿用 `06-security-and-privacy.md` §7 规则）
 - 服务端转发消息限速、限大小（64 KiB），防止信令放大
 
 ## 10. 监控与质量指标
@@ -259,7 +266,7 @@ LiveKit 屏幕发布是整个共享会话的**常驻安全网**：先发布成�
 | 直连成功率不达标（观看者 CGNAT 且无 IPv6） | 自动回退 LiveKit SFU/TURN，体验不劣于现状；监控回退率持续改进 |
 | 共享者家庭网络波动 | 有线优先建议；断线后按现有重连逻辑恢复，P2P 会话重建或整体回退 |
 | 客户端代理/TUN 劫持媒体 | §6.4 注意事项 + UI 提示；可配置直连规则 |
-| 家庭 IP 变化 | 不影响已建立连接；仅影响下次会议协商 |
+| 家庭 IP 变化 | 可能中断已建立候选对，需要重协商或按路径恢复/回退 |
 | 共享者上行不足（档位过高） | 档位联动建议 + 手动可调 + 拥塞控制自动降码率 |
 | 信令服务不可用 | 观看者直接走 LiveKit 屏幕订阅（P2P 只是增强路径），语音不受影响 |
 

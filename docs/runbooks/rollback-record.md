@@ -2,6 +2,12 @@
 
 This file describes guarded recovery. It is not evidence that a rollback was executed. Do not roll back during an active meeting. Do not use git reset --hard, delete images, or delete backups as a recovery shortcut.
 
+## One-click update rollback
+
+For releases made by `scripts/update.sh`, use the release directory and `rollback.sh` referenced by `var/releases/current-update.json` or `var/releases/update-pending.json`. This restores the actual previous API/web image IDs and Compose chain. It does not replace the SQLite database. Retain the protected database backup and inspect migration compatibility before deciding on any database restoration. A failed update keeps its pending record until the operator has verified recovery and archived it.
+
+Do not use an older `current-release.env` to recover an installation changed by one-click updates or release overlays. The rest of this runbook applies to the guarded full-deployment `.env` records.
+
 ## Before any rollback
 
 Confirm all of these first:
@@ -12,9 +18,10 @@ Confirm all of these first:
 - The database backup and checksum sidecar exist and match the recorded checksum.
 - Every predecessor image tag resolves to the immutable image ID recorded in the release/pending record.
 - The smoke token file is non-empty, mode 600, and not expired. Generate a fresh token from the current API image before rollback if necessary.
+- If the failed or current deployment had Cloudflare credentials configured, preserve the deployment-smoke evidence showing default, explicit `coturn`, and explicit `cloudflare` ICE checks before changing state.
 - There is no active meeting or planned destructive migration window.
 
-A stale smoke-token file can make the core-only RTC check fail even when LiveKit is healthy. The normal deployment smoke creates a temporary meeting and signs a fresh Token, but rollback consumes the supplied file directly.
+A stale smoke-token file can make the core-only RTC check fail even when LiveKit is healthy. The normal deployment smoke creates a temporary meeting and signs a fresh Token, and may also run explicit `SMOKE_REQUESTED_TURN_PROVIDER=coturn|cloudflare` ICE checks when Cloudflare credentials are present, but rollback consumes the supplied file directly.
 
 ## Roll back a committed release
 

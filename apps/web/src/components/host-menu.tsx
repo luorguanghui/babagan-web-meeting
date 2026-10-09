@@ -6,6 +6,7 @@ import { useI18n } from '../i18n/i18n.js';
 interface HostMenuProps {
   participants: ParticipantSummary[];
   authorizeHost: () => Promise<void>;
+  authorized?: boolean;
   onGrantShare: (identity: string) => Promise<void>;
   onRevokeShare: () => Promise<void>;
   onKick: (identity: string) => Promise<void>;
@@ -18,6 +19,7 @@ interface HostMenuProps {
 export function HostMenu({
   participants,
   authorizeHost,
+  authorized: controlledAuthorized,
   onGrantShare,
   onRevokeShare,
   onKick,
@@ -27,7 +29,7 @@ export function HostMenu({
   onAuthorizationChange
 }: HostMenuProps) {
   const { t } = useI18n();
-  const [authorized, setAuthorized] = useState(false);
+  const [locallyAuthorized, setLocallyAuthorized] = useState(false);
   const [error, setError] = useState<string>();
   const [ending, setEnding] = useState(false);
   const [sharingIdentity, setSharingIdentity] = useState<string | undefined>(
@@ -35,18 +37,19 @@ export function HostMenu({
   );
 
   useEffect(() => {
+    if (controlledAuthorized !== undefined) return;
     let active = true;
-    setAuthorized(false);
+    setLocallyAuthorized(false);
     void authorizeHost().then(
-      () => { if (active) { setAuthorized(true); onAuthorizationChange?.(true); } },
-      () => { if (active) { setAuthorized(false); onAuthorizationChange?.(false); } }
+      () => { if (active) { setLocallyAuthorized(true); onAuthorizationChange?.(true); } },
+      () => { if (active) { setLocallyAuthorized(false); onAuthorizationChange?.(false); } }
     );
     return () => { active = false; };
-  }, [authorizeHost, onAuthorizationChange]);
+  }, [authorizeHost, controlledAuthorized, onAuthorizationChange]);
 
   const externalSharingIdentity = participants.find((participant) => participant.isSharing)?.identity;
   useEffect(() => { setSharingIdentity(externalSharingIdentity); }, [externalSharingIdentity]);
-  if (!authorized) return null;
+  if (!(controlledAuthorized ?? locallyAuthorized)) return null;
 
   async function act(action: () => Promise<void>): Promise<boolean> {
     setError(undefined);

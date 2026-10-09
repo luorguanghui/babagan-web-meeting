@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { P2pViewerController } from './p2p-viewer-controller.js';
 
 import {
   buildP2pSignalingUrl,
@@ -98,6 +99,117 @@ afterEach(() => {
 });
 
 describe('p2p signaling client', () => {
+  it('sends a screen transport request without selecting or trusting a sharer identity', async () => {
+    const client = createClient();
+    const socket = await connectClient(client);
+    client.sendScreenTransport('sfu');
+    client.sendScreenTransport('peer');
+    expect(socket.sent.slice(1)).toEqual([
+      { type: 'screen-transport', transport: 'sfu' },
+      { type: 'screen-transport', transport: 'peer' }
+    ]);
+  });
+
+  it('queues screen transport changes across reconnect until the new welcome', async () => {
+    const client = createClient();
+    const first = await connectClient(client);
+    first.fail();
+    client.sendScreenTransport('sfu');
+    client.sendScreenTransport('peer');
+    vi.advanceTimersByTime(1_000);
+    const second = lastSocket();
+    second.open();
+    expect(second.sent).toEqual([{ type: 'hello', participantIdentity: 'participant-1' }]);
+    second.message({ type: 'welcome', peers: [] });
+    expect(second.sent.slice(1)).toEqual([
+      { type: 'screen-transport', transport: 'sfu' },
+      { type: 'screen-transport', transport: 'peer' }
+    ]);
+  });
+
+  it('dispatches valid screen transport envelopes and ignores malformed ones', async () => {
+    const onScreenTransport = vi.fn();
+    const socket = await connectClient(createClient({ ...eventHandlers(), onScreenTransport }));
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'peer' });
+    socket.message({ type: 'screen-transport', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: '', transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 1, transport: 'sfu' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'turn' });
+    socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu', to: 'sharer' });
+    expect(onScreenTransport.mock.calls).toEqual([['viewer', 'sfu'], ['viewer', 'peer']]);
+  });
+
+  it('accepts screen transport envelopes when no optional callback is registered', async () => {
+    const socket = await connectClient();
+    expect(() => socket.message({ type: 'screen-transport', from: 'viewer', transport: 'sfu' })).not.toThrow();
+  });
+
+  it.each([false, true])('reconnects a socket that never receives welcome (open: %s)', async (opened) => {
+    const client = createClient();
+    const connected = client.connect();
+    const rejected = expect(connected).rejects.toThrow('timed out');
+    const first = lastSocket();
+    if (opened) first.open();
+    // A broken network path may never deliver close, even after the server
+    // has expired this participant from its P2P roster.
+    first.close = vi.fn();
+    vi.advanceTimersByTime(10_000);
+    await rejected;
+    vi.advanceTimersByTime(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    const recovered = lastSocket();
+    recovered.open();
+    recovered.message({ type: 'welcome', peers: [] });
+    vi.advanceTimersByTime(10_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('allows an explicit viewer retry after automatic reconnect attempts are exhausted', async () => {
+    const client = createClient();
+    await connectClient(client);
+    for (let i = 0; i < 6; i += 1) {
+      lastSocket().fail();
+      vi.advanceTimersByTime(30_000);
+    }
+    const count = FakeWebSocket.instances.length;
+    client.sendRetry('sharer');
+    expect(FakeWebSocket.instances).toHaveLength(count);
+    client.retryConnection();
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    lastSocket().open();
+    lastSocket().message({ type: 'welcome', peers: [] });
+    expect(lastSocket().sent).toContainEqual({ type: 'retry', to: 'sharer' });
+  });
+
+  it('resumes exhausted signaling from auto P2P recovery without resetting its reconnect budget', async () => {
+    const client = createClient();
+    await connectClient(client);
+    for (let i = 0; i < 6; i++) {
+      lastSocket().fail();
+      await vi.advanceTimersByTimeAsync(30_000);
+    }
+    const count = FakeWebSocket.instances.length;
+    const viewer = new P2pViewerController(client, [], {
+      createPeerConnection: () => ({
+        setRemoteDescription: async () => { throw new Error('negotiation failed'); },
+        close: vi.fn()
+      }) as unknown as RTCPeerConnection
+    });
+    clients.push(viewer);
+    await viewer.acceptOffer('sharer', 'offer');
+    // Peer recovery now starts immediately; later attempts retain the 30s pace.
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    lastSocket().fail();
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(FakeWebSocket.instances).toHaveLength(count + 1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(count + 2);
+    lastSocket().open();
+    lastSocket().message({ type: 'welcome', peers: [] });
+    expect(lastSocket().sent).toContainEqual({ type: 'retry', to: 'sharer' });
+  });
+
   it('builds the wss endpoint from the current page origin', async () => {
     const client = createClient();
     const connected = client.connect();
@@ -138,7 +250,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(createClient(handlers));
     const sdp = 'v=0\r\no=- 1 1 IN IP4 0.0.0.0';
 
-    socket.message({ type: 'offer', to: 'participant-1', sdp, from: 'sharer' });
+    socket.message({ type: 'offer', to: 'participant-1', sdp, turnProvider: 'cloudflare', from: 'sharer' });
     socket.message({ type: 'answer', to: 'participant-1', sdp, from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: 'candidate:1', from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: null, from: 'sharer' });
@@ -151,7 +263,7 @@ describe('p2p signaling client', () => {
     socket.message({ type: 'share-gone', reason: 'sharer left' });
     socket.message({ type: 'error', code: 'RATE_LIMITED', message: 'slow down' });
 
-    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp);
+    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp, undefined, 'cloudflare');
     expect(handlers.onAnswer).toHaveBeenCalledWith('sharer', sdp);
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', 'candidate:1');
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', null);
@@ -317,6 +429,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(client);
 
     client.sendOffer('sharer', 'offer-sdp');
+    client.sendOffer('viewer-1', 'offer-sdp-turn', undefined, 'cloudflare');
     client.sendAnswer('sharer', 'answer-sdp');
     client.sendIce('sharer', 'candidate:1');
     client.sendIce('sharer', null);
@@ -328,6 +441,7 @@ describe('p2p signaling client', () => {
     expect(socket.sent).toEqual([
       { type: 'hello', participantIdentity: 'participant-1' },
       { type: 'offer', to: 'sharer', sdp: 'offer-sdp' },
+      { type: 'offer', to: 'viewer-1', sdp: 'offer-sdp-turn', turnProvider: 'cloudflare' },
       { type: 'answer', to: 'sharer', sdp: 'answer-sdp' },
       { type: 'ice', to: 'sharer', candidate: 'candidate:1' },
       { type: 'ice', to: 'sharer', candidate: null },

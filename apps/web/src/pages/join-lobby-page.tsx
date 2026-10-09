@@ -5,16 +5,22 @@ import {
   type JoinMeetingResponse,
   type MeetingSummary
 } from '@meeting/contracts';
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import { ApiRequestError, apiRequest } from '../api/client.js';
 import { DeviceCheck } from '../components/device-check.js';
+import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, type Translate, useI18n } from '../i18n/i18n.js';
 import { MeetingRoomPage } from './meeting-room-page.js';
 
 interface JoinLobbyPageProps { slug: string; }
 type ClientNotice = { kind: 'block'; message: string } | { kind: 'notice'; message: string } | undefined;
+type LobbySummaryState =
+  | { kind: 'loading' }
+  | { kind: 'ready'; slug: string; summary: MeetingSummary }
+  | { kind: 'unavailable' };
+type JoinedMeeting = { slug: string; meetingName: string; response: JoinMeetingResponse };
 
 function clientNotice(t: Translate): ClientNotice {
   const userAgent = navigator.userAgent;
@@ -30,35 +36,65 @@ function clientNotice(t: Translate): ClientNotice {
   return undefined;
 }
 
+function isTerminalMeetingFailure(reason: unknown): boolean {
+  if (!(reason instanceof ApiRequestError)) return false;
+  const code = reason.details?.error.code;
+  return reason.status === 404
+    || reason.status === 410
+    || code === 'MEETING_NOT_FOUND'
+    || code === 'MEETING_EXPIRED';
+}
+
 export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
   const [nickname, setNickname] = useState('');
   const [meetingPassword, setMeetingPassword] = useState('');
   const [error, setError] = useState<string>();
-  const [joined, setJoined] = useState<JoinMeetingResponse>();
+  const [joined, setJoined] = useState<JoinedMeeting>();
   const [isJoining, setIsJoining] = useState(false);
   const [previewCleanup, setPreviewCleanup] = useState<(() => void) | null>(null);
-  const [summary, setSummary] = useState<MeetingSummary>();
+  const [summaryState, setSummaryState] = useState<LobbySummaryState>({ kind: 'loading' });
+  const [deviceCheckOpen, setDeviceCheckOpen] = useState(() => !window.matchMedia?.('(max-width: 44.999rem)').matches);
+  const summaryRequestGeneration = useRef(0);
   const notice = clientNotice(t);
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
-  const passwordRequired = summary?.requiresPassword === true;
+  const readySummary = summaryState.kind === 'ready' && summaryState.slug === slug ? summaryState.summary : undefined;
+  const passwordRequired = Boolean(readySummary?.requiresPassword);
+
+  const loadSummary = useCallback(async () => {
+    const generation = ++summaryRequestGeneration.current;
+    setSummaryState({ kind: 'loading' });
+    try {
+      const summary = await apiRequest<MeetingSummary>(
+        `/meetings/${encodeURIComponent(slug)}`,
+        MeetingSummarySchema
+      );
+      if (generation !== summaryRequestGeneration.current) return;
+      if (summary.status === 'ended' || summary.status === 'expired') {
+        navigate('/create', { replace: true });
+        return;
+      }
+      setSummaryState({ kind: 'ready', slug, summary });
+    } catch (reason) {
+      if (generation !== summaryRequestGeneration.current) return;
+      if (isTerminalMeetingFailure(reason)) {
+        navigate('/create', { replace: true });
+        return;
+      }
+      setSummaryState({ kind: 'unavailable' });
+    }
+  }, [navigate, slug]);
 
   useEffect(() => {
-    let active = true;
-    void apiRequest<MeetingSummary>(
-      `/meetings/${encodeURIComponent(slug)}`,
-      MeetingSummarySchema
-    ).then(
-      (value) => { if (active) setSummary(value); },
-      () => { if (active) setSummary(undefined); }
-    );
-    return () => { active = false; };
-  }, [slug, t]);
+    void loadSummary();
+    return () => { summaryRequestGeneration.current++; };
+  }, [loadSummary]);
 
-  if (joined) return <MeetingRoomPage
+  if (joined?.slug === slug) return <MeetingRoomPage
     slug={slug}
-    join={joined}
+    meetingName={joined.meetingName}
+    join={joined.response}
     onLeft={() => setJoined(undefined)}
     onTerminal={(reason) => {
       setJoined(undefined);
@@ -76,19 +112,44 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     setIsJoining(true);
     try {
       const response = await apiRequest<JoinMeetingResponse>(`/meetings/${slug}/join`, JoinMeetingResponseSchema, { method: 'POST', body: JSON.stringify(body) });
-      setJoined(response); setMeetingPassword('');
-    } catch (reason) { setError(reason instanceof ApiRequestError ? apiErrorText(reason, t, 'join.failed') : t('join.failed')); }
+      setJoined({ slug, meetingName: readySummary?.name ?? '', response }); setMeetingPassword('');
+    } catch (reason) {
+      if (isTerminalMeetingFailure(reason)) {
+        previewCleanup?.();
+        navigate('/create', { replace: true });
+        return;
+      }
+      setError(reason instanceof ApiRequestError ? apiErrorText(reason, t, 'join.failed') : t('join.failed'));
+    }
     finally { setIsJoining(false); }
   }
-  return <main className="shell"><section className="panel lobby" aria-labelledby="lobby-heading">
-    <p className="eyebrow">{t('join.eyebrow')}</p><h1 id="lobby-heading">{t('join.heading')}</h1><p className="lede">{t('join.lede')}</p>
+
+  if (!readySummary) return <TaskPageLayout eyebrow={t('join.eyebrow')} title={t('join.heading')} lede={t('join.lede')}>
+    <p className={summaryState.kind === 'loading' ? 'message' : 'message error'} role={summaryState.kind === 'loading' ? 'status' : 'alert'}>
+      {summaryState.kind === 'loading' ? t('join.loading') : t('join.lookupFailed')}
+    </p>
+    {summaryState.kind === 'unavailable' && <button type="button" className="secondary" onClick={() => void loadSummary()}>{t('join.retry')}</button>}
+  </TaskPageLayout>;
+
+  return <TaskPageLayout
+    eyebrow={t('join.eyebrow')}
+    title={t('join.heading')}
+    lede={t('join.lede')}
+  >
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
-    <form onSubmit={join} noValidate>
+    <form aria-label={t('join.form')} onSubmit={join} noValidate>
       <label>{t('join.nickname')}<input aria-label={t('join.nickname')} value={nickname} onChange={(event) => setNickname(event.target.value)} maxLength={40} autoComplete="name" /></label>
       <label>{t('join.password')} <span className="optional">{passwordRequired ? t('join.required') : t('common.optional')}</span><input aria-label={t('join.password')} aria-required={passwordRequired} required={passwordRequired} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="current-password" /></label>
       {error && <p className="message error" role="alert">{error}</p>}
       <button type="submit" disabled={isJoining || notice?.kind === 'block'}>{isJoining ? t('join.submitting') : t('join.submit')}</button>
     </form>
-    <DeviceCheck onCleanupReady={registerCleanup} />
-  </section></main>;
+    <details
+      className="device-check-disclosure"
+      open={deviceCheckOpen}
+      onToggle={(event) => setDeviceCheckOpen(event.currentTarget.open)}
+    >
+      <summary>{t('device.heading')}</summary>
+      <DeviceCheck onCleanupReady={registerCleanup} />
+    </details>
+  </TaskPageLayout>;
 }

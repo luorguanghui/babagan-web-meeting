@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
+  P2P_ICE_NEGOTIATION_MAX_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
   P2P_RTP_STALL_TIMEOUT_MS
 } from '@meeting/contracts';
@@ -67,6 +68,7 @@ class FakeRTCPeerConnection {
   readonly addIceCandidate = vi.fn(async (candidate?: RTCIceCandidateInit | RTCIceCandidate) => {
     this.addedIceCandidates.push(candidate === undefined ? undefined : (candidate as RTCIceCandidateInit));
   });
+  readonly setConfiguration = vi.fn();
   readonly getStats = vi.fn(async () => {
     const report = this.statsOmitPair
       ? new Map<string, RTCStats>([
@@ -151,6 +153,8 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
 function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
   onFallbackRequested?: (complete: () => void) => void;
+  iceTransportPolicy?: RTCIceTransportPolicy;
+  turnProvider?: 'coturn' | 'cloudflare';
   now?: () => number;
 } = {}) {
   let healthCheck: (() => Promise<void>) | undefined;
@@ -164,6 +168,8 @@ function makeHarness(options: {
       options.onPcCreated?.(pc);
       return pc as unknown as RTCPeerConnection;
     },
+    iceTransportPolicy: options.iceTransportPolicy,
+    turnProvider: options.turnProvider,
     onFallback,
     onFallbackRequested: options.onFallbackRequested,
     healthSampleIntervalMs: 1_000,
@@ -195,6 +201,166 @@ afterEach(() => {
 });
 
 describe('p2p viewer controller', () => {
+  it('retries peer transport on failure without starting an automatic SFU handover', async () => {
+    const onFallbackRequested = vi.fn();
+    const { controller, signaling, onFallback } = makeHarness({ onFallbackRequested });
+    await controller.acceptOffer('sharer-1', 'offer');
+    FakeRTCPeerConnection.instances[0].setIceConnectionState('failed');
+    expect(signaling.sendRetry).toHaveBeenCalledWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(onFallbackRequested).not.toHaveBeenCalled();
+    expect(controller.getState()).not.toBe('livekit');
+  });
+  it('retries unanswered peer recovery once per negotiation window and stops on close', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    expect(signaling.sendRetry).toHaveBeenLastCalledWith('sharer-1');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_MAX_MS - 1);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(2 * P2P_ICE_NEGOTIATION_MAX_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(4);
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    controller.close();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(4);
+  });
+
+  it('cancels peer recovery for explicit SFU and resumes when auto is selected again', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+    controller.requestSfu();
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+    controller.setIceTransportPolicy('all');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not interrupt a fresh negotiation with an old peer recovery retry', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+    await controller.acceptOffer('sharer-1', 'new-offer');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+  });
+
+  it('preserves recovery pacing across failed offers and cancels it after direct recovery', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 2_000);
+    await controller.acceptOffer('sharer-1', 'failed-retry');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 2_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(18_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    await controller.acceptOffer('sharer-1', 'recovered');
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    expect(controller.getState()).toBe('p2p');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
+  it('cancels auto recovery when the user switches to forced TURN', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+    controller.setIceTransportPolicy('relay');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+  });
+
+  it('restores prompt recovery after direct video has been stable for thirty seconds', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_TIMEOUT_MS + 2_000);
+    await controller.acceptOffer('sharer-1', 'recovered');
+    const pc = FakeRTCPeerConnection.instances.at(-1)!;
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    for (let second = 0; second < 30; second++) {
+      await vi.advanceTimersByTimeAsync(1_000);
+      await runHealthCheck();
+    }
+    pc.iceConnectionState = 'failed';
+    pc.oniceconnectionstatechange?.();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
+  it('continues direct probes when a failed TURN connection heals without a fresh offer', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    pc.iceConnectionState = 'failed';
+    pc.oniceconnectionstatechange?.();
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    pc.iceConnectionState = 'connected';
+    pc.oniceconnectionstatechange?.();
+    await runHealthCheck();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(vi.mocked(signaling.sendRetry).mock.calls.length).toBeGreaterThan(1);
+    controller.close();
+  });
+
+  it.each(['all', 'relay'] as const)('only probes a healthy TURN path in auto mode (%s)', async (policy) => {
+    const { controller, signaling, runHealthCheck } = makeHarness({ iceTransportPolicy: policy });
+    await controller.acceptOffer('sharer-1', 'offer');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    expect(controller.getState()).toBe('turn');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_MAX_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(policy === 'all' ? 1 : 0);
+    controller.close();
+  });
+
+  it('lets a late direct candidate replace early TURN without restarting the ICE generation', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const track = new FakeTrack('video');
+    track.muted = false;
+    pc.ontrack?.({ track, streams: [makeStream()] } as unknown as RTCTrackEvent);
+    await runHealthCheck();
+    expect(controller.getState()).toBe('turn');
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
+    pc.statsCandidateType = 'srflx';
+    await runHealthCheck();
+    expect(controller.getState()).toBe('p2p');
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('creates relay-only peer connections when the viewer chooses TURN', async () => {
     const signaling: P2pViewerSignaling = {
       sendAnswer: vi.fn(), sendIce: vi.fn(), sendMediaReady: vi.fn(), sendRetry: vi.fn(), sendBye: vi.fn()
@@ -273,22 +439,27 @@ describe('p2p viewer controller', () => {
     expect(signaling.sendAnswer).toHaveBeenCalledTimes(2);
     expect(signaling.sendAnswer).toHaveBeenLastCalledWith('sharer-1', 'answer-1');
     expect(controller.getState()).toBe('negotiating');
-    expect(controller.getStream()).toBeNull(); // old stream dropped with the old session
+    expect(controller.getStream()).toBe(stream); // keep the last frame until replacement media decodes
+    const replacementStream = makeStream();
+    const replacementTrack = second.fireTrack('video', replacementStream);
+    expect(controller.getStream()).toBe(stream);
+    replacementTrack.unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getStream()).toBe(replacementStream);
   });
 
-  it('renegotiates even from the livekit state when a fresh offer arrives', async () => {
+  it('ignores unsolicited peer offers while the user has explicitly selected SFU', async () => {
     const { controller, signaling, onFallback } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-1');
-    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
+    controller.requestSfu();
     expect(controller.getState()).toBe('livekit');
     expect(onFallback).toHaveBeenCalledOnce();
 
     await controller.acceptOffer('sharer-1', 'offer-2');
 
-    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
-    expect(FakeRTCPeerConnection.instances[1].closed).toBe(false);
-    expect(signaling.sendAnswer).toHaveBeenCalledTimes(2);
-    expect(controller.getState()).toBe('negotiating');
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    expect(signaling.sendAnswer).toHaveBeenCalledOnce();
+    expect(controller.getState()).toBe('livekit');
   });
 
   it('queues remote candidates until the remote description is applied, then flushes them in order', async () => {
@@ -410,6 +581,36 @@ describe('p2p viewer controller', () => {
     expect(signaling.sendBye).not.toHaveBeenCalled();
   });
 
+  it('marks decoded media as TURN when relay policy hides the selected pair', async () => {
+    const { controller, signaling } = makeHarness({ iceTransportPolicy: 'relay' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    pc.setIceConnectionState('connected');
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('keeps an existing session tied to its creation-time relay policy', async () => {
+    const { controller } = makeHarness({ iceTransportPolicy: 'relay' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsOmitPair = true;
+    controller.setIceTransportPolicy('all');
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getState()).toBe('turn');
+  });
+
   it('retains a candidate that arrives immediately before its offer', async () => {
     const { controller } = makeHarness();
 
@@ -466,6 +667,300 @@ describe('p2p viewer controller', () => {
     expect(signaling.sendMediaReady).toHaveBeenCalledWith('sharer-1');
   });
 
+  it('reports the provider used by a healthy relay session', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(controller.getTurnProvider()).toBe('cloudflare');
+  });
+
+  it.each(['coturn', 'cloudflare'] as const)(
+    'requests recovery of an established %s TURN session when ICE fails',
+    async (turnProvider) => {
+      const { controller, signaling, onFallback } = makeHarness({ turnProvider });
+      await controller.acceptOffer('sharer-1', 'offer-sdp');
+      const pc = FakeRTCPeerConnection.instances[0];
+      pc.statsCandidateType = 'relay';
+      const videoTrack = pc.fireTrack('video', makeStream());
+      videoTrack.unmute();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(controller.getState()).toBe('turn');
+
+      pc.setIceConnectionState('failed');
+
+      expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+      expect(controller.getState()).toBe('turn');
+      expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+      expect(onFallback).not.toHaveBeenCalled();
+      expect(pc.closed).toBe(false);
+    }
+  );
+
+  it('keeps an established TURN session after the disconnect timeout', async () => {
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    pc.setIceConnectionState('disconnected');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('requests TURN recovery when RTP stalls without switching to SFU', async () => {
+    let now = 0;
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({
+      turnProvider: 'cloudflare',
+      now: () => now
+    });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    pc.autoProgress = false;
+
+    for (let elapsed = 0; elapsed < P2P_RTP_STALL_TIMEOUT_MS + 1_000; elapsed += 1_000) {
+      now += 1_000;
+      await runHealthCheck();
+    }
+
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('detects a decoder freeze even while video bytes keep arriving', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.autoProgress = false;
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let elapsed = 0; elapsed < P2P_RTP_STALL_TIMEOUT_MS; elapsed += 1_000) {
+      pc.statsBytes += 1_000;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await runHealthCheck();
+    }
+
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    controller.close();
+  });
+
+  it('recovers a stalled TURN stream through a new offer and ignores the old connection', async () => {
+    const { controller, signaling } = makeHarness({ iceTransportPolicy: 'relay', turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp', 'generation-1');
+    const oldPc = FakeRTCPeerConnection.instances[0];
+    oldPc.statsCandidateType = 'relay';
+    oldPc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    oldPc.setIceConnectionState('failed');
+
+    await controller.acceptOffer('sharer-1', 'new-offer', 'generation-2');
+    const replacement = FakeRTCPeerConnection.instances[1];
+    replacement.statsCandidateType = 'relay';
+    const recoveredStream = makeStream();
+    replacement.fireTrack('video', recoveredStream).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getState()).toBe('turn');
+    expect(controller.getStream()).toBe(recoveredStream);
+    expect(controller.getTurnProvider()).toBe('cloudflare');
+    expect(signaling.sendMediaReady).toHaveBeenLastCalledWith('sharer-1', 'generation-2');
+    expect(oldPc.closed).toBe(true);
+    oldPc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it.each(['close', 'requestSfu'] as const)('cancels TURN recovery on %s', async (action) => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    controller[action]();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps automatically retrying TURN when a recovery offer arrives before the network recovers', async () => {
+    const { controller, signaling, onFallback } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    await controller.acceptOffer('sharer-1', 'recovery-offer');
+    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('rate limits recovery requests across a burst of failed replacement offers', async () => {
+    const { controller, signaling } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await controller.acceptOffer('sharer-1', `recovery-${attempt}`);
+      FakeRTCPeerConnection.instances.at(-1)!.setIceConnectionState('failed');
+    }
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
+  it('requests recovery when stats keep failing after decoded video stops', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    pc.getStats.mockRejectedValue(new Error('stats temporarily unavailable'));
+    await vi.advanceTimersByTimeAsync(P2P_RTP_STALL_TIMEOUT_MS);
+    await runHealthCheck();
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    controller.close();
+  });
+
+  it.each(['all', 'relay'] as const)('retries unanswered %s recovery at a bounded rate and cancels it on new decoded media', async (policy: RTCIceTransportPolicy) => {
+    const { controller, signaling, runHealthCheck } = makeHarness({ iceTransportPolicy: policy });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = policy === 'relay' ? 'relay' : 'srflx';
+    pc.autoProgress = false;
+    pc.fireTrack('video', makeStream()).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    pc.setIceConnectionState('failed');
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+
+    pc.setIceConnectionState('connected');
+    pc.statsFrames += 1;
+    await runHealthCheck();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(signaling.sendRetry).toHaveBeenCalledTimes(2);
+    controller.close();
+  });
+
+  it('keeps an established TURN session through sustained poor-quality samples', async () => {
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.statsPacketsReceived = 100;
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    for (let sample = 0; sample < 8; sample += 1) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await runHealthCheck();
+    }
+
+    expect(controller.getState()).toBe('turn');
+    expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).not.toHaveBeenCalled();
+  });
+
+  it('still honors an explicit SFU request from an established TURN session', async () => {
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    controller.requestSfu();
+
+    expect(controller.getState()).toBe('livekit');
+    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(onFallback).toHaveBeenCalledOnce();
+  });
+
+  it('applies refreshed ICE credentials to the active peer connection', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const freshServers: RTCIceServer[] = [{
+      urls: ['turn:turn.example.test:3478?transport=udp'],
+      username: 'fresh-user',
+      credential: 'fresh-credential'
+    }];
+
+    controller.updateIceServers(freshServers, 'coturn');
+
+    expect(pc.setConfiguration).toHaveBeenCalledWith({
+      iceServers: freshServers,
+      iceTransportPolicy: 'all'
+    });
+    expect(controller.getTurnProvider()).toBeUndefined();
+  });
+
+  it('keeps the established provider label until a new relay session is negotiated', async () => {
+    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    controller.updateIceServers([{ urls: ['turn:turn.example.test:3478'] }], 'coturn');
+
+    expect(controller.getTurnProvider()).toBe('cloudflare');
+  });
+
+  it('updates the provider when a direct session later migrates to relay', async () => {
+    const { controller, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    await controller.acceptOffer('sharer-1', 'offer-sdp');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const videoTrack = pc.fireTrack('video', makeStream());
+    videoTrack.unmute();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(controller.getState()).toBe('p2p');
+
+    controller.updateIceServers([{ urls: ['turn:turn.example.test:3478'] }], 'coturn');
+    pc.statsCandidateType = 'relay';
+    await runHealthCheck();
+
+    expect(controller.getState()).toBe('turn');
+    expect(controller.getTurnProvider()).toBe('coturn');
+  });
+
   it('tracks selected-pair migration from direct to relay and back to direct', async () => {
     const { controller, runHealthCheck } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
@@ -501,9 +996,9 @@ describe('p2p viewer controller', () => {
     expect(await controller.getStatsReport()).toBeUndefined();
   });
 
-  it('falls back after inbound video RTP stops growing for five seconds', async () => {
+  it('requests peer recovery after inbound video RTP stops growing for five seconds', async () => {
     let now = 0;
-    const { controller, runHealthCheck } = makeHarness({ now: () => now });
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({ now: () => now });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     const videoTrack = pc.fireTrack('video', makeStream());
@@ -518,12 +1013,16 @@ describe('p2p viewer controller', () => {
     }
 
     expect(pc.getStats.mock.calls.length).toBeGreaterThanOrEqual(6);
-    expect(controller.getState()).toBe('livekit');
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(false);
   });
 
   it('still detects a complete RTP stall after decoded media on an unknown path', async () => {
     let now = 0;
-    const { controller, runHealthCheck } = makeHarness({ now: () => now });
+    const { controller, signaling, runHealthCheck } = makeHarness({ now: () => now });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsOmitPair = true;
@@ -538,11 +1037,13 @@ describe('p2p viewer controller', () => {
       await runHealthCheck();
     }
 
-    expect(controller.getState()).toBe('livekit');
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
   });
 
-  it('falls back after eight consecutive populated intervals at fifteen percent loss', async () => {
-    const { controller, runHealthCheck } = makeHarness();
+  it('requests peer recovery after eight consecutive populated intervals at fifteen percent loss', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsPacketsReceived = 100;
@@ -556,16 +1057,45 @@ describe('p2p viewer controller', () => {
       pc.statsPacketsLost += 3;
       await runHealthCheck();
       expect(controller.getState()).toBe('p2p');
+      expect(signaling.sendRetry).not.toHaveBeenCalled();
     }
 
     pc.statsPacketsReceived += 17;
     pc.statsPacketsLost += 3;
     await runHealthCheck();
-    expect(controller.getState()).toBe('livekit');
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+  });
+
+  it('paces recovery requests during sustained loss even while frames continue decoding', async () => {
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness();
+    await controller.acceptOffer('sharer-1', 'offer');
+    const pc = FakeRTCPeerConnection.instances[0];
+    const stream = makeStream();
+    pc.fireTrack('video', stream).unmute();
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let sample = 0; sample < 16; sample++) {
+      pc.statsPacketsReceived += 17;
+      pc.statsPacketsLost += 3;
+      await vi.advanceTimersByTimeAsync(1_000);
+      await runHealthCheck();
+    }
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(controller.getStream()).toBe(stream);
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+
+    pc.statsPacketsReceived += 20;
+    await runHealthCheck();
+    await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_MAX_MS);
+    expect(signaling.sendRetry).toHaveBeenCalledOnce();
+    controller.close();
   });
 
   it('resets the poor-quality streak after one healthy interval', async () => {
-    const { controller, runHealthCheck } = makeHarness();
+    const { controller, signaling, runHealthCheck } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsPacketsReceived = 100;
@@ -587,11 +1117,13 @@ describe('p2p viewer controller', () => {
       await runHealthCheck();
     }
     expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
 
     pc.statsPacketsReceived += 17;
     pc.statsPacketsLost += 3;
     await runHealthCheck();
-    expect(controller.getState()).toBe('livekit');
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
   });
 
   it('ignores high loss percentages when an interval has fewer than twenty packets', async () => {
@@ -611,8 +1143,8 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('p2p');
   });
 
-  it('falls back after freezes grow for eight consecutive populated intervals', async () => {
-    const { controller, runHealthCheck } = makeHarness();
+  it('requests peer recovery after freezes grow for eight consecutive populated intervals', async () => {
+    const { controller, signaling, runHealthCheck } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     const videoTrack = pc.fireTrack('video', makeStream());
@@ -624,15 +1156,18 @@ describe('p2p viewer controller', () => {
       pc.statsFreezeCount += 1;
       await runHealthCheck();
       expect(controller.getState()).toBe('p2p');
+      expect(signaling.sendRetry).not.toHaveBeenCalled();
     }
 
     pc.statsPacketsReceived += 20;
     pc.statsFreezeCount += 1;
     await runHealthCheck();
-    expect(controller.getState()).toBe('livekit');
+    expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
   });
 
-  it('keeps the p2p stream and connection until fallback handover completes', async () => {
+  it('keeps the p2p stream and connection until an explicit SFU handover completes', async () => {
     let completeFallback: (() => void) | undefined;
     const { controller } = makeHarness({
       onFallbackRequested: (complete) => { completeFallback = complete; }
@@ -644,7 +1179,7 @@ describe('p2p viewer controller', () => {
     videoTrack.unmute();
     await vi.advanceTimersByTimeAsync(1_000);
 
-    pc.setIceConnectionState('failed');
+    controller.requestSfu();
 
     expect(controller.getState()).toBe('livekit');
     expect(controller.getStream()).toBe(stream);
@@ -654,24 +1189,26 @@ describe('p2p viewer controller', () => {
     expect(pc.closed).toBe(true);
   });
 
-  it('falls back 8 seconds after the answer when no track ever arrives', async () => {
+  it('requests peer recovery 8 seconds after the answer when no track ever arrives', async () => {
     const { controller, signaling, onFallback } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
 
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS - 1);
     expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(onFallback).toHaveBeenCalledOnce();
-    expect(pc.closed).toBe(true);
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(false);
     expect(controller.getStream()).toBeNull();
   });
 
-  it('falls back 8 seconds after the answer when the video track never receives RTP', async () => {
+  it('requests peer recovery 8 seconds after the answer when the video track never receives RTP', async () => {
     const { controller, signaling } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -679,11 +1216,12 @@ describe('p2p viewer controller', () => {
 
     vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS);
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
   });
 
-  it('extends the media deadline once while ICE is still checking before falling back', async () => {
+  it('extends the media deadline once while ICE is still checking before requesting peer recovery', async () => {
     const { controller, signaling, onFallback } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -695,11 +1233,13 @@ describe('p2p viewer controller', () => {
 
     vi.advanceTimersByTime(1_000); // 15s: deadline fires while checking → one extension
     expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS); // 23s: extension elapsed → fallback
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(onFallback).toHaveBeenCalledOnce();
+    vi.advanceTimersByTime(P2P_ICE_NEGOTIATION_TIMEOUT_MS); // 23s: extension elapsed → recovery
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
   });
 
   it('uses freshly updated ICE servers for the next renegotiation', async () => {
@@ -716,16 +1256,17 @@ describe('p2p viewer controller', () => {
     expect(FakeRTCPeerConnection.instances[1].config).toEqual({ iceServers: fresh });
   });
 
-  it('falls back when applying the remote offer fails', async () => {
+  it('requests peer recovery when applying the remote offer fails', async () => {
     const { controller, signaling, onFallback } = makeHarness({
       onPcCreated: (pc) => { pc.failRemoteDescription = true; }
     });
 
     await controller.acceptOffer('sharer-1', 'offer-sdp');
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(onFallback).toHaveBeenCalledOnce();
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
   });
 
   it('is idempotent on close, clears timers and state, and ignores later offers', async () => {
@@ -767,7 +1308,7 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('idle');
   });
 
-  it('falls back 5 seconds after ICE stays disconnected while media is flowing', async () => {
+  it('requests peer recovery 5 seconds after ICE stays disconnected while media is flowing', async () => {
     const { controller, signaling, onFallback } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -780,16 +1321,19 @@ describe('p2p viewer controller', () => {
     pc.setIceConnectionState('disconnected');
     vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS - 1);
     expect(controller.getState()).toBe('p2p');
+    expect(signaling.sendRetry).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(onFallback).toHaveBeenCalledOnce();
-    expect(pc.closed).toBe(true);
+    expect(controller.getState()).toBe('p2p');
+    expect(controller.getStream()).toBe(stream);
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(false);
   });
 
-  it('falls back from negotiating when ICE stays disconnected', async () => {
+  it('requests peer recovery from negotiating when ICE stays disconnected', async () => {
     const { controller, signaling } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -797,12 +1341,13 @@ describe('p2p viewer controller', () => {
     pc.setIceConnectionState('disconnected');
     vi.advanceTimersByTime(P2P_ICE_DISCONNECT_TIMEOUT_MS);
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(pc.closed).toBe(true);
+    expect(controller.getState()).toBe('negotiating');
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(false);
   });
 
-  it('falls back immediately when ICE reaches failed', async () => {
+  it('requests peer recovery immediately when ICE reaches failed', async () => {
     const { controller, signaling, onFallback } = makeHarness();
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
@@ -813,10 +1358,12 @@ describe('p2p viewer controller', () => {
 
     pc.setIceConnectionState('failed');
 
-    expect(controller.getState()).toBe('livekit');
-    expect(signaling.sendBye).toHaveBeenCalledWith('sharer-1', 'fallback');
-    expect(onFallback).toHaveBeenCalledOnce();
-    expect(pc.closed).toBe(true);
+    expect(controller.getState()).toBe('p2p');
+    expect(controller.getStream()).toBe(stream);
+    expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect(signaling.sendBye).not.toHaveBeenCalled();
+    expect(onFallback).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(false);
   });
 
   it('does not fall back when ICE reconnects within the 5s window', async () => {

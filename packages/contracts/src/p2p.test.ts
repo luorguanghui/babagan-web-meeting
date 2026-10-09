@@ -8,6 +8,7 @@ import {
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
   P2P_MESSAGE_MAX_BYTES,
   P2P_SCREEN_BITRATES,
+  P2P_TOTAL_UPLINK_BUDGET_BPS,
   P2pClientMessage,
   P2pClientMessageSchema,
   P2pScreenBitrate,
@@ -21,11 +22,12 @@ describe('P2P signaling contract types', () => {
   it('exports the exact client-message discriminated union', () => {
     expectTypeOf<P2pClientMessage>().toEqualTypeOf<
       | { type: 'hello'; participantIdentity: string }
-      | { type: 'offer'; to: string; sdp: string; generation?: string }
+      | { type: 'offer'; to: string; sdp: string; generation?: string; turnProvider?: 'coturn' | 'cloudflare' }
       | { type: 'answer'; to: string; sdp: string; generation?: string }
       | { type: 'ice'; to: string; candidate: string | null; generation?: string } // null = end-of-candidates
       | { type: 'media-ready'; to: string; generation?: string }
       | { type: 'retry'; to: string }
+      | { type: 'screen-transport'; transport: 'peer' | 'sfu' }
       | { type: 'bye'; to: string; reason?: string }
       | { type: 'ping' }
     >();
@@ -39,6 +41,7 @@ describe('P2P signaling contract types', () => {
       | { type: 'pong' }
       | { type: 'share-gone'; reason: string }
       | { type: 'error'; code: string; message: string }
+      | { type: 'screen-transport'; from: string; transport: 'peer' | 'sfu' }
     >();
   });
 
@@ -51,13 +54,35 @@ describe('P2P signaling contract types', () => {
     expect(P2P_ICE_DISCONNECT_TIMEOUT_MS).toBe(5000);
     expect(P2P_MESSAGE_MAX_BYTES).toBe(64 * 1024);
     expect(P2P_SCREEN_BITRATES).toEqual([5_000_000, 8_000_000, 10_000_000]);
+    expect(P2P_TOTAL_UPLINK_BUDGET_BPS).toBe(40_000_000);
   });
 });
 
 describe('P2P client message schema', () => {
+  it.each(['peer', 'sfu'])('accepts a screen transport request for %s without a target', (transport: string) => {
+    expect(parseP2pClientMessage({ type: 'screen-transport', transport })).toEqual({
+      type: 'screen-transport', transport
+    });
+  });
+
+  it.each([
+    { type: 'screen-transport', transport: 'turn' },
+    { type: 'screen-transport' },
+    { type: 'screen-transport', transport: 'sfu', to: 'sharer' },
+    { type: 'screen-transport', transport: 'peer', from: 'viewer' },
+    { type: 'screen-transport', transport: 'sfu', extra: true }
+  ])('rejects a malformed screen transport request %j', (message: unknown) => {
+    expect(() => parseP2pClientMessage(message)).toThrow(SchemaError);
+  });
   it('accepts every documented client message', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'hello', participantIdentity: 'participant-1' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'offer', to: 'viewer-1', sdp: 'v=0 ...' })).toBe(true);
+    expect(Value.Check(P2pClientMessageSchema, {
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
+    })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: 'candidate:1 1 udp 2130706431 192.0.2.1 54666 typ host' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: null })).toBe(true);
@@ -70,6 +95,12 @@ describe('P2P client message schema', () => {
 
   it('rejects messages missing to, with unknown types, empty sdp, or extra properties', () => {
     expect(Value.Check(P2pClientMessageSchema, { type: 'offer', sdp: 'v=0 ...' })).toBe(false);
+    expect(Value.Check(P2pClientMessageSchema, {
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'unknown'
+    })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'answer', sdp: 'v=0 ...' })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', candidate: null })).toBe(false);
     expect(Value.Check(P2pClientMessageSchema, { type: 'bye' })).toBe(false);
@@ -88,6 +119,17 @@ describe('parseP2pClientMessage', () => {
     });
     expect(parseP2pClientMessage({ type: 'offer', to: 'viewer-1', sdp: 'v=0 ...' })).toEqual({
       type: 'offer', to: 'viewer-1', sdp: 'v=0 ...'
+    });
+    expect(parseP2pClientMessage({
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
+    })).toEqual({
+      type: 'offer',
+      to: 'viewer-1',
+      sdp: 'v=0 ...',
+      turnProvider: 'cloudflare'
     });
     expect(parseP2pClientMessage({ type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toEqual({
       type: 'answer', to: 'sharer-1', sdp: 'v=0 ...'
@@ -148,6 +190,18 @@ describe('SchemaError', () => {
 });
 
 describe('P2P server message schema', () => {
+  it.each(['peer', 'sfu'])('accepts a screen transport envelope for %s', (transport: string) => {
+    expect(Value.Check(P2pServerMessageSchema, { type: 'screen-transport', from: 'viewer', transport })).toBe(true);
+  });
+
+  it.each([
+    { type: 'screen-transport', transport: 'sfu' },
+    { type: 'screen-transport', transport: 'sfu', from: '' },
+    { type: 'screen-transport', transport: 'turn', from: 'viewer' },
+    { type: 'screen-transport', transport: 'peer', from: 'viewer', to: 'sharer' }
+  ])('rejects a malformed screen transport envelope %j', (message: unknown) => {
+    expect(Value.Check(P2pServerMessageSchema, message)).toBe(false);
+  });
   it('accepts every documented server message', () => {
     expect(Value.Check(P2pServerMessageSchema, {
       type: 'welcome', peers: [{ identity: 'participant-1', nickname: 'Ada' }]

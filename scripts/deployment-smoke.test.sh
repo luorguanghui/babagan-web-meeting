@@ -27,6 +27,8 @@ cat >"$temp_dir/scripts/smoke-test.sh" <<'EOF'
 {
   printf 'slug=%s\n' "$SMOKE_MEETING_SLUG"
   printf 'cookie=%s\n' "$SMOKE_PARTICIPANT_COOKIE"
+  printf 'provider=%s\n' "$P2P_TURN_PROVIDER"
+  printf 'requested=%s\n' "${SMOKE_REQUESTED_TURN_PROVIDER:-}"
   printf 'stun=%s\n' "$P2P_STUN_URLS"
   printf 'turn=%s\n' "$P2P_TURN_URLS"
   printf 'image=%s\n' "$SMOKE_NODE_IMAGE"
@@ -38,11 +40,14 @@ EOF
 chmod 700 "$temp_dir/scripts/smoke-test.sh"
 
 printf '%s\n' \
+  'P2P_TURN_PROVIDER=cloudflare' \
   'P2P_STUN_URLS=stun:stun.cloudflare.com:3478' \
   'P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' \
   'P2P_TURN_SECRET=0123456789abcdef0123456789abcdef' \
   'P2P_TURN_TTL_SECONDS=600' \
-  'TURN_SHARED_SECRET=0123456789abcdef0123456789abcdef' >"$temp_dir/production.env"
+  'TURN_SHARED_SECRET=0123456789abcdef0123456789abcdef' \
+  'CLOUDFLARE_TURN_KEY_ID=key-id' \
+  'CLOUDFLARE_TURN_API_TOKEN=api-token' >"$temp_dir/production.env"
 chmod 600 "$temp_dir/production.env"
 printf '%s\n' 'services: {}' >"$temp_dir/docker-compose.yml"
 
@@ -63,12 +68,24 @@ grep -Fq -- '-e DATABASE_PATH=/data/meetings.sqlite' "$temp_dir/docker.log"
 grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log"
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
 grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
+grep -Fqx 'provider=cloudflare' "$temp_dir/smoke.log"
+grep -Fqx 'requested=' "$temp_dir/smoke.log"
+grep -Fqx 'requested=coturn' "$temp_dir/smoke.log"
+grep -Fqx 'requested=cloudflare' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.cloudflare.com:3478' "$temp_dir/smoke.log"
 grep -Fqx 'turn=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp' "$temp_dir/smoke.log"
 grep -Fqx 'image=meeting-api:test' "$temp_dir/smoke.log"
 grep -Fqx 'livekit_token=fresh.header.signature' "$temp_dir/smoke.log" \
   || { echo 'deployment smoke reused a stale static LiveKit token' >&2; exit 1; }
+grep -Fc 'args=https://meet.example.com|wss://rtc.example.com' "$temp_dir/smoke.log" | grep -Fxq '3' \
+  || { echo 'deployment smoke wrapper did not run both default and explicit provider checks' >&2; exit 1; }
 
+: >"$temp_dir/docker.log"
+: >"$temp_dir/smoke.log"
+output="$(SKIP_CLOUDFLARE_SMOKE=1 run_smoke)"
+grep -Fq 'explicitly skipped' <<<"$output"
+[[ "$(grep -c '^args=' "$temp_dir/smoke.log")" == 2 ]] || { echo 'waiver must retain default and explicit coturn smoke' >&2; exit 1; }
+! grep -Fqx 'requested=cloudflare' "$temp_dir/smoke.log" || { echo 'waived Cloudflare check still ran' >&2; exit 1; }
 : >"$temp_dir/docker.log"
 : >"$temp_dir/smoke.log"
 if SMOKE_SHOULD_FAIL=1 run_smoke; then

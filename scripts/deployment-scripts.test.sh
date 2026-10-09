@@ -23,11 +23,14 @@ done
 # Failed candidate deployments retain this protected record before any pull/build
 # or migration, and only archive it after smoke success.
 need "$deploy" 'pending-release.env'
+need "$deploy" '/run/lock/babagan-meeting-update.lock'
+need "$deploy" 'flock -n "$update_lock_fd"'
 need "$deploy" 'compose pull --policy missing caddy livekit coturn'
 need "$deploy" 'coturn_image='
 need "$deploy" 'for service in caddy api livekit web coturn'
 need "$deploy" 'compose run --rm --no-deps api'
 need "$deploy" 'mv "$pending" "$state_dir/releases/$sha.pending-completed.env"'
+need "$deploy" 'VERSION_ID'
 need "$deploy" 'PREVIOUS_API_IMAGE_ID'
 need "$deploy" 'DATABASE_BACKUP_SHA256'
 need "$deploy" '(( mem_kib >= 1153434 ))'
@@ -59,6 +62,8 @@ need "$web_dockerfile" 'pnpm --filter @meeting/contracts build'
 need "$deploy" '"$script_dir/deployment-smoke.sh"'
 need "$deployment_smoke" 'SMOKE_NODE_IMAGE="$api_image"'
 need "$root/scripts/smoke-test.sh" 'SMOKE_NODE_IMAGE'
+need "$root/scripts/smoke-test.sh" '--user 0:0'
+need "$root/scripts/smoke-test.sh" '--cap-drop ALL --security-opt no-new-privileges --read-only'
 need "$root/scripts/smoke-test.sh" 'SMOKE_CORE_ONLY'
 need "$root/scripts/smoke-test.sh" 'for websocket_attempt in 1 2 3'
 need "$root/scripts/smoke-test.sh" 'sleep 5'
@@ -68,6 +73,8 @@ need "$deploy" 'wss://meet.babagan.cloud/rtc'
 need "$rollback" 'wss://meet.babagan.cloud/rtc'
 need "$deploy" 'compose config | awk -v service="$1"'
 need "$deploy" 'image_ref="babagan-meeting-$1:latest"'
+need "$root/scripts/smoke-test.sh" 'SMOKE_REQUESTED_TURN_PROVIDER'
+need "$deployment_smoke" 'SMOKE_REQUESTED_TURN_PROVIDER=cloudflare'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before
@@ -84,6 +91,15 @@ stop_line="$(grep -nF 'compose stop api' "$rollback" | head -n1 | cut -d: -f1)"
 # binary. This proves a missing first-deploy baseline is rejected, while a
 # complete baseline and a complete pending-recovery record are accepted.
 temp_dir="$(mktemp -d)"; trap 'rm -rf "$temp_dir"' EXIT
+export BABAGAN_UPDATE_LOCK_FILE="$temp_dir/shared-update.lock"
+# Git Bash has no util-linux flock; real exclusion is covered on Linux by
+# update-release.test.py. Only mock coordination for these parser tests.
+if ! command -v flock >/dev/null; then
+  mkdir -p "$temp_dir/lock-bin"
+  printf '#!/bin/bash\nexit 0\n' >"$temp_dir/lock-bin/flock"
+  chmod 700 "$temp_dir/lock-bin/flock"
+  export PATH="$temp_dir/lock-bin:$PATH"
+fi
 mkdir -p "$temp_dir/bin"
 # Execute deploy.sh itself from an otherwise empty app root. Its baseline gate
 # must stop before Docker/host preflights and before it creates var/, backups,

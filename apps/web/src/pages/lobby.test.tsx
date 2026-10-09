@@ -1,7 +1,7 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { CreateMeetingResponseSchema, RefreshParticipantTokenResponseSchema } from '@meeting/contracts';
@@ -29,7 +29,25 @@ function success(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+async function renderValidLobby() {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+    name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+  })));
+  const rendered = renderAt(`/m/${slug}`);
+  await screen.findByLabelText('Nickname');
+  return rendered;
+}
+
 describe('meeting creation', () => {
+  it('places creation context and the form in separate task regions', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({ meeting: null })));
+    renderAt('/create');
+
+    expect(await screen.findByRole('complementary')).toHaveTextContent('short-lived room');
+    expect(screen.getByRole('form', { name: 'Create meeting' })).toBeVisible();
+  });
+
   it('follows a Chinese browser language and can switch back to English', async () => {
     installBrowserFakes();
     Object.defineProperty(window.navigator, 'languages', { configurable: true, value: ['zh-CN', 'en-US'] });
@@ -174,6 +192,101 @@ describe('API client', () => {
 });
 
 describe('join lobby', () => {
+  it('hides a validated lobby immediately when navigating to another meeting slug', async () => {
+    installBrowserFakes();
+    const nextSlug = 'another-meeting-slug-long-enough';
+    const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).endsWith(nextSlug)
+      ? new Promise<Response>(() => undefined)
+      : Promise.resolve(success({ name: 'Daily', status: 'created', requiresPassword: true, isFull: false })));
+    vi.stubGlobal('fetch', fetchMock);
+    function SwitchMeeting() {
+      const navigate = useNavigate();
+      return <button type="button" onClick={() => navigate(`/m/${nextSlug}`)}>Switch meeting</button>;
+    }
+    render(<MemoryRouter initialEntries={[`/m/${slug}`]}><SwitchMeeting /><App /></MemoryRouter>);
+    expect(await screen.findByLabelText('Nickname')).toBeVisible();
+
+    await userEvent.click(screen.getByRole('button', { name: 'Switch meeting' }));
+
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Join muted' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the mobile join form before a collapsed device check', async () => {
+    installBrowserFakes();
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true,
+      media: '(max-width: 44.999rem)',
+      onchange: null,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+    })));
+    renderAt(`/m/${slug}`);
+
+    const form = await screen.findByRole('form', { name: 'Join meeting' });
+    const summary = screen.getByText('Device check', { selector: 'summary' });
+    const disclosure = summary.closest('details');
+    expect(disclosure).not.toHaveAttribute('open');
+    expect(form.compareDocumentPosition(disclosure!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('does not expose the join form before the meeting summary is validated', () => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    renderAt(`/m/${slug}`);
+
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Join muted' })).not.toBeInTheDocument();
+  });
+
+  it.each(['ended', 'expired'] as const)('redirects a %s meeting summary to create', async (status) => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      name: 'Old meeting', status, requiresPassword: false, isFull: false
+    })));
+    renderAt(`/meetings/${slug}`);
+
+    expect(await screen.findByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ['MEETING_NOT_FOUND', 404],
+    ['MEETING_EXPIRED', 410]
+  ] as const)('redirects terminal lookup error %s to create', async (code, status) => {
+    installBrowserFakes();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
+      error: { code, message: 'Terminal', correlationId: 'corr-terminal' }
+    }, status)));
+    renderAt(`/m/${slug}`);
+
+    expect(await screen.findByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+  });
+
+  it('keeps a transient lookup failure in the lobby and retries', async () => {
+    installBrowserFakes();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(success({
+        error: { code: 'MEDIA_SERVICE_UNAVAILABLE', message: 'Unavailable', correlationId: 'corr-503' }
+      }, 503))
+      .mockResolvedValueOnce(success({
+        name: 'Daily', status: 'created', requiresPassword: false, isFull: false
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderAt(`/m/${slug}`);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Meeting details could not be loaded');
+    expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByLabelText('Nickname')).toBeVisible();
+  });
+
   it('marks and validates the password for a protected meeting', async () => {
     installBrowserFakes();
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
@@ -199,55 +312,63 @@ describe('join lobby', () => {
     expect(screen.getByText('optional')).toBeVisible();
   });
 
-  it('blocks unsupported desktop browsers with guidance', () => {
+  it('keeps device check secondary to the labelled join form', async () => {
+    installBrowserFakes();
+    await renderValidLobby();
+
+    expect(screen.getByRole('form', { name: 'Join meeting' })).toBeVisible();
+    expect(screen.getByRole('group', { name: 'Device check' })).toBeVisible();
+  });
+
+  it('blocks unsupported desktop browsers with guidance', async () => {
     installBrowserFakes({ userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/605.1 Safari/17.0' });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByRole('alert')).toHaveTextContent('Windows 10 or 11 with Chrome or Edge');
     expect(screen.getByRole('button', { name: 'Join muted' })).toBeDisabled();
   });
 
-  it('shows mobile users the view and voice limitation notice', () => {
+  it('shows mobile users the view and voice limitation notice', async () => {
     installBrowserFakes({ userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1 Mobile/15E148' });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByText('Mobile is available for view and voice only; screen sharing is not supported.')).toBeVisible();
     expect(screen.getByRole('button', { name: 'Join muted' })).toBeEnabled();
   });
 
-  it('warns when the page is not running over HTTPS', () => {
+  it('warns when the page is not running over HTTPS', async () => {
     installBrowserFakes({ secure: false });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByRole('alert')).toHaveTextContent('secure HTTPS connection');
     expect(screen.getByRole('button', { name: 'Join muted' })).toBeDisabled();
   });
 
-  it('warns when WebRTC is unavailable', () => {
+  it('warns when WebRTC is unavailable', async () => {
     installBrowserFakes({ webRtc: false });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByRole('alert')).toHaveTextContent('WebRTC is unavailable');
   });
 
-  it('blocks Chromium derivatives that are not Chrome or Edge', () => {
+  it('blocks Chromium derivatives that are not Chrome or Edge', async () => {
     installBrowserFakes({ userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36 OPR/125.0.0.0' });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByRole('alert')).toHaveTextContent('Windows 10 or 11 with Chrome or Edge');
   });
 
-  it('blocks Brave despite its Chrome user agent token', () => {
+  it('blocks Brave despite its Chrome user agent token', async () => {
     installBrowserFakes();
     Object.defineProperty(window.navigator, 'brave', { configurable: true, value: {} });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     expect(screen.getByRole('alert')).toHaveTextContent('Windows 10 or 11 with Chrome or Edge');
   });
 
   it('does not request microphone permission until a person starts the device check', async () => {
     const { getUserMedia, track } = installBrowserFakes();
-    const rendered = renderAt(`/m/${slug}`);
+    const rendered = await renderValidLobby();
 
     expect(getUserMedia).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
@@ -258,7 +379,7 @@ describe('join lobby', () => {
 
   it('reports denied microphone permission', async () => {
     installBrowserFakes({ getUserMedia: async () => { throw new DOMException('Denied', 'NotAllowedError'); } });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
 
@@ -268,7 +389,7 @@ describe('join lobby', () => {
   it('explains when browser policy does not expose microphone access', async () => {
     installBrowserFakes();
     Object.defineProperty(window.navigator, 'mediaDevices', { configurable: true, value: undefined });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
 
@@ -280,7 +401,7 @@ describe('join lobby', () => {
     const lateTrack = { stop: vi.fn() };
     const lateStream = { getTracks: () => [lateTrack] } as unknown as MediaStream;
     installBrowserFakes({ getUserMedia: () => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }) });
-    const rendered = renderAt(`/m/${slug}`);
+    const rendered = await renderValidLobby();
 
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     rendered.unmount();
@@ -299,7 +420,7 @@ describe('join lobby', () => {
       .mockImplementationOnce(() => new Promise<MediaStream>((resolve) => { resolveFirst = resolve; }))
       .mockResolvedValueOnce(secondStream);
     installBrowserFakes({ getUserMedia });
-    renderAt(`/m/${slug}`);
+    await renderValidLobby();
 
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
@@ -320,12 +441,13 @@ describe('join lobby', () => {
     vi.stubGlobal('fetch', fetchMock);
     renderAt(`/m/${slug}`);
 
+    await screen.findByLabelText('Nickname');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
     expect(screen.getByText('Nickname is required.')).toBeVisible();
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
 
-    expect(await screen.findByRole('heading', { name: 'Ada, you are in' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Daily' })).toBeVisible();
     expect(fetchMock).toHaveBeenCalledWith(`/api/v1/meetings/${slug}/join`, expect.objectContaining({
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
@@ -336,16 +458,38 @@ describe('join lobby', () => {
 
   it('stops an active preview before joining', async () => {
     const { track } = installBrowserFakes();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({
-      participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
-      meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
-    })));
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/join')
+      ? success({
+        participantIdentity: 'p-1', participantName: 'Ada', livekitUrl: 'wss://rtc.example', token: 'token',
+        meetingExpiresAt: 1_725_000_000_000, permissions: { publishSources: ['microphone'] }
+      })
+      : success({ name: 'Daily', status: 'created', requiresPassword: false, isFull: false })));
     renderAt(`/m/${slug}`);
 
+    await screen.findByLabelText('Nickname');
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
 
     await waitFor(() => expect(track.stop).toHaveBeenCalledOnce());
+  });
+
+  it('stops device preview and redirects when the meeting ends before join completes', async () => {
+    const { track } = installBrowserFakes();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/join')
+      ? success({
+        error: { code: 'MEETING_EXPIRED', message: 'Ended', correlationId: 'corr-ended' }
+      }, 410)
+      : success({ name: 'Daily', status: 'active', requiresPassword: false, isFull: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderAt(`/m/${slug}`);
+
+    await screen.findByLabelText('Nickname');
+    await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+    await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
+    await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
+
+    expect(await screen.findByRole('heading', { name: 'Create a meeting' })).toBeVisible();
+    expect(track.stop).toHaveBeenCalledOnce();
   });
 });

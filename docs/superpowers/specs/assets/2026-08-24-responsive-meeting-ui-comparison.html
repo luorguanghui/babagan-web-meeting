@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Responsive meeting UI comparison</title>
+  <style>
+    :root { color-scheme: dark; font-family: system-ui, sans-serif; }
+    body { background: #081419; color: #f3f8f9; margin: 0; padding: 24px; }
+    h1 { font-size: 20px; margin: 0 0 20px; }
+    .grid { display: grid; gap: 24px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    figure { margin: 0; min-width: 0; }
+    figcaption { color: #9cb2b8; font-size: 14px; margin-bottom: 8px; }
+    img { background: #030708; border: 1px solid rgba(196, 231, 236, .2); display: block; height: auto; width: 100%; }
+    .mobile img { margin-inline: auto; max-width: 390px; }
+  </style>
+</head>
+<body>
+  <h1>Approved reference and browser-rendered implementation</h1>
+  <div class="grid">
+    <figure><figcaption>Desktop reference</figcaption><img src="./2026-08-24-responsive-meeting-ui-desktop.png" alt="Approved desktop reference"></figure>
+    <figure><figcaption>Desktop implementation · drawer open, empty-share state</figcaption><img src="./implementation/2026-08-24-responsive-meeting-ui-desktop-drawer.png" alt="Browser-rendered desktop implementation with participant drawer"></figure>
+    <figure class="mobile"><figcaption>Mobile reference · More open</figcaption><img src="./2026-08-24-responsive-meeting-ui-mobile.png" alt="Approved mobile reference"></figure>
+    <figure class="mobile"><figcaption>Mobile implementation · More open, empty-share state</figcaption><img src="./implementation/2026-08-24-responsive-meeting-ui-mobile-more.png" alt="Browser-rendered mobile implementation"></figure>
+  </div>
+</body>
+</html>

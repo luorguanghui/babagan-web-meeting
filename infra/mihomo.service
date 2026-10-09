@@ -1,0 +1,23 @@
+[Unit]
+Description=Mihomo egress proxy for Cloudflare TURN credential generation
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=mihomo
+Group=mihomo
+ExecStart=/usr/local/bin/mihomo -d /var/lib/mihomo -f /etc/mihomo/config.yaml
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mihomo
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

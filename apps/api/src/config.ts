@@ -1,3 +1,7 @@
+import { isIP } from 'node:net';
+
+import type { P2pTurnProvider } from '@meeting/contracts';
+
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
   publicBaseUrl: URL;
@@ -12,6 +16,12 @@ export interface AppConfig {
   p2pTurnUrls: string[];
   p2pTurnSecret: string;
   p2pTurnTtlSeconds: number;
+  p2pTurnProvider?: P2pTurnProvider;
+  cloudflareTurnKeyId?: string;
+  cloudflareTurnApiToken?: string;
+  cloudflareTurnTtlSeconds?: number;
+  cloudflareTurnConnectIps?: string[];
+  cloudflareTurnProxyUrl?: string;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -76,6 +86,66 @@ function parseTurnTtlSeconds(env: Environment): number {
   return value;
 }
 
+function parseTurnProvider(env: Environment): P2pTurnProvider {
+  const value = env.P2P_TURN_PROVIDER?.trim() || 'coturn';
+  if (value !== 'coturn' && value !== 'cloudflare') {
+    throw new Error('P2P_TURN_PROVIDER must be coturn or cloudflare');
+  }
+  return value;
+}
+
+function parseCloudflareTurnTtlSeconds(env: Environment): number {
+  const raw = env.CLOUDFLARE_TURN_TTL_SECONDS?.trim() || '600';
+  const value = Number(raw);
+  if (!Number.isInteger(value)) throw new Error('CLOUDFLARE_TURN_TTL_SECONDS must be an integer');
+  if (value < 60 || value > 86_400) {
+    throw new Error('CLOUDFLARE_TURN_TTL_SECONDS must be between 60 and 86400');
+  }
+  return value;
+}
+
+function parseCloudflareTurnConnectIps(env: Environment): string[] | undefined {
+  const raw = env.CLOUDFLARE_TURN_CONNECT_IPS?.trim();
+  if (!raw) return undefined;
+  const values = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  if (values.length === 0 || values.some((value) => isIP(value) === 0)) {
+    throw new Error('CLOUDFLARE_TURN_CONNECT_IPS must contain only IP addresses');
+  }
+  return values;
+}
+
+function parseCloudflareTurnProxyUrl(env: Environment): string | undefined {
+  const raw = env.CLOUDFLARE_TURN_HTTPS_PROXY?.trim();
+  if (!raw) return undefined;
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error('CLOUDFLARE_TURN_HTTPS_PROXY must be a valid URL');
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error('CLOUDFLARE_TURN_HTTPS_PROXY must use http or https');
+  }
+  return raw;
+}
+
+function parseCloudflareTurnCredentials(env: Environment): {
+  keyId?: string;
+  apiToken?: string;
+} {
+  const keyId = env.CLOUDFLARE_TURN_KEY_ID?.trim();
+  const apiToken = env.CLOUDFLARE_TURN_API_TOKEN?.trim();
+
+  if ((keyId && !apiToken) || (!keyId && apiToken)) {
+    throw new Error('CLOUDFLARE_TURN_KEY_ID and CLOUDFLARE_TURN_API_TOKEN must both be set or both be empty');
+  }
+
+  return {
+    keyId,
+    apiToken
+  };
+}
+
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';
   if (nodeEnv !== 'development' && nodeEnv !== 'test' && nodeEnv !== 'production') {
@@ -97,6 +167,19 @@ export function loadConfig(env: Environment): AppConfig {
     throw new Error('P2P_TURN_SECRET must be at least 32 bytes');
   }
 
+  const p2pTurnProvider = parseTurnProvider(env);
+  const cloudflareCredentials = parseCloudflareTurnCredentials(env);
+  const cloudflareEnabled = p2pTurnProvider === 'cloudflare' || cloudflareCredentials.keyId !== undefined;
+  if (p2pTurnProvider === 'cloudflare' && !cloudflareCredentials.keyId) {
+    throw new Error('CLOUDFLARE_TURN_KEY_ID is required when P2P_TURN_PROVIDER is cloudflare');
+  }
+
+  const cloudflareTurnKeyId = cloudflareEnabled ? cloudflareCredentials.keyId : undefined;
+  const cloudflareTurnApiToken = cloudflareEnabled ? cloudflareCredentials.apiToken : undefined;
+  const cloudflareTurnTtlSeconds = cloudflareEnabled ? parseCloudflareTurnTtlSeconds(env) : undefined;
+  const cloudflareTurnConnectIps = cloudflareEnabled ? parseCloudflareTurnConnectIps(env) : undefined;
+  const cloudflareTurnProxyUrl = cloudflareEnabled ? parseCloudflareTurnProxyUrl(env) : undefined;
+
   return {
     nodeEnv,
     publicBaseUrl,
@@ -111,6 +194,12 @@ export function loadConfig(env: Environment): AppConfig {
     p2pTurnUrls: parseTurnUrls(env),
     p2pTurnSecret,
     p2pTurnTtlSeconds: parseTurnTtlSeconds(env),
+    p2pTurnProvider,
+    cloudflareTurnKeyId,
+    cloudflareTurnApiToken,
+    cloudflareTurnTtlSeconds,
+    cloudflareTurnConnectIps,
+    cloudflareTurnProxyUrl,
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

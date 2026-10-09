@@ -78,6 +78,80 @@ describe('P2pSignalingSession', () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  it('routes screen transport requests to the current sharer with the authenticated viewer identity', () => {
+    const harness = createHarness();
+    const { socket: adaSocket } = createSession(harness, 'ada', 'Ada');
+    const { socket: carolSocket } = createSession(harness, 'carol', 'Carol');
+    const { session: bobSession, socket: bobSocket } = createSession(harness, 'bob', 'Bob');
+    harness.shareIdentity = 'ada';
+
+    bobSession.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
+    harness.shareIdentity = 'carol';
+    bobSession.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'peer' }));
+
+    expect(adaSocket.messages().filter((message) => message.type === 'screen-transport')).toEqual([
+      { type: 'screen-transport', transport: 'sfu', from: 'bob' }
+    ]);
+    expect(carolSocket.messages().filter((message) => message.type === 'screen-transport')).toEqual([
+      { type: 'screen-transport', transport: 'peer', from: 'bob' }
+    ]);
+    expect(bobSocket.closed).toBe(false);
+  });
+
+  it('silently ignores screen transport requests when no share is active', () => {
+    const harness = createHarness();
+    const { session, socket } = createSession(harness, 'bob', 'Bob');
+    session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
+    expect(socket.messages()).toEqual([{ type: 'welcome', peers: [] }]);
+    expect(socket.closed).toBe(false);
+  });
+
+  it('forbids the sharer from requesting its own screen transport', () => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { session, socket } = createSession(harness, 'ada', 'Ada');
+    session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
+    expect(socket.messages().at(-1)).toEqual(errorMessage('P2P_FORBIDDEN'));
+    expect(socket.messages().filter((message) => message.type === 'screen-transport')).toEqual([]);
+  });
+
+  it('reports an offline current sharer for screen transport requests', () => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { session, socket } = createSession(harness, 'bob', 'Bob');
+    session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
+    expect(socket.messages().at(-1)).toEqual(errorMessage('P2P_PEER_NOT_FOUND'));
+  });
+
+  it.each([
+    { type: 'screen-transport', transport: 'sfu', from: 'other' },
+    { type: 'screen-transport', transport: 'sfu', to: 'other' },
+    { type: 'screen-transport', transport: 'turn' }
+  ])('rejects a forged or invalid screen transport request %j', (message: unknown) => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { socket: adaSocket } = createSession(harness, 'ada', 'Ada');
+    const { session, socket } = createSession(harness, 'bob', 'Bob');
+    session.handleMessage(JSON.stringify(message));
+    expect(socket.messages().at(-1)).toEqual(errorMessage('INVALID_MESSAGE'));
+    expect(socket.closeCode).toBe(P2P_CLOSE_POLICY_VIOLATION);
+    expect(adaSocket.messages().filter((message) => message.type === 'screen-transport')).toEqual([]);
+  });
+
+  it('applies the connection rate limit to screen transport requests', () => {
+    const harness = createHarness();
+    harness.shareIdentity = 'ada';
+    const { socket: adaSocket } = createSession(harness, 'ada', 'Ada');
+    const { session, socket } = createSession(harness, 'bob', 'Bob', { messageRateLimit: { max: 1, windowMs: 60_000 } });
+    session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
+    session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'peer' }));
+    expect(adaSocket.messages().filter((message) => message.type === 'screen-transport')).toEqual([
+      { type: 'screen-transport', transport: 'sfu', from: 'bob' }
+    ]);
+    expect(socket.messages().at(-1)).toEqual(errorMessage('RATE_LIMITED'));
+    expect(socket.closeCode).toBe(P2P_CLOSE_POLICY_VIOLATION);
+  });
+
   it('welcomes a new peer with the existing members and announces it to the others', () => {
     const harness = createHarness();
     createSession(harness, 'bob', 'Bob');

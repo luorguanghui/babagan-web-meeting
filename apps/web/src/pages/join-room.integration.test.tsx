@@ -23,7 +23,7 @@ describe('lobby to room integration', () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       if ((init?.method ?? 'GET') === 'GET') {
         return new Response(JSON.stringify({
-          slug, name: 'Meeting', status: 'active', requiresPassword: false, isFull: false
+          name: 'Meeting', status: 'active', requiresPassword: false, isFull: false
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return new Response(JSON.stringify({
@@ -33,7 +33,7 @@ describe('lobby to room integration', () => {
     }));
     render(<MemoryRouter initialEntries={[`/m/${slug}`]}><App /></MemoryRouter>);
 
-    await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
+    await userEvent.type(await screen.findByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
     expect(await screen.findByRole('heading', { name: 'Joined room' })).toBeVisible();
 

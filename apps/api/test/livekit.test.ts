@@ -297,31 +297,87 @@ describe('LiveKit webhook handler', () => {
       participant: { identity: 'participant-1' }
     });
 
-    await handler.handle(delivery.rawBody, delivery.authorization);
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({
+      shareGone: { slug: 'meeting-1', reason: 'share released' }
+    });
 
     expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
   });
 
-  it('releases the matching share lock when a screen track is unpublished', async () => {
+  it.each(['SCREEN_SHARE', 'SCREEN_SHARE_AUDIO'])(
+    'keeps the active share lock and screen grant when its SFU %s track is unpublished',
+    async (source: string) => {
+      repo.updateMeetingLifecycle('meeting-1', { status: 'active', emptySince: null, endedAt: null });
+      const meeting = repo.findBySlug('meeting-one');
+      if (!meeting) throw new Error('meeting fixture missing');
+      repo.trySetShareIdentity(meeting.id, meeting.version, 'participant-1');
+      await media.updateParticipantSources('meeting-1', 'participant-1', [
+        'microphone', 'screen_share', 'screen_share_audio'
+      ]);
+      const activeShare = repo.findBySlug('meeting-one');
+      const delivery = await signedWebhook({
+        id: 'event-track-unpublished',
+        event: 'track_unpublished',
+        room: { name: 'meeting-1' },
+        participant: { identity: 'participant-1' },
+        track: { source }
+      });
+
+      await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
+      await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
+
+      expect(repo.findBySlug('meeting-one')).toEqual(activeShare);
+      expect(media.sourceUpdates).toEqual([{
+        roomName: 'meeting-1',
+        identity: 'participant-1',
+        sources: ['microphone', 'screen_share', 'screen_share_audio']
+      }]);
+      expect(processedEvents(db)).toEqual(['event-track-unpublished']);
+    }
+  );
+
+  it('releases the P2P share when the sharer leaves after removing both SFU screen tracks', async () => {
     const meeting = repo.findBySlug('meeting-one');
     if (!meeting) throw new Error('meeting fixture missing');
     repo.trySetShareIdentity(meeting.id, meeting.version, 'participant-1');
+    for (const source of ['SCREEN_SHARE', 'SCREEN_SHARE_AUDIO']) {
+      const delivery = await signedWebhook({
+        id: `event-unpublish-${source}`,
+        event: 'track_unpublished',
+        room: { name: 'meeting-1' },
+        participant: { identity: 'participant-1' },
+        track: { source }
+      });
+      await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
+    }
+    const left = await signedWebhook({
+      id: 'event-left-after-sfu-unpublished',
+      event: 'participant_left',
+      room: { name: 'meeting-1', numParticipants: 1 },
+      participant: { identity: 'participant-1' }
+    });
+    await expect(handler.handle(left.rawBody, left.authorization)).resolves.toEqual({
+      shareGone: { slug: 'meeting-1', reason: 'share released' }
+    });
+    expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
+  });
+
+  it('does not return share-gone for a stale unpublish identity', async () => {
+    const meeting = repo.findBySlug('meeting-one');
+    if (!meeting) throw new Error('meeting fixture missing');
+    repo.trySetShareIdentity(meeting.id, meeting.version, 'participant-2');
     const delivery = await signedWebhook({
-      id: 'event-track-unpublished',
+      id: 'event-stale-share-unpublish',
       event: 'track_unpublished',
       room: { name: 'meeting-1' },
       participant: { identity: 'participant-1' },
       track: { source: 'SCREEN_SHARE' }
     });
 
-    await handler.handle(delivery.rawBody, delivery.authorization);
-    await handler.handle(delivery.rawBody, delivery.authorization);
-
-    expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
+    await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({});
+    expect(repo.findBySlug('meeting-one')?.shareIdentity).toBe('participant-2');
     expect(media.sourceUpdates).toEqual([{
-      roomName: 'meeting-1',
-      identity: 'participant-1',
-      sources: ['microphone']
+      roomName: 'meeting-1', identity: 'participant-1', sources: ['microphone']
     }]);
   });
 

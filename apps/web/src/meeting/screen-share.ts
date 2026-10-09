@@ -5,7 +5,7 @@ import {
   type ScreenShareQuality
 } from '@meeting/contracts';
 
-import type { P2pShareController } from './p2p-share-controller.js';
+import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
 import type { Peer } from './p2p-signaling.js';
 
 export interface ScreenShareQualityPreset {
@@ -17,17 +17,19 @@ export interface ScreenShareQualityPreset {
 
 /**
  * Screen-share quality presets applied to both the SFU fallback and the P2P
- * path. The default and flow presets preserve spatial resolution under
- * pressure; 60 fps is reserved for the explicitly selected motion preset.
+ * path. All presets capture at least 1080p when the source supports it.
+ * Direct P2P overrides degradation to preserve resolution; relay/SFU paths
+ * can still prioritize the standard/motion frame-rate targets.
  */
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
-  flow: { width: 1280, height: 720, frameRate: 30, degradationPreference: 'maintain-resolution' },
-  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
-  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
+  flow: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
+  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-framerate' },
+  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' }
 };
 
 export const screenShareDefaultQuality: ScreenShareQuality = 'standard';
 export const screenShareContentHint = 'detail' as const;
+export const screenShareAudioContentHint = 'music' as const;
 
 /**
  * P2P screen-share bitrate tiers (contracts constants): the direct peer-to-peer
@@ -131,8 +133,17 @@ class BrowserScreenShareController implements ScreenShareController {
         return;
       }
       stream = await this.dependencies.getDisplayMedia({
-        video: { width: settings.width, height: settings.height, frameRate: settings.frameRate },
-        audio: { restrictOwnAudio: true } as MediaTrackConstraints & {
+        video: {
+          // Inspect native dimensions before applying the aspect-aware cap.
+          // A 16:9 picker hint can already shrink an ultrawide source below 1080p.
+          frameRate: { ideal: settings.frameRate }
+        },
+        audio: {
+          autoGainControl: false,
+          echoCancellation: false,
+          noiseSuppression: false,
+          restrictOwnAudio: true
+        } as MediaTrackConstraints & {
           restrictOwnAudio: boolean;
         },
         systemAudio: 'include',
@@ -153,6 +164,14 @@ class BrowserScreenShareController implements ScreenShareController {
       const displaySurface = videoTrack.getSettings?.().displaySurface;
       const [audioTrack] = stream.getAudioTracks();
       if (audioTrack) {
+        audioTrack.contentHint = screenShareAudioContentHint;
+        await (typeof audioTrack.applyConstraints === 'function'
+          ? audioTrack.applyConstraints({
+            autoGainControl: false,
+            echoCancellation: false,
+            noiseSuppression: false
+          }).catch(() => undefined)
+          : undefined);
         const ownAudioRestricted = await this.verifyOwnAudioRestriction(audioTrack);
         if ((displaySurface === 'monitor' || displaySurface === 'window') && !ownAudioRestricted) {
           const choice = await this.dependencies.chooseUnrestrictedSystemAudio({ displaySurface });
@@ -180,20 +199,30 @@ class BrowserScreenShareController implements ScreenShareController {
         await this.cancelStart(stream, grantAcquired);
         return;
       }
-      // Normalize the capture resolution: display scaling can make the browser
-      // capture at odd logical sizes (e.g. 1536x864 on a 125%-scaled 1080p
-      // screen), which would then transmit unchanged on both the direct P2P
-      // and the SFU path. The preset dimensions are ideal — the browser keeps
-      // the native size when the display cannot provide more — so the shared
-      // picture settles on a standard tier instead.
+      // Keep the source aspect ratio and a 1080px short side. A 1920px
+      // width cap alone would shrink ultrawide captures below 1080p.
+      const sourceSettings = videoTrack.getSettings?.() ?? {};
+      const portrait = (sourceSettings.height ?? 0) > (sourceSettings.width ?? 0);
+      const sourceWidth = sourceSettings.width;
+      const sourceHeight = sourceSettings.height;
+      const sourceScale = sourceWidth && sourceHeight
+        ? Math.max(1, Math.min(sourceWidth, sourceHeight) / 1080) : undefined;
+      const maximumWidth = sourceScale && sourceWidth
+        ? Math.round(sourceWidth / sourceScale) : portrait ? settings.height : settings.width;
+      const maximumHeight = sourceScale && sourceHeight
+        ? Math.round(sourceHeight / sourceScale) : portrait ? settings.width : settings.height;
       await (typeof videoTrack.applyConstraints === 'function'
         ? videoTrack.applyConstraints({
-          width: { ideal: settings.width },
-          height: { ideal: settings.height },
+          width: { max: maximumWidth },
+          height: { max: maximumHeight },
           frameRate: { ideal: settings.frameRate }
         }).catch(() => undefined)
         : undefined);
-      videoTrack.contentHint = screenShareContentHint;
+      // Set before publication so the encoder starts in the intended content
+      // mode. Detail favors sharp individual frames and can drop motion frames
+      // even while outbound qualityLimitationReason remains "none".
+      videoTrack.contentHint = settings.degradationPreference === 'maintain-framerate'
+        ? 'motion' : screenShareContentHint;
       this.activeStream = stream;
       const onEnded = () => {
         // Only the current start's ended track may stop the share; a
@@ -330,6 +359,7 @@ export interface HybridScreenSharePublisherDependencies {
   sfuFallbackBitrate?: number;
   /** Fired synchronously once the P2P controller exists, so signaling events can be routed to it. */
   onControllerCreated?: (controller: P2pShareController) => void;
+  onViewerStatesChanged?: (states: ReadonlyMap<string, ViewerSessionState>) => void;
 }
 
 export interface ScreenSharePublishOptions {
@@ -340,10 +370,8 @@ export interface ScreenSharePublishOptions {
 }
 
 /**
- * Hybrid screen-share publisher. LiveKit is published first and stays active
- * for the full share as a compatibility and recovery safety net. P2P-capable
- * viewers may unsubscribe their own LiveKit screen publications only after
- * direct media is rendering; the sharer never removes the fallback globally.
+ * Screen sharing starts on P2P/TURN. LiveKit exists only while at least one
+ * viewer explicitly requests SFU; failures never create a backup publication.
  */
 export class HybridScreenSharePublisher implements ScreenSharePublisher {
   private readonly sfuFallbackBitrate: number;
@@ -351,7 +379,11 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
   private activeOptions?: ScreenSharePublishOptions;
   private shareController?: P2pShareController;
   private unsubscribeController?: () => void;
-  private sfuPublished = false;
+  private publishedSfuStream?: MediaStream;
+  private readonly sfuViewers = new Set<string>();
+  private readonly transportRevisions = new Map<string, number>();
+  private nextTransportRevision = 0;
+  private viewerStates = new Map<string, ViewerSessionState>();
   private sfuTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: HybridScreenSharePublisherDependencies) {
@@ -366,71 +398,122 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
   async publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void> {
     this.activeStream = stream;
     this.activeOptions = options;
-    await this.publishSfu(stream);
     const viewers = this.deps.getViewers();
     if (viewers.length === 0) return;
     const controller = this.ensureController();
     try {
       await controller.start(stream, options, viewers);
     } catch {
-      // LiveKit is already carrying the share; P2P remains a best-effort path.
+      // Keep the capture available for a P2P retry or explicit SFU request.
     }
   }
 
   async release(stream: MediaStream): Promise<void> {
+    if (this.activeStream !== undefined && this.activeStream !== stream) return;
     const controller = this.shareController;
     this.shareController = undefined;
     this.unsubscribeController?.();
     this.unsubscribeController = undefined;
     this.activeStream = undefined;
     this.activeOptions = undefined;
+    this.sfuViewers.clear();
+    this.transportRevisions.clear();
+    this.viewerStates.clear();
     if (controller) await controller.stop();
-    if (this.sfuPublished) {
-      this.sfuPublished = false;
-      await this.queueSfu(() => this.deps.sfuPublisher.release(stream)).catch(() => undefined);
-    }
+    await this.reconcileSfu();
   }
 
   /** The roster changed; a reconnect welcome also refreshes incomplete ICE generations. */
   viewerRosterChanged(recoverNegotiating = false): void {
     if (this.activeStream === undefined) return;
     const viewers = this.deps.getViewers();
+    for (const identity of this.sfuViewers) {
+      if (!viewers.some((viewer) => viewer.identity === identity)) this.sfuViewers.delete(identity);
+    }
+    void this.reconcileSfu().catch(() => undefined);
     if (viewers.length === 0) return;
     const controller = this.ensureController();
-    void controller.start(this.activeStream, this.activeOptions!, viewers, recoverNegotiating).catch(() => undefined);
+    void controller.start(this.activeStream, this.activeOptions!, viewers.filter((viewer) => !this.sfuViewers.has(viewer.identity)), recoverNegotiating).catch(() => undefined);
   }
 
   /** A viewer left (`peer-left`): drop them from fallback tracking and close their session. */
   viewerLeft(identity: string): void {
+    this.sfuViewers.delete(identity);
+    this.transportRevisions.delete(identity);
+    this.viewerStates.delete(identity);
     this.shareController?.handleViewerLeft(identity);
+    this.emitViewerStates();
+    void this.reconcileSfu().catch(() => undefined);
   }
 
-  /** A `bye` arrived from a viewer; a `fallback` bye means they need the SFU track. */
+  /** A viewer ended its peer session; this never requests an SFU publication. */
   handleViewerBye(identity: string, reason?: string): void {
     void reason;
     this.shareController?.handleViewerLeft(identity);
+  }
+
+  async setViewerScreenTransport(identity: string, transport: 'peer' | 'sfu'): Promise<void> {
+    const stream = this.activeStream;
+    if (!stream) return;
+    const revision = ++this.nextTransportRevision;
+    this.transportRevisions.set(identity, revision);
+    if (transport === 'sfu') {
+      this.sfuViewers.add(identity);
+      this.shareController?.handleViewerLeft(identity);
+    } else {
+      this.sfuViewers.delete(identity);
+    }
+    this.emitViewerStates();
+    await this.reconcileSfu();
+    if (transport === 'peer' && this.activeStream === stream && this.activeOptions
+      && this.transportRevisions.get(identity) === revision && !this.sfuViewers.has(identity)
+      && this.deps.getViewers().some((viewer) => viewer.identity === identity)) {
+      if (this.shareController) this.shareController.handleRetry(identity);
+      else await this.ensureController().start(stream, this.activeOptions, this.deps.getViewers().filter((viewer) => !this.sfuViewers.has(viewer.identity)));
+    }
+  }
+
+  private emitViewerStates(): void {
+    const states = new Map(this.viewerStates);
+    for (const [identity, state] of states) {
+      if (state === 'livekit-fallback') states.set(identity, 'negotiating');
+    }
+    for (const identity of this.sfuViewers) states.set(identity, 'livekit-fallback');
+    this.deps.onViewerStatesChanged?.(states);
   }
 
   private ensureController(): P2pShareController {
     if (this.shareController === undefined) {
       const controller = this.deps.createShareController({
         onViewerFallback: () => undefined,
-        onAllViewersClosed: () => {
-          // Every tracked viewer is gone: clear the P2P sessions; the share
-          // itself stays active and re-drives if a viewer joins again.
-          if (this.activeStream !== undefined) void this.shareController?.stop();
-        }
+        // Closed viewer sessions keep the active stream/options on the
+        // controller so a viewer can request a fresh TURN/P2P offer after an
+        // SFU fallback. Full controller shutdown belongs to share release.
+        onAllViewersClosed: () => undefined
       });
       this.shareController = controller;
-      this.unsubscribeController = controller.subscribe(() => undefined);
+      this.unsubscribeController = controller.subscribe((states) => {
+        this.viewerStates = new Map(states);
+        this.emitViewerStates();
+      });
       this.deps.onControllerCreated?.(controller);
     }
     return this.shareController;
   }
 
-  private async publishSfu(stream: MediaStream): Promise<void> {
-    await this.queueSfu(() => this.deps.sfuPublisher.publish(stream, this.sfuOptions()));
-    this.sfuPublished = true;
+  private reconcileSfu(): Promise<void> {
+    return this.queueSfu(async () => {
+      const stream = this.activeStream;
+      if (stream && this.sfuViewers.size > 0 && !this.publishedSfuStream) {
+        await this.deps.sfuPublisher.publish(stream, this.sfuOptions());
+        this.publishedSfuStream = stream;
+      }
+      if (this.publishedSfuStream && (this.activeStream !== this.publishedSfuStream || this.sfuViewers.size === 0)) {
+        const published = this.publishedSfuStream;
+        await this.deps.sfuPublisher.release(published);
+        this.publishedSfuStream = undefined;
+      }
+    });
   }
 
   private sfuOptions(): ScreenSharePublishOptions {

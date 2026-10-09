@@ -1,10 +1,6 @@
-import { type ReactNode, useEffect, useRef } from 'react';
+import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
-import {
-  createScreenAudioDynamics,
-  type AudioContextLike
-} from '../meeting/screen-audio-dynamics.js';
 
 type StageTrack = Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
 
@@ -58,8 +54,7 @@ export function ScreenStage({
   muted,
   sharerName,
   onSourceReady,
-  audioDynamics = false,
-  createAudioContext = defaultCreateAudioContext,
+  sharedAudioVolume = 1,
   children
 }: {
   stream?: MediaStream;
@@ -70,10 +65,8 @@ export function ScreenStage({
   sharerName?: string;
   /** Called after the selected source renders its first media event or a bounded LiveKit handover is forced. */
   onSourceReady?: () => void;
-  /** Routes the stage audio through a trim + limiter (remote shared audio only). */
-  audioDynamics?: boolean;
-  /** AudioContext factory; injectable for tests (jsdom has no real AudioContext). */
-  createAudioContext?: () => AudioContextLike;
+  /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (original level). */
+  sharedAudioVolume?: number;
   children?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -81,6 +74,12 @@ export function ScreenStage({
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const committedRef = useRef<StageSource>(null);
+  const [sourceAspectRatio, setSourceAspectRatio] = useState(16 / 9);
+  const updateAspectRatio = useCallback(() => {
+    const video = videoRef.current;
+    if (!video?.videoWidth || !video.videoHeight) return;
+    setSourceAspectRatio(video.videoWidth / video.videoHeight);
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -109,6 +108,7 @@ export function ScreenStage({
     if (desired === null) {
       // The share ended: release immediately, no first-frame retention for "nothing".
       committedRef.current = null;
+      setSourceAspectRatio(16 / 9);
       if (element !== null && committed !== null) releaseSource(element, committed);
       return;
     }
@@ -223,44 +223,31 @@ export function ScreenStage({
     };
   }, []);
 
-  // Remote shared audio is routed through a trim + limiter so computer audio
-  // never overwhelms the meeting mix. Rebuilt per source swap: a media element
-  // can only become a MediaElementSource once per context.
   useEffect(() => {
-    if (!audioDynamics || muted) return;
-    const element = videoElementRef.current;
-    if (element === null) return;
-    let context: AudioContextLike;
-    try {
-      context = createAudioContext();
-    } catch {
-      return;
-    }
-    const dynamics = createScreenAudioDynamics(element, context);
-    if (dynamics === undefined) {
-      void context.close().catch(() => undefined);
-      return;
-    }
-    const resume = () => { void dynamics.resume().catch(() => undefined); };
-    element.addEventListener('playing', resume);
-    if (!element.paused) resume();
-    return () => {
-      element.removeEventListener('playing', resume);
-      void dynamics.dispose();
-    };
-  }, [audioDynamics, createAudioContext, muted, stream, track, audioTrack]);
+    const element = videoRef.current;
+    if (element !== null) element.volume = Math.min(1, Math.max(0, sharedAudioVolume));
+  }, [audioTrack, sharedAudioVolume, stream, track]);
 
   if (!stream && !track) return <section className="screen-stage screen-stage-empty" aria-label={t('screen.stage')}>
     <p>{t('screen.empty')}</p>
   </section>;
 
   const name = sharerName ?? t('screen.participant');
-  return <section ref={stageRef} className="screen-stage" aria-label={t('screen.stage')}>
+  const stageStyle = { '--stage-aspect-ratio': String(sourceAspectRatio) } as CSSProperties;
+  return <section
+    ref={stageRef}
+    className="screen-stage"
+    aria-label={t('screen.stage')}
+    data-orientation={sourceAspectRatio >= 1 ? 'landscape' : 'portrait'}
+    style={stageStyle}
+  >
     <video
       ref={videoRef}
       aria-label={t('screen.videoLabel', { name })}
       autoPlay
       muted={muted ?? (Boolean(stream) || !audioTrack)}
+      onLoadedMetadata={updateAspectRatio}
+      onResize={updateAspectRatio}
       playsInline
       style={{ objectFit: 'contain' }}
     />
@@ -273,8 +260,4 @@ export function ScreenStage({
     >{t('screen.fullscreenAction')}</button>
     {children}
   </section>;
-}
-
-function defaultCreateAudioContext(): AudioContextLike {
-  return new AudioContext();
 }

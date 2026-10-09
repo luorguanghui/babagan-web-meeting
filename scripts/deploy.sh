@@ -24,7 +24,13 @@ while (($#)); do case "$1" in
 [[ "$target_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || fail 'target IP must be IPv4'
 env_file="${env_file:-$app_dir/infra/.env.production}"; compose_file="$app_dir/infra/docker-compose.yml"; state_dir="$app_dir/var/releases"; backup_dir="$app_dir/var/backups"
 compose() { docker compose --env-file "$env_file" -f "$compose_file" "$@"; }
-# This is deliberately before every directory creation, chmod, backup, pull or build.
+# Share a nonblocking transaction lock with scripts/update.sh. This is only
+# a coordination file; baseline checks still precede application mutations.
+need flock
+update_lock_file=${BABAGAN_UPDATE_LOCK_FILE:-/run/lock/babagan-meeting-update.lock}
+(umask 077; : >>"$update_lock_file")
+exec {update_lock_fd}<>"$update_lock_file"
+flock -n "$update_lock_fd" || fail 'another deployment/update is running'
 previous="$state_dir/current-release.env"
 previous_sha='' previous_api='' previous_web='' previous_caddy='' previous_livekit=''; previous_api_id='' previous_web_id='' previous_caddy_id='' previous_livekit_id=''
 if (( bootstrap_empty )); then
@@ -33,12 +39,24 @@ else
   load_verified_baseline_release "$previous" || fail 'deployment requires a protected, verified baseline current-release record before any mutation'
   previous_sha="$RELEASE_SHA"; previous_api="$API_IMAGE_TAG"; previous_web="$WEB_IMAGE_TAG"; previous_caddy="$CADDY_IMAGE_TAG"; previous_livekit="$LIVEKIT_IMAGE_TAG"
   previous_api_id="$API_IMAGE_ID"; previous_web_id="$WEB_IMAGE_ID"; previous_caddy_id="$CADDY_IMAGE_ID"; previous_livekit_id="$LIVEKIT_IMAGE_ID"
+  for service in api web caddy livekit; do
+    upper="$(tr '[:lower:]' '[:upper:]' <<<"$service")"; image_var="${upper}_IMAGE_ID"
+    running_id="$(docker inspect "babagan-meeting-$service-1" --format '{{.Image}}' 2>/dev/null || true)"
+    [[ "$running_id" == "${!image_var}" ]] || fail 'running images differ from the baseline record; use the existing-installation update.sh workflow'
+  done
 fi
 need docker; need sqlite3; need sha256sum; need getent; need ss; need git; need curl
-. /etc/os-release; [[ "${ID:-}" == debian && "${VERSION_ID:-}" == 12* ]] || fail 'target must run Debian 12'
+. /etc/os-release; [[ "${ID:-}" == debian && ( "${VERSION_ID:-}" == 12* || "${VERSION_ID:-}" == 13* ) ]] || fail 'target must run Debian 12 or Debian 13'
 need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'production environment file must have mode 600'
 grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" && fail 'production environment contains example values'
 for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET P2P_STUN_URLS P2P_TURN_URLS P2P_TURN_SECRET P2P_TURN_TTL_SECONDS TURN_SHARED_SECRET TURN_EXTERNAL_IP TURN_RELAY_IP; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
+turn_provider="$(sed -n 's/^P2P_TURN_PROVIDER=//p' "$env_file")"; turn_provider="${turn_provider:-coturn}"
+[[ "$turn_provider" == coturn || "$turn_provider" == cloudflare ]] || fail 'P2P_TURN_PROVIDER must be coturn or cloudflare'
+if [[ "$turn_provider" == cloudflare ]]; then
+  grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_KEY_ID'
+  grep -Eq '^CLOUDFLARE_TURN_API_TOKEN=.+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_API_TOKEN'
+  grep -Eq '^CLOUDFLARE_TURN_TTL_SECONDS=[0-9]+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_TTL_SECONDS'
+fi
 [[ "$(grep -c '^LIVEKIT_IMAGE=' "$env_file")" -le 1 ]] || fail 'LIVEKIT_IMAGE must appear at most once'
 livekit_image="$(sed -n 's/^LIVEKIT_IMAGE=//p' "$env_file")"
 livekit_image="${livekit_image:-livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16}"
@@ -76,12 +94,11 @@ grep -Eq '^P2P_TURN_URLS=.*turn\.babagan\.cloud:3478.*turns:turn\.babagan\.cloud
 [[ "$(git -C "$app_dir" rev-parse HEAD)" == "$sha" ]] || fail 'confirmation SHA does not equal checked-out release'
 mem_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"; disk_kib="$(df -Pk "$app_dir" | awk 'NR==2 {print $4}')"
 (( mem_kib >= 1153434 )) || fail 'requires at least 1.1 GiB available RAM'; (( disk_kib >= 10485760 )) || fail 'requires at least 10 GiB free disk'
-getent ahostsv4 meet.babagan.cloud >/dev/null || fail 'meet DNS does not resolve'
-for host in rtc.babagan.cloud turn.babagan.cloud; do getent ahostsv4 "$host" | awk '{print $1}' | grep -Fxq "$target_ip" || fail "$host must resolve to target IP"; done
-# meet is intentionally Cloudflare-proxied, so it must not be required to return origin IP.
+for host in meet.babagan.cloud rtc.babagan.cloud turn.babagan.cloud; do getent ahostsv4 "$host" | awk '{print $1}' | grep -Fxq "$target_ip" || fail "$host must resolve to target IP"; done
+# All three production names are DNS-only and connect directly to Caddy.
 need_file "$network_file"; need_file "$cloudflare_file"
 verify_firewall_attestation "$network_file" "$allow_public_ssh" || fail 'firewall attestation does not match the selected SSH policy'
-grep -Fqx 'Cloudflare: meet proxied; rtc DNS-only; turn DNS-only; SSL/TLS Full (strict)' "$cloudflare_file" || fail 'missing Cloudflare attestation'
+verify_dns_attestation "$cloudflare_file" || fail 'missing DNS-only Cloudflare attestation'
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
 for spec in '80 t' '443 t' '3478 t' '5349 t' '7881 t' '443 u' '3478 u' '49160 u' '49200 u' '50000 u' '60000 u'; do
@@ -100,6 +117,7 @@ else
   [[ -n "$volume" && -f "$volume/meetings.sqlite" ]] || fail 'a verified baseline API database is required before deployment'
 fi
 [[ ! -e "$state_dir/pending-release.env" ]] || fail 'a previous deployment is pending recovery; run guarded rollback or archive its evidence before another deploy'
+[[ ! -e "$state_dir/update-pending.json" ]] || fail 'an application update is pending recovery; inspect its protected record before full deployment'
 # All preflights above are read-only. The first mutation is a checksummed backup.
 umask 077; mkdir -p "$state_dir/releases" "$backup_dir"; chmod 700 "$state_dir" "$state_dir/releases" "$backup_dir"
 backup=''; backup_checksum=''

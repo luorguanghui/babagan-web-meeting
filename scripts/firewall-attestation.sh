@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 
+verify_dns_attestation() {
+  grep -Fqx 'Cloudflare: meet DNS-only; rtc DNS-only; turn DNS-only' "$1"
+}
+
 verify_firewall_attestation() {
   local evidence_file=$1 allow_public_ssh=$2
   if (( allow_public_ssh )); then

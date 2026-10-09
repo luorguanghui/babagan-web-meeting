@@ -1,7 +1,10 @@
+import { P2P_TURN_PROVIDERS, type P2pTurnProvider } from '@meeting/contracts';
 import type { P2pClientMessage } from '@meeting/contracts';
 
 /** Interval at which the client pings the server to keep the connection alive. */
 export const P2P_HEARTBEAT_INTERVAL_MS = 25_000;
+/** A stalled HTTP upgrade or missing welcome must not disable P2P forever. */
+export const P2P_CONNECT_TIMEOUT_MS = 10_000;
 /** First reconnect delay; doubles on every consecutive failure. */
 export const P2P_RECONNECT_BACKOFF_BASE_MS = 1_000;
 /** Ceiling for the exponential reconnect backoff. */
@@ -18,7 +21,7 @@ export const P2P_MAX_CONSECUTIVE_RECONNECTS = 5;
 /** Maximum application signaling messages retained across a temporary socket outage. */
 const P2P_OUTBOUND_QUEUE_MAX_MESSAGES = 96;
 
-type QueuedP2pMessage = Extract<P2pClientMessage, { to: string }>;
+type QueuedP2pMessage = Extract<P2pClientMessage, { to: string } | { type: 'screen-transport' }>;
 
 export interface Peer {
   identity: string;
@@ -29,12 +32,14 @@ export interface P2pSignalingEvents {
   onWelcome(peers: Peer[]): void;
   onPeerJoined(peer: Peer): void;
   onPeerLeft(peer: { identity: string }): void;
-  onOffer(from: string, sdp: string, generation?: string): void;
+  onOffer(from: string, sdp: string, generation?: string, turnProvider?: P2pTurnProvider): void;
   onAnswer(from: string, sdp: string, generation?: string): void;
   onIce(from: string, candidate: string | null, generation?: string): void;
   onMediaReady(from: string, generation?: string): void;
   /** A viewer asked the sharer to re-drive a fresh offer for them. */
   onRetry(from: string): void;
+  /** A viewer requested a transport for the current screen share. */
+  onScreenTransport?(from: string, transport: 'peer' | 'sfu'): void;
   onBye(from: string, reason?: string): void;
   onShareGone(): void;
   onError(code: string): void;
@@ -99,6 +104,7 @@ export class P2pSignalingClient {
   private resolveConnect?: () => void;
   private rejectConnect?: (reason: Error) => void;
   private heartbeatTimer?: ReturnType<typeof setInterval>;
+  private connectTimer?: ReturnType<typeof setTimeout>;
   private reconnectTimer?: ReturnType<typeof setTimeout>;
   /** Consecutive failed connections since the last `welcome`; reset on success. */
   private backoff = 0;
@@ -150,8 +156,8 @@ export class P2pSignalingClient {
     return promise;
   }
 
-  sendOffer(to: string, sdp: string, generation?: string): void {
-    this.sendOrQueue(generation === undefined ? { type: 'offer', to, sdp } : { type: 'offer', to, sdp, generation });
+  sendOffer(to: string, sdp: string, generation?: string, turnProvider?: P2pTurnProvider): void {
+    this.sendOrQueue(buildOfferMessage(to, sdp, generation, turnProvider));
   }
 
   sendAnswer(to: string, sdp: string, generation?: string): void {
@@ -170,6 +176,18 @@ export class P2pSignalingClient {
     this.sendOrQueue({ type: 'retry', to });
   }
 
+  sendScreenTransport(transport: 'peer' | 'sfu'): void {
+    this.sendOrQueue({ type: 'screen-transport', transport });
+  }
+
+  retryConnection(): void {
+    // A deliberate user retry can resume after the bounded automatic attempts.
+    if (!this.closed && this.socket === undefined) {
+      this.backoff = 0;
+      void this.connect().catch(() => undefined);
+    }
+  }
+
   sendBye(to: string, reason?: string): void {
     this.sendOrQueue(reason === undefined ? { type: 'bye', to } : { type: 'bye', to, reason });
   }
@@ -183,6 +201,7 @@ export class P2pSignalingClient {
     this.outboundQueue.length = 0;
     this.removeVisibilityListener();
     this.cancelReconnect();
+    this.disarmConnectTimeout();
     this.disarmHeartbeat();
     if (this.socket) {
       const socket = this.socket;
@@ -210,6 +229,7 @@ export class P2pSignalingClient {
     };
     socket.onclose = () => {
       if (!this.ownsSocket(socket)) return;
+      this.disarmConnectTimeout();
       this.socket = undefined;
       this.socketOpen = false;
       this.ready = false;
@@ -218,6 +238,18 @@ export class P2pSignalingClient {
       if (this.closed) return;
       this.scheduleReconnect();
     };
+    this.connectTimer = setTimeout(() => {
+      if (!this.ownsSocket(socket) || this.ready) return;
+      this.connectTimer = undefined;
+      this.socket = undefined;
+      this.socketOpen = false;
+      this.ready = false;
+      this.disarmHeartbeat();
+      this.rejectPendingConnect(new Error('P2P signaling connection timed out before the server welcome'));
+      // Do not depend on close arriving across the same broken network path.
+      try { socket.close(); } catch { /* the replacement owns recovery */ }
+      this.scheduleReconnect();
+    }, P2P_CONNECT_TIMEOUT_MS);
   }
 
   private ownsSocket(socket: P2pWebSocket): boolean {
@@ -237,6 +269,7 @@ export class P2pSignalingClient {
     const from = typeof message.from === 'string' ? message.from : undefined;
     switch (message.type) {
       case 'welcome': {
+        this.disarmConnectTimeout();
         const peers = message.peers;
         this.backoff = 0;
         this.ready = true;
@@ -265,8 +298,15 @@ export class P2pSignalingClient {
         break;
       case 'offer':
         if (from !== undefined && typeof message.sdp === 'string') {
-          if (typeof message.generation === 'string') this.events.onOffer(from, message.sdp, message.generation);
-          else this.events.onOffer(from, message.sdp);
+          const turnProvider = isP2pTurnProvider(message.turnProvider) ? message.turnProvider : undefined;
+          if (typeof message.generation === 'string') {
+            if (turnProvider === undefined) this.events.onOffer(from, message.sdp, message.generation);
+            else this.events.onOffer(from, message.sdp, message.generation, turnProvider);
+          } else if (turnProvider === undefined) {
+            this.events.onOffer(from, message.sdp);
+          } else {
+            this.events.onOffer(from, message.sdp, undefined, turnProvider);
+          }
         }
         break;
       case 'answer':
@@ -291,6 +331,13 @@ export class P2pSignalingClient {
         break;
       case 'retry':
         if (from !== undefined) this.events.onRetry(from);
+        break;
+      case 'screen-transport':
+        if (from !== undefined && from.length > 0 && from.length <= 256
+          && (message.transport === 'peer' || message.transport === 'sfu')
+          && Object.keys(message).length === 3) {
+          this.events.onScreenTransport?.(from, message.transport);
+        }
         break;
       case 'bye':
         if (from !== undefined) {
@@ -358,6 +405,20 @@ export class P2pSignalingClient {
     }
   }
 
+  /** One recovery probe, paced by the media controller, after fast retries stop. */
+  resumeConnection(): void {
+    if (this.closed || this.socket !== undefined || this.reconnectTimer !== undefined
+      || this.backoff < this.maxReconnectAttempts) return;
+    // Preserve the exhausted budget: a failed probe must not start another
+    // burst of fast reconnects. The next media retry will probe again.
+    void this.connect().catch(() => undefined);
+  }
+
+  private disarmConnectTimeout(): void {
+    if (this.connectTimer !== undefined) clearTimeout(this.connectTimer);
+    this.connectTimer = undefined;
+  }
+
   private scheduleReconnect(): void {
     if (this.closed || this.reconnectTimer !== undefined) return;
     // `backoff` counts consecutive failures since the last welcome; beyond the
@@ -415,4 +476,20 @@ export function createP2pSignalingClient(
   dependencies?: P2pSignalingDependencies
 ): P2pSignalingClient {
   return new P2pSignalingClient(slug, identity, events, dependencies);
+}
+
+function buildOfferMessage(
+  to: string,
+  sdp: string,
+  generation?: string,
+  turnProvider?: P2pTurnProvider
+): QueuedP2pMessage {
+  const base = generation === undefined
+    ? { type: 'offer', to, sdp } as const
+    : { type: 'offer', to, sdp, generation } as const;
+  return turnProvider === undefined ? base : { ...base, turnProvider };
+}
+
+function isP2pTurnProvider(value: unknown): value is P2pTurnProvider {
+  return typeof value === 'string' && (P2P_TURN_PROVIDERS as readonly string[]).includes(value);
 }

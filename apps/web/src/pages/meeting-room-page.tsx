@@ -1,5 +1,6 @@
 import {
   RefreshParticipantTokenResponseSchema,
+  type P2pTurnProvider,
   type JoinMeetingResponse,
   type ParticipantSummary,
   type RefreshParticipantTokenResponse,
@@ -7,26 +8,40 @@ import {
   type ScreenShareQuality
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { MonitorUp } from 'lucide-react';
 
-import { apiNoContent, apiRequest } from '../api/client.js';
+import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
-import { MeetingControls } from '../components/meeting-controls.js';
+import { MeetingControls, MeetingSettings, type MeetingControlsProps } from '../components/meeting-controls.js';
+import { MeetingDrawer, type MeetingPanel } from '../components/meeting-drawer.js';
+import { MeetingMenu, type MeetingMenuAction } from '../components/meeting-menu.js';
+import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createP2pSignalingClient, type Peer, type P2pSignalingClient, type P2pSignalingEvents } from '../meeting/p2p-signaling.js';
-import { iceCredentialsExpireSoon } from '../meeting/ice-credentials.js';
 import {
   createP2pShareController,
   IceServersResponseSchema,
   type P2pShareController,
+  type P2pEncodingDiagnostics,
   type ViewerSessionState
 } from '../meeting/p2p-share-controller.js';
 import { P2pViewerController, type ViewerP2pState } from '../meeting/p2p-viewer-controller.js';
+import {
+  iceConfigurationExpiresSoon,
+  normalizeP2pIceServerConfiguration,
+  type P2pIceServerConfiguration
+} from '../meeting/p2p-ice.js';
 import { createRoomController, type MeetingRoomController } from '../meeting/room-controller.js';
+import {
+  readScreenShareTurnProviderPreference,
+  saveScreenShareTurnProviderPreference,
+  type ScreenShareTurnProviderPreference
+} from '../meeting/screen-turn-provider-preference.js';
 import {
   createScreenShareController,
   HybridScreenSharePublisher,
@@ -38,9 +53,15 @@ import {
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
+import type { TurnPathProbeSnapshot } from '../meeting/cloudflare-turn-capacity.js';
 import {
+  canRetryViewerScreenTransport,
   deriveSharerScreenTransportMode,
-  deriveViewerScreenTransportMode
+  deriveSharerTurnProvider,
+  deriveViewerTurnProvider,
+  deriveViewerScreenTransportMode,
+  type ScreenTransportMode,
+  type ScreenTurnProvider
 } from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
@@ -53,6 +74,7 @@ import {
 
 export interface MeetingRoomPageProps {
   slug: string;
+  meetingName?: string;
   join: JoinMeetingResponse;
   controller?: MeetingRoomController;
   controllerFactory?: () => MeetingRoomController;
@@ -67,6 +89,7 @@ export interface MeetingRoomPageProps {
   shareControllerFactory?: (deps: {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
+    cloudflareTurnControlMode: 'observe' | 'control';
   }) => P2pShareController;
   /** Test seam: anonymous quality-stats collector factory, defaults to `createP2pStatsCollector({ slug })`. */
   createStatsCollector?: () => P2pStatsCollector;
@@ -86,6 +109,16 @@ export interface MeetingRoomApi {
 }
 
 type HostAuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
+type RequestedIceTurnProvider = 'auto' | P2pTurnProvider;
+const transportModeKeys: Record<ScreenTransportMode, MessageKey> = {
+  p2p: 'screenTransport.p2p', turn: 'screenTransport.turn', sfu: 'screenTransport.sfu', mixed: 'screenTransport.mixed',
+  negotiating: 'screenTransport.negotiating', waiting: 'screenTransport.waiting'
+};
+const turnProviderKeys: Record<ScreenTurnProvider, MessageKey> = {
+  cloudflare: 'screenTransport.turnCloudflare',
+  coturn: 'screenTransport.turnCoturn',
+  mixed: 'screenTransport.turnMixed'
+};
 
 async function defaultLeaveMeeting(slug: string): Promise<void> {
   const response = await fetch(`/api/v1/meetings/${encodeURIComponent(slug)}/leave`, { method: 'POST', credentials: 'include' });
@@ -154,6 +187,7 @@ async function noContent(
 
 export function MeetingRoomPage({
   slug,
+  meetingName,
   join,
   controller: providedController,
   controllerFactory = createRoomController,
@@ -178,6 +212,13 @@ export function MeetingRoomPage({
   ), [slug]);
   const { state, error: connectionError, reconnectState, reconnectRateLimited } = useMeetingRoom(join, controller, refresh);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
+  const [callAudioVolume, setCallAudioVolume] = useState(100);
+  const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
+  const [meetingPanel, setMeetingPanel] = useState<MeetingPanel>(null);
+  const [meetingPanelParent, setMeetingPanelParent] = useState<'more' | null>(null);
+  const participantButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -195,23 +236,60 @@ export function MeetingRoomPage({
     readViewerTransportPreference()
   );
   const viewerTransportPreferenceRef = useRef(viewerTransportPreference);
+  const [screenShareTurnProvider, setScreenShareTurnProvider] = useState<ScreenShareTurnProviderPreference>(() =>
+    readScreenShareTurnProviderPreference()
+  );
+  const screenTurnProviderPreferenceRef = useRef(screenShareTurnProvider);
+  const [availableScreenTurnProviders, setAvailableScreenTurnProviders] = useState<readonly P2pTurnProvider[]>(['coturn']);
+  const availableScreenTurnProvidersRef = useRef<readonly P2pTurnProvider[]>(availableScreenTurnProviders);
   const viewerSharerIdentityRef = useRef<string | undefined>(undefined);
   const signalingRef = useRef<P2pSignalingClient | undefined>(undefined);
   const viewerRosterRef = useRef<Peer[]>([]);
   const p2pShareRef = useRef<P2pShareController | undefined>(undefined);
   const p2pShareUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
+  const p2pShareProbeUnsubscribeRef = useRef<(() => void) | undefined>(undefined);
   const [shareViewerStates, setShareViewerStates] = useState<ReadonlyMap<string, ViewerSessionState>>(() => new Map());
+  const [shareViewerTurnProviders, setShareViewerTurnProviders] = useState<ReadonlyMap<string, P2pTurnProvider>>(() => new Map());
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
+  const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
+  const [turnPathProbeSnapshot, setTurnPathProbeSnapshot] = useState<TurnPathProbeSnapshot>(() => ({
+    status: 'idle',
+    probeTargetBps: 2_000_000
+  }));
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
+  const requestMeetingIceServers = useCallback(async (
+    requestedProvider: RequestedIceTurnProvider = 'auto'
+  ): Promise<P2pIceServerConfiguration> => {
+    const path = requestedProvider === 'auto'
+      ? `/meetings/${encodeURIComponent(slug)}/ice-servers`
+      : `/meetings/${encodeURIComponent(slug)}/ice-servers?turnProvider=${encodeURIComponent(requestedProvider)}`;
+    const configuration = normalizeP2pIceServerConfiguration(await apiRequest<P2pIceServerConfiguration>(
+      path,
+      IceServersResponseSchema
+    ));
+    const availableTurnProviders = configuration.availableTurnProviders ?? [configuration.turnProvider];
+    availableScreenTurnProvidersRef.current = availableTurnProviders;
+    setAvailableScreenTurnProviders(availableTurnProviders);
+    return configuration;
+  }, [slug]);
   const authorizationChanged = useCallback((authorized: boolean) => {
     hostAuthorizedRef.current = authorized;
     setHostAuthorized(authorized);
     setHostAuthorization(authorized ? 'authorized' : 'unauthorized');
   }, []);
+  useEffect(() => {
+    let active = true;
+    setHostAuthorization('unknown');
+    void authorizeHost().then(
+      () => { if (active) authorizationChanged(true); },
+      () => { if (active) authorizationChanged(false); }
+    );
+    return () => { active = false; };
+  }, [authorizationChanged, authorizeHost]);
   const chooseUnrestrictedSystemAudio = useCallback((context: { displaySurface: string }) => new Promise<UnrestrictedSystemAudioChoice>((resolve) => {
     systemAudioDecisionResolver.current = resolve;
     setSystemAudioDecision(context);
@@ -228,19 +306,37 @@ export function MeetingRoomPage({
   }): P2pShareController => {
     let share: P2pShareController;
     if (shareControllerFactory) {
-      share = shareControllerFactory(deps);
+      share = shareControllerFactory({
+        ...deps,
+        cloudflareTurnControlMode: 'control'
+      });
     } else {
       const signaling = signalingRef.current;
       if (!signaling) throw new Error('P2P signaling is not connected.');
-      share = createP2pShareController({ slug, signaling, ...deps });
+      share = createP2pShareController({
+        slug,
+        signaling,
+        fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
+        cloudflareTurnControlMode: 'control',
+        ...deps
+      });
     }
     p2pShareUnsubscribeRef.current?.();
     p2pShareUnsubscribeRef.current = share.subscribe((states) => {
       setShareViewerStates(new Map(states));
+      setShareViewerTurnProviders(new Map(share.getViewerTurnProviders?.() ?? []));
       p2pStats.observeShareStates(states);
     });
+    p2pShareProbeUnsubscribeRef.current?.();
+    setTurnPathProbeSnapshot(share.getTurnPathProbeSnapshot?.() ?? {
+      status: 'idle',
+      probeTargetBps: 2_000_000
+    });
+    p2pShareProbeUnsubscribeRef.current = share.subscribeTurnPathProbe?.((snapshot) => {
+      setTurnPathProbeSnapshot(snapshot);
+    });
     return share;
-  }, [p2pStats, shareControllerFactory, slug]);
+  }, [p2pStats, requestMeetingIceServers, shareControllerFactory, slug]);
   const screenShare = useMemo(() => createScreenShareController({
     requestGrant: () => hostAuthorizedRef.current
       ? meetingApi.grantShare(slug, join.participantIdentity)
@@ -258,17 +354,27 @@ export function MeetingRoomPage({
             publish: async (s, o) => {
               const cloned = cloneShareStream(s);
               sfuStreamRef.current = cloned;
-              await controller.publishScreenShare(cloned, o);
+              try {
+                await controller.publishScreenShare(cloned, o);
+              } catch (error) {
+                if (sfuStreamRef.current === cloned) sfuStreamRef.current = undefined;
+                for (const track of cloned.getTracks()) track.stop();
+                throw error;
+              }
             },
             release: async () => {
               const cloned = sfuStreamRef.current;
               sfuStreamRef.current = undefined;
-              if (cloned) await controller.releaseScreenShare(cloned);
+              if (cloned) {
+                try { await controller.releaseScreenShare(cloned); }
+                finally { for (const track of cloned.getTracks()) track.stop(); }
+              }
             }
           },
           getViewers: () => viewerRosterRef.current,
           createShareController,
-          onControllerCreated: (share) => { p2pShareRef.current = share; }
+          onControllerCreated: (share) => { p2pShareRef.current = share; },
+          onViewerStatesChanged: setShareViewerStates
         });
         hybridShareRef.current = hybrid;
         await hybrid.publish(stream, options);
@@ -278,7 +384,12 @@ export function MeetingRoomPage({
         hybridShareRef.current = undefined;
         p2pShareUnsubscribeRef.current?.();
         p2pShareUnsubscribeRef.current = undefined;
+        p2pShareProbeUnsubscribeRef.current?.();
+        p2pShareProbeUnsubscribeRef.current = undefined;
         setShareViewerStates(new Map());
+        setShareViewerTurnProviders(new Map());
+        setEncodingDiagnostics(new Map());
+        setTurnPathProbeSnapshot({ status: 'idle', probeTargetBps: 2_000_000 });
         p2pShareRef.current = undefined;
         if (hybrid) await hybrid.release(stream);
       }
@@ -299,37 +410,106 @@ export function MeetingRoomPage({
   }, [screenState.status]);
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
+  const [viewerTurnProvider, setViewerTurnProvider] = useState<P2pTurnProvider>();
   const viewerP2pRef = useRef<P2pViewerController | undefined>(undefined);
   const pendingFallbackCompletionRef = useRef<(() => void) | undefined>(undefined);
   const [fallbackP2pStream, setFallbackP2pStream] = useState<MediaStream>();
 
   useEffect(() => {
     let cancelled = false;
-    let iceServers: RTCIceServer[] | undefined;
+    let iceConfiguration: P2pIceServerConfiguration | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    let iceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+    // A revoked/expired session cannot recover by polling. Keep this scoped
+    // to the join effect so a fresh join can fetch credentials again.
+    let terminalIceError: ApiRequestError | undefined;
     type ViewerSignal =
-      | { type: 'offer'; from: string; sdp: string; generation?: string }
+      | { type: 'offer'; from: string; sdp: string; generation?: string; turnProvider?: P2pTurnProvider }
       | { type: 'ice'; from: string; candidate: string | null; generation?: string };
     /** Viewer signaling received while ICE credentials are in flight. */
     const pendingViewerSignals: ViewerSignal[] = [];
     let viewerSignalTail = Promise.resolve();
-    let iceServersFetch: Promise<RTCIceServer[]> | undefined;
-    const fetchIceServersOnce = (): Promise<RTCIceServer[]> => {
-      if (iceServersFetch === undefined) {
-        iceServersFetch = apiRequest<{ iceServers: RTCIceServer[] }>(
-          `/meetings/${encodeURIComponent(slug)}/ice-servers`,
-          IceServersResponseSchema
-        ).then((response) => response.iceServers).finally(() => {
-          iceServersFetch = undefined;
-        });
+    const iceServersFetches = new Map<RequestedIceTurnProvider, Promise<P2pIceServerConfiguration>>();
+    let latestViewerIceRequestToken = 0;
+    let blockedViewerSignalProvider: RequestedIceTurnProvider | undefined;
+    const fetchIceServersOnce = (requestedProvider: RequestedIceTurnProvider = 'auto'): Promise<P2pIceServerConfiguration> => {
+      if (terminalIceError) return Promise.reject(terminalIceError);
+      const inFlight = iceServersFetches.get(requestedProvider);
+      if (inFlight) return inFlight;
+      const fetchPromise = requestMeetingIceServers(requestedProvider).catch((error: unknown) => {
+        if (error instanceof ApiRequestError && [401, 403, 404, 410].includes(error.status)) {
+          terminalIceError = error;
+          if (retryTimer !== undefined) clearTimeout(retryTimer);
+          if (iceRefreshTimer !== undefined) clearTimeout(iceRefreshTimer);
+          retryTimer = undefined;
+          iceRefreshTimer = undefined;
+          pendingViewerSignals.length = 0;
+        }
+        throw error;
+      }).finally(() => {
+        iceServersFetches.delete(requestedProvider);
+      });
+      iceServersFetches.set(requestedProvider, fetchPromise);
+      return fetchPromise;
+    };
+    const configurationMatchesRequest = (
+      configuration: P2pIceServerConfiguration,
+      requestedProvider: RequestedIceTurnProvider
+    ): boolean => requestedProvider === 'auto' || configuration.turnProvider === requestedProvider;
+    const applyIceConfiguration = (configuration: P2pIceServerConfiguration): void => {
+      iceConfiguration = configuration;
+      viewerP2pRef.current?.updateIceServers(configuration.iceServers, configuration.turnProvider);
+      scheduleIceRefresh(configuration);
+    };
+    const fetchAndApplyIceServers = async (
+      requestedProvider: RequestedIceTurnProvider = 'auto'
+    ): Promise<boolean> => {
+      const requestToken = ++latestViewerIceRequestToken;
+      const fresh = await fetchIceServersOnce(requestedProvider);
+      if (!configurationMatchesRequest(fresh, requestedProvider)) {
+        throw new Error(`Requested ${requestedProvider} ICE configuration but received ${fresh.turnProvider}.`);
       }
-      return iceServersFetch;
+      if (cancelled || terminalIceError || requestToken !== latestViewerIceRequestToken) return false;
+      applyIceConfiguration(fresh);
+      return true;
+    };
+    const queuePendingViewerSignals = (): void => {
+      const queued = pendingViewerSignals.splice(0);
+      for (const pending of queued) dispatchViewerSignal(pending);
+    };
+    const scheduleIceServersRetry = (requestedProvider: RequestedIceTurnProvider = 'auto'): void => {
+      if (cancelled || terminalIceError) return;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = undefined;
+        fetchIceServersWithRetry(requestedProvider);
+      }, 2_000);
+    };
+    const refreshViewerIceServers = (requestedProvider: RequestedIceTurnProvider = iceConfiguration?.turnProvider ?? 'auto'): void => {
+      void fetchAndApplyIceServers(requestedProvider).catch(() => {
+        if (cancelled || terminalIceError) return;
+        iceRefreshTimer = setTimeout(() => {
+          iceRefreshTimer = undefined;
+          refreshViewerIceServers(requestedProvider);
+        }, 2_000);
+      });
+    };
+    const scheduleIceRefresh = (configuration: P2pIceServerConfiguration): void => {
+      if (iceRefreshTimer !== undefined) clearTimeout(iceRefreshTimer);
+      iceRefreshTimer = undefined;
+      if (configuration.turnCredentialsExpiresAt === undefined) return;
+      const delay = Math.max(1_000, (configuration.turnCredentialsExpiresAt - Date.now() / 1_000 - 60) * 1_000);
+      iceRefreshTimer = setTimeout(() => {
+        iceRefreshTimer = undefined;
+        refreshViewerIceServers(configuration.turnProvider);
+      }, delay);
     };
     const ensureController = (): P2pViewerController | undefined => {
-      if (iceServers === undefined) return undefined;
+      if (iceConfiguration === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
-        const viewerController = new P2pViewerController(signaling, iceServers, {
+        const viewerController = new P2pViewerController(signaling, iceConfiguration.iceServers, {
           iceTransportPolicy: viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
+          turnProvider: iceConfiguration.turnProvider,
           onFallbackRequested: (complete) => {
             pendingFallbackCompletionRef.current = complete;
             setFallbackP2pStream(viewerP2pRef.current?.getStream() ?? undefined);
@@ -340,40 +520,70 @@ export function MeetingRoomPage({
         });
         viewerP2pRef.current = viewerController;
         viewerController.subscribe((state) => {
-          if (!cancelled) setViewerP2pState(state);
+          if (!cancelled) {
+            setViewerP2pState(state);
+            setViewerTurnProvider(viewerController.getTurnProvider());
+          }
           p2pStats.observeViewerState(state);
         });
       }
       return viewerP2pRef.current;
     };
     const dispatchViewerSignal = (signal: ViewerSignal): void => {
-      if (cancelled) return;
+      if (cancelled || terminalIceError) return;
       viewerSignalTail = viewerSignalTail.then(async () => {
-        if (cancelled) return;
-        if (signal.type === 'offer' && viewerTransportPreferenceRef.current === 'sfu') return;
+        if (cancelled || terminalIceError) return;
+        if (blockedViewerSignalProvider !== undefined && signal.type === 'ice') {
+          pendingViewerSignals.push(signal);
+          return;
+        }
         if (signal.type === 'offer') {
           viewerSharerIdentityRef.current = signal.from;
+          if (viewerTransportPreferenceRef.current === 'sfu') {
+            signaling.sendScreenTransport('sfu');
+            return;
+          }
+          const requestedProvider: RequestedIceTurnProvider = signal.turnProvider ?? 'coturn';
+          const shouldRefreshIceServers = signal.turnProvider !== undefined
+            ? iceConfiguration === undefined
+              || iceConfiguration.turnProvider !== requestedProvider
+              || iceConfigurationExpiresSoon(iceConfiguration)
+            : iceConfiguration !== undefined
+              && (iceConfiguration.turnProvider !== requestedProvider
+                || iceConfigurationExpiresSoon(iceConfiguration));
           // A fresh offer may arrive long after page load. Refresh ICE
           // credentials when the cached TURN ones are about to expire:
           // gathering with expired credentials silently yields no relay
           // candidates, which strands asymmetric NAT pairs on the SFU even
-          // though the sharer's fresh session could relay. A refresh failure
-          // keeps the cached servers; the sharer's automatic re-drive covers
-          // a failed negotiation.
-          if (iceServers !== undefined && iceCredentialsExpireSoon(iceServers)) {
+          // though the sharer's fresh session could relay.
+          if (shouldRefreshIceServers) {
             try {
-              const fresh = await fetchIceServersOnce();
-              if (!cancelled) {
-                iceServers = fresh;
-                viewerP2pRef.current?.updateIceServers(fresh);
+              const applied = await fetchAndApplyIceServers(requestedProvider);
+              if (!applied && (iceConfiguration === undefined
+                || !configurationMatchesRequest(iceConfiguration, requestedProvider))) {
+                blockedViewerSignalProvider = requestedProvider;
+                pendingViewerSignals.push(signal);
+                scheduleIceServersRetry(requestedProvider);
+                return;
               }
             } catch {
-              // Keep the cached (possibly stale) servers for this attempt.
+              if (cancelled || terminalIceError) return;
+              blockedViewerSignalProvider = requestedProvider;
+              pendingViewerSignals.push(signal);
+              scheduleIceServersRetry(requestedProvider);
+              return;
             }
           }
+          if (iceConfiguration === undefined || !configurationMatchesRequest(iceConfiguration, requestedProvider)) {
+            blockedViewerSignalProvider = requestedProvider;
+            pendingViewerSignals.push(signal);
+            if (signal.turnProvider !== undefined) scheduleIceServersRetry(requestedProvider);
+            return;
+          }
+          blockedViewerSignalProvider = undefined;
           if (cancelled) return;
         }
-        if (iceServers === undefined) {
+        if (iceConfiguration === undefined) {
           pendingViewerSignals.push(signal);
           return;
         }
@@ -393,23 +603,26 @@ export function MeetingRoomPage({
     // viewer, which is exactly what made "when I share, the others cannot
     // P2P" while their own shares worked (the sharer fetches credentials
     // fresh at share time).
-    const fetchIceServersWithRetry = (): void => {
-      void fetchIceServersOnce().then((servers) => {
-        if (cancelled) return;
-        iceServers = servers;
-        viewerP2pRef.current?.updateIceServers(servers);
+    const fetchIceServersWithRetry = (requestedProvider: RequestedIceTurnProvider = 'auto'): void => {
+      void fetchAndApplyIceServers(requestedProvider).then((applied) => {
+        if (cancelled || !applied) return;
+        const activeIceConfiguration = iceConfiguration;
+        if (blockedViewerSignalProvider !== undefined
+          && (activeIceConfiguration === undefined
+            || !configurationMatchesRequest(activeIceConfiguration, blockedViewerSignalProvider))) return;
+        blockedViewerSignalProvider = undefined;
         ensureController();
-        const queued = pendingViewerSignals.splice(0);
-        for (const signal of queued) dispatchViewerSignal(signal);
+        queuePendingViewerSignals();
       }).catch(() => {
         if (cancelled) return;
-        retryTimer = setTimeout(fetchIceServersWithRetry, 2_000);
+        if (requestedProvider === 'auto' && blockedViewerSignalProvider !== undefined) return;
+        scheduleIceServersRetry(requestedProvider);
       });
     };
     fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
-      onOffer: (from, sdp, generation) => {
-        dispatchViewerSignal({ type: 'offer', from, sdp, generation });
+      onOffer: (from, sdp, generation, turnProvider) => {
+        dispatchViewerSignal({ type: 'offer', from, sdp, generation, turnProvider });
       },
       // While we are the sharer, answers/ice/bye belong to the share session.
       onAnswer: (from, sdp, generation) => { void p2pShareRef.current?.handleAnswer(from, sdp, generation); },
@@ -423,6 +636,9 @@ export function MeetingRoomPage({
       },
       onMediaReady: (from, generation) => {
         p2pShareRef.current?.handleMediaReady(from, generation);
+      },
+      onScreenTransport: (from, transport) => {
+        void hybridShareRef.current?.setViewerScreenTransport(from, transport).catch(() => setNotice(t('room.shareFailed')));
       },
       onRetry: (from) => {
         // While we are the sharer, a retry request belongs to the share
@@ -438,23 +654,26 @@ export function MeetingRoomPage({
         }
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
+        setViewerTurnProvider(undefined);
         pendingFallbackCompletionRef.current = undefined;
         setFallbackP2pStream(undefined);
-        void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+        void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
       },
       onShareGone: () => {
         viewerSharerIdentityRef.current = undefined;
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
+        setViewerTurnProvider(undefined);
         pendingFallbackCompletionRef.current = undefined;
         setFallbackP2pStream(undefined);
-        void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+        void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
         // The host revoked (or the server ended) our share: tear it down fully.
         if (screenShareRef.current?.getState().status !== 'idle') {
           void screenShareRef.current?.stop();
         }
       },
       onWelcome: (peers) => {
+        if (viewerTransportPreferenceRef.current === 'sfu') signaling.sendScreenTransport('sfu');
         const previous = viewerRosterRef.current;
         viewerRosterRef.current = peers;
         setViewerCount(peers.length);
@@ -470,9 +689,10 @@ export function MeetingRoomPage({
               viewerSharerIdentityRef.current = undefined;
               viewerP2pRef.current?.close();
               viewerP2pRef.current = undefined;
+              setViewerTurnProvider(undefined);
               pendingFallbackCompletionRef.current = undefined;
               setFallbackP2pStream(undefined);
-              void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+              void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
             }
           }
         }
@@ -496,9 +716,10 @@ export function MeetingRoomPage({
           viewerSharerIdentityRef.current = undefined;
           viewerP2pRef.current?.close();
           viewerP2pRef.current = undefined;
+          setViewerTurnProvider(undefined);
           pendingFallbackCompletionRef.current = undefined;
           setFallbackP2pStream(undefined);
-          void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
+          void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
         }
       },
       onError: () => undefined
@@ -512,26 +733,33 @@ export function MeetingRoomPage({
       cancelled = true;
       pendingViewerSignals.length = 0;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
+      if (iceRefreshTimer !== undefined) clearTimeout(iceRefreshTimer);
       signalingRef.current = undefined;
       viewerSharerIdentityRef.current = undefined;
       pendingFallbackCompletionRef.current?.();
       pendingFallbackCompletionRef.current = undefined;
       viewerP2pRef.current?.close();
       viewerP2pRef.current = undefined;
+      setViewerTurnProvider(undefined);
       p2pShareUnsubscribeRef.current?.();
       p2pShareUnsubscribeRef.current = undefined;
+      p2pShareProbeUnsubscribeRef.current?.();
+      p2pShareProbeUnsubscribeRef.current = undefined;
       signaling.close();
     };
-  }, [controller, createSignalingClient, join.participantIdentity, p2pStats, slug]);
+  }, [controller, createSignalingClient, join.participantIdentity, p2pStats, requestMeetingIceServers, slug]);
 
   useEffect(() => {
-    if (viewerP2pState === 'p2p' || viewerP2pState === 'turn') return;
-    // A renegotiation may replace an established P2P session. Restore the
-    // safety net while it negotiates so the stage never drops to an empty source.
-    if (viewerP2pState === 'negotiating') {
-      void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
-    }
-  }, [controller, viewerP2pState]);
+    void controller.setRemoteScreenShareSubscribed(viewerTransportPreference === 'sfu').catch(() => undefined);
+  }, [controller, viewerTransportPreference, state.connection]);
+
+  useEffect(() => {
+    if (viewerTransportPreference !== 'sfu' || screenState.status !== 'idle' || state.remoteScreenShare?.track) return;
+    // Explicit demand may arrive before capture exists. Reassert it while
+    // waiting, independently of P2P offers or ICE credential availability.
+    const timer = window.setInterval(() => signalingRef.current?.sendScreenTransport('sfu'), 5_000);
+    return () => window.clearInterval(timer);
+  }, [viewerTransportPreference, screenState.status, state.remoteScreenShare?.track]);
 
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
@@ -598,6 +826,8 @@ export function MeetingRoomPage({
     }
 
     const viewerController = viewerP2pRef.current;
+    signalingRef.current?.retryConnection();
+    signalingRef.current?.sendScreenTransport(preference === 'sfu' ? 'sfu' : 'peer');
     if (preference === 'sfu') {
       if (viewerController) viewerController.requestSfu();
       else void controller.setRemoteScreenShareSubscribed(true).catch(() => undefined);
@@ -605,38 +835,76 @@ export function MeetingRoomPage({
     }
 
     viewerController?.setIceTransportPolicy(viewerTransportPreferenceToIcePolicy(preference));
-    if (viewerController) viewerController.requestRetry();
-    else if (viewerSharerIdentityRef.current) {
-      signalingRef.current?.sendRetry(viewerSharerIdentityRef.current);
+    const sharerIdentity = state.remoteScreenShare?.sharerIdentity
+      ?? viewerSharerIdentityRef.current
+      ?? viewerController?.getSharerIdentity();
+    if (sharerIdentity) {
+      signalingRef.current?.retryConnection();
     }
-  }, [controller]);
+  }, [controller, state.remoteScreenShare?.sharerIdentity]);
+  const handleScreenShareTurnProviderChange = useCallback((preference: ScreenShareTurnProviderPreference) => {
+    screenTurnProviderPreferenceRef.current = preference;
+    setScreenShareTurnProvider(preference);
+    saveScreenShareTurnProviderPreference(window.localStorage, preference);
+  }, []);
 
   const hostParticipants: ParticipantSummary[] = state.participants.map((participant) => ({
     identity: participant.identity,
     name: participant.name,
     isSharing: participant.isSharing
   }));
-  // P2P first: the remote P2P stream renders while the viewer state is `p2p`;
-  // during `negotiating` and on `livekit` the stage falls back to the LiveKit
-  // screen track (the hybrid controller switches sources with first-frame
-  // retention, so no black screen while the swap is in flight).
-  const livekitViewerTrack = state.remoteScreenShare?.track;
+  // SFU is shown only after explicit selection. Peer renegotiation may retain
+  // the last peer frame, but never substitutes a LiveKit backup behind it.
+  const livekitViewerTrack = viewerTransportPreference === 'sfu' ? state.remoteScreenShare?.track : undefined;
   const p2pViewerStream = viewerP2pState === 'p2p' || viewerP2pState === 'turn'
+    || (viewerTransportPreference !== 'sfu' && viewerP2pState === 'negotiating')
     ? viewerP2pRef.current?.getStream() ?? undefined
     : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
       ? fallbackP2pStream
       : undefined;
   const stageStream = screenState.stream ?? p2pViewerStream;
-  const stageTrack = stageStream ? undefined : state.remoteScreenShare?.track;
-  const stageAudioTrack = stageStream ? undefined : state.remoteScreenShare?.audioTrack;
+  const stageTrack = stageStream ? undefined : livekitViewerTrack;
+  const stageAudioTrack = stageStream || viewerTransportPreference !== 'sfu' ? undefined : state.remoteScreenShare?.audioTrack;
   const stageMuted = Boolean(screenState.stream) || (p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
   const screenTransportMode = screenState.stream
     ? deriveSharerScreenTransportMode(shareViewerStates)
     : deriveViewerScreenTransportMode(viewerP2pState);
+  const screenTurnProvider = screenState.stream
+    ? deriveSharerTurnProvider(shareViewerStates, shareViewerTurnProviders)
+    : deriveViewerTurnProvider(viewerP2pState, viewerTurnProvider);
+  const screenTransportLabel = hasActiveScreenShare && screenTransportMode === 'turn' && screenTurnProvider
+    ? t(turnProviderKeys[screenTurnProvider])
+    : hasActiveScreenShare
+      ? t(transportModeKeys[screenTransportMode])
+      : t('connection.connected');
   const sharerName = screenState.stream
     ? join.participantName
     : state.remoteScreenShare?.sharerName;
+  const localCloudflareRelayActive = Boolean(
+    screenState.stream
+    && (screenTurnProvider === 'cloudflare' || screenTurnProvider === 'mixed')
+  );
+  // Calibration rungs and isolated windows are diagnostic only. The main
+  // badge may call a value TURN capacity only after the reducer verifies a
+  // stable same-target sample set.
+  const turnProbeCapacityBps = turnPathProbeSnapshot.stableCapacityBps;
+  const turnProbeBitrateLabel = turnProbeCapacityBps === undefined
+    ? undefined
+    : (turnProbeCapacityBps / 1_000_000).toFixed(1);
+  const cloudflareTurnProbeLabel = !localCloudflareRelayActive
+    ? undefined
+    : turnPathProbeSnapshot.status === 'ready' && turnProbeBitrateLabel !== undefined
+      ? t('room.cloudflareTurnProbeReady', { bitrate: turnProbeBitrateLabel })
+      : (turnPathProbeSnapshot.status === 'stale' || turnPathProbeSnapshot.status === 'probing')
+        && turnProbeBitrateLabel !== undefined
+        ? t('room.cloudflareTurnProbeRemeasuring', { bitrate: turnProbeBitrateLabel })
+        : turnPathProbeSnapshot.status === 'negotiating' || turnPathProbeSnapshot.status === 'probing'
+          ? t('room.cloudflareTurnProbeProbing')
+          : turnPathProbeSnapshot.status === 'error' || turnPathProbeSnapshot.status === 'unsupported'
+            ? t('room.cloudflareTurnProbeUnavailable')
+            : undefined;
+
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
     if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
@@ -654,6 +922,7 @@ export function MeetingRoomPage({
   useEffect(() => {
     if (!hasActiveScreenShare) {
       setScreenStats(undefined);
+      setEncodingDiagnostics(new Map());
       return;
     }
     let cancelled = false;
@@ -667,7 +936,9 @@ export function MeetingRoomPage({
         || viewerP2pState === 'turn') {
         const report = await viewerP2pRef.current?.getStatsReport();
         if (report) return [report];
+        return [];
       }
+      if (screenState.status !== 'sharing' && viewerTransportPreference !== 'sfu') return [];
       return controller.getScreenShareStatsReports
         ? controller.getScreenShareStatsReports()
         : [];
@@ -678,6 +949,11 @@ export function MeetingRoomPage({
         if (cancelled) return;
         previous = summarizeWebRtcStats(reports, previous);
         setScreenStats(previous);
+        setEncodingDiagnostics(new Map(
+          screenState.status === 'sharing'
+            ? p2pShareRef.current?.getEncodingDiagnostics?.() ?? []
+            : []
+        ));
         p2pStats.observeQuality(previous);
       } catch {
         // Statistics are diagnostic only and must never interrupt the meeting.
@@ -689,16 +965,82 @@ export function MeetingRoomPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [controller, hasActiveScreenShare, screenState.status, viewerP2pState]);
+  }, [controller, hasActiveScreenShare, screenState.status, viewerP2pState, viewerTransportPreference]);
+
+  const meetingControlsProps: MeetingControlsProps = {
+    connection: state.connection,
+    microphoneEnabled: state.microphoneEnabled,
+    audioPlaybackBlocked: state.audioPlaybackBlocked,
+    callAudioVolume,
+    sharedAudioVolume,
+    sharedAudioVolumeVisible: Boolean(!screenState.stream && hasActiveScreenShare),
+    devices,
+    leaving,
+    screenShareAuthorized: hostAuthorized || Boolean(state.screenShareAuthorized),
+    screenShareActive: screenState.status === 'sharing',
+    screenShareBusy: screenState.status === 'starting',
+    screenCodec,
+    screenBitrate,
+    screenQuality,
+    screenShareTurnProvider,
+    availableTurnProviders: availableScreenTurnProviders,
+    onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
+    onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
+    onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
+    onResumeAudio: () => void controller.resumeAudioPlayback(),
+    onCallAudioVolumeChange: (volume) => {
+      setCallAudioVolume(volume);
+      controller.setCallAudioVolume(volume / 100);
+    },
+    onSharedAudioVolumeChange: setSharedAudioVolume,
+    onScreenCodecChange: setScreenCodec,
+    onScreenBitrateChange: (bitrate) => {
+      screenBitrateTouchedRef.current = true;
+      setScreenBitrate(bitrate);
+    },
+    onScreenQualityChange: setScreenQuality,
+    screenShareTurnProviderVisible: hostAuthorized || Boolean(state.screenShareAuthorized),
+    onScreenShareTurnProviderChange: handleScreenShareTurnProviderChange,
+    viewerTransportPreferenceVisible: Boolean(!screenState.stream && hasActiveScreenShare),
+    viewerTransportPreference,
+    onViewerTransportPreferenceChange: handleViewerTransportPreferenceChange,
+    screenViewerCount: viewerCount,
+    p2pRetryVisible: Boolean(
+      (screenState.status === 'sharing' && viewerCount > 0)
+      || (hasActiveScreenShare && canRetryViewerScreenTransport(viewerP2pState))
+    ),
+    onP2pRetry: () => {
+      signalingRef.current?.retryConnection();
+      if (screenState.status === 'sharing') void p2pShareRef.current?.retryAll(viewerRosterRef.current);
+      else viewerP2pRef.current?.requestRetry();
+    },
+    onScreenShareToggle: () => void toggleScreenShare(),
+    onLeave: () => void leave()
+  };
+
+  const handleMeetingMenuAction = (action: MeetingMenuAction) => {
+    if (action === 'participants') { setMeetingPanelParent('more'); setMeetingPanel('participants'); }
+    else if (action === 'audio-devices' || action === 'screen-settings') { setMeetingPanelParent('more'); setMeetingPanel('settings'); }
+    else if (action === 'webrtc-stats') { setMeetingPanelParent('more'); setMeetingPanel('stats'); }
+    else void leave();
+  };
+  const closeMeetingPanel = () => { setMeetingPanel(null); setMeetingPanelParent(null); };
+  const backToMore = () => { setMeetingPanelParent(null); setMeetingPanel('more'); };
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
-    <header className="meeting-topbar meeting-room-header">
-      <div className="meeting-room-title">
-        <p className="eyebrow">{t('room.eyebrow')}</p>
-        <h1>{t('room.heading', { name: join.participantName })}</h1>
-      </div>
-      <ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />
-    </header>
+    <MeetingTopBar
+      title={meetingName || t('room.heading', { name: join.participantName })}
+      connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}
+      transportLabel={screenTransportLabel}
+      participantCount={state.participants.length}
+      navigationLabel={t('controls.navigation')}
+      participantLabel={t('participants.label')}
+      settingsLabel={t('controls.settingsShort')}
+      onParticipants={() => { setMeetingPanelParent(null); setMeetingPanel('participants'); }}
+      onSettings={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
+      participantButtonRef={participantButtonRef}
+      settingsButtonRef={settingsButtonRef}
+    />
     <section className="meeting-notices" aria-live="polite">
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
       {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
@@ -717,6 +1059,15 @@ export function MeetingRoomPage({
     </section>
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
+        {hasActiveScreenShare && <p className="meeting-sharing-label">
+          <MonitorUp aria-hidden="true" size={18} />
+          <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
+          {cloudflareTurnProbeLabel && <span
+            className="meeting-turn-probe-badge"
+            role="status"
+            aria-live="polite"
+          >{cloudflareTurnProbeLabel}</span>}
+        </p>}
         <section className="meeting-stage-shell">
           <ScreenStage
             stream={stageStream}
@@ -725,84 +1076,87 @@ export function MeetingRoomPage({
             muted={stageMuted}
             sharerName={sharerName}
             onSourceReady={handleStageSourceReady}
-            audioDynamics={!screenState.stream}
+            sharedAudioVolume={sharedAudioVolume / 100}
           >
-            {hasActiveScreenShare && <WebRtcStatsPanel
-              snapshot={screenStats}
-              requestedCodec={screenCodec}
-              mode={screenTransportMode}
-            />}
           </ScreenStage>
         </section>
         <MeetingControls
+          {...meetingControlsProps}
           className="meeting-control-dock"
-          connection={state.connection}
-          microphoneEnabled={state.microphoneEnabled}
-          audioPlaybackBlocked={state.audioPlaybackBlocked}
-          devices={devices}
-          leaving={leaving}
-          screenShareAuthorized={hostAuthorized || Boolean(state.screenShareAuthorized)}
-          screenShareActive={screenState.status === 'sharing'}
-          screenShareBusy={screenState.status === 'starting'}
-          screenCodec={screenCodec}
-          screenBitrate={screenBitrate}
-          screenQuality={screenQuality}
-          onMicrophoneToggle={() => void controller.setMicrophoneEnabled(!state.microphoneEnabled)}
-          onMicrophoneDeviceChange={(deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId)}
-          onSpeakerDeviceChange={(deviceId) => void changeSpeaker(deviceId)}
-          onResumeAudio={() => void controller.resumeAudioPlayback()}
-          onScreenCodecChange={setScreenCodec}
-          onScreenBitrateChange={(bitrate) => {
-            screenBitrateTouchedRef.current = true;
-            setScreenBitrate(bitrate);
-          }}
-          onScreenQualityChange={setScreenQuality}
-          viewerTransportPreferenceVisible={Boolean(!screenState.stream && hasActiveScreenShare)}
-          viewerTransportPreference={viewerTransportPreference}
-          onViewerTransportPreferenceChange={handleViewerTransportPreferenceChange}
-          screenViewerCount={viewerCount}
-          p2pRetryVisible={Boolean(
-            (screenState.status === 'sharing' && viewerCount > 0)
-            || (hasActiveScreenShare && (viewerP2pState === 'livekit' || viewerP2pState === 'negotiating'))
-          )}
-          onP2pRetry={() => {
-            // Sharer: re-drive every viewer with a fresh session. Viewer:
-            // ask the sharer to re-drive a fresh offer for us.
-            if (screenState.status === 'sharing') {
-              void p2pShareRef.current?.retryAll(viewerRosterRef.current);
-            } else {
-              viewerP2pRef.current?.requestRetry();
-            }
-          }}
-          onScreenShareToggle={() => void toggleScreenShare()}
-          onLeave={() => void leave()}
+          includeSettings={false}
+          onMore={() => { setMeetingPanelParent(null); setMeetingPanel('more'); }}
+          moreButtonRef={moreButtonRef}
         />
       </div>
-      <aside className="meeting-side-rail" aria-label={t('room.sidePanel')}>
-        <ParticipantList participants={state.participants} />
-        <details className="meeting-management">
-          <summary>{t('room.management')}</summary>
-          <HostMenu
-            participants={hostParticipants}
-            authorizeHost={authorizeHost}
-            onAuthorizationChange={authorizationChanged}
-            onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
-            onRevokeShare={() => meetingApi.revokeShare(slug)}
-            onKick={(identity) => meetingApi.kick(slug, identity)}
-            onEndMeeting={() => meetingApi.end(slug)}
+    </div>
+    {meetingPanel === 'participants' && <MeetingDrawer
+      title={t('participants.label')}
+      closeLabel={t('controls.closePanel')}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : participantButtonRef}
+    >
+      <ParticipantList participants={state.participants} />
+      <details className="meeting-management">
+        <summary>{t('room.management')}</summary>
+        <HostMenu
+          participants={hostParticipants}
+          authorizeHost={authorizeHost}
+          authorized={hostAuthorized}
+          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
+          onRevokeShare={() => meetingApi.revokeShare(slug)}
+          onKick={(identity) => meetingApi.kick(slug, identity)}
+          onEndMeeting={() => meetingApi.end(slug)}
+          onEnded={() => onTerminal?.('ended')}
+        />
+        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
+          <h2>{t('adminEnd.heading')}</h2>
+          <AdminEndMeetingForm
+            compact
+            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
             onEnded={() => onTerminal?.('ended')}
           />
-          {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
-            <h2>{t('adminEnd.heading')}</h2>
-            <AdminEndMeetingForm
-              compact
-              onEnd={(password) => meetingApi.adminEnd!(slug, password)}
-              onEnded={() => onTerminal?.('ended')}
-            />
-          </section>}
-        </details>
-      </aside>
-    </div>
+        </section>}
+      </details>
+    </MeetingDrawer>}
+    {meetingPanel === 'settings' && <MeetingDrawer
+      title={t('controls.settings')}
+      closeLabel={t('controls.closePanel')}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
+    ><MeetingSettings {...meetingControlsProps} /></MeetingDrawer>}
+    {meetingPanel === 'more' && <MeetingDrawer
+      title={t('controls.more')}
+      closeLabel={t('controls.closePanel')}
+      onClose={closeMeetingPanel}
+      returnFocusRef={moreButtonRef}
+    ><MeetingMenu items={[
+      { action: 'participants', label: t('participants.label') },
+      { action: 'audio-devices', label: t('controls.audioDevices') },
+      { action: 'screen-settings', label: t('controls.screenSettings') },
+      { action: 'webrtc-stats', label: t('controls.webrtcData') },
+      { action: 'leave', label: t('controls.leave') }
+    ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
+    {meetingPanel === 'stats' && <MeetingDrawer
+      title={t('controls.webrtcData')}
+      closeLabel={t('controls.closePanel')}
+      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      onClose={closeMeetingPanel}
+      returnFocusRef={moreButtonRef}
+    ><WebRtcStatsPanel
+      embedded
+      active={hasActiveScreenShare}
+      snapshot={screenStats}
+      turnProbe={screenState.status === 'sharing' ? turnPathProbeSnapshot : undefined}
+      encodingDiagnostics={screenState.status === 'sharing' ? encodingDiagnostics : undefined}
+      requestedCodec={screenCodec}
+      mode={screenTransportMode}
+      turnProvider={screenTurnProvider}
+    /></MeetingDrawer>}
   </main>;
 }
 
@@ -812,7 +1166,11 @@ export function MeetingRoomPage({
  * P2P sessions are sending.
  */
 function cloneShareStream(stream: MediaStream): MediaStream {
-  const tracks = stream.getTracks().map((track) => track.clone());
+  const tracks = stream.getTracks().map((track) => {
+    const cloned = track.clone();
+    if (track.contentHint) cloned.contentHint = track.contentHint;
+    return cloned;
+  });
   return {
     getTracks: () => tracks,
     getVideoTracks: () => tracks.filter((track) => track.kind === 'video'),
