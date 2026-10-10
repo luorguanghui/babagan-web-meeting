@@ -16,7 +16,10 @@ document.querySelector('#start').onclick = async () => {
   for (let at = first; at < start + duration; at += 5000) { const time = (at - epoch) / 1000; gain.gain.setValueAtTime(.2, time); gain.gain.setValueAtTime(0, time + .12); }
   let frame = 0, current;
   const timer = setInterval(() => {
-    const now = performance.now(), index = Math.floor((now - first) / 5000), elapsed = now - first - index * 5000;
+    // Pulse and marker must follow the same source clock. AudioContext can
+    // render ahead of the wall clock; mixing currentTime and performance.now()
+    // creates an input skew that a faithful transmission cannot correct.
+    const now = sound.currentTime * 1000 + epoch, index = Math.floor((now - first) / 5000), elapsed = now - first - index * 5000;
     const marked = index >= 0 && elapsed < 160;
     context.fillStyle = `hsl(${frame++ * 3 % 360} 70% 35%)`; context.fillRect(0,0,1920,1080);
     for (let x = 0; x < 20; x++) { context.fillStyle = '#ababab'; context.fillRect((x * 109 + frame * 13) % 1900, (x * 71 + frame * 7) % 1080, 90, 90); }
@@ -63,6 +66,7 @@ document.querySelector('#start').onclick = async () => {
     let last=-1;
     const sampleTimer=setInterval(()=>{cycles.push({atMs:performance.now()-start,sent:current.sender.getStats(),received:current.receiver.getStats(),heap:performance.memory?.usedJSHeapSize});},10000);
     window.check=()=>({elapsedMs:performance.now()-start,samples:samples.length,maxSkewMs:Math.max(0,...samples.map(x=>Math.abs(x.skewMs))),errors,cycles:cycles.length});
+    window.evidence=()=>({durationMs:performance.now()-start,samples:[...samples],errors:[...errors],cycles:[...cycles],reconnects,maxSkewMs:Math.max(0,...samples.map(x=>Math.abs(x.skewMs)))});
     while(performance.now()-start<duration){
       const elapsed=performance.now()-start, desired=Math.min(reconnects,Math.floor(elapsed/interval));
       if(desired>last+1){await current.close();current=await connect(desired);last=desired-1;}

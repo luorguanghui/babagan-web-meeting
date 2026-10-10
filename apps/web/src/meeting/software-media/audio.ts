@@ -56,6 +56,8 @@ export class ProjectAudioPlayback {
   private context?: AudioContext;
   private node?: AudioWorkletNode;
   private decoder?: AudioDecoder;
+  private readonly timestamps: Array<{ timestampUs: number; used: number }> = [];
+  private lastTimestampUs = -Infinity;
   private anchor = 0;
   private closed = false;
   track?: MediaStreamTrack;
@@ -71,19 +73,36 @@ export class ProjectAudioPlayback {
     this.track = destination.stream.getAudioTracks()[0];
     this.anchor = performance.timeOrigin + performance.now() - context.currentTime * 1000;
     void this.resume().catch(() => undefined);
-    this.decoder = new AudioDecoder({ output: data => {
+    this.makeDecoder();
+  }
+  private makeDecoder(): void {
+    const decoder = new AudioDecoder({ output: data => {
       try {
-        if (this.closed || !this.context || !this.node || data.numberOfFrames > 5760 || data.numberOfChannels !== 2) return;
-        const now = performance.now(); this.clock.anchor(data.timestamp, now);
-        const due = this.clock.dueAt(data.timestamp);
-        if (now - due > 200) return;
+        if (this.closed || this.decoder !== decoder || !this.context || !this.node) return;
+        if (data.numberOfFrames > 5760 || data.numberOfChannels !== 2) throw new Error('Unexpected shared Opus PCM format');
         const samples = new Float32Array(data.numberOfFrames * 2);
         data.copyTo(samples, { planeIndex: 0, format: 'f32' });
-        const startFrame = Math.round((due + performance.timeOrigin - this.anchor) * 48);
-        this.node.port.postMessage({ samples, startFrame }, [samples.buffer]);
+        let offset = 0;
+        while (offset < data.numberOfFrames) {
+          const packet = this.timestamps[0];
+          if (!packet) throw new Error('Shared Opus output has no packet timestamp');
+          const frames = Math.min(data.numberOfFrames - offset, 960 - packet.used);
+          const timestampUs = packet.timestampUs + packet.used * 1000000 / 48000;
+          const now = performance.now(); this.clock.anchor(timestampUs, now);
+          const due = this.clock.dueAt(timestampUs);
+          if (now - due <= 200) {
+            const segment = samples.slice(offset * 2, (offset + frames) * 2);
+            const startFrame = Math.round((due + performance.timeOrigin - this.anchor) * 48);
+            this.node.port.postMessage({ samples: segment, startFrame }, [segment.buffer]);
+          }
+          offset += frames; packet.used += frames;
+          if (packet.used === 960) this.timestamps.shift();
+        }
+      } catch (error) { this.timestamps.length = 0; this.onError(String(error));
       } finally { data.close(); }
     }, error: error => this.onError(String(error)) });
-    this.decoder.configure(config);
+    this.decoder = decoder;
+    decoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 2 });
   }
   async resume(): Promise<void> {
     if (!this.context || this.closed) return;
@@ -91,13 +110,21 @@ export class ProjectAudioPlayback {
     this.anchor = performance.timeOrigin + performance.now() - this.context.currentTime * 1000;
   }
   packet(data: Uint8Array, timestampUs: number): void {
-    if (this.closed || !this.decoder || this.decoder.state !== 'configured' || this.decoder.decodeQueueSize >= 8) return;
-    this.decoder.decode(new EncodedAudioChunk({ type: 'key', data, timestamp: timestampUs, duration: 20000 }));
+    if (this.closed || !this.decoder || this.decoder.state !== 'configured' || this.decoder.decodeQueueSize >= 8 || this.timestamps.length >= 8 || timestampUs <= this.lastTimestampUs) return;
+    this.timestamps.push({ timestampUs, used: 0 });
+    try {
+      this.decoder.decode(new EncodedAudioChunk({ type: 'key', data, timestamp: timestampUs, duration: 20000 }));
+      this.lastTimestampUs = timestampUs;
+    } catch (error) { this.timestamps.pop(); this.onError(String(error)); }
   }
-  clear(): void { this.node?.port.postMessage({ type: 'clear' }); }
+  clear(): void {
+    this.node?.port.postMessage({ type: 'clear' }); this.timestamps.length = 0; this.lastTimestampUs = -Infinity;
+    if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
+    if (!this.closed && this.context && this.node) this.makeDecoder();
+  }
   get blocked(): boolean { return this.context?.state === 'suspended'; }
   async close(): Promise<void> {
-    this.closed = true; this.track?.stop(); this.node?.disconnect();
+    this.closed = true; this.timestamps.length = 0; this.track?.stop(); this.node?.disconnect();
     if (this.decoder && this.decoder.state !== 'closed') this.decoder.close();
     if (this.context && this.context.state !== 'closed') await this.context.close();
   }
