@@ -17,6 +17,7 @@ export class ProjectPeerReceiver {
   private readonly pending = new Map<number, { frame: EncodedFrame; arrived: number }>();
   private readonly display: Array<{ frame: VideoFrame; due: number }> = [];
   private readonly clock = new PlaybackClock();
+  private syncAudio = false;
   private canvas?: HTMLCanvasElement;
   private stream?: MediaStream;
   private lastRequest = -Infinity;
@@ -65,6 +66,7 @@ export class ProjectPeerReceiver {
     if (message.type !== 'config') return;
     this.generation = message.generation;
     this.clearVideo(); this.clock.reset();
+    this.syncAudio = message.audio;
     this.assembler?.clear(); this.assembler = new FrameAssembler(message.generation);
     const config = { codec: message.codec, codedWidth: message.width, codedHeight: message.height, optimizeForLatency: true };
     const support = await VideoDecoder.isConfigSupported(config);
@@ -90,6 +92,10 @@ export class ProjectPeerReceiver {
       if (this.closed || generation !== this.generation || this.decoder !== decoder) { frame.close(); return; }
       if (frame.displayWidth > 3840 || frame.displayHeight > 2160) { frame.close(); this.requestKey(); return; }
       this.stats.decodedFrames++;
+      // Without shared audio there is no timeline to synchronize to. Render
+      // live decoded video immediately: a fixed initial clock otherwise makes
+      // every later frame permanently "late" after delivery delay increases.
+      if (!this.syncAudio) { this.present(frame); return; }
       this.clock.anchor(frame.timestamp, performance.now());
       // A 100ms playout buffer already needs more than six frames at 60fps
       // when decoder output runs before the timer. Six caused the oldest
@@ -128,14 +134,19 @@ export class ProjectPeerReceiver {
     while (this.display.length && this.display[0].due <= now) {
       const { frame, due } = this.display.shift()!;
       if (now - due > 200) { frame.close(); this.stats.droppedFrames++; continue; }
+      this.present(frame);
+    }
+  }
+  private present(frame: VideoFrame): void {
+    try {
       this.canvas ??= document.createElement('canvas');
       if (this.canvas.width !== frame.displayWidth) this.canvas.width = frame.displayWidth;
       if (this.canvas.height !== frame.displayHeight) this.canvas.height = frame.displayHeight;
-      this.canvas.getContext('2d')?.drawImage(frame, 0, 0); frame.close();
-      if (!this.stream) { this.stream = this.canvas.captureStream(0); if (this.audio?.track) this.stream.addTrack(this.audio.track); this.deps.onStream(this.stream); }
+      this.canvas.getContext('2d')?.drawImage(frame, 0, 0);
+      if (!this.stream) { this.stream = this.canvas.captureStream(0); if (this.syncAudio && this.audio?.track) this.stream.addTrack(this.audio.track); this.deps.onStream(this.stream); }
       (this.stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack).requestFrame();
       this.stats.renderedFrames++;
-    }
+    } finally { frame.close(); }
   }
   private requestKey(): void {
     this.pending.clear(); this.waitingKey = true; this.expectedId = undefined;

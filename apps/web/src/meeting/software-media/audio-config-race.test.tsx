@@ -27,3 +27,30 @@ it('waits for shared audio initialization across overlapping configs and attache
   expect(tracks).toEqual([state.track]);
   await receiver.close();
 });
+it('keeps the shared audio/video synchronization buffer when audio is configured', async () => {
+  state.wait = Promise.resolve();
+  let now = 1000, output!: VideoDecoderInit['output'];
+  vi.spyOn(performance, 'now').mockImplementation(() => now);
+  vi.stubGlobal('VideoDecoder', class {
+    state = 'configured'; decodeQueueSize = 0;
+    static async isConfigSupported() { return { supported: true }; }
+    constructor(options: VideoDecoderInit) { output = options.output; }
+    configure() {} close() { this.state = 'closed'; }
+  });
+  const onStream = vi.fn(), requestFrame = vi.fn(), videoTrack = { requestFrame, stop() {} }, audioTracks: object[] = [];
+  const receiver = new ProjectPeerReceiver({ pc: {} as RTCPeerConnection, onStream, onError(message) { throw new Error(message); } });
+  const internal = receiver as unknown as { canvas: object; controlMessage(raw: string): Promise<void>; tick(): void };
+  internal.canvas = { width: 1920, height: 1080, getContext: () => ({ drawImage() {} }),
+    captureStream: () => ({ getVideoTracks: () => [videoTrack], getTracks: () => [videoTrack], addTrack(track: object) { audioTracks.push(track); } }) };
+  await internal.controlMessage(JSON.stringify({ type: 'config', generation: 2, codec: 'avc1.42c02a', width: 1920, height: 1080, audio: true }));
+  const frame = { timestamp: 1000000, displayWidth: 1920, displayHeight: 1080, close: vi.fn() };
+  output(frame as unknown as VideoFrame); internal.tick();
+  expect(onStream).not.toHaveBeenCalled();
+  now = 1100; internal.tick();
+  expect(onStream).toHaveBeenCalledOnce();
+  expect(requestFrame).toHaveBeenCalledOnce();
+  expect(audioTracks).toEqual([state.track]);
+  await receiver.close();
+  expect(frame.close).toHaveBeenCalledOnce();
+  vi.restoreAllMocks();
+});
