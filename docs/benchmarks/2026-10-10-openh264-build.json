@@ -1,0 +1,70 @@
+{
+  "source": {
+    "openh264": {
+      "version": "2.6.0",
+      "repository": "https://github.com/cisco/openh264.git",
+      "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+    },
+    "emsdk": {
+      "version": "4.0.23",
+      "repository": "https://github.com/emscripten-core/emsdk.git",
+      "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+      "release": "aaa43392544d695232b70eda706d751f18980c2a"
+    },
+    "libav": {
+      "package": "@libav.js/variant-vp8-opus",
+      "version": "6.10.9"
+    }
+  },
+  "flags": [
+    "-O3",
+    "-flto",
+    "-msimd128",
+    "-std=c++17",
+    "-DNDEBUG",
+    "-fno-rtti"
+  ],
+  "includePaths": [
+    "codec/api/wels",
+    "codec/common/inc",
+    "codec/encoder/core/inc",
+    "codec/encoder/plus/inc",
+    "codec/processing/interface",
+    "codec/processing/src/common",
+    "codec/processing/src/adaptivequantization",
+    "codec/processing/src/downsample",
+    "codec/processing/src/scrolldetection",
+    "codec/processing/src/vaacalc"
+  ],
+  "wrapperSha256": "05aa881edfb61ae1abb98275fa9e77113efb4214f278d362ebaa1586f51fc2ff",
+  "toolchain": {
+    "version": "4.0.23",
+    "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+    "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+    "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+  },
+  "releaseReady": false,
+  "artifacts": {
+    "encoder-single.mjs": {
+      "bytes": 11792,
+      "sha256": "ae31aba89b66df6b1f7be4b3c7e0b72789f7c4411c7fbeca08bcb34f3c248648"
+    },
+    "encoder-single.wasm": {
+      "bytes": 449246,
+      "sha256": "17d02c7c3d8d9523b6392172af45e0b7c2932bb58f133626a353f4a8ffe94168"
+    },
+    "encoder-threads.mjs": {
+      "bytes": 26413,
+      "sha256": "6c93c48b5ebc8d93cf79d714b72776489d97ef944216bd34f6ed6be9139eefc1"
+    },
+    "encoder-threads.wasm": {
+      "bytes": 466356,
+      "sha256": "2793095ec2669c53962a98d1da29668c912945f33b1ff32a2f4fe81eac227279"
+    },
+    "LICENSE": {
+      "bytes": 1317,
+      "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+    }
+  }
+}

@@ -37,6 +37,8 @@ import {
 } from './cloudflare-turn-path-probe.js';
 import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import type { Peer } from './p2p-signaling.js';
+import { ProjectPeerSender } from './software-media/peer-sender.js';
+import type { ProjectStats } from './software-media/encoder.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
@@ -66,6 +68,7 @@ const P2P_RESOLUTION_RECOVERY_RETRY_MS = 30_000;
  * path encode the share the same way (codec, frame rate, degradation).
  */
 export interface P2pShareOptions {
+  encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
   frameRate: number;
   degradationPreference: RTCDegradationPreference;
@@ -83,6 +86,7 @@ export interface P2pShareOptions {
  * decides whether to publish a LiveKit screen track for those viewers.
  */
 export interface P2pShareController {
+  getProjectMediaErrors?(): ReadonlyMap<string, string>;
   start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[], recoverNegotiating?: boolean): Promise<void>;
   handleAnswer(from: string, sdp: string, generation?: string): Promise<void>;
   handleIce(from: string, candidate: string | null, generation?: string): Promise<void>;
@@ -107,6 +111,7 @@ export interface P2pShareController {
 }
 
 export interface P2pEncodingDiagnostics {
+  project?: ProjectStats;
   profileTargetBitrateBps: number;
   transportBitrateCapBps: number;
   scaleResolutionDownBy: number;
@@ -124,6 +129,8 @@ export interface P2pShareSignaling {
 }
 
 export interface P2pShareControllerDependencies {
+  createProjectSender?: (options: ConstructorParameters<typeof ProjectPeerSender>[0]) => Pick<ProjectPeerSender, 'setBudget' | 'getStats' | 'close'>;
+  onProjectMediaError?: (message: string) => void;
   slug: string;
   signaling: P2pShareSignaling;
   /** PC factory; defaults to `window.RTCPeerConnection` with the fetched ICE servers. */
@@ -185,6 +192,9 @@ export function deserializeIceCandidate(raw: string): RTCIceCandidateInit {
 }
 
 interface ViewerSession {
+  project?: Pick<ProjectPeerSender, 'setBudget' | 'getStats' | 'close'>;
+  projectClose?: Promise<void>;
+  projectError?: string;
   identity: string;
   generation: string;
   pc: RTCPeerConnection;
@@ -430,14 +440,19 @@ class P2pShareControllerImpl implements P2pShareController {
       session.state = 'closed';
       this.closeSession(session);
     }
+    const projectClosures = [...this.sessions.values()].map(session => session.projectClose);
     this.sessions.clear();
     this.emit();
+    await Promise.all(projectClosures);
   }
 
   getViewerStates(): ReadonlyMap<string, ViewerSessionState> {
     const snapshot = new Map<string, ViewerSessionState>();
     for (const [identity, session] of this.sessions) snapshot.set(identity, session.state);
     return snapshot;
+  }
+  getProjectMediaErrors(): ReadonlyMap<string, string> {
+    return new Map([...this.sessions].filter(([, session]) => session.projectError).map(([identity, session]) => [identity, session.projectError!]));
   }
 
   getViewerTurnProviders(): ReadonlyMap<string, P2pTurnProvider> {
@@ -456,6 +471,7 @@ class P2pShareControllerImpl implements P2pShareController {
       const encoding = isCloudflareTurn ? session.cloudflareEncodingState : undefined;
       const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
       snapshot.set(identity, {
+        ...(session.project ? { project: session.project.getStats() } : {}),
         profileTargetBitrateBps: encoding?.profileTargetBitrateBps
           ?? this.activeOptions?.maxBitrate
           ?? session.options.maxBitrate,
@@ -576,7 +592,14 @@ class P2pShareControllerImpl implements P2pShareController {
       directEncoderRecoveryAttempted: false,
       directEncoderRecoveryPending: false
     };
-    for (const track of stream.getVideoTracks().slice(0, 1)) {
+    if (options.encodingEngine === 'project') {
+      const factory = this.deps.createProjectSender ?? (settings => new ProjectPeerSender(settings));
+      session.project = factory({ pc, stream, options, onError: message => {
+        if (session.pcClosed || this.sessions.get(identity) !== session) return;
+        session.projectError = message; this.clearTimers(session); this.closePc(session); session.state = 'closed';
+        this.deps.signaling.sendBye(identity, message.slice(0, 512)); this.emit(); this.deps.onProjectMediaError?.(message);
+      } });
+    } else for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
       // the offer is created; the bitrate/frame-rate cap is applied later via
       // `setParameters` so a failure there stays best-effort.
@@ -584,7 +607,7 @@ class P2pShareControllerImpl implements P2pShareController {
       applyCodecPreference(transceiver, options.codec);
       session.videoSender = transceiver.sender;
     }
-    for (const track of stream.getAudioTracks().slice(0, 1)) {
+    for (const track of options.encodingEngine === 'project' ? [] : stream.getAudioTracks().slice(0, 1)) {
       track.contentHint = 'music';
       pc.addTrack(track, stream);
     }
@@ -746,6 +769,7 @@ class P2pShareControllerImpl implements P2pShareController {
       }
       const sender = inspectSenderVideoStats(report);
       this.syncSessionProviderFromStats(session, sender);
+      if (session.project) return;
       await this.adaptEncodingPressure(session, sender);
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
@@ -1030,6 +1054,10 @@ class P2pShareControllerImpl implements P2pShareController {
   /** Applies this active viewer's fair share without disturbing other sessions. */
   private async applySenderParameters(session: ViewerSession): Promise<void> {
     session.senderParameterTail = session.senderParameterTail.then(async () => {
+      if (session.project && !session.pcClosed) {
+        const viewers = [...this.sessions.values()].filter(item => !item.pcClosed && item.state !== 'closed' && item.state !== 'livekit-fallback').length;
+        session.project.setBudget(session.options.maxBitrate, Math.max(1, viewers)); return;
+      }
       if (session.videoSender === undefined || session.pcClosed) return;
       try {
         const { options } = session;
@@ -1212,6 +1240,7 @@ class P2pShareControllerImpl implements P2pShareController {
   private closePc(session: ViewerSession): void {
     if (session.pcClosed) return;
     session.pcClosed = true;
+    session.projectClose = session.project?.close();
     try {
       session.pc.close();
     } catch {

@@ -1,0 +1,77 @@
+{
+  "package": "@libav.js/variant-vp8-opus",
+  "version": "6.10.9",
+  "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+  "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+  "releaseReady": true,
+  "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+  "artifacts": {
+    "libav-6.10.9.0-vp8-opus.mjs": {
+      "bytes": 27615,
+      "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+    },
+    "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+      "bytes": 276896,
+      "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+    },
+    "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+      "bytes": 1436660,
+      "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+    },
+    "libav-6.10.9.0-vp8-opus.thr.mjs": {
+      "bytes": 292386,
+      "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+    },
+    "libav-6.10.9.0-vp8-opus.thr.wasm": {
+      "bytes": 1564494,
+      "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+    }
+  },
+  "sources": {
+    "sources/emfiberthreads-1.3.tar.gz": {
+      "bytes": 7802,
+      "sha256": "0fe933d7742de3b3213608e0fb087a1ae0d060604d5835f7c9cdfcee0fc8cbcb"
+    },
+    "sources/ffmpeg-9.0.tar.xz": {
+      "bytes": 12032020,
+      "sha256": "7f607a00dd0d28a729d5a4811205812eef01cf6ef6155025febb6f36a9062d52"
+    },
+    "sources/lame-3.100.tar.gz": {
+      "bytes": 1524133,
+      "sha256": "ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
+    },
+    "sources/libaom-03087864.tar.gz": {
+      "bytes": 6379106,
+      "sha256": "364cc54d1879a0a84b9b78ff5e1f5f04d0a3833e83edc38a10f80c67dc0e0ad3"
+    },
+    "sources/libav.js.tar.xz": {
+      "bytes": 4266860,
+      "sha256": "ad1932a86ef0bcc87b1e71df34b735f8b3cda0022ffe04b95890adfda24cd186"
+    },
+    "sources/libogg-1.3.6.tar.xz": {
+      "bytes": 439952,
+      "sha256": "5c8253428e181840cd20d41f3ca16557a9cc04bad4a3d04cce84808677fa1061"
+    },
+    "sources/libvorbis-1.3.7.tar.xz": {
+      "bytes": 1203792,
+      "sha256": "b33cc4934322bcbf6efcbacf49e3ca01aadbea4114ec9589d1b1e9d20f72954b"
+    },
+    "sources/libvpx-1.16.0.tar.gz": {
+      "bytes": 5635379,
+      "sha256": "7a479a3c66b9f5d5542a4c6a1b7d3768a983b1e5c14c60a9396edc9b649e015c"
+    },
+    "sources/opus-1.6.1.tar.gz": {
+      "bytes": 10472813,
+      "sha256": "6ffcb593207be92584df15b32466ed64bbec99109f007c82205f0194572411a1"
+    },
+    "sources/project-binding-patch.mjs": {
+      "bytes": 2184,
+      "sha256": "0ec69365ee1efd69cb2c4926368b3001ea1615cce942d85c538e293ab5e06d83"
+    },
+    "sources/zlib-1.3.2.tar.gz": {
+      "bytes": 1502830,
+      "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+    }
+  },
+  "releaseSourcesArchiveSha256": "ec718371836fdfe00b455c8a34c826cfbcf9b72e35cc75b0bc5c739900ad3f01"
+}

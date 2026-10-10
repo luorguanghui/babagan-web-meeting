@@ -1,0 +1,30 @@
+<!doctype html><meta charset="utf-8"><title>Project codec integration test</title><pre id="result">Starting</pre>
+<script type="module">
+window.result = { status: 'running' };
+const worker = new Worker('/src/meeting/software-media/encoder-worker.ts', { type: 'module' });
+let decoded = 0, encoded = 0, submitted = 0, config;
+const decoder = new VideoDecoder({ output(frame) { decoded++; frame.close(); }, error(error) { finish({ status: 'error', message: String(error) }); } });
+const params = new URLSearchParams(location.search), codec = params.get('codec') ?? 'h264';
+function finish(result) { window.result = result; document.querySelector('#result').textContent = JSON.stringify(result); }
+function sendFrame() {
+  const data = new Uint8Array(640 * 360 * 4).fill(255);
+  for (let index = 0; index < data.length; index += 4) { data[index] = submitted * 20; data[index + 1] = 60; data[index + 2] = 120; }
+  const frame = new VideoFrame(data, { format: 'RGBA', codedWidth: 640, codedHeight: 360, timestamp: submitted * 16667 });
+  worker.postMessage({ type: 'frame', frame, timestampUs: submitted * 16667, capturedAt: performance.timeOrigin + performance.now() }, [frame]);
+  submitted++;
+}
+worker.onerror = event => finish({ status: 'error', message: event.message });
+worker.onmessage = async ({ data }) => {
+  if (data.type === 'ready') sendFrame();
+  if (data.type === 'error') finish({ status: 'error', message: data.message });
+  if (data.type === 'video') {
+    if (!config) { config = { codec: data.codec, codedWidth: data.width, codedHeight: data.height, optimizeForLatency: true }; decoder.configure(config); }
+    decoder.decode(new EncodedVideoChunk({ data: data.data, type: data.keyframe ? 'key' : 'delta', timestamp: data.timestampUs }));
+    encoded++;
+    if (encoded < 8) sendFrame();
+    else { await decoder.flush(); worker.postMessage({ type: 'stop' }); }
+  }
+  if (data.type === 'stopped') { finish({ status: 'done', submitted, encoded, decoded }); decoder.close(); worker.terminate(); }
+};
+worker.postMessage({ type: 'init', options: { codec, width: 640, height: 360, fps: 60, bitrate: 1000000, threads: 1 } });
+</script>

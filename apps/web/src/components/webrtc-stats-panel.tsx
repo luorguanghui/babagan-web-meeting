@@ -5,6 +5,8 @@ import type { P2pEncodingDiagnostics } from '../meeting/p2p-share-controller.js'
 import type { TurnPathProbeSnapshot } from '../meeting/cloudflare-turn-capacity.js';
 import type { ScreenTransportMode, ScreenTurnProvider } from '../meeting/screen-transport-mode.js';
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
+import { ProjectMediaSection } from '../meeting/software-media/project-stats.js';
+import type { ProjectStats } from '../meeting/software-media/encoder.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   p2p: 'screenTransport.p2p',
@@ -27,6 +29,8 @@ export function WebRtcStatsPanel({
   turnProvider,
   turnProbe,
   encodingDiagnostics,
+  projectReceiver,
+  onProjectAudioResume,
   embedded = false,
   active = true
 }: {
@@ -36,6 +40,8 @@ export function WebRtcStatsPanel({
   turnProvider?: P2pTurnProvider | 'mixed';
   turnProbe?: TurnPathProbeSnapshot;
   encodingDiagnostics?: ReadonlyMap<string, P2pEncodingDiagnostics>;
+  projectReceiver?: ProjectStats;
+  onProjectAudioResume?: () => void;
   embedded?: boolean;
   active?: boolean;
 }) {
@@ -43,7 +49,7 @@ export function WebRtcStatsPanel({
   const transportKey = mode === 'turn' && turnProvider !== undefined
     ? turnProviderKeys[turnProvider]
     : modeKeys[mode];
-  const hasMediaStats = Boolean(snapshot?.sender || snapshot?.receiver);
+  const hasMediaStats = Boolean(snapshot?.sender || snapshot?.receiver || projectReceiver);
   const hasTurnProbe = (turnProvider === 'cloudflare' || turnProvider === 'mixed') && turnProbe !== undefined;
   const hasEncodingDiagnostics = (encodingDiagnostics?.size ?? 0) > 0;
   const heading = <>
@@ -57,6 +63,7 @@ export function WebRtcStatsPanel({
       : <div className="webrtc-stats-grid">
         {snapshot?.sender && <StatsSection title={t('stats.sender')} stats={snapshot.sender} sender />}
         {snapshot?.receiver && <StatsSection title={t('stats.receiver')} stats={snapshot.receiver} />}
+        {projectReceiver && <ProjectMediaSection stats={projectReceiver} onResumeAudio={onProjectAudioResume} />}
         {(turnProvider === 'cloudflare' || turnProvider === 'mixed') && turnProbe
           && <TurnDiagnosticsSection snapshot={turnProbe} />}
         {encodingDiagnostics && encodingDiagnostics.size > 0 && <EncodingDiagnosticsSection diagnostics={encodingDiagnostics} />}
@@ -137,6 +144,7 @@ function EncodingDiagnosticsSection({ diagnostics }: { diagnostics: ReadonlyMap<
     <h3>{t('stats.encodingDiagnostics')}</h3>
     {[...diagnostics.entries()].map(([identity, state]) => <section key={identity}>
       <h4>{identity}</h4>
+      {state.project && <ProjectMediaSection stats={state.project} />}
       <dl>
         <div><dt>{t('stats.selectedProvider')}</dt><dd>{state.provider ?? '—'}</dd></div>
         <div><dt>{t('stats.profileTarget')}</dt><dd>{bitrate(state.profileTargetBitrateBps)}</dd></div>

@@ -103,6 +103,38 @@ def public_asset(html):
     return parser.sources[0]
 
 
+def verify_codec_http(base, fetch, headers):
+    page_headers = headers(base + '/')
+    if page_headers.get('cross-origin-opener-policy') != 'same-origin' or page_headers.get('cross-origin-embedder-policy') != 'require-corp':
+        raise RuntimeError('Public application is missing WASM thread isolation headers')
+    manifests = {}
+    for name in ['openh264-2.6.0', 'libav-6.10.9']:
+        prefix = base + '/screen-codecs/' + name + '/'
+        raw = fetch(prefix + 'manifest.json')
+        manifest = json.loads(raw)
+        if manifest.get('releaseReady') is not True or not manifest.get('sources'):
+            raise RuntimeError('Codec release is missing corresponding source metadata')
+        artifacts = manifest.get('artifacts')
+        if not isinstance(artifacts, dict) or not any(name.endswith('.wasm') for name in artifacts) or not any(name.endswith('.mjs') for name in artifacts):
+            raise RuntimeError('Codec artifact manifest is missing JavaScript or WASM modules')
+        sources = manifest['sources']
+        if not isinstance(sources, dict):
+            raise RuntimeError('Invalid codec source metadata')
+        for filename, record in [*artifacts.items(), *sources.items()]:
+            parts = filename.split('/')
+            if (len(parts) > 1 and (filename not in sources or parts[0] != 'sources')) or not all(re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', part) for part in parts):
+                raise RuntimeError('Unsafe codec artifact path')
+            if not isinstance(record, dict) or type(record.get('bytes')) is not int or not 0 < record['bytes'] <= 32 * 1024 * 1024 or not re.fullmatch(r'[0-9a-f]{64}', str(record.get('sha256', ''))):
+                raise RuntimeError('Invalid codec artifact size or hash')
+            data = fetch(prefix + filename)
+            if len(data) != record['bytes'] or hashlib.sha256(data).hexdigest() != record['sha256']:
+                raise RuntimeError('Public codec artifact hash does not match manifest')
+            if filename.endswith('.wasm') and headers(prefix + filename).get('content-type', '').split(';', 1)[0].strip() != 'application/wasm':
+                raise RuntimeError('Public WASM resource has incorrect MIME')
+        manifests[name] = hashlib.sha256(raw).hexdigest()
+    return manifests
+
+
 def activate(compose, selected, rollback, verify, log_directory=None):
     with ExitStack() as stack:
         activation_log = stack.enter_context((log_directory / 'activation.log').open('w')) if log_directory else None
@@ -247,6 +279,16 @@ def perform_update(options, app, env_file, state):
         expected = command(['docker', 'exec', 'babagan-meeting-web-1', 'sha256sum', '/srv' + asset]).split()[0]
         if digest != expected:
             raise RuntimeError('Public JavaScript does not match the running container')
+        if (source / 'apps/web/public/screen-codecs').is_dir():
+            def response_headers(url):
+                raw = command(['curl', '--fail', '--silent', '--show-error', '--head', '--max-time', '30', '--proto', '=https', url])
+                return {line.split(':', 1)[0].strip().lower(): line.split(':', 1)[1].strip() for line in raw.splitlines() if ':' in line}
+            proof['codecManifests'] = verify_codec_http(public_base, fetch, response_headers)
+            for codec_name, manifest_digest in proof['codecManifests'].items():
+                expected_manifest = command(['docker', 'exec', 'babagan-meeting-web-1', 'sha256sum',
+                                             '/srv/screen-codecs/' + codec_name + '/manifest.json']).split()[0]
+                if manifest_digest != expected_manifest:
+                    raise RuntimeError('Public codec manifest does not match the running container')
         proof.update(publicAsset=asset, publicAssetSha256=digest, containers=container_metadata(after))
         api_image = images.get('api') or next(c['Image'] for c in before if c['Name'] == '/babagan-meeting-api-1')
         smoke_env = dict(os.environ, SKIP_CLOUDFLARE_SMOKE='1' if options.skip_cloudflare_smoke else '0')

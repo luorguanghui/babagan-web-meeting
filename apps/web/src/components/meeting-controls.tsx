@@ -28,6 +28,8 @@ export interface MeetingControlsProps {
   screenShareActive?: boolean;
   screenShareBusy?: boolean;
   screenCodec?: ScreenShareCodec;
+  screenEncodingEngine?: 'project' | 'browser';
+  onScreenEncodingEngineChange?: (value: 'project' | 'browser') => void;
   screenBitrate?: ScreenShareBitrate;
   screenQuality?: ScreenShareQuality;
   screenViewerCount?: number;
@@ -197,6 +199,9 @@ export function MeetingSettings(props: MeetingControlsProps) {
     </select></label>
     <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
       <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
+    </select></label>
+    <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenEncodingEngine ?? 'project'} disabled={props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
+      <option value="project">{t('controls.projectEncoding')}</option><option value="browser">{t('controls.browserEncoding')}</option>
     </select></label>
     <label>{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>
       {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}

@@ -16,6 +16,8 @@ COPY packages/contracts/package.json packages/contracts/package.json
 RUN pnpm install --frozen-lockfile
 
 COPY apps/web apps/web
+COPY media/codec-options.mjs media/codec-options.mjs
+COPY media/codec-options.d.mts media/codec-options.d.mts
 COPY packages/contracts packages/contracts
 RUN pnpm --filter @meeting/contracts build \
   && pnpm --filter @meeting/web build

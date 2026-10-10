@@ -87,6 +87,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@libav.js/variant-vp8-opus':
+        specifier: 6.10.9
+        version: 6.10.9
       '@meeting/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
@@ -551,6 +554,9 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@libav.js/variant-vp8-opus@6.10.9':
+    resolution: {integrity: sha512-oZY80MdTlaWQFzcV3ip+QEWtfYmN2yS9B72FZGCt1nxCME/DrmBA0bsuLRLiL7Pd/g/+M4YTOQcddmCje0hLKA==}
 
   '@livekit/mutex@1.1.1':
     resolution: {integrity: sha512-EsshAucklmpuUAfkABPxJNhzj9v2sG7JuzFDL4ML1oJQSV14sqrpTYnsaOudMAw9yOaW53NU3QQTlUQoRs4czw==}
@@ -2627,6 +2633,8 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@libav.js/variant-vp8-opus@6.10.9': {}
 
   '@livekit/mutex@1.1.1': {}
 

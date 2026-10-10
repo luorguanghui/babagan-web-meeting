@@ -1,0 +1,22 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Project WASM codec benchmark</title>
+<h1>逐帧 WASM 编码基准</h1>
+<p>只测编码、复制与浏览器解码；不代表会议完整流水线已通过。</p>
+<pre id="result">Running…</pre>
+<script type="module">
+const options = Object.fromEntries(new URLSearchParams(location.search));
+window.benchmark = { status: 'running' };
+const worker = new Worker('/fixtures/screen-codecs-worker.mjs', { type: 'module' });
+worker.onmessage = ({ data }) => {
+  window.benchmark = data;
+  document.querySelector('#result').textContent = JSON.stringify(data, null, 2);
+  if (data.status === 'done' || data.status === 'error') worker.terminate();
+};
+worker.onerror = event => {
+  window.benchmark = { status: 'error', message: event.message };
+  document.querySelector('#result').textContent = JSON.stringify(window.benchmark);
+  worker.terminate();
+};
+worker.postMessage(options);
+</script>

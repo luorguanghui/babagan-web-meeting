@@ -1,4 +1,6 @@
 :8080 {
+  header Cross-Origin-Opener-Policy same-origin
+  header Cross-Origin-Embedder-Policy require-corp
   root * /srv
   encode zstd gzip
   try_files {path} /index.html

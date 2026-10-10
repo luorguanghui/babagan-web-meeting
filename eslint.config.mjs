@@ -8,7 +8,11 @@ export default tseslint.config(
       '**/node_modules/**',
       '**/coverage/**',
       '**/playwright-report/**',
-      '**/test-results/**'
+      '**/test-results/**',
+      '**/.superpowers/**',
+      '**/artifacts/**',
+      '**/.playwright-cli/**',
+      '**/public/screen-codecs/**'
     ]
   },
   js.configs.recommended,

@@ -69,6 +69,7 @@ export interface ScreenSharePublisher {
     frameRate: number;
     degradationPreference: RTCDegradationPreference;
     codec: ScreenShareCodec;
+    encodingEngine?: 'project' | 'browser';
   }): Promise<void>;
   release(stream: MediaStream): Promise<void>;
 }
@@ -77,7 +78,8 @@ export interface ScreenShareController {
   start(
     codec?: ScreenShareCodec,
     maxBitrate?: ScreenShareBitrate,
-    quality?: ScreenShareQuality
+    quality?: ScreenShareQuality,
+    encodingEngine?: 'project' | 'browser'
   ): Promise<void>;
   stop(): Promise<void>;
   getState(): ScreenShareState;
@@ -114,7 +116,8 @@ class BrowserScreenShareController implements ScreenShareController {
   async start(
     codec: ScreenShareCodec = 'h264',
     maxBitrate: ScreenShareBitrate = screenShareDefaultBitrate,
-    quality: ScreenShareQuality = screenShareDefaultQuality
+    quality: ScreenShareQuality = screenShareDefaultQuality,
+    encodingEngine?: 'project' | 'browser'
   ): Promise<void> {
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const myGen = ++this.startGen;
@@ -235,7 +238,8 @@ class BrowserScreenShareController implements ScreenShareController {
         maxBitrate,
         frameRate: settings.frameRate,
         degradationPreference: settings.degradationPreference,
-        codec
+        codec,
+        ...(encodingEngine ? { encodingEngine } : {})
       }));
       this.publication = publication;
       await publication;
@@ -363,6 +367,7 @@ export interface HybridScreenSharePublisherDependencies {
 }
 
 export interface ScreenSharePublishOptions {
+  encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
   frameRate: number;
   degradationPreference: RTCDegradationPreference;

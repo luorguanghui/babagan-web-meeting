@@ -5,6 +5,8 @@ import {
   P2P_RTP_STALL_TIMEOUT_MS,
   type P2pTurnProvider
 } from '@meeting/contracts';
+import { ProjectPeerReceiver } from './software-media/peer-receiver.js';
+import type { ProjectStats } from './software-media/encoder.js';
 
 import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
 import { configureOpusSdp, deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
@@ -31,6 +33,7 @@ export interface P2pViewerSignaling {
 }
 
 export interface P2pViewerControllerDependencies {
+  onProjectMediaError?: (message: string) => void;
   /** PC factory; defaults to `window.RTCPeerConnection` with the given ICE servers and policy. */
   createPeerConnection?: (iceServers: RTCIceServer[], iceTransportPolicy?: RTCIceTransportPolicy) => RTCPeerConnection;
   /** ICE policy for the next peer connection. `relay` forces TURN. */
@@ -46,6 +49,7 @@ export interface P2pViewerControllerDependencies {
 }
 
 interface ViewerPcSession {
+  project?: ProjectPeerReceiver;
   pc: RTCPeerConnection;
   iceTransportPolicy: RTCIceTransportPolicy;
   turnProvider: P2pTurnProvider;
@@ -94,6 +98,7 @@ interface ViewerPcSession {
  * and rebuilt, never rejected or double-answered.
  */
 export class P2pViewerController {
+  private readonly onProjectMediaError?: (message: string) => void;
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private iceTransportPolicy: RTCIceTransportPolicy;
   private turnProvider: P2pTurnProvider;
@@ -126,6 +131,7 @@ export class P2pViewerController {
     this.iceTransportPolicy = dependencies.iceTransportPolicy ?? 'all';
     this.turnProvider = dependencies.turnProvider ?? 'coturn';
     this.onFallback = dependencies.onFallback;
+    this.onProjectMediaError = dependencies.onProjectMediaError;
     this.onFallbackRequested = dependencies.onFallbackRequested;
     this.healthSampleIntervalMs = dependencies.healthSampleIntervalMs ?? 1_000;
     this.now = dependencies.now ?? Date.now;
@@ -208,6 +214,8 @@ export class P2pViewerController {
   getStream(): MediaStream | null {
     return this.stream;
   }
+  getProjectStats(): ProjectStats | undefined { return this.session?.project?.getStats(); }
+  resumeProjectAudio(): Promise<void> { return this.session?.project?.resumeAudio() ?? Promise.resolve(); }
 
   getState(): ViewerP2pState {
     return this.state;
@@ -327,6 +335,19 @@ export class P2pViewerController {
       mediaTimerExtended: false
     };
     pc.ontrack = (event) => this.handleTrack(session, event);
+    pc.ondatachannel = event => {
+      if (!this.ownsSession(session)) { event.channel.close(); return; }
+      session.project ??= new ProjectPeerReceiver({ pc,
+        onStream: stream => {
+          if (!this.ownsSession(session)) return;
+          session.stream = stream; session.videoTrack = stream.getVideoTracks()[0]; this.stream = stream;
+          this.emit(); this.armHealthMonitor(session); void this.queueMediaHealthSample(session);
+        }, onError: message => {
+          if (!this.ownsSession(session)) return;
+          this.onProjectMediaError?.(message); this.teardownSession(); this.transition('idle');
+        } });
+      session.project.acceptChannel(event.channel);
+    };
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
     pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
     return session;
@@ -379,6 +400,8 @@ export class P2pViewerController {
     if (!this.ownsSession(session) || session.fallbackPending) return;
     try {
       const health = inspectP2pMediaHealth(await session.pc.getStats());
+      const project = session.project?.getStats();
+      if (project) { health.bytesReceived = project.receivedBytes; health.framesDecoded = project.decodedFrames; }
       if (!this.ownsSession(session) || session.fallbackPending) return;
       // Receiving undecodable packets does not mean the picture is moving.
       const progressed = health.framesDecoded > session.lastFramesDecoded;
@@ -403,7 +426,7 @@ export class P2pViewerController {
       // classification. `getStats` may transiently lack the selected pair or
       // its candidate stats (path 'unknown') even while RTP is flowing — that
       // must not be mistaken for a failed negotiation while the picture moves.
-      const hasDecodedVideo = session.videoTrack !== undefined
+      const hasDecodedVideo = project ? project.renderedFrames > 0 : session.videoTrack !== undefined
         && !session.videoTrack.muted
         && health.bytesReceived > 0
         && health.framesDecoded > 0;
@@ -654,6 +677,7 @@ export class P2pViewerController {
   }
 
   private closePc(session: ViewerPcSession): void {
+    void session.project?.close();
     if (session.pcClosed) return;
     session.pcClosed = true;
     try {

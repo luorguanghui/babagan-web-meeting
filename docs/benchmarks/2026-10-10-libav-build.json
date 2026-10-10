@@ -1,0 +1,30 @@
+{
+  "package": "@libav.js/variant-vp8-opus",
+  "version": "6.10.9",
+  "sourceCommit": "c80e885c3461f7bb7ea565c9631b34243ae0dbf1",
+  "modifications": "Delay cwrap resolution until invocation in pthread postamble. See scripts/prepare-libav-codecs.mjs.",
+  "releaseReady": false,
+  "sourcesNotice": "Complete corresponding sources must be included before distributing this build.",
+  "artifacts": {
+    "libav-6.10.9.0-vp8-opus.mjs": {
+      "bytes": 27615,
+      "sha256": "a09e80c1ec05b516f01842eb5a421f8b19c2026c267433bc04223fa9e6daead1"
+    },
+    "libav-6.10.9.0-vp8-opus.wasm.mjs": {
+      "bytes": 276896,
+      "sha256": "7e1bdda014911ae51516a59c69e0751bc73951831d38c7d85ae7faebeaae4a30"
+    },
+    "libav-6.10.9.0-vp8-opus.wasm.wasm": {
+      "bytes": 1436660,
+      "sha256": "38fb807eb5119bcfa086d68ffa1799a2fb4f452027c4c45d639ce1a918462e4e"
+    },
+    "libav-6.10.9.0-vp8-opus.thr.mjs": {
+      "bytes": 292386,
+      "sha256": "d630900e9de9f9146a2a707c576152e4c42cd597875b95877401754d3b2eda65"
+    },
+    "libav-6.10.9.0-vp8-opus.thr.wasm": {
+      "bytes": 1564494,
+      "sha256": "3a245b606c11546c7879b1fb8056b0bb2bb83ed0344f15e59a41d8bef0c65dd2"
+    }
+  }
+}
