@@ -27,6 +27,7 @@ export interface MeetingControlsProps {
   screenShareAuthorized?: boolean;
   screenShareActive?: boolean;
   screenShareBusy?: boolean;
+  screenShareStopping?: boolean;
   screenCodec?: ScreenShareCodec;
   screenEncodingEngine?: 'project' | 'browser';
   screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
@@ -114,11 +115,11 @@ export function MeetingControls(props: MeetingControlsProps) {
           type="button"
           className="meeting-action meeting-action-share"
           data-active={props.screenShareActive ? 'true' : 'false'}
-          aria-label={props.screenShareActive ? t('controls.stopShare') : t('controls.share')}
+          aria-label={props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShare') : t('controls.share')}
           title={props.screenShareAuthorized ? undefined : t('controls.shareGrantRequired')}
           disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
           onClick={props.onScreenShareToggle}
-        ><MonitorUp aria-hidden="true" size={19} /><span>{props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span></button>
+        ><MonitorUp aria-hidden="true" size={19} /><span>{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span></button>
         <div ref={volumeActionsRef} className="meeting-volume-actions">
           <div className="meeting-volume-button-row">
             <button
@@ -196,9 +197,6 @@ export function MeetingSettings(props: MeetingControlsProps) {
     {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <label>{t('controls.viewerTransport')}<select aria-label={t('controls.viewerTransport')} value={props.viewerTransportPreference ?? 'auto'} onChange={(event) => props.onViewerTransportPreferenceChange?.(event.target.value as ViewerTransportPreference)}>
       <option value="auto">{t('controls.viewerTransportAuto')}</option><option value="turn">{t('controls.viewerTransportTurn')}</option><option value="sfu">{t('controls.viewerTransportSfu')}</option>
     </select></label>}
-    {props.screenShareTurnProviderVisible && props.onScreenShareTurnProviderChange && <label>{t('controls.screenShareTurnProvider')}<select aria-label={t('controls.screenShareTurnProvider')} value={props.screenShareTurnProvider ?? 'auto'} disabled={screenShareProviderDisabled} onChange={(event) => props.onScreenShareTurnProviderChange?.(event.target.value as ScreenShareTurnProviderPreference)}>
-      <option value="auto">{t('controls.screenShareTurnProviderAuto')}</option><option value="coturn">{t('controls.screenShareTurnProviderCoturn')}</option>
-    </select><span className="meeting-controls-hint">{t('controls.screenShareTurnProviderHint')}</span></label>}
     <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
       <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option><option value="detail60">{t('controls.detail60')}</option>
     </select></label>

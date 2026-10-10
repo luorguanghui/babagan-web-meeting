@@ -160,6 +160,8 @@ sudoedit infra/.env.production
 
 Cloudflare SFU 鉴权和会话请求由服务器直连 `https://rtc.live.cloudflare.com/v1`，浏览器媒体直接连接 SFU；不配置 SFU 代理，不关闭 TLS 验证。更新后的 smoke 会验证真实 SFU App Secret 鉴权及已认证项目 API 的 SFU 可用状态，配置存在但检查失败会回滚；旧的 Cloudflare TURN smoke 豁免不能用于 SFU。真实发布、订阅和媒体仍需会话验收。
 
+服务器 coturn 是唯一 TURN 提供方，界面不再显示提供方选择框；观看者仍可选择 TURN 接收路径。停止共享后，客户端等待旧发布和共享权限释放完成才允许下一次捕获，期间显示“正在停止共享”。SFU 上游操作按成员串行，不同观看者可并发协商；失效发布立即撤出发现目录，失败的轨道关闭仍保留后台清理。客户端会话请求最多等待 45 秒，以覆盖两次各 10 秒的上游调用及失败清理，不能把超时自动当成未分配成功并盲重试。
+
 LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少32字符；镜像保持示例中的批准 digest。Compose 的 edge 网段为 `172.30.0.0/16`、backend 网段为 `172.31.0.0/16`，现有内部服务和防火墙边界保持原配置。
 服务器生成随机值，不要把结果贴到聊天或 Git：
 

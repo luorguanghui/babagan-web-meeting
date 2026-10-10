@@ -215,7 +215,9 @@ function waitForPc(pc: RTCPeerConnection, event: string, done: () => boolean, si
 }
 export function createCloudflareScreenApi(slug: string): CloudflareScreenApi {
   const base = `/meetings/${encodeURIComponent(slug)}/screen-sfu`;
-  const request = (method: string, body?: unknown) => ({ method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(15000) });
+  // Allocation can use two 10s upstream calls, followed by bounded cleanup.
+  // Do not abandon a valid allocation before that server-side budget finishes.
+  const request = (method: string, body?: unknown) => ({ method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(45000) });
   return {
     publish: body => apiRequest(`${base}/publish`, CloudflareSfuSessionResponseSchema, request('POST', body)),
     ready: sessionId => apiNoContent(`${base}/publish/ready`, request('POST', { sessionId })),

@@ -134,6 +134,69 @@ describe('Cloudflare SFU broker routes', () => {
       expect((await call(f.slug, f.viewer)).json().publication).toBeNull();
     } finally { vi.useRealTimers(); }
   });
+  it('lets four viewers complete slow independent negotiations within their own deadlines', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    const viewers = [f.viewer];
+    for (let i = 2; i <= 4; i++) viewers.push(cookiePair((await fixture.join(f.slug, `Viewer ${i}`)).headers['set-cookie']));
+    const original = globalThis.fetch;
+    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+    let started = 0;
+    let allStarted!: () => void;
+    const starting = new Promise<void>(resolve => { allStarted = resolve; });
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/sessions/new')) {
+        if (++started === 4) allStarted();
+        await new Promise(resolve => setTimeout(resolve, 8000));
+      }
+      if (String(url).endsWith('/tracks/new')) await new Promise(resolve => setTimeout(resolve, 9000));
+      return original(url, init);
+    }));
+    const allocations: number[] = [];
+    const results = viewers.map(cookie => call(f.slug, cookie, '/subscribe', 'POST', { shareId: p.shareId }).then(async response => {
+      allocations.push(response.statusCode);
+      if (response.statusCode !== 200) return response.statusCode;
+      return (await call(f.slug, cookie, `/sessions/${response.json().sessionId}/answer`, 'PUT', { sessionDescription: { type: 'answer', sdp: 'receiver-answer' } })).statusCode;
+    }));
+    try {
+      await starting;
+      await vi.advanceTimersByTimeAsync(17001);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(allocations).toEqual([200, 200, 200, 200]);
+      expect(await Promise.all(results)).toEqual([204, 204, 204, 204]);
+    } finally {
+      await vi.advanceTimersByTimeAsync(100000);
+      vi.useRealTimers();
+      vi.stubGlobal('fetch', original);
+      await Promise.all(results);
+    }
+  });
+  it('drains cleanup after failed closes and a sharer handoff without nested owner deadlock', async () => {
+    const f = await setup();
+    const a = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: a.sessionId });
+    await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: a.shareId });
+    const original = globalThis.fetch;
+    let failClose = true;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (failClose && String(url).endsWith('/tracks/close')) return new Response('', { status: 503 });
+      return original(url, init);
+    }));
+    await call(f.slug, f.publisher, `/sessions/${a.sessionId}`, 'DELETE');
+    await fixture.app.inject({ method: 'DELETE', url: `/api/v1/meetings/${f.slug}/share`, headers: { cookie: f.publisher, origin: config.publicBaseUrl.origin } });
+    // Fixture session identities are stable; grant the second participant directly
+    // through the same host authority route used by the product.
+    const identities = fixture.db.prepare('SELECT identity FROM participant_sessions WHERE nickname=?').all('Bob') as Array<{ identity: string }>;
+    const grant = await fixture.app.inject({ method: 'PUT', url: `/api/v1/meetings/${f.slug}/share-grant`, headers: { cookie: fixture.hostCookie, origin: config.publicBaseUrl.origin }, payload: { participantIdentity: identities[0].identity } });
+    expect(grant.statusCode).toBe(204);
+    const b = (await call(f.slug, f.viewer, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.viewer, '/publish/ready', 'POST', { sessionId: b.sessionId });
+    expect((await call(f.slug, f.publisher, '/subscribe', 'POST', { shareId: b.shareId })).statusCode).toBe(200);
+    failClose = false;
+    await fixture.screenSfu.closeMeeting(f.slug);
+    expect((await call(f.slug, f.viewer)).json().publication).toBeNull();
+  });
   it('cleans a late upstream allocation when its share grant is revoked during the request', async () => {
     const f = await setup();
     let started!: () => void; const inFlight = new Promise<void>((resolve) => { started = resolve; });

@@ -41,6 +41,35 @@ afterEach(() => {
 });
 
 describe('controlled browser screen sharing', () => {
+  it('does not offer a TURN provider selector when the server is the only provider', () => {
+    render(<LanguageProvider><MeetingSettings connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]} leaving={false}
+      screenShareTurnProviderVisible onScreenShareTurnProviderChange={vi.fn()} onMicrophoneToggle={vi.fn()} onMicrophoneDeviceChange={vi.fn()} onSpeakerDeviceChange={vi.fn()} onResumeAudio={vi.fn()} onLeave={vi.fn()} /></LanguageProvider>);
+    expect(screen.queryByRole('combobox', { name: 'Screen-share TURN provider' })).not.toBeInTheDocument();
+  });
+  it('holds a restart until the old publication and grant have both finished releasing', async () => {
+    const first = displayStream({ audio: false }).stream;
+    const second = displayStream({ audio: false }).stream;
+    let finishPublication!: () => void;
+    let finishGrant!: () => void;
+    const release = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { finishPublication = resolve; })).mockResolvedValue(undefined);
+    const releaseGrant = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { finishGrant = resolve; })).mockResolvedValue(undefined);
+    const capture = vi.fn().mockResolvedValueOnce(first).mockResolvedValueOnce(second);
+    const grant = vi.fn(async () => undefined);
+    const controller = createScreenShareController({ requestGrant: grant, releaseGrant, getDisplayMedia: capture, publisher: { publish: vi.fn(async () => undefined), release } });
+    await controller.start();
+    const stopped = controller.stop();
+    const restarted = controller.start();
+    await waitFor(() => expect(release).toHaveBeenCalledOnce());
+    expect(capture).toHaveBeenCalledOnce();
+    expect(grant).toHaveBeenCalledOnce();
+    finishPublication();
+    await Promise.resolve();
+    expect(capture).toHaveBeenCalledOnce();
+    finishGrant();
+    await Promise.all([stopped, restarted]);
+    expect(controller.getState()).toMatchObject({ status: 'sharing', stream: second });
+    await controller.stop();
+  });
   it('offers Cloudflare SFU at the source and locks software encoding for that choice', () => {
     render(<LanguageProvider><MeetingSettings connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]} leaving={false}
       screenSourceTransport="cloudflare-sfu" onScreenSourceTransportChange={vi.fn()} onMicrophoneToggle={vi.fn()} onMicrophoneDeviceChange={vi.fn()} onSpeakerDeviceChange={vi.fn()} onResumeAudio={vi.fn()} onLeave={vi.fn()} /></LanguageProvider>);
@@ -1103,7 +1132,7 @@ describe('controlled browser screen sharing', () => {
     await waitFor(() => expect(publish).toHaveBeenCalledOnce());
 
     video.dispatchEvent(new Event('ended'));
-    expect(controller.getState().status).toBe('idle');
+    expect(controller.getState().status).toBe('stopping');
     publication.resolve();
     await starting;
 
