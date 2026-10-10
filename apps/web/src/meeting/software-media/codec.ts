@@ -4,7 +4,14 @@ export interface LibavModule {
   ff_encode_multi(ctx: number, frame: number, packet: number, inputs: unknown[]): Promise<Array<{ data: Uint8Array; flags: number }>>;
   ff_free_encoder(ctx: number, frame: number, packet: number): Promise<void>;
   AV_SAMPLE_FMT_FLT: number;
+  PThread?: { terminateAllThreads(): void };
   terminate(): void;
+}
+function terminateLibav(lib: LibavModule): void {
+  // The pinned wrapper references runningWorkers, which newer Emscripten
+  // runtimes replaced with a pthread registry. Use the runtime's own cleanup.
+  if (lib.PThread?.terminateAllThreads) lib.PThread.terminateAllThreads();
+  else lib.terminate();
 }
 interface H264Module {
   HEAPU8: Uint8Array;
@@ -82,7 +89,7 @@ export class ProjectVideoCodec {
       if (!this.handle) throw new Error('Project H264 initialization failed');
     } else {
       this.libav = await loadLibav(this.options.threads);
-      if (this.stopped) { this.libav.terminate(); return; }
+      if (this.stopped) { terminateLibav(this.libav); return; }
       this.encoder = await this.libav.ff_init_encoder('libvpx', vp8EncoderOptions(this.options));
       this.codecString = 'vp8';
     }
@@ -129,6 +136,6 @@ export class ProjectVideoCodec {
       const old = this.encoder; this.encoder = undefined;
       await this.libav.ff_free_encoder(old[1], old[2], old[3]);
     }
-    this.libav?.terminate();
+    if (this.libav) terminateLibav(this.libav);
   }
 }

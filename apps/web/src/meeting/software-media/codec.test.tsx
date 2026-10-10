@@ -22,3 +22,12 @@ it('rejects modified module bytes before executing downloaded code', async () =>
   await expect(codec.initialize()).rejects.toThrow('hash mismatch');
   await codec.close();
 });
+it('closes threaded VP8 through the runtime thread registry instead of obsolete wrapper worker lists', async () => {
+  const terminateAllThreads = vi.fn();
+  const obsoleteTerminate = vi.fn(() => { throw new TypeError('runningWorkers is undefined'); });
+  const codec = new ProjectVideoCodec({ codec: 'vp8', width: 640, height: 360, fps: 60, bitrate: 1000000, threads: 4 });
+  Object.assign(codec, { libav: { PThread: { terminateAllThreads }, terminate: obsoleteTerminate } });
+  await expect(codec.close()).resolves.toBeUndefined();
+  expect(terminateAllThreads).toHaveBeenCalledOnce();
+  expect(obsoleteTerminate).not.toHaveBeenCalled();
+});
