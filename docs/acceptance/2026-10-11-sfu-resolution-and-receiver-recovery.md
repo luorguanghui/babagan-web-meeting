@@ -16,7 +16,7 @@
 
 ## 修改
 
-- Cloudflare 单路视频发送器设置 `scaleResolutionDownBy=1`、`maintain-resolution`，保留用户的码率上限、帧率和内容提示。UI 明示 Cloudflare 路径在码率预算内优先保持采集分辨率；受压时帧率或细节质量仍可能下降。
+- 用户最终要求保留 `maintain-framerate`。Cloudflare 发送器沿用所选画质档的 `degradationPreference`，撤回候选版本中的强制 `maintain-resolution` 和 `scaleResolutionDownBy=1`，恢复原 UI 提示。标准/动态档仍允许浏览器为保持帧率自适应降低分辨率；detail60/flow 档仍按各自选项工作。
 - 独立的接收健康采样每秒串行运行。持续新的视频字节到达而 6 秒没有任何新解码帧，或连接持续 disconnected 约 5 秒/failed，请求替换该观看者会话。关闭旧会话完成后再订阅当前 publication；每个 publication 最多自动重建两次，失败保留显式重试入口。协商 HTTP 出错或分配结果不确定时不盲目重试。
 - 静态无数据、后台页面、超过 2.5 秒的采样挂起、统计 SSRC/计数器重置均清除判定基线，避免把暂停时间计入持续卡顿。停止和过期回调不会重建连接。
 - 接收解码 FPS 优先计算最近帧计数增量；面板新增最近采样的收到包、丢包、NACK/PLI。切换 SSRC 后码率重新建立基线，避免旧会话的字节差影响新会话。
@@ -25,11 +25,11 @@
 
 - 分辨率策略、持续有数据无解码、持续断连、恢复串行/次数上限、解码统计测试先观察到对应失败，再实现修复。
 - 独立审查发现后台定时器挂起边界；新增 60 秒无采样跳跃回归先失败，修复后通过。最终审查无剩余可操作发现。
-- 最终 `pnpm test`：62 个文件，876 项测试通过。
+- 最终 `pnpm test`：62 个文件，877 项测试通过，包含保留两种所选发送策略的回归。
 - Web 类型检查、全仓 lint、Web 生产构建、`git diff --check` 通过。构建保留现有大 bundle 提示。
-- 本机真实 Chromium/WebRTC H.264 编码/解码测试，合成 1920×1080 canvas 高动态内容，生产 `CloudflareScreenSession` 发布逻辑对接本机 offer/answer 接收 PC。无真实 Cloudflare 转发；末段 10 次采样全部保持 1920×1080，编码 FPS 46–53，解码帧数从 34 增长到 674。验证参数与真实编码行为，不验证用户网络、不证明稳定 60fps。
+- 初始候选版本的本机真实 Chromium/WebRTC H.264 编码/解码测试采用强制分辨率保护，末段 10 次采样全部保持 1920×1080，编码 FPS 46–53，解码帧数从 34 增长到 674。它仅验证本机参数与真实编码行为。用户后续撤回此策略，因此该结果不是最终 `maintain-framerate` 版本的分辨率保持承诺。
 - 本机夹具与原始采样保留在忽略的 `output/playwright/sfu-resolution-probe.html`、`sfu-resolution-probe.json`；截图为同目录 `sfu-resolution-probe.png`。
 
 ## 发布状态
 
-本轮尚未替换运行中的服务器服务。修复已准备为只更新 Web 的候选版本，API/媒体服务器/Worker 不需变更；上线仍需用户确认。上线后两端刷新并重新共享，使用原高动态画面检查分辨率、最近解码与接收帧率和最近丢包；未把原设备的卡顿复测标记为完成。
+用户已授权保留 `maintain-framerate`、部署其余恢复与统计修复。最终候选只更新 Web，API/媒体服务器/Worker 不需变更。发布后两端刷新并重新共享，使用原高动态画面检查最近解码与接收帧率和最近丢包；原设备的卡顿复测另行验收。

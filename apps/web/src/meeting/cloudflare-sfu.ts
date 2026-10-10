@@ -41,7 +41,7 @@ export class CloudflareScreenSession {
         const clone = track.clone();
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
-        const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate, scaleResolutionDownBy: 1 } : {}) }] });
+        const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
         if (track.kind === 'video' && options.codec !== 'auto') {
           const codecs = globalThis.RTCRtpSender?.getCapabilities?.('video')?.codecs;
           const preferred = codecs?.filter(c => c.mimeType.toLowerCase() === `video/${options.codec}`);
@@ -69,11 +69,8 @@ export class CloudflareScreenSession {
         if (track.kind !== 'video')
           continue;
         const parameters = transceiver.sender.getParameters();
-        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate, scaleResolutionDownBy: 1 }];
-        // Like direct P2P, keep the selected source dimensions. Motion still
-        // selects the motion content hint and 60fps target, but does not grant
-        // the browser permission to silently shrink the single SFU encoder.
-        parameters.degradationPreference = 'maintain-resolution';
+        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }];
+        parameters.degradationPreference = options.degradationPreference;
         await transceiver.sender.setParameters(parameters);
       }
       await waitForPc(pc, 'connectionstatechange', () => pc.connectionState === 'connected', this.abort.signal, 20000);

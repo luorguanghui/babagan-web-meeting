@@ -37,14 +37,14 @@ function setup(configure: (pc: Pc) => void = () => {}, onRecoveryNeeded = vi.fn(
   return { pcs, api, create, onRecoveryNeeded };
 }
 describe('Cloudflare native screen session', () => {
-  it('protects the source resolution for a motion share while preserving its bitrate and frame target', async () => {
+  it.each(['maintain-framerate', 'maintain-resolution'] as const)('preserves the selected SFU %s strategy and encoding targets', async degradationPreference => {
     const { pcs, create } = setup(); const source = create();
     await source.publish(new Stream([new Track('video')]) as unknown as MediaStream,
-      { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-framerate' });
+      { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference });
     const sender = pcs[0].transceivers[0].sender as { setParameters: ReturnType<typeof vi.fn> };
     expect(sender.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({
-      degradationPreference: 'maintain-resolution',
-      encodings: [expect.objectContaining({ maxBitrate: 8000000, maxFramerate: 60, scaleResolutionDownBy: 1 })]
+      degradationPreference,
+      encodings: [{ maxBitrate: 8000000, maxFramerate: 60 }]
     }));
     await source.close();
   });
