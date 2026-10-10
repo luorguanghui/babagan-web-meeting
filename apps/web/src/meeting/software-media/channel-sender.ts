@@ -54,7 +54,11 @@ export class ChannelSender {
       if (this.closed || this.channel.readyState !== 'open') return false;
       this.channel.send(fragment);
       this.sentBytes += fragment.byteLength;
-      this.nextSendAt = Math.max(this.nextSendAt, this.clock.now()) + fragment.byteLength * 1.12 * 8000 / this.wireBps;
+      // Keep the pacing deadline when a timer wakes late, rather than charging
+      // its scheduling delay to every fragment. Bound catch-up to one message
+      // so an idle/stalled channel cannot accumulate an unlimited burst.
+      const creditMs = Math.min(12 * 1024, this.maxMessageSize() || 12 * 1024) * 1.12 * 8000 / this.wireBps;
+      this.nextSendAt = Math.max(this.nextSendAt, this.clock.now() - creditMs) + fragment.byteLength * 1.12 * 8000 / this.wireBps;
     }
     return true;
   }
