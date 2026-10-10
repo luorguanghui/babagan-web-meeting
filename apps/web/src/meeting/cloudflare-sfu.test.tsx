@@ -37,6 +37,39 @@ function setup(configure: (pc: Pc) => void = () => {}) {
   return { pcs, api, create };
 }
 describe('Cloudflare native screen session', () => {
+  it('continues with gathered candidates when a slow ICE server has not completed', async () => {
+    vi.useFakeTimers();
+    try {
+      const { create, api } = setup(pc => {
+        pc.iceGatheringState = 'gathering';
+        pc.createOffer = async () => ({ type: 'offer', sdp: 'v=0\r\na=candidate:1 1 udp 123 192.0.2.1 1234 typ host\r\n' });
+      });
+      const publisher = create();
+      const publishing = publisher.publish(new Stream([new Track('video')]) as unknown as MediaStream, { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-resolution' });
+      const result = publishing.catch(e => e.message);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(await result).toBeUndefined();
+      expect(api.publish).toHaveBeenCalledOnce();
+      expect(api.ready).toHaveBeenCalledOnce();
+      await publisher.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it('answers with gathered candidates even when another ICE request is still pending', async () => {
+    vi.useFakeTimers();
+    try {
+      const { create, api } = setup(pc => {
+        pc.iceGatheringState = 'gathering';
+        pc.createAnswer = async () => ({ type: 'answer', sdp: 'v=0\r\na=candidate:1 1 udp 123 192.0.2.1 1234 typ host\r\n' });
+      });
+      const viewer = create();
+      const subscribing = viewer.subscribe(publication);
+      const result = subscribing.catch(e => e.message);
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(await result).toBeUndefined();
+      expect(api.answer).toHaveBeenCalledOnce();
+      await viewer.close();
+    } finally { vi.useRealTimers(); }
+  });
   it('waits for gathered ICE SDP and fails once at the bounded gathering deadline', async () => {
     vi.useFakeTimers();
     try {
