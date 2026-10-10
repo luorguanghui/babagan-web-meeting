@@ -11,6 +11,8 @@ export interface CloudflareSfuApi {
   getSessionMids(sessionId: string): Promise<string[]>;
   close?(): Promise<void>;
 }
+/** Explicit 410/session_error on an owned cleanup operation proves session expiry. */
+export class CloudflareSfuSessionGoneError extends Error {}
 
 /** Fixed-origin SFU control API, optionally via the trusted Worker. Never retry allocations or log upstream bodies/SDP. */
 export class CloudflareSfuClient implements CloudflareSfuApi {
@@ -42,17 +44,17 @@ export class CloudflareSfuClient implements CloudflareSfuApi {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/renegotiate`, 'PUT', { sessionDescription: description });
   }
   async closeTracks(sessionId: string, mids: string[]): Promise<string[]> {
-    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}/tracks/close`, 'PUT', { force: true, tracks: mids.map((mid) => ({ mid })) }, true);
+    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}/tracks/close`, 'PUT', { force: true, tracks: mids.map((mid) => ({ mid })) }, true, true);
     // A 200 can carry failures. Missing/unreported mids must remain queued.
     return mids.filter((mid) => !result.tracks?.some((t) => t.mid === mid && (!t.errorCode || t.errorCode === 'close_track_error')));
   }
   async getSessionMids(sessionId: string): Promise<string[]> {
-    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}`, 'GET');
+    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}`, 'GET', undefined, false, true);
     if (!Array.isArray(result.tracks)) throw domainError('MEDIA_SERVICE_UNAVAILABLE');
     return result.tracks.flatMap((track) => typeof track.mid === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(track.mid) ? [track.mid] : []);
   }
   async close(): Promise<void> {}
-  private async request(path: string, method: string, body?: unknown, allowTrackErrors = false): Promise<SfuResult> {
+  private async request(path: string, method: string, body?: unknown, allowTrackErrors = false, cleanup = false): Promise<SfuResult> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     timer.unref();
@@ -62,11 +64,15 @@ export class CloudflareSfuClient implements CloudflareSfuApi {
         headers: { ...(this.authorization ? { Authorization: this.authorization } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
-      if (!response.ok) throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       const result = await response.json() as SfuResult;
+      if (cleanup && response.status === 410 && result?.errorCode === 'session_error') throw new CloudflareSfuSessionGoneError();
+      if (!response.ok) throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       if (!result || typeof result !== 'object' || (result.errorCode && !allowTrackErrors)) throw domainError('MEDIA_SERVICE_UNAVAILABLE');
       return result;
-    } catch { throw domainError('MEDIA_SERVICE_UNAVAILABLE'); }
+    } catch (error) {
+      if (error instanceof CloudflareSfuSessionGoneError) throw error;
+      throw domainError('MEDIA_SERVICE_UNAVAILABLE');
+    }
     finally { clearTimeout(timer); }
   }
 }

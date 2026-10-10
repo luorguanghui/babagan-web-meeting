@@ -1,8 +1,17 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
-import { CloudflareSfuClient } from './cloudflare-sfu-client.js';
+import { CloudflareSfuClient, CloudflareSfuSessionGoneError } from './cloudflare-sfu-client.js';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('Cloudflare fixed-origin SFU client', () => {
+  it('recognizes an explicit gone session only for owned resource cleanup', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ errorCode: 'session_error' }, { status: 410 })));
+    const client = new CloudflareSfuClient({ appId: 'app', appSecret: 'private' });
+    await expect(client.closeTracks('owned', ['0'])).rejects.toBeInstanceOf(CloudflareSfuSessionGoneError);
+    await expect(client.getSessionMids('owned')).rejects.toBeInstanceOf(CloudflareSfuSessionGoneError);
+    await expect(client.answer('owned', { type: 'answer', sdp: 'answer' })).rejects.toThrow('MEDIA_SERVICE_UNAVAILABLE');
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ errorCode: 'unauthorized' }, { status: 410 })));
+    await expect(client.closeTracks('owned', ['0'])).rejects.toThrow('MEDIA_SERVICE_UNAVAILABLE');
+  });
   it('retains partial track results even with a request error so cleanup knows new receiving mids', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ errorCode: 'partial', tracks: [{ mid: '17', trackName: 'video' }] })));
     const result = await new CloudflareSfuClient({ appId: 'app', appSecret: 'private' }).newTracks('session', { tracks: [{ location: 'remote', trackName: 'video', sessionId: 'publisher' }] });

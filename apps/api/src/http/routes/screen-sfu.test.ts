@@ -208,6 +208,36 @@ describe('Cloudflare SFU broker routes', () => {
     await fixture.screenSfu.closeMeeting(f.slug);
     expect((await call(f.slug, f.viewer)).json().publication).toBeNull();
   });
+  it('allows a new publication after Cloudflare explicitly reports the old session gone', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    const original = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes(`/sessions/${p.sessionId}/tracks/close`)) return Response.json({ errorCode: 'session_error' }, { status: 410 });
+      return original(url, init);
+    }));
+    expect((await call(f.slug, f.publisher, `/sessions/${p.sessionId}`, 'DELETE')).statusCode).toBe(204);
+    const next = await call(f.slug, f.publisher, '/publish', 'POST', offer);
+    expect(next.statusCode, next.body).toBe(200);
+    expect(next.json().sessionId).not.toBe(p.sessionId);
+  });
+  it('retires an uncertain allocation when an owned inspection proves its session expired', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    const original = globalThis.fetch;
+    let failViewer = true;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/sessions/cf-2') && init?.method === 'GET') return Response.json({ errorCode: 'session_error' }, { status: 410 });
+      if (String(url).endsWith('/tracks/new') && !JSON.parse(String(init?.body)).sessionDescription && failViewer) {
+        failViewer = false; return new Response('', { status: 503 });
+      }
+      return original(url, init);
+    }));
+    expect((await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: p.shareId })).statusCode).toBe(503);
+    expect((await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: p.shareId })).statusCode).toBe(200);
+  });
   it('cleans a late upstream allocation when its share grant is revoked during the request', async () => {
     const f = await setup();
     let started!: () => void; const inFlight = new Promise<void>((resolve) => { started = resolve; });

@@ -3,6 +3,7 @@ import type { CloudflareSfuPublication, CloudflareSfuPublishRequest, CloudflareS
 import { DomainError, SfuCleanupPendingError, domainError } from '../domain/errors.js';
 import type { P2pRoomRegistry } from '../p2p/room-registry.js';
 import type { CloudflareSfuApi, SfuResult, SfuTrack } from './cloudflare-sfu-client.js';
+import { CloudflareSfuSessionGoneError } from './cloudflare-sfu-client.js';
 import { KeyedMutex } from './keyed-mutex.js';
 import type { ActiveParticipantSession, ParticipantApplicationService } from './participant-application-service.js';
 
@@ -193,16 +194,22 @@ export class CloudflareSfuService {
       let inspected = true;
       if (session.uncertainUntil !== undefined) {
         try { session.mids = [...new Set([...session.mids, ...await this.api().getSessionMids(session.id)])]; }
-        catch { inspected = false; }
+        catch (error) { if (error instanceof CloudflareSfuSessionGoneError) throw error; inspected = false; }
       }
       if (session.mids.length) session.mids = await this.api().closeTracks(session.id, session.mids);
       if (session.mids.length === 0 && inspected && (session.uncertainUntil === undefined || this.now() >= session.uncertainUntil)) {
-        this.sessions.delete(session.id);
-        this.closedSessions.set(session.id, { slug: session.slug, identity: session.owner.identity, tokenHash: session.owner.tokenHash, expiresAt: this.now() + 300_000 });
-        for (const [id, closed] of this.closedSessions) if (closed.expiresAt <= this.now()) this.closedSessions.delete(id);
-        while (this.closedSessions.size > 500) this.closedSessions.delete(this.closedSessions.keys().next().value!);
+        this.retire(session);
       }
-    } catch { /* retain known mids for safe forced-close cleanup during sweeps */ }
+    } catch (error) {
+      if (error instanceof CloudflareSfuSessionGoneError) this.retire(session);
+      // All other failures retain known mids for forced-close cleanup in sweeps.
+    }
+  }
+  private retire(session: Session): void {
+    this.sessions.delete(session.id);
+    this.closedSessions.set(session.id, { slug: session.slug, identity: session.owner.identity, tokenHash: session.owner.tokenHash, expiresAt: this.now() + 300_000 });
+    for (const [id, closed] of this.closedSessions) if (closed.expiresAt <= this.now()) this.closedSessions.delete(id);
+    while (this.closedSessions.size > 500) this.closedSessions.delete(this.closedSessions.keys().next().value!);
   }
   private assertCurrent(session: Session): void {
     this.assertActive(session.slug, session.owner);
