@@ -24,7 +24,8 @@ export interface ScreenShareQualityPreset {
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
   flow: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
   standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-framerate' },
-  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' }
+  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' },
+  detail60: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
 };
 
 export const screenShareDefaultQuality: ScreenShareQuality = 'standard';

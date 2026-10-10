@@ -152,27 +152,15 @@ sudo chmod 600 infra/.env.production
 sudoedit infra/.env.production
 ~~~
 
-至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。生产默认保持 `P2P_TURN_PROVIDER=coturn`，这样 `/ice-servers` 的 `auto` 请求默认走 coturn；如果要开放页面中的 Cloudflare TURN 选项，则在同一份受保护 env 中同时配置 Cloudflare TURN app 创建页一次性返回的 `CLOUDFLARE_TURN_KEY_ID` 和 `CLOUDFLARE_TURN_API_TOKEN`（这里存的是 TURN Key API Token/Secret，不是 User API Token），以及 `CLOUDFLARE_TURN_TTL_SECONDS=600`。若旧的 `babagan-turn-production-v2` 长期凭据无法在受保护流程中取得，则在 Cloudflare Realtime TURN 页面新建 `babagan-turn-production-v3`，保留 v2，不把一次性返回的长期凭据写入聊天、Git 或日志。若服务器 DNS 返回的 Cloudflare API 地址不可达，可配置 `CLOUDFLARE_TURN_CONNECT_IPS` 为逗号分隔的可达 Cloudflare 边缘 IP，连接仍使用 `rtc.live.cloudflare.com` 的 TLS SNI/Host。长期 Cloudflare TURN Key Secret 只放服务器 mode 600 的生产环境文件。LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少 32 字符；镜像必须保持示例中的批准 digest。
+至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER=coturn、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。P2P TURN 只使用服务器 coturn；项目已移除 Cloudflare TURN 凭据生成、选项和探测功能。
 
-这样部署后，API 会把 `availableTurnProviders` 暴露给浏览器；共享者只有在服务端同时存在 Cloudflare Key ID 与 API Token 时，才会在设置里看到 `Cloudflare TURN` 选项。共享者每次开始共享前可选 `auto`、`coturn` 或 `cloudflare`；选择持久化在浏览器本地，但不修改服务器默认 env。
+如需 Cloudflare SFU，在受保护的生产 env 中成对配置 `CLOUDFLARE_SFU_APP_ID` 与 `CLOUDFLARE_SFU_APP_SECRET`。这里的秘密是 SFU 应用 App Secret，不是旧 Cloudflare TURN Key token，也不是 Cloudflare 用户 API token。App Secret 只由 API 后端读取，不发送到浏览器、Git 或日志。没有这对配置时 Cloudflare SFU 入口显示未配置。
 
-如果显式 `turnProvider=cloudflare` 请求实际返回 `turnProvider=coturn`，先不要轮换凭据或把 coturn 当作 Cloudflare。用不带 Token 的请求分别从宿主机和 API 容器探测 `rtc.live.cloudflare.com:443`；只有收到任意 HTTP 响应（不是状态码 000、超时或 `ENETUNREACH`）的 IPv4 地址才可以写入 `CLOUDFLARE_TURN_CONNECT_IPS`。应用会继续使用 `rtc.live.cloudflare.com` 作为 TLS SNI 和 HTTP Host：
+共享者在共享前选择 Cloudflare SFU 后，只发送一份屏幕视频与可选电脑声音；所有观看者从同一发布订阅，语音仍使用 LiveKit。P2P/服务器 TURN 与显式 LiveKit SFU 保留，Cloudflare TURN 不再可选。旧 `babagan.screen-turn-provider=cloudflare` 缓存会回退自动/coturn；升级时从当前 env 移除所有 `CLOUDFLARE_TURN_*`，设置 `P2P_TURN_PROVIDER=coturn`，先保留 mode-600 的 env 备份。不要删除 Cloudflare 账户中现有 TURN 应用。
 
-~~~bash
-getent ahostsv4 rtc.live.cloudflare.com www.cloudflare.com api.cloudflare.com | awk '{print $1}' | sort -u
-for ip in $(getent ahostsv4 rtc.live.cloudflare.com www.cloudflare.com api.cloudflare.com | awk '{print $1}' | sort -u); do
-  printf '%s ' "$ip"
-  timeout 8 curl -4 --resolve "rtc.live.cloudflare.com:443:$ip" \
-    --silent --show-error --output /dev/null \
-    --write-out 'http=%{http_code} remote=%{remote_ip}\n' \
-    https://rtc.live.cloudflare.com/ || true
-done
-~~~
+Cloudflare SFU 鉴权和会话请求由服务器直连 `https://rtc.live.cloudflare.com/v1`，浏览器媒体直接连接 SFU；不配置 SFU 代理，不关闭 TLS 验证。更新后的 smoke 会验证真实 SFU App Secret 鉴权及已认证项目 API 的 SFU 可用状态，配置存在但检查失败会回滚；旧的 Cloudflare TURN smoke 豁免不能用于 SFU。真实发布、订阅和媒体仍需会话验收。
 
-若宿主机和 API 容器都无法连接，保留 `CLOUDFLARE_TURN_CONNECT_IPS` 为空并记录为服务器到 Cloudflare 的出网问题；不得凭猜测写入 Cloudflare IP。编辑生产 env 前先执行 `sudo cp -p infra/.env.production /root/babagan-protected/env.production.before-cloudflare-<UTC>`，并保持 env 与备份 mode 600。
-
-如果目标主机已有经过授权且可访问 Cloudflare 的 HTTP/HTTPS 代理，可只把 Cloudflare 凭据生成请求送入代理：将代理核心和配置保存在服务器受保护目录，代理端口只绑定 Docker edge 网关 `172.30.0.1` 或内部网络，不发布到公网；在生产 env 中设置 `CLOUDFLARE_TURN_HTTPS_PROXY=http://host.docker.internal:<proxy-port>`。Compose 将 edge 网段固定为 `172.30.0.0/16`、backend 网段固定为 `172.31.0.0/16`，API 和 Caddy 的 `host.docker.internal` 固定解析到 edge 网关，以匹配仅允许 edge 网段访问宿主机 LiveKit 7880 的防火墙规则。API 使用独立的代理 dispatcher，LiveKit、coturn、Caddy、镜像拉取和浏览器媒体不经过该代理。代理配置、订阅和节点凭据不得进入 Git、聊天或日志；启用前必须从 API 容器验证 `rtc.live.cloudflare.com` 的 2xx/4xx HTTP 响应，并再运行显式 Cloudflare ICE smoke。
-
+LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少32字符；镜像保持示例中的批准 digest。Compose 的 edge 网段为 `172.30.0.0/16`、backend 网段为 `172.31.0.0/16`，现有内部服务和防火墙边界保持原配置。
 服务器生成随机值，不要把结果贴到聊天或 Git：
 
 ~~~bash
@@ -254,7 +242,7 @@ EOF
 sudo chmod 600 /root/babagan-protected/network.txt /root/babagan-protected/cloudflare.txt
 ~~~
 
-deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token，并在检测到 Cloudflare 长期凭据成对存在时额外执行显式 `turnProvider=coturn` 与 `turnProvider=cloudflare` 两轮 ICE smoke。准备一个 24 小时 Token：
+deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token，验证服务器coturn。配置了Cloudflare SFU时还会直连验证其App Secret及项目SFU能力接口。准备一个24小时Token：
 
 ~~~bash
 sudo bash -c 'umask 077; docker run --rm --network none --env-file /opt/babagan-web-meeting/infra/.env.production --entrypoint node babagan-meeting-api:bootstrap --input-type=module -e '\''import {AccessToken} from "livekit-server-sdk"; const t=new AccessToken(process.env.LIVEKIT_API_KEY,process.env.LIVEKIT_API_SECRET,{identity:"deployment-rollback",ttl:86400}); t.addGrant({room:"deployment-smoke",roomJoin:true}); process.stdout.write(await t.toJwt());'\'' > /root/babagan-secrets/smoke-token; chmod 600 /root/babagan-secrets/smoke-token'
@@ -319,7 +307,7 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --commit '<40 位
 
 更新过程：验证现有服务及配置 → 独立 Git 快照 → SQLite 在线备份 → 固定版本 Dockerfile 构建 → 再检查会议及当前容器 → API 更新时执行迁移 → 仅替换目标应用容器 → 等待五服务健康 → 公网 JavaScript 与容器文件 SHA-256 比对 → 新签发 Token 的鉴权 ICE/RTC 冒烟 → 写发布记录。
 
-默认检测已配置的 Cloudflare 凭据并验证 Cloudflare。只有操作人明确接受该提供方暂不可用时才追加 `--skip-cloudflare-smoke`；此选项保留默认及显式 coturn 检查，发布记录会标记未验收 Cloudflare，不修改提供方或秘密配置。
+默认检测已配置的Cloudflare SFU并要求鉴权检查通过。旧Cloudflare TURN的`--skip-cloudflare-smoke`参数已移除，不适用于SFU。API更新override向当前Compose链注入服务端SFU密钥引用并取消旧TURN配置，web-only不重配API。配置Cloudflare SFU或移除旧TURN时必须更新API和web。
 
 ### 4.3 发布记录与失败恢复
 
@@ -398,7 +386,7 @@ sudo bash scripts/deploy.sh \
 
 若使用公网 SSH 证据，追加 --allow-public-ssh；非默认 env 文件追加 --env-file /受保护路径/infra.env.production。
 
-deploy.sh 顺序固定为：只读预检 → SQLite 在线备份和 checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像 tag → 启动并等待五服务 healthy → deployment-smoke。smoke 会创建临时会议并现场签发 LiveKit Token，检查健康端点、认证 ICE、Cache-Control: no-store、P2P 跨站 403、RTC WebSocket 和公网 3000/7880 阻断。若生产 env 同时包含 `CLOUDFLARE_TURN_KEY_ID` 与 `CLOUDFLARE_TURN_API_TOKEN`，还会追加显式 `SMOKE_REQUESTED_TURN_PROVIDER=coturn` 与 `SMOKE_REQUESTED_TURN_PROVIDER=cloudflare` 两轮检查；显式 Cloudflare 请求若服务端实际回退 coturn，则 smoke 应失败。成功后写 release record、更新 current-release.env，并保存 completed pending record。Cloudflare fallback 日志只保留 provider、目标 host 和固定 error class，不保留原始错误文本或请求凭据。
+deploy.sh 顺序固定为：只读预检 → SQLite在线备份和checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像tag → 启动并等待五服务healthy → deployment-smoke。smoke创建临时会议并现场签发LiveKit Token，检查健康端点、coturn认证ICE、Cache-Control:no-store、P2P跨站403、RTC WebSocket和公网3000/7880阻断。配置了SFU App ID/Secret时，运行API容器内的直连SFU鉴权CLI以及已认证SFU能力请求；成功后写release record并保存completed pending。SFU诊断不输出App Secret、原始SDP或完整上游错误。
 
 ### 4.4 更新后验收
 
@@ -412,7 +400,7 @@ sudo sed -n '1,32p' var/releases/current-release.env
 sudo test ! -e var/releases/pending-release.env
 ~~~
 
-应看到五服务 healthy、健康端点分别返回 {"status":"ok"} 和 {"status":"ready"}、首页 HTTP 200、current-release.env 为本次 SHA、没有 pending。若 Cloudflare 凭据已配置，deployment smoke 还应留下默认请求、显式 coturn 请求和显式 cloudflare 请求都通过的证据。保留 deploy、compose ps、健康和 smoke 输出到受保护运维记录。
+应看到五服务healthy、健康端点分别返回{"status":"ok"}和{"status":"ready"}、首页HTTP200、本次SHA、没有pending。若SFU已配置，smoke还应有`CLOUDFLARE_SFU_API_OK`，增量发布记录`cloudflareSfuApiVerified=true`；这只是鉴权／能力检查，媒体发布与订阅仍需真实会议验收。保留发布、健康与smoke输出到受保护记录。
 
 ## 5. 失败处理：先诊断，不自动回滚
 
@@ -481,8 +469,8 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 ## 7. 日常运维和安全
 
 - Caddy 续期 turn 证书后，重复 3.4 节读取权限检查，重启 coturn 并验证 5349/TCP。
-- P2P_TURN_SECRET 与 TURN_SHARED_SECRET 必须相同且至少 32 字符；P2P_TURN_TTL_SECONDS 固定 600。Cloudflare provider 的长期 API Token 不得进入 Git、浏览器或日志；页面的 TURN 标签应显示本次实际 provider。
-- 共享者的 TURN provider 选择只影响当前这次共享，进行中的共享不允许切换；若 Cloudflare 取凭据失败，API 会回退 coturn，页面状态与 WebRTC 统计面板应显示实际 provider，而不是显示请求值。
+- P2P_TURN_SECRET与TURN_SHARED_SECRET必须相同且至少32字符，TTL固定600；P2P TURN只使用coturn。Cloudflare SFU App Secret不得进入Git、浏览器或日志。
+- 共享传输方式在共享前选择，进行中不允许切换；Cloudflare SFU应明确显示为SFU，不能显示为Cloudflare TURN或在失败后暗中增加P2P编码。
 - Cache-Control: no-store 是认证 ICE 响应的验收条件。
 - 7880 不对公网开放；7881/TCP、UDP 443、50000–60000 由安全组和 UFW 同步允许。
 - 旧 standalone babagan-coturn.service 不应与 Compose coturn 并存；确认使用容器版后执行 sudo systemctl disable --now babagan-coturn.service。
@@ -500,7 +488,7 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 建议顺序：
 
 1. 先在新主机完成部署、证书、健康、默认 coturn smoke。
-2. 若 Cloudflare 长期凭据已配置，再确认显式 Cloudflare smoke。
+2. 若Cloudflare SFU已配置，确认直连鉴权smoke及真实发布／订阅媒体。
 3. 最后切换 `meet`、`rtc`、`turn` 三条 A 记录到新公网 IP，并分别核对代理状态未改变。
 4. 在新主机重复 `getent ahostsv4 "$PUBLIC_HOST" "$RTC_HOST" "$TURN_HOST"`，确认解析结果已更新。
 

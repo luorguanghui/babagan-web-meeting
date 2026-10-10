@@ -99,6 +99,20 @@ describe('P2pRoomRegistry', () => {
     expect(registry.listPeers('meeting-a')).toEqual([]);
   });
 
+  it('clears SFU discovery and closes all peers even when a stale socket cannot send', () => {
+    const registry = new P2pRoomRegistry();
+    const stale = new FakeSocket();
+    const healthy = new FakeSocket();
+    registry.join('meeting-a', 'stale', 'Stale', stale);
+    registry.join('meeting-a', 'healthy', 'Healthy', healthy);
+    registry.setScreenSfu('meeting-a', { shareId: 'share', sessionId: 'session', sharerIdentity: 'healthy', sharerName: 'Healthy', tracks: [{ kind: 'video', trackName: 'screen' }] });
+    stale.send = () => { throw new Error('socket already closed'); };
+    expect(() => registry.closeRoom('meeting-a', 'ended')).not.toThrow();
+    expect(registry.getScreenSfu('meeting-a')).toBeNull();
+    expect(stale.closeCalls).toEqual([1000]);
+    expect(healthy.closeCalls).toEqual([1000]);
+    expect(healthy.messages()).toContainEqual({ type: 'screen-sfu', publication: null });
+  });
   it('leave removes the peer, reports whether it removed, and cleans up empty rooms', () => {
     const registry = new P2pRoomRegistry();
     const socket = new FakeSocket();

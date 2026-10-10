@@ -1,4 +1,4 @@
-export type ScreenShareTurnProviderPreference = 'auto' | 'coturn' | 'cloudflare';
+export type ScreenShareTurnProviderPreference = 'auto' | 'coturn';
 
 export const SCREEN_SHARE_TURN_PROVIDER_PREFERENCE_KEY = 'babagan.screen-turn-provider';
 
@@ -25,5 +25,5 @@ export function saveScreenShareTurnProviderPreference(
 }
 
 function isScreenShareTurnProviderPreference(value: string | null): value is ScreenShareTurnProviderPreference {
-  return value === 'auto' || value === 'coturn' || value === 'cloudflare';
+  return value === 'auto' || value === 'coturn';
 }

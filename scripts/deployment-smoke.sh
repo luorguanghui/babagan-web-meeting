@@ -30,7 +30,7 @@ p2p_turn_secret="$(sed -n 's/^P2P_TURN_SECRET=//p' "$env_file")"
 turn_shared_secret="$(sed -n 's/^TURN_SHARED_SECRET=//p' "$env_file")"
 turn_ttl="$(sed -n 's/^P2P_TURN_TTL_SECONDS=//p' "$env_file")"
 turn_provider="$(sed -n 's/^P2P_TURN_PROVIDER=//p' "$env_file")"; turn_provider="${turn_provider:-coturn}"
-[[ "$turn_provider" == coturn || "$turn_provider" == cloudflare ]] \
+[[ "$turn_provider" == coturn ]] \
   || { echo 'production P2P_TURN_PROVIDER is invalid' >&2; exit 1; }
 [[ "$p2p_turn_urls" == turn:* || "$p2p_turn_urls" == turns:* ]] \
   || { echo 'production P2P_TURN_URLS is invalid' >&2; exit 1; }
@@ -73,21 +73,7 @@ cleanup_on_exit() {
 }
 trap cleanup_on_exit EXIT
 
-cloudflare_credentials_present=0
-skip_cloudflare_smoke=${SKIP_CLOUDFLARE_SMOKE:-0}
-[[ "$skip_cloudflare_smoke" == 0 || "$skip_cloudflare_smoke" == 1 ]] \
-  || { echo 'SKIP_CLOUDFLARE_SMOKE must be 0 or 1.' >&2; exit 64; }
-if grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_TURN_API_TOKEN=.+$' "$env_file"; then
-  cloudflare_credentials_present=1
-fi
-
-default_smoke_provider=auto
-if (( skip_cloudflare_smoke )) && [[ "$turn_provider" == cloudflare ]]; then
-  # The waiver also covers the default provider when it is Cloudflare.
-  # Keep an authenticated coturn check without changing production settings.
-  default_smoke_provider=coturn
-fi
-SMOKE_REQUESTED_TURN_PROVIDER="$default_smoke_provider" \
+SMOKE_REQUESTED_TURN_PROVIDER=coturn \
 SMOKE_MEETING_SLUG="$smoke_slug" \
 SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
 SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
@@ -96,29 +82,16 @@ P2P_TURN_URLS="$p2p_turn_urls" \
 P2P_TURN_PROVIDER="$turn_provider" \
 SMOKE_NODE_IMAGE="$api_image" \
   "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
-if (( cloudflare_credentials_present )); then
-  SMOKE_REQUESTED_TURN_PROVIDER=coturn \
-  SMOKE_MEETING_SLUG="$smoke_slug" \
-  SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
-  SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
-  P2P_STUN_URLS="$p2p_stun_urls" \
-  P2P_TURN_URLS="$p2p_turn_urls" \
-  P2P_TURN_PROVIDER="$turn_provider" \
-  SMOKE_NODE_IMAGE="$api_image" \
-    "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
-  if (( skip_cloudflare_smoke )); then
-    echo 'Cloudflare provider smoke explicitly skipped; no Cloudflare acceptance is claimed.'
-  else
-  SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
-  SMOKE_MEETING_SLUG="$smoke_slug" \
-  SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
-  SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
-  P2P_STUN_URLS="$p2p_stun_urls" \
-  P2P_TURN_URLS="$p2p_turn_urls" \
-  P2P_TURN_PROVIDER="$turn_provider" \
-  SMOKE_NODE_IMAGE="$api_image" \
-    "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
-  fi
+if grep -Eq '^CLOUDFLARE_SFU_APP_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_SFU_APP_SECRET=.+$' "$env_file"; then
+  # Read credentials only inside the running API. Do not echo them, and do
+  # not reuse the retired TURN waiver for this requested SFU integration.
+  docker exec babagan-meeting-api-1 node dist/smoke/cloudflare-sfu-check-cli.js
+  sfu_status=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+    -H "Origin: $public_base" -H "Cookie: $smoke_cookie" \
+    "$public_base/api/v1/meetings/$smoke_slug/screen-sfu")
+  grep -Eq '"available"[[:space:]]*:[[:space:]]*true' <<<"$sfu_status" \
+    || { echo 'configured Cloudflare SFU is not available through the authenticated API' >&2; exit 1; }
+  echo 'CLOUDFLARE_SFU_API_OK'
 fi
 
 cleanup_probe

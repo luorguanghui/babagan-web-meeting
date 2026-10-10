@@ -1,148 +1,34 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-
 import type { AppConfig } from '../../config.js';
 import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
-import type {
-  ActiveParticipantSession,
-  ParticipantApplicationService
-} from '../../services/participant-application-service.js';
-import {
-  describeCloudflareTurnFailure,
-  fetchCloudflareTurnIceServers
-} from '../../services/cloudflare-turn.js';
+import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { createTurnCredentials } from '../../services/turn-credentials.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { generalApiRateLimit } from '../rate-limit.js';
 
-type IceTurnProviderRequest = 'auto' | 'coturn' | 'cloudflare';
-
-const SlugParamsSchema = Type.Object({ slug: Type.String({ minLength: 22, maxLength: 256 }) });
-const IceServersQuerySchema = Type.Object({
-  turnProvider: Type.Optional(Type.Union([
-    Type.Literal('auto'),
-    Type.Literal('coturn'),
-    Type.Literal('cloudflare')
-  ]))
-});
-const IceServerSchema = Type.Object({
-  urls: Type.Array(Type.String()),
-  username: Type.Optional(Type.String()),
-  credential: Type.Optional(Type.String())
-});
-const IceServersResponseSchema = Type.Object({
-  iceServers: Type.Array(IceServerSchema),
-  availableTurnProviders: Type.Array(Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')])),
-  turnProvider: Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')]),
-  turnCredentialsExpiresAt: Type.Integer()
-});
-
-export function registerIceServersRoutes(app: FastifyInstance, dependencies: {
-  participants: ParticipantApplicationService;
-  config: AppConfig;
-}): void {
+export function registerIceServersRoutes(app: FastifyInstance, dependencies: { participants: ParticipantApplicationService; config: AppConfig }): void {
   app.get('/api/v1/meetings/:slug/ice-servers', {
     schema: {
-      params: SlugParamsSchema,
-      querystring: IceServersQuerySchema,
-      response: { 200: IceServersResponseSchema }
-    },
-    preHandler: app.rateLimit(generalApiRateLimit())
-  }, async (request, reply) => {
-    const value = slug(request.params);
-    const session = participantSession(request, dependencies.participants, value);
-    const turn = createTurnCredentials({
-      secret: dependencies.config.p2pTurnSecret,
-      participantIdentity: session.identity,
-      ttlSeconds: dependencies.config.p2pTurnTtlSeconds,
-      nowSeconds: Date.now() / 1_000
+      params: Type.Object({ slug: Type.String({ minLength: 22, maxLength: 256 }) }),
+      querystring: Type.Object({ turnProvider: Type.Optional(Type.Union([Type.Literal('auto'), Type.Literal('coturn')])) }),
+      response: { 200: Type.Object({
+        iceServers: Type.Array(Type.Object({ urls: Type.Array(Type.String()), username: Type.Optional(Type.String()), credential: Type.Optional(Type.String()) })),
+        availableTurnProviders: Type.Array(Type.Literal('coturn')), turnProvider: Type.Literal('coturn'), turnCredentialsExpiresAt: Type.Integer()
+      }) }
+    }, preHandler: app.rateLimit(generalApiRateLimit())
+  }, async (request: FastifyRequest, reply) => {
+    const slug = (request.params as { slug: string }).slug;
+    const raw = readSignedSessionCookie(request, participantCookie);
+    if (!raw) throw new SessionAuthenticationError();
+    const session = dependencies.participants.authenticate(raw, slug);
+    const config = dependencies.config;
+    const turn = createTurnCredentials({ secret: config.p2pTurnSecret, participantIdentity: session.identity, ttlSeconds: config.p2pTurnTtlSeconds, nowSeconds: Date.now() / 1000 });
+    const ownStunUrls = config.p2pTurnUrls.flatMap((url) => {
+      const match = /^turn:([^?]+)(?:\?transport=udp)?$/i.exec(url);
+      return match ? [`stun:${match[1]}`] : [];
     });
     reply.header('Cache-Control', 'no-store');
-    const availableTurnProviders = resolveAvailableTurnProviders(dependencies.config);
-
-    const coturn = {
-      iceServers: [
-        { urls: coturnStunUrls(dependencies.config) },
-        { urls: dependencies.config.p2pTurnUrls, ...turn }
-      ],
-      availableTurnProviders,
-      turnProvider: 'coturn' as const,
-      turnCredentialsExpiresAt: Number(turn.username.split(':', 1)[0])
-    };
-    if (
-      resolveRequestedTurnProvider(request.query, dependencies.config) !== 'cloudflare'
-      || !availableTurnProviders.includes('cloudflare')
-    ) return coturn;
-
-    try {
-      return await fetchCloudflareTurnIceServers({
-        keyId: dependencies.config.cloudflareTurnKeyId!,
-        apiToken: dependencies.config.cloudflareTurnApiToken!,
-        ttlSeconds: dependencies.config.cloudflareTurnTtlSeconds ?? 600,
-        connectIps: dependencies.config.cloudflareTurnConnectIps,
-        proxyUrl: dependencies.config.cloudflareTurnProxyUrl
-      }).then((response) => {
-        // STUN discovery is independent of the selected TURN provider. In
-        // particular, retain configured numeric STUN entries when client DNS
-        // cannot resolve a usable address for the provider's STUN hostname.
-        const providerUrls = new Set(response.iceServers.flatMap((server) => server.urls));
-        const extraStunUrls = coturnStunUrls(dependencies.config).filter((url) => !providerUrls.has(url));
-        return {
-          ...response,
-          iceServers: extraStunUrls.length === 0
-            ? response.iceServers
-            : [...response.iceServers, { urls: extraStunUrls }],
-          availableTurnProviders
-        };
-      });
-    } catch (error) {
-      // Keep the existing coturn path as an availability fallback while the
-      // managed provider is being rolled out or temporarily unavailable.
-      request.log.warn(
-        describeCloudflareTurnFailure(error),
-        'Cloudflare TURN credentials unavailable; using coturn fallback'
-      );
-      return coturn;
-    }
+    return { iceServers: [{ urls: [...new Set([...ownStunUrls, ...config.p2pStunUrls])] }, { urls: config.p2pTurnUrls, ...turn }], availableTurnProviders: ['coturn'], turnProvider: 'coturn', turnCredentialsExpiresAt: Number(turn.username.split(':', 1)[0]) };
   });
-}
-
-/** The configured UDP TURN listener also answers unauthenticated STUN Binding. */
-function coturnStunUrls(config: AppConfig): string[] {
-  const ownStunUrls = config.p2pTurnUrls.flatMap((url) => {
-    // Do not invent UDP listeners for TLS/TCP-only TURN endpoints.
-    const match = /^turn:([^?]+)(?:\?transport=udp)?$/i.exec(url);
-    return match ? [`stun:${match[1]}`] : [];
-  });
-  // Public STUN does not require TURN credentials. A failed credential API
-  // must not also remove the provider's independent address-discovery path.
-  const providerStunUrls = resolveAvailableTurnProviders(config).includes('cloudflare')
-    ? ['stun:stun.cloudflare.com:3478'] : [];
-  return [...new Set([...ownStunUrls, ...providerStunUrls, ...config.p2pStunUrls])];
-}
-
-function participantSession(
-  request: FastifyRequest,
-  participants: ParticipantApplicationService,
-  slugValue: string
-): ActiveParticipantSession {
-  const raw = readSignedSessionCookie(request, participantCookie);
-  if (!raw) throw new SessionAuthenticationError();
-  return participants.authenticate(raw, slugValue);
-}
-
-function slug(params: unknown): string {
-  return (params as { slug: string }).slug;
-}
-
-function resolveRequestedTurnProvider(query: unknown, config: AppConfig): 'coturn' | 'cloudflare' {
-  const requested = (query as { turnProvider?: IceTurnProviderRequest }).turnProvider ?? 'auto';
-  if (requested === 'auto') return config.p2pTurnProvider ?? 'coturn';
-  return requested;
-}
-
-function resolveAvailableTurnProviders(config: AppConfig): Array<'coturn' | 'cloudflare'> {
-  return config.cloudflareTurnKeyId && config.cloudflareTurnApiToken
-    ? ['coturn', 'cloudflare']
-    : ['coturn'];
 }

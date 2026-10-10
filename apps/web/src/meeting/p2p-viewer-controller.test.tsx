@@ -154,7 +154,7 @@ function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
   onFallbackRequested?: (complete: () => void) => void;
   iceTransportPolicy?: RTCIceTransportPolicy;
-  turnProvider?: 'coturn' | 'cloudflare';
+  turnProvider?: 'coturn';
   now?: () => number;
 } = {}) {
   let healthCheck: (() => Promise<void>) | undefined;
@@ -668,7 +668,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('reports the provider used by a healthy relay session', async () => {
-    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -677,10 +677,10 @@ describe('p2p viewer controller', () => {
 
     await vi.advanceTimersByTimeAsync(1_000);
 
-    expect(controller.getTurnProvider()).toBe('cloudflare');
+    expect(controller.getTurnProvider()).toBe('coturn');
   });
 
-  it.each(['coturn', 'cloudflare'] as const)(
+  it.each(['coturn', 'coturn'] as const)(
     'requests recovery of an established %s TURN session when ICE fails',
     async (turnProvider) => {
       const { controller, signaling, onFallback } = makeHarness({ turnProvider });
@@ -703,7 +703,7 @@ describe('p2p viewer controller', () => {
   );
 
   it('keeps an established TURN session after the disconnect timeout', async () => {
-    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -723,7 +723,7 @@ describe('p2p viewer controller', () => {
   it('requests TURN recovery when RTP stalls without switching to SFU', async () => {
     let now = 0;
     const { controller, signaling, onFallback, runHealthCheck } = makeHarness({
-      turnProvider: 'cloudflare',
+      turnProvider: 'coturn',
       now: () => now
     });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
@@ -765,7 +765,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('recovers a stalled TURN stream through a new offer and ignores the old connection', async () => {
-    const { controller, signaling } = makeHarness({ iceTransportPolicy: 'relay', turnProvider: 'cloudflare' });
+    const { controller, signaling } = makeHarness({ iceTransportPolicy: 'relay', turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp', 'generation-1');
     const oldPc = FakeRTCPeerConnection.instances[0];
     oldPc.statsCandidateType = 'relay';
@@ -781,7 +781,7 @@ describe('p2p viewer controller', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(controller.getState()).toBe('turn');
     expect(controller.getStream()).toBe(recoveredStream);
-    expect(controller.getTurnProvider()).toBe('cloudflare');
+    expect(controller.getTurnProvider()).toBe('coturn');
     expect(signaling.sendMediaReady).toHaveBeenLastCalledWith('sharer-1', 'generation-2');
     expect(oldPc.closed).toBe(true);
     oldPc.setIceConnectionState('failed');
@@ -875,7 +875,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('keeps an established TURN session through sustained poor-quality samples', async () => {
-    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller, signaling, onFallback, runHealthCheck } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -896,7 +896,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('still honors an explicit SFU request from an established TURN session', async () => {
-    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller, signaling, onFallback } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -912,7 +912,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('applies refreshed ICE credentials to the active peer connection', async () => {
-    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     const freshServers: RTCIceServer[] = [{
@@ -931,7 +931,7 @@ describe('p2p viewer controller', () => {
   });
 
   it('keeps the established provider label until a new relay session is negotiated', async () => {
-    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
@@ -941,11 +941,11 @@ describe('p2p viewer controller', () => {
 
     controller.updateIceServers([{ urls: ['turn:turn.example.test:3478'] }], 'coturn');
 
-    expect(controller.getTurnProvider()).toBe('cloudflare');
+    expect(controller.getTurnProvider()).toBe('coturn');
   });
 
   it('updates the provider when a direct session later migrates to relay', async () => {
-    const { controller, runHealthCheck } = makeHarness({ turnProvider: 'cloudflare' });
+    const { controller, runHealthCheck } = makeHarness({ turnProvider: 'coturn' });
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     const pc = FakeRTCPeerConnection.instances[0];
     const videoTrack = pc.fireTrack('video', makeStream());

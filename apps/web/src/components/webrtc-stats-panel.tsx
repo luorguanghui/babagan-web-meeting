@@ -2,13 +2,13 @@ import type { P2pTurnProvider, ScreenShareCodec } from '@meeting/contracts';
 
 import { type MessageKey, useI18n } from '../i18n/i18n.js';
 import type { P2pEncodingDiagnostics } from '../meeting/p2p-share-controller.js';
-import type { TurnPathProbeSnapshot } from '../meeting/cloudflare-turn-capacity.js';
 import type { ScreenTransportMode, ScreenTurnProvider } from '../meeting/screen-transport-mode.js';
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 import { ProjectMediaSection } from '../meeting/software-media/project-stats.js';
 import type { ProjectStats } from '../meeting/software-media/encoder.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
+  'cloudflare-sfu': 'screenTransport.cloudflareSfu',
   p2p: 'screenTransport.p2p',
   turn: 'screenTransport.turn',
   sfu: 'screenTransport.sfu',
@@ -17,7 +17,6 @@ const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   waiting: 'screenTransport.waiting'
 };
 const turnProviderKeys: Record<ScreenTurnProvider, MessageKey> = {
-  cloudflare: 'screenTransport.turnCloudflare',
   coturn: 'screenTransport.turnCoturn',
   mixed: 'screenTransport.turnMixed'
 };
@@ -27,7 +26,6 @@ export function WebRtcStatsPanel({
   requestedCodec,
   mode = 'sfu',
   turnProvider,
-  turnProbe,
   encodingDiagnostics,
   projectReceiver,
   onProjectAudioResume,
@@ -38,7 +36,6 @@ export function WebRtcStatsPanel({
   requestedCodec: ScreenShareCodec;
   mode?: ScreenTransportMode;
   turnProvider?: P2pTurnProvider | 'mixed';
-  turnProbe?: TurnPathProbeSnapshot;
   encodingDiagnostics?: ReadonlyMap<string, P2pEncodingDiagnostics>;
   projectReceiver?: ProjectStats;
   onProjectAudioResume?: () => void;
@@ -50,7 +47,6 @@ export function WebRtcStatsPanel({
     ? turnProviderKeys[turnProvider]
     : modeKeys[mode];
   const hasMediaStats = Boolean(snapshot?.sender || snapshot?.receiver || projectReceiver);
-  const hasTurnProbe = (turnProvider === 'cloudflare' || turnProvider === 'mixed') && turnProbe !== undefined;
   const hasEncodingDiagnostics = (encodingDiagnostics?.size ?? 0) > 0;
   const heading = <>
       <span>{t('stats.heading')}</span>
@@ -58,14 +54,12 @@ export function WebRtcStatsPanel({
     </>;
   const content = <>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
-    {!hasMediaStats && !hasTurnProbe && !hasEncodingDiagnostics
+    {!hasMediaStats && !hasEncodingDiagnostics
       ? <p>{t(active ? 'stats.collecting' : 'stats.noData')}</p>
       : <div className="webrtc-stats-grid">
         {snapshot?.sender && <StatsSection title={t('stats.sender')} stats={snapshot.sender} sender />}
         {snapshot?.receiver && <StatsSection title={t('stats.receiver')} stats={snapshot.receiver} />}
         {projectReceiver && <ProjectMediaSection stats={projectReceiver} onResumeAudio={onProjectAudioResume} />}
-        {(turnProvider === 'cloudflare' || turnProvider === 'mixed') && turnProbe
-          && <TurnDiagnosticsSection snapshot={turnProbe} />}
         {encodingDiagnostics && encodingDiagnostics.size > 0 && <EncodingDiagnosticsSection diagnostics={encodingDiagnostics} />}
       </div>}
   </>;
@@ -121,23 +115,6 @@ function StatsSection({ title, stats, sender = false }: { title: string; stats: 
   </section>;
 }
 
-function TurnDiagnosticsSection({ snapshot }: { snapshot: TurnPathProbeSnapshot }) {
-  const { t } = useI18n();
-  const capacity = snapshot.stableCapacityBps;
-  const rows: Array<[string, string | undefined]> = [
-    [t('stats.turnProbeStatus'), snapshot.status],
-    [t('stats.turnProbeCapacity'), bitrate(capacity)],
-    [t('stats.turnProbeSampledAt'), snapshot.sampledAt === undefined ? undefined : formatTimestamp(snapshot.sampledAt)],
-    [t('stats.relayProtocol'), snapshot.selectedProtocol]
-  ];
-  return <section className="webrtc-stats-detail">
-    <h3>{t('stats.turnDiagnostics')}</h3>
-    <dl>{rows.filter(([, value]) => value !== undefined).map(([label, value]) => <div key={label}>
-      <dt>{label}</dt><dd>{value}</dd>
-    </div>)}</dl>
-  </section>;
-}
-
 function EncodingDiagnosticsSection({ diagnostics }: { diagnostics: ReadonlyMap<string, P2pEncodingDiagnostics> }) {
   const { t } = useI18n();
   return <section className="webrtc-stats-detail">
@@ -165,9 +142,4 @@ function unit(value: number | undefined, suffix: string): string | undefined {
 
 function bitrate(value: number | undefined): string | undefined {
   return value === undefined ? undefined : `${Number((value / 1_000_000).toFixed(2))} Mbps`;
-}
-
-function formatTimestamp(value: number): string {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toISOString();
 }

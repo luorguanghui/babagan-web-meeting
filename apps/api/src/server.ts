@@ -4,6 +4,8 @@ import { pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { FastifyInstance } from 'fastify';
 
+import { CloudflareSfuClient } from './services/cloudflare-sfu-client.js';
+import { CloudflareSfuService } from './services/cloudflare-sfu.js';
 import { buildApp } from './app.js';
 import { loadConfig } from './config.js';
 import { createDatabase } from './db/database.js';
@@ -37,7 +39,7 @@ export async function startManagedServer(dependencies: {
   signals?: SignalSource;
   intervalMs?: number;
   port?: number;
-  onMeetingsCleaned?: (slugs: string[]) => void;
+  onMeetingsCleaned?: (slugs: string[]) => void | Promise<void>;
 }): Promise<{ shutdown(): Promise<void> }> {
   const signals = dependencies.signals ?? process;
   const intervalMs = dependencies.intervalMs ?? 30_000;
@@ -49,7 +51,7 @@ export async function startManagedServer(dependencies: {
     cleanupPromise = (async () => {
       try {
         const cleaned = await dependencies.meetings.runCleanup();
-        dependencies.onMeetingsCleaned?.(cleaned);
+        await dependencies.onMeetingsCleaned?.(cleaned);
       } catch {
         dependencies.app.log.error({}, 'Meeting cleanup failed');
       } finally {
@@ -121,13 +123,20 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
       apiSecret: config.livekitApiSecret,
       clock
     });
-    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p });
+    const screenSfu = new CloudflareSfuService({ participants, registry: p2p,
+      api: config.cloudflareSfuAppId && config.cloudflareSfuAppSecret
+        ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret }) : undefined
+    });
+    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu });
     const managed = await startManagedServer({
       app,
       database,
       meetings,
-      onMeetingsCleaned: (slugs) => {
-        for (const slug of slugs) p2p.closeRoom(slug, 'meeting ended');
+      onMeetingsCleaned: async (slugs) => {
+        for (const slug of slugs) {
+          await screenSfu.closeMeeting(slug);
+          p2p.closeRoom(slug, 'meeting ended');
+        }
       }
     });
     return { app, shutdown: managed.shutdown };

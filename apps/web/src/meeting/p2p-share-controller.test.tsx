@@ -3,13 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
   P2P_ICE_NEGOTIATION_TIMEOUT_MS,
-  P2P_TOTAL_UPLINK_BUDGET_BPS,
   type P2pScreenBitrate
 } from '@meeting/contracts';
 
 import type { Peer } from './p2p-signaling.js';
-import type { CloudflareTurnPathProbe } from './cloudflare-turn-path-probe.js';
-import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import {
   computeResolutionScale,
   configureOpusSdp,
@@ -274,58 +271,10 @@ function makeCandidate(raw: string, sdpMid = '0', sdpMLineIndex = 0): RTCPeerCon
   } as unknown as RTCPeerConnectionIceEvent;
 }
 
-interface FakeTurnPathProbe {
-  probe: {
-    start: ReturnType<typeof vi.fn>;
-    requestVerification: ReturnType<typeof vi.fn>;
-    getSnapshot: ReturnType<typeof vi.fn>;
-    subscribe: ReturnType<typeof vi.fn>;
-    stop: ReturnType<typeof vi.fn>;
-  };
-  listeners: Set<(snapshot: TurnPathProbeSnapshot) => void>;
-  publishedSnapshots: TurnPathProbeSnapshot[];
-  setSnapshot(next: TurnPathProbeSnapshot): void;
-}
-
-function createFakeTurnPathProbe(): FakeTurnPathProbe {
-  const listeners = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
-  const publishedSnapshots: TurnPathProbeSnapshot[] = [];
-  let current: TurnPathProbeSnapshot = {
-    status: 'ready',
-    probeTargetBps: 2_000_000,
-    offeredBps: 8_000_000,
-    windowKind: 'verification',
-    stableCapacityBps: 4_000_000,
-    sampledAt: 1_234
-  };
-  const probe = {
-    start: vi.fn(async () => undefined),
-    requestVerification: vi.fn(),
-    getSnapshot: vi.fn(() => current),
-    subscribe: vi.fn((listener: (snapshot: TurnPathProbeSnapshot) => void) => {
-      listeners.add(listener);
-      listener(current);
-      publishedSnapshots.push(current);
-      return () => listeners.delete(listener);
-    }),
-    stop: vi.fn(async () => undefined)
-  };
-  return {
-    probe,
-    listeners,
-    publishedSnapshots,
-    setSnapshot(next: TurnPathProbeSnapshot) {
-      current = { windowKind: 'verification', ...next };
-    }
-  };
-}
-
 function makeHarness(options: {
   onPcCreated?: (pc: FakeRTCPeerConnection) => void;
-  turnProvider?: 'coturn' | 'cloudflare';
+  turnProvider?: 'coturn';
   turnCredentialsExpiresAt?: number;
-  probes?: boolean;
-  control?: boolean;
 } = {}) {
   const signaling: P2pShareSignaling = { sendOffer: vi.fn(), sendIce: vi.fn(), sendBye: vi.fn() };
   const onViewerFallback = vi.fn();
@@ -340,7 +289,6 @@ function makeHarness(options: {
         : { turnCredentialsExpiresAt: options.turnCredentialsExpiresAt })
     });
   const transportChecks = new Set<() => Promise<void>>();
-  const probes = { created: 0, items: [] as FakeTurnPathProbe[] };
   const controller = createP2pShareController({
     slug: 'meeting-slug',
     signaling,
@@ -356,22 +304,12 @@ function makeHarness(options: {
     },
     onViewerFallback,
     onAllViewersClosed,
-    ...(options.probes || options.control
-      ? {
-        createTurnPathProbe: () => {
-          const fake = createFakeTurnPathProbe();
-          probes.created += 1;
-          probes.items.push(fake);
-          return fake.probe as unknown as CloudflareTurnPathProbe;
-        }
-      }
-      : {}),
-    ...(options.control ? { cloudflareTurnControlMode: 'control' as const } : {})
+
   });
   const runTransportChecks = async () => {
     await Promise.all([...transportChecks].map((check) => check()));
   };
-  return { controller, signaling, onViewerFallback, onAllViewersClosed, fetchIceServers, runTransportChecks, probes };
+  return { controller, signaling, onViewerFallback, onAllViewersClosed, fetchIceServers, runTransportChecks };
 }
 
 const viewers: Peer[] = [
@@ -608,28 +546,6 @@ describe('p2p share controller', () => {
     });
   });
 
-  it.each(['coturn', 'cloudflare'] as const)('clears relay sampling when the connection returns to direct P2P (%s)', async (provider: 'coturn' | 'cloudflare') => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: provider, control: true });
-    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await runTransportChecks();
-    const sender = videoSender(pc);
-    sender.seedParameters({
-      ...sender.getParameters(), degradationPreference: 'maintain-framerate',
-      encodings: [{ maxBitrate: 4_000_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }]
-    });
-    pc.statsCandidateType = 'srflx';
-    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
-    await runTransportChecks();
-    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
-    expect(sender.getParameters()).toMatchObject({
-      degradationPreference: 'maintain-resolution',
-      encodings: [{ maxBitrate: 8_000_000, scaleResolutionDownBy: 1 }]
-    });
-  });
 
   it('creates one PC per viewer with video and audio on the same connection and sends offers', async () => {
     const { controller, signaling, fetchIceServers } = makeHarness();
@@ -656,35 +572,6 @@ describe('p2p share controller', () => {
     }
   });
 
-  it('sends the actual TURN provider with a sharer offer', async () => {
-    const sendOffer = vi.fn();
-    const cloudflareIceServers: RTCIceServer[] = [{
-      urls: ['turn:turn.cloudflare.com:3478'],
-      username: 'u',
-      credential: 'c'
-    }];
-    const controller = createP2pShareController({
-      slug: 'meeting-slug',
-      signaling: { sendOffer, sendIce: vi.fn(), sendBye: vi.fn() },
-      fetchIceServers: async () => ({
-        iceServers: cloudflareIceServers,
-        turnProvider: 'cloudflare',
-        turnCredentialsExpiresAt: 9_999_999_999
-      }),
-      createPeerConnection: (servers) =>
-        new FakeRTCPeerConnection({ iceServers: servers }) as unknown as RTCPeerConnection
-    });
-
-    await controller.start(makeStream(), shareOptions, [{ identity: 'viewer-1', nickname: 'Bob' }]);
-
-    expect(FakeRTCPeerConnection.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers });
-    expect(sendOffer).toHaveBeenCalledWith(
-      'viewer-1',
-      expect.any(String),
-      expect.any(String),
-      'cloudflare'
-    );
-  });
 
   it('caps bitrate and frame rate and applies the degradation preference on the video sender only', async () => {
     const { controller } = makeHarness();
@@ -1049,629 +936,26 @@ describe('p2p share controller', () => {
     await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
   });
 
-  it('reports the provider used by each TURN viewer', async () => {
-    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
 
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
-  });
 
-  it('does not start a probe for negotiating, direct, coturn, or SFU sessions', async () => {
-    const direct = makeHarness({ probes: true });
-    await direct.controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const directPc = FakeRTCPeerConnection.instances[0];
-    directPc.statsCandidateType = 'srflx';
-    directPc.setIceConnectionState('connected');
-    direct.controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(direct.controller.getViewerStates().get('viewer-1')).toBe('p2p'));
-    await direct.runTransportChecks();
-    expect(direct.probes.created).toBe(0);
 
-    const coturn = makeHarness({ turnProvider: 'coturn', probes: true });
-    await coturn.controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const coturnPc = FakeRTCPeerConnection.instances.at(-1)!;
-    coturnPc.statsCandidateType = 'relay';
-    coturnPc.setIceConnectionState('connected');
-    coturn.controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(coturn.controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await coturn.runTransportChecks();
-    expect(coturn.probes.created).toBe(0);
 
-    const negotiating = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await negotiating.controller.start(makeStream(), shareOptions, [viewers[0]]);
-    expect(negotiating.probes.created).toBe(0);
-    await negotiating.controller.stop();
-  });
 
-  it('starts one probe when the first viewer becomes Cloudflare turn', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await runTransportChecks();
 
-    await vi.waitFor(() => expect(probes.created).toBe(1));
-    await vi.waitFor(() => expect(probes.items[0].probe.start).toHaveBeenCalledWith(iceServers));
-  });
 
-  it('does not create another probe for additional Cloudflare viewers', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, viewers);
-    for (const pc of FakeRTCPeerConnection.instances) {
-      pc.statsCandidateType = 'relay';
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
-    }
-    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn', 'turn', 'turn']));
-    await runTransportChecks();
 
-    await vi.waitFor(() => expect(probes.created).toBe(1));
-    await controller.stop();
-    expect(probes.items[0].probe.stop).toHaveBeenCalled();
-  });
 
-  it('keeps the probe while at least one Cloudflare viewer remains and stops after the final one leaves', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0], viewers[1]]);
-    for (const pc of FakeRTCPeerConnection.instances) {
-      pc.statsCandidateType = 'relay';
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
-    }
-    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn']));
-    await runTransportChecks();
-    await vi.waitFor(() => expect(probes.created).toBe(1));
 
-    controller.handleViewerLeft('viewer-1');
-    await runTransportChecks();
-    expect(probes.items[0].probe.stop).not.toHaveBeenCalled();
 
-    controller.handleViewerLeft('viewer-2');
-    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
-  });
 
-  it('rebuilds the probe after Cloudflare credential refresh', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await runTransportChecks();
-    await vi.waitFor(() => expect(probes.created).toBe(1));
 
-    controller.refreshIceServers?.({
-      iceServers: [{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }],
-      turnProvider: 'cloudflare'
-    });
 
-    await vi.waitFor(() => expect(probes.created).toBe(2));
-    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
-    expect(probes.items[1].probe.start).toHaveBeenCalledWith([{ urls: ['turn:turn.cloudflare.com:443?transport=tcp'] }]);
-  });
 
-  it('keeps the Cloudflare probe running when retry credentials fail and the viewer stays connected', async () => {
-    const { controller, fetchIceServers, probes } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(probes.created).toBe(1));
 
-    fetchIceServers.mockRejectedValueOnce(new Error('retry credentials unavailable'));
-    controller.handleRetry('viewer-1');
 
-    await vi.advanceTimersByTimeAsync(0);
-    expect(pc.closed).toBe(false);
-    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
-    expect(probes.items[0].probe.stop).not.toHaveBeenCalled();
-    await controller.stop();
-    expect(probes.items[0].probe.stop).toHaveBeenCalled();
-  });
 
-  it('stops the Cloudflare probe and emits negotiation when a viewer retry replaces the last relay', async () => {
-    const { controller, probes } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(probes.created).toBe(1);
-    const states: ViewerSessionState[] = [];
-    controller.subscribe((snapshot) => { states.push(snapshot.get('viewer-1')!); });
 
-    controller.handleRetry('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(pc.closed).toBe(true);
-    expect(states.at(-1)).toBe('negotiating');
-    expect(probes.items.every((item) => vi.mocked(item.probe.stop).mock.calls.length > 0)).toBe(true);
-    await controller.stop();
-  });
 
-  it('does not bind a Cloudflare probe to refreshed coturn credentials', async () => {
-    const { controller, fetchIceServers, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    fetchIceServers.mockResolvedValueOnce({
-      iceServers: [
-        { urls: ['stun:stun.example.test:3478'] },
-        { urls: ['turn:turn.cloudflare.com:3478'], username: 'user', credential: 'credential' }
-      ],
-      turnProvider: 'cloudflare'
-    });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(probes.created).toBe(1));
-
-    controller.refreshIceServers?.({
-      iceServers: [{ urls: ['turn:turn.example.test:3478?transport=udp'] }],
-      turnProvider: 'coturn'
-    });
-
-    await vi.waitFor(() => expect(probes.items[0].probe.stop).toHaveBeenCalled());
-    expect(probes.created).toBe(1);
-
-    pc.senderStats = {
-      ...pc.senderStats,
-      selectedLocalCandidateUrl: 'turn:turn.example.test:3478?transport=udp'
-    };
-    await runTransportChecks();
-    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
-  });
-
-  it('publishes immutable probe snapshots without changing sender parameters in observation mode', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', probes: true });
-    const snapshots: TurnPathProbeSnapshot[] = [];
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    controller.subscribeTurnPathProbe?.((snapshot) => snapshots.push(snapshot));
-    const pc = FakeRTCPeerConnection.instances[0];
-    videoSender(pc).seedParameters({
-      ...videoSender(pc).getParameters(),
-      encodings: [{ maxBitrate: 8_000_000, maxFramerate: 30, scaleResolutionDownBy: 4 }],
-      degradationPreference: 'maintain-resolution'
-    });
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 1_000_000,
-      timestamp: 1_000
-    };
-    await runTransportChecks();
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 3_000_000,
-      timestamp: 2_000
-    };
-    await runTransportChecks();
-
-    const published = probes.items[0]?.publishedSnapshots.at(-1);
-    expect(published).toBeDefined();
-    expect(controller.getTurnPathProbeSnapshot?.()).toEqual(published);
-    expect(snapshots).toContain(published);
-    // Observation mode: the published snapshot alone never touches the sender.
-    expect(senderMaxBitrate(pc)).toBe(8_000_000);
-    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy).toBe(4);
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
-  });
-
-  it('raises maxBitrate without changing the profile target when probe capacity is high', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    probes.items[0].setSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 40_000_000,
-      sampledAt: 1_000
-    });
-    for (let sample = 0; sample < 2; sample += 1) {
-      pc.senderStats = {
-        availableOutgoingBitrateBps: 700_000,
-        qualityLimitationReason: 'none',
-        framesPerSecond: 30,
-        bytesSent: 2_000_000 + sample * 5_000_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-
-    // One 15% step on the transport cap; the probe headroom and profile target
-    // never let it jump straight to the measured 40 Mbps.
-    expect(senderMaxBitrate(pc)).toBe(9_200_000);
-  });
-
-  it('exposes fixed target and current transport cap for diagnostics', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
-      profileTargetBitrateBps: 8_000_000,
-      transportBitrateCapBps: 8_000_000,
-      scaleResolutionDownBy: 1,
-      provider: 'cloudflare'
-    });
-
-    probes.items[0].setSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 40_000_000,
-      sampledAt: 1_000
-    });
-    for (let sample = 0; sample < 2; sample += 1) {
-      pc.senderStats = {
-        qualityLimitationReason: 'none',
-        framesPerSecond: 30,
-        bytesSent: 2_000_000 + sample * 5_000_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-
-    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
-      profileTargetBitrateBps: 8_000_000,
-      transportBitrateCapBps: 9_200_000,
-      scaleResolutionDownBy: 1,
-      provider: 'cloudflare'
-    });
-  });
-
-  it('does not expose stale Cloudflare cap after a viewer returns to direct P2P', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    probes.items[0].setSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 40_000_000,
-      sampledAt: 1_000
-    });
-    for (let sample = 0; sample < 2; sample += 1) {
-      pc.senderStats = {
-        qualityLimitationReason: 'none',
-        framesPerSecond: 30,
-        bytesSent: 2_000_000 + sample * 5_000_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-    expect(controller.getEncodingDiagnostics?.().get('viewer-1')?.transportBitrateCapBps).toBe(9_200_000);
-
-    pc.statsCandidateType = 'srflx';
-    await runTransportChecks();
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
-
-    expect(controller.getEncodingDiagnostics?.().get('viewer-1')).toMatchObject({
-      profileTargetBitrateBps: 8_000_000,
-      transportBitrateCapBps: 8_000_000,
-      scaleResolutionDownBy: 1
-    });
-  });
-
-  it('does not lower maxBitrate for one low probe or one low RTC estimate', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    probes.items[0].setSnapshot({
-      status: 'probing',
-      probeTargetBps: 2_000_000,
-      offeredBps: 500_000,
-      measuredCapacityBps: 500_000,
-      sampledAt: 1_000
-    });
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 500_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 10,
-      bytesSent: 2_000_000,
-      timestamp: 1_000
-    };
-    await runTransportChecks();
-
-    expect(senderMaxBitrate(pc)).toBe(8_000_000);
-    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1).toBe(1);
-  });
-
-  it('backs off only the pressured viewer after corroborated low probe windows', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0], viewers[1]]);
-    const pressured = FakeRTCPeerConnection.instances[0];
-    const healthy = FakeRTCPeerConnection.instances[1];
-    for (const pc of [pressured, healthy]) {
-      pc.statsCandidateType = 'relay';
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady(viewers[pc.id]?.identity ?? viewers[0].identity);
-    }
-    await vi.waitFor(() => expect([...controller.getViewerStates().values()]).toEqual(['turn', 'turn']));
-
-    for (let sample = 0; sample < 3; sample += 1) {
-      probes.items[0].setSnapshot({
-        status: 'ready',
-        probeTargetBps: 2_000_000,
-        offeredBps: 8_000_000,
-        measuredCapacityBps: 1_500_000,
-        stableCapacityBps: 1_500_000,
-        sampledAt: 1_000 + sample * 1_000
-      });
-      pressured.senderStats = {
-        availableOutgoingBitrateBps: 700_000,
-        qualityLimitationReason: 'bandwidth',
-        framesPerSecond: 8,
-        bytesSent: 2_000_000 + sample * 500_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      healthy.senderStats = {
-        availableOutgoingBitrateBps: 700_000,
-        qualityLimitationReason: 'none',
-        framesPerSecond: 30,
-        bytesSent: 9_000_000 + sample * 5_000_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-
-    expect(senderMaxBitrate(pressured)).toBeLessThan(8_000_000);
-    expect(senderMaxBitrate(healthy)).toBe(8_000_000);
-  });
-
-  it('does not include Cloudflare viewers in the aggregate uplink budget', async () => {
-    const roster: Peer[] = [
-      ...viewers,
-      { identity: 'viewer-5', nickname: 'Eve' },
-      { identity: 'viewer-6', nickname: 'Fay' },
-      { identity: 'viewer-7', nickname: 'Gus' }
-    ];
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, roster);
-    const cloudflarePc = FakeRTCPeerConnection.instances[0];
-    cloudflarePc.statsCandidateType = 'relay';
-    cloudflarePc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    for (let index = 1; index < roster.length; index += 1) {
-      const pc = FakeRTCPeerConnection.instances[index];
-      pc.statsCandidateType = 'srflx';
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady(roster[index].identity);
-    }
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await runTransportChecks();
-
-    // Six budgeted direct viewers squeeze the 40 Mbps budget to ~6.67 Mbps each,
-    // while the Cloudflare viewer keeps the full profile tier.
-    expect(senderMaxBitrate(cloudflarePc)).toBe(8_000_000);
-    expect(senderMaxBitrate(FakeRTCPeerConnection.instances[1])).toBe(Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / 6));
-  });
-
-  it('restores an observed Cloudflare TURN sender from the negotiating fair share to the selected tier', async () => {
-    const roster: Peer[] = Array.from({ length: 7 }, (_, index) => ({
-      identity: `viewer-${index + 1}`,
-      nickname: `Viewer ${index + 1}`
-    }));
-    const selected = { ...shareOptions, maxBitrate: 10_000_000 };
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), selected, roster);
-    const cloudflarePc = FakeRTCPeerConnection.instances[0];
-    expect(senderMaxBitrate(cloudflarePc)).toBe(Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / 7));
-
-    cloudflarePc.statsCandidateType = 'relay';
-    cloudflarePc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await runTransportChecks();
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    expect(senderMaxBitrate(cloudflarePc)).toBe(10_000_000);
-    expect(controller.getEncodingDiagnostics?.().get('viewer-1')?.transportBitrateCapBps).toBe(
-      senderMaxBitrate(cloudflarePc)
-    );
-  });
-
-  it('requests probe verification when sender pressure begins', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(probes.created).toBe(1));
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'none',
-      framesPerSecond: 30,
-      bytesSent: 1_000_000,
-      timestamp: 1_000
-    };
-    await runTransportChecks();
-    expect(probes.items[0].probe.requestVerification).not.toHaveBeenCalled();
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 1_500_000,
-      timestamp: 2_000
-    };
-    await runTransportChecks();
-    expect(probes.items[0].probe.requestVerification).toHaveBeenCalledTimes(1);
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 2_000_000,
-      timestamp: 3_000
-    };
-    await runTransportChecks();
-    expect(probes.items[0].probe.requestVerification).toHaveBeenCalledTimes(1);
-  });
-
-  it('uses remote loss deltas instead of cumulative remote loss for pressure', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    await vi.waitFor(() => expect(probes.created).toBe(1));
-
-    for (let sample = 0; sample < 3; sample += 1) {
-      probes.items[0].setSnapshot({
-        status: 'ready',
-        probeTargetBps: 2_000_000,
-        offeredBps: 8_000_000,
-        measuredCapacityBps: 1_500_000,
-        stableCapacityBps: 1_500_000,
-        sampledAt: 1_000 + sample * 1_000
-      });
-      pc.senderStats = {
-        qualityLimitationReason: 'none',
-        framesPerSecond: 10,
-        remotePacketsLost: 10,
-        remotePacketsReceived: 90 + sample * 100,
-        bytesSent: 1_000_000 + sample * 500_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-    }
-
-    expect(senderMaxBitrate(pc)).toBe(8_000_000);
-  });
-
-  it('recovers browser-downscaled resolution above the hard floor when capacity returns', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(true, false, { width: 1920, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    probes.items[0].setSnapshot({
-      status: 'ready', probeTargetBps: 32_000_000, stableCapacityBps: 40_000_000,
-      sampledAt: 1_000
-    });
-    pc.senderStats = {
-      qualityLimitationReason: 'bandwidth', framesPerSecond: 30,
-      frameWidth: 1280, frameHeight: 720
-    };
-    for (let sample = 0; sample < 4; sample += 1) await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
-    await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
-    expect(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy).toBe(1);
-
-    // Restored output releases recovery protection; later congestion can adapt again.
-    pc.senderStats = {
-      qualityLimitationReason: 'none', framesPerSecond: 30,
-      frameWidth: 1920, frameHeight: 1080
-    };
-    await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
-  });
-
-  it('applies continuous scale and 540p hard protection', async () => {
-    const { controller, probes, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare', control: true });
-    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    const scales: number[] = [];
-    for (let sample = 0; sample < 6; sample += 1) {
-      probes.items[0].setSnapshot({
-        status: 'ready',
-        probeTargetBps: 2_000_000,
-        offeredBps: 8_000_000,
-        measuredCapacityBps: 1_500_000,
-        stableCapacityBps: 1_500_000,
-        sampledAt: 1_000 + sample * 1_000
-      });
-      pc.senderStats = {
-        availableOutgoingBitrateBps: 700_000,
-        qualityLimitationReason: 'bandwidth',
-        framesPerSecond: 8,
-        bytesSent: 2_000_000 + sample * 500_000,
-        timestamp: 1_000 + sample * 1_000
-      };
-      await runTransportChecks();
-      scales.push(videoSender(pc).getParameters().encodings[0]?.scaleResolutionDownBy ?? 1);
-    }
-
-    expect(scales[0]).toBe(1);
-    expect(scales.at(-1)!).toBeGreaterThan(1.1);
-    for (let index = 1; index < scales.length; index += 1) {
-      expect(scales[index] / scales[index - 1]).toBeLessThanOrEqual(1.1 + 1e-9);
-    }
-
-    // The browser itself dropped to a 480p short side: hard protection kicks in.
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 6_000_000,
-      timestamp: 10_000,
-      frameWidth: 854,
-      frameHeight: 480
-    };
-    await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
-
-    pc.senderStats = {
-      availableOutgoingBitrateBps: 700_000,
-      qualityLimitationReason: 'bandwidth',
-      framesPerSecond: 8,
-      bytesSent: 6_500_000,
-      timestamp: 11_000,
-      frameWidth: 1728,
-      frameHeight: 1080
-    };
-    await runTransportChecks();
-    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-framerate');
-  });
 
   it('preserves 1080p in direct P2P mode under bandwidth and frame-rate pressure', async () => {
     const { controller, runTransportChecks } = makeHarness();
@@ -1712,70 +996,8 @@ describe('p2p share controller', () => {
     expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
   });
 
-  it('updates the provider when a direct viewer later migrates to relay', async () => {
-    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
 
-    const refreshIceServers = (controller as unknown as {
-      refreshIceServers(configuration: {
-        iceServers: RTCIceServer[];
-        turnProvider: 'coturn' | 'cloudflare';
-        turnCredentialsExpiresAt?: number;
-      }): void;
-    }).refreshIceServers;
-    refreshIceServers.call(controller, {
-      iceServers: [{ urls: ['turn:turn.example.test:3478'] }],
-      turnProvider: 'coturn'
-    });
-    pc.statsCandidateType = 'relay';
-    await runTransportChecks();
 
-    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
-    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
-  });
-
-  it('refreshes active viewer peer connections before Cloudflare credentials expire', async () => {
-    const { controller } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-    const freshConfiguration = {
-      iceServers: [{
-        urls: ['turn:turn.cloudflare.com:3478?transport=udp'],
-        username: 'fresh-user',
-        credential: 'fresh-credential'
-      }],
-      turnProvider: 'coturn' as const,
-      turnCredentialsExpiresAt: Math.floor(Date.now() / 1_000) + 600
-    };
-
-    const refreshIceServers = (controller as unknown as {
-      refreshIceServers?: (configuration: typeof freshConfiguration) => void;
-    }).refreshIceServers;
-    expect(typeof refreshIceServers).toBe('function');
-    refreshIceServers?.call(controller, freshConfiguration);
-
-    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers: freshConfiguration.iceServers });
-    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('cloudflare');
-  });
-
-  it('schedules an active-session credential refresh before expiry', async () => {
-    const expiresAt = Math.floor(Date.now() / 1_000) + 61;
-    const { controller } = makeHarness({ turnProvider: 'cloudflare', turnCredentialsExpiresAt: expiresAt });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-
-    await vi.advanceTimersByTimeAsync(2_000);
-
-    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers });
-  });
 
   it('tracks selected-pair migration from direct to relay and back to direct', async () => {
     const { controller, runTransportChecks } = makeHarness();
@@ -1959,43 +1181,6 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).toHaveBeenCalledWith('viewer-1');
   });
 
-  it.each(['coturn', 'cloudflare'] as const)(
-    'rebuilds an established %s TURN viewer when ICE fails',
-    async (turnProvider) => {
-      const { controller, onViewerFallback } = makeHarness({ turnProvider });
-      await controller.start(makeStream(), shareOptions, [viewers[0]]);
-      const pc = FakeRTCPeerConnection.instances[0];
-      pc.statsCandidateType = 'relay';
-      pc.setIceConnectionState('connected');
-      controller.handleMediaReady('viewer-1');
-      await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-      pc.setIceConnectionState('failed');
-
-      await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
-      expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
-      expect(onViewerFallback).not.toHaveBeenCalled();
-      expect(pc.closed).toBe(true);
-    }
-  );
-
-  it('rebuilds an established TURN viewer after the disconnect timeout', async () => {
-    const { controller, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
-
-    pc.setIceConnectionState('disconnected');
-    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
-
-    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
-    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
-    expect(onViewerFallback).not.toHaveBeenCalled();
-    expect(pc.closed).toBe(true);
-  });
 
   it('falls back when applying the remote answer fails', async () => {
     const { controller, onViewerFallback } = makeHarness();
@@ -2009,68 +1194,8 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).toHaveBeenCalledWith('viewer-1');
   });
 
-  it('retries TURN recovery after a failed credential refresh and resumes decoded media', async () => {
-    const { controller, signaling, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
-    pc.setIceConnectionState('failed');
-    pc.setIceConnectionState('failed');
-    await vi.advanceTimersByTimeAsync(0);
-    expect(fetchIceServers).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
-    expect(fetchIceServers).toHaveBeenCalledTimes(3);
-    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
-    const replacement = FakeRTCPeerConnection.instances[1];
-    replacement.statsCandidateType = 'relay';
-    replacement.setIceConnectionState('connected');
-    const generation = vi.mocked(signaling.sendOffer).mock.calls.at(-1)![2];
-    controller.handleMediaReady('viewer-1', generation);
-    await vi.advanceTimersByTimeAsync(0);
-    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
-    expect(onViewerFallback).not.toHaveBeenCalled();
-    await controller.stop();
-  });
 
-  it.each(['leave', 'stop'] as const)('does not revive TURN recovery after %s', async (action) => {
-    const { controller, signaling, fetchIceServers } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    let resolveCredentials!: (servers: RTCIceServer[]) => void;
-    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
-    pc.setIceConnectionState('failed');
-    if (action === 'leave') controller.handleViewerLeft('viewer-1');
-    else await controller.stop();
-    resolveCredentials(iceServers);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
-    expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
-  });
 
-  it('keeps TURN recovery active when the replacement ICE connection also fails', async () => {
-    const { controller, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    pc.setIceConnectionState('failed');
-    await vi.advanceTimersByTimeAsync(0);
-    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
-    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
-    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
-    expect(onViewerFallback).not.toHaveBeenCalled();
-    await controller.stop();
-  });
 
   it('restores normal fallback after a TURN recovery negotiates a direct path', async () => {
     const { controller, onViewerFallback } = makeHarness();
@@ -2092,43 +1217,7 @@ describe('p2p share controller', () => {
     await controller.stop();
   });
 
-  it('retains TURN recovery intent across a failed viewer-requested credential refresh', async () => {
-    const { controller, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
-    controller.handleRetry('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    controller.handleRetry('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
-    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
-    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
-    expect(onViewerFallback).not.toHaveBeenCalled();
-    await controller.stop();
-  });
 
-  it('keeps transport monitoring when the old TURN connection heals after credential refresh fails', async () => {
-    const { controller, fetchIceServers, runTransportChecks } = makeHarness({ turnProvider: 'cloudflare' });
-    await controller.start(makeStream(), shareOptions, [viewers[0]]);
-    const pc = FakeRTCPeerConnection.instances[0];
-    pc.statsCandidateType = 'relay';
-    pc.setIceConnectionState('connected');
-    controller.handleMediaReady('viewer-1');
-    await vi.advanceTimersByTimeAsync(0);
-    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
-    pc.setIceConnectionState('failed');
-    await vi.advanceTimersByTimeAsync(0);
-    pc.setIceConnectionState('connected');
-    pc.statsCandidateType = 'srflx';
-    await runTransportChecks();
-    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
-    await controller.stop();
-  });
 
   it('marks a departed viewer closed without sending a bye and notifies when all viewers are gone', async () => {
     const { controller, signaling, onAllViewersClosed } = makeHarness();
@@ -2428,6 +1517,238 @@ describe('p2p share controller', () => {
     FakeRTCPeerConnection.instances[0].setIceConnectionState('failed');
     expect(seen.at(-1)?.get('viewer-1')).toBe('p2p'); // no further emissions after unsubscribe
   });
+  it('sends the actual TURN provider with a sharer offer', async () => {
+    const sendOffer = vi.fn();
+    const coturnIceServers: RTCIceServer[] = [{
+      urls: ['turn:turn.example.test:3478'],
+      username: 'u',
+      credential: 'c'
+    }];
+    const controller = createP2pShareController({
+      slug: 'meeting-slug',
+      signaling: { sendOffer, sendIce: vi.fn(), sendBye: vi.fn() },
+      fetchIceServers: async () => ({
+        iceServers: coturnIceServers,
+        turnProvider: 'coturn',
+        turnCredentialsExpiresAt: 9_999_999_999
+      }),
+      createPeerConnection: (servers) =>
+        new FakeRTCPeerConnection({ iceServers: servers }) as unknown as RTCPeerConnection
+    });
+
+    await controller.start(makeStream(), shareOptions, [{ identity: 'viewer-1', nickname: 'Bob' }]);
+
+    expect(FakeRTCPeerConnection.instances[0]?.config).toEqual({ iceServers: coturnIceServers });
+    expect(sendOffer).toHaveBeenCalledWith(
+      'viewer-1',
+      expect.any(String),
+      expect.any(String),
+      'coturn'
+    );
+  });
+  it('reports the provider used by each TURN viewer', async () => {
+    const { controller } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
+  });
+  it('updates the provider when a direct viewer later migrates to relay', async () => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('p2p'));
+
+    const refreshIceServers = (controller as unknown as {
+      refreshIceServers(configuration: {
+        iceServers: RTCIceServer[];
+        turnProvider: 'coturn';
+        turnCredentialsExpiresAt?: number;
+      }): void;
+    }).refreshIceServers;
+    refreshIceServers.call(controller, {
+      iceServers: [{ urls: ['turn:turn.example.test:3478'] }],
+      turnProvider: 'coturn'
+    });
+    pc.statsCandidateType = 'relay';
+    await runTransportChecks();
+
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(controller.getViewerTurnProviders?.().get('viewer-1')).toBe('coturn');
+  });
+  it('schedules an active-session credential refresh before expiry', async () => {
+    const expiresAt = Math.floor(Date.now() / 1_000) + 61;
+    const { controller } = makeHarness({ turnProvider: 'coturn', turnCredentialsExpiresAt: expiresAt });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(pc.setConfiguration).toHaveBeenCalledWith({ iceServers });
+  });
+  it('retries TURN recovery after a failed credential refresh and resumes decoded media', async () => {
+    const { controller, signaling, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    pc.setIceConnectionState('failed');
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(fetchIceServers).toHaveBeenCalledTimes(3);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    const replacement = FakeRTCPeerConnection.instances[1];
+    replacement.statsCandidateType = 'relay';
+    replacement.setIceConnectionState('connected');
+    const generation = vi.mocked(signaling.sendOffer).mock.calls.at(-1)![2];
+    controller.handleMediaReady('viewer-1', generation);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+  it.each(['leave', 'stop'] as const)('does not revive TURN recovery after %s', async (action) => {
+    const { controller, signaling, fetchIceServers } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    let resolveCredentials!: (servers: RTCIceServer[]) => void;
+    fetchIceServers.mockImplementationOnce(() => new Promise((resolve) => { resolveCredentials = resolve; }));
+    pc.setIceConnectionState('failed');
+    if (action === 'leave') controller.handleViewerLeft('viewer-1');
+    else await controller.stop();
+    resolveCredentials(iceServers);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    expect(signaling.sendOffer).toHaveBeenCalledTimes(1);
+  });
+  it('keeps TURN recovery active when the replacement ICE connection also fails', async () => {
+    const { controller, onViewerFallback } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+  it('retains TURN recovery intent across a failed viewer-requested credential refresh', async () => {
+    const { controller, fetchIceServers, onViewerFallback } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    controller.handleRetry('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    FakeRTCPeerConnection.instances[1].setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(3);
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+  it('keeps transport monitoring when the old TURN connection heals after credential refresh fails', async () => {
+    const { controller, fetchIceServers, runTransportChecks } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    fetchIceServers.mockRejectedValueOnce(new Error('offline'));
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    pc.setIceConnectionState('connected');
+    pc.statsCandidateType = 'srflx';
+    await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    await controller.stop();
+  });
+
+  it.each(['coturn'] as const)('clears relay sampling when the connection returns to direct P2P (%s)', async (provider: 'coturn') => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: provider });
+    await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await runTransportChecks();
+    const sender = videoSender(pc);
+    sender.seedParameters({
+      ...sender.getParameters(), degradationPreference: 'maintain-framerate',
+      encodings: [{ maxBitrate: 4_000_000, maxFramerate: 30, scaleResolutionDownBy: 1.5 }]
+    });
+    pc.statsCandidateType = 'srflx';
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 30, frameWidth: 1152, frameHeight: 720 };
+    await runTransportChecks();
+    expect(controller.getViewerStates().get('viewer-1')).toBe('p2p');
+    expect(sender.getParameters()).toMatchObject({
+      degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: 8_000_000, scaleResolutionDownBy: 1 }]
+    });
+  });
+  it.each(['coturn'] as const)(
+    'rebuilds an established %s TURN viewer when ICE fails',
+    async (turnProvider) => {
+      const { controller, onViewerFallback } = makeHarness({ turnProvider });
+      await controller.start(makeStream(), shareOptions, [viewers[0]]);
+      const pc = FakeRTCPeerConnection.instances[0];
+      pc.statsCandidateType = 'relay';
+      pc.setIceConnectionState('connected');
+      controller.handleMediaReady('viewer-1');
+      await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+      pc.setIceConnectionState('failed');
+
+      await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+      expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+      expect(onViewerFallback).not.toHaveBeenCalled();
+      expect(pc.closed).toBe(true);
+    }
+  );
+
+  it('rebuilds an established TURN viewer after the disconnect timeout', async () => {
+    const { controller, onViewerFallback } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), shareOptions, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.waitFor(() => expect(controller.getViewerStates().get('viewer-1')).toBe('turn'));
+
+    pc.setIceConnectionState('disconnected');
+    await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
+
+    await vi.waitFor(() => expect(FakeRTCPeerConnection.instances).toHaveLength(2));
+    expect(controller.getViewerStates().get('viewer-1')).toBe('negotiating');
+    expect(onViewerFallback).not.toHaveBeenCalled();
+    expect(pc.closed).toBe(true);
+  });
+
 });
 
 describe('computeResolutionScale', () => {

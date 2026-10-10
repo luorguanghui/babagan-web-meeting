@@ -2,6 +2,7 @@ import type { WebSocket } from '@fastify/websocket';
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { AppConfig } from '../../config.js';
 import type { P2pSocket } from '../../p2p/room-registry.js';
 import { P2pRoomRegistry } from '../../p2p/room-registry.js';
@@ -16,6 +17,7 @@ const SlugParamsSchema = Type.Object({ slug: Type.String({ minLength: 22, maxLen
 export interface P2pSignalingDependencies {
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
+  screenSfu?: CloudflareSfuService;
   config: Pick<AppConfig, 'publicBaseUrl'>;
 }
 
@@ -64,6 +66,7 @@ export function registerP2pSignalingRoute(app: FastifyInstance, dependencies: P2
       // authentication there could throw uncaught inside the socket callback
       // (e.g. when a session is revoked between upgrade and first message).
       request.p2pAuth = authenticateP2pHandshake(request, dependencies.participants, slug(request.params));
+      await dependencies.screenSfu?.reconcile(slug(request.params));
     }
   }, (socket, request) => {
     const value = slug(request.params);

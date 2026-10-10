@@ -16,7 +16,11 @@ describe('screen TURN provider preference', () => {
     expect(readScreenShareTurnProviderPreference(window.localStorage)).toBe('auto');
   });
 
-  it.each(['auto', 'coturn', 'cloudflare'] as const)('persists %s', (preference) => {
+  it('migrates the removed Cloudflare TURN preference to auto', () => {
+    window.localStorage.setItem('babagan.screen-turn-provider', 'cloudflare');
+    expect(readScreenShareTurnProviderPreference()).toBe('auto');
+  });
+  it.each(['auto', 'coturn'] as const)('persists %s', (preference) => {
     saveScreenShareTurnProviderPreference(window.localStorage, preference);
 
     expect(readScreenShareTurnProviderPreference(window.localStorage)).toBe(preference);

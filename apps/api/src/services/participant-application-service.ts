@@ -74,6 +74,10 @@ export class ParticipantApplicationService {
     return this.dependencies.repository.findBySlug(slug)?.shareIdentity ?? null;
   }
 
+  isParticipantActive(session: ActiveParticipantSession, slug: string): boolean {
+    try { this.authorize(session, slug); return true; } catch { return false; }
+  }
+
   async refreshToken(
     session: ActiveParticipantSession,
     slug: string

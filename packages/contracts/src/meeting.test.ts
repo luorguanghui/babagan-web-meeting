@@ -15,10 +15,14 @@ import {
   ParticipantSummarySchema,
   ParticipantsResponseSchema,
   ScreenShareCodecSchema,
+  ScreenShareQualitySchema,
   ShareGrantRequestSchema
 } from './index.js';
 
 describe('meeting HTTP contracts', () => {
+  it('accepts the 1080p60 detail quality', () => {
+    expect(Value.Check(ScreenShareQualitySchema, 'detail60')).toBe(true);
+  });
   it('accepts a valid create-meeting request', () => {
     expect(Value.Check(CreateMeetingRequestSchema, {
       name: '周会',

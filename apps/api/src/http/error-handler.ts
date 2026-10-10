@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { ApiErrorCode, ApiErrorResponse } from '@meeting/contracts';
 import type { FastifyError, FastifyInstance } from 'fastify';
 
-import { DomainError } from '../domain/errors.js';
+import { DomainError, SfuCleanupPendingError } from '../domain/errors.js';
 import { InvalidLiveKitWebhookError } from '../livekit/webhook-handler.js';
 import { SessionAuthenticationError } from './auth.js';
 import { OriginValidationError } from './origin.js';
@@ -30,6 +30,9 @@ export interface ApiErrorDetails {
 }
 
 export function apiErrorDetails(error: unknown, correlationId: string): ApiErrorDetails {
+  if (error instanceof SfuCleanupPendingError) {
+    return details('MEDIA_SERVICE_UNAVAILABLE', 503, 'Cloudflare SFU cleanup is in progress; try again shortly', correlationId);
+  }
   if (error instanceof DomainError) {
     if (error.code === 'MEETING_ALREADY_ACTIVE') {
       return details('MEETING_FULL', 409, 'An active meeting already exists', correlationId);
@@ -67,6 +70,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error, request, reply) => {
     const correlationId = request.id || randomUUID();
     const mapped = apiErrorDetails(error, correlationId);
+    if (error instanceof SfuCleanupPendingError) reply.header('Retry-After', '5');
     if (mapped.statusCode >= 500) {
       request.log.error({ correlationId }, 'Unhandled API error');
     }

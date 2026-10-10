@@ -102,7 +102,7 @@ describe('P2pSignalingSession', () => {
     const harness = createHarness();
     const { session, socket } = createSession(harness, 'bob', 'Bob');
     session.handleMessage(JSON.stringify({ type: 'screen-transport', transport: 'sfu' }));
-    expect(socket.messages()).toEqual([{ type: 'welcome', peers: [] }]);
+    expect(socket.messages()).toEqual([{ type: 'welcome', screenSfu: null, peers: [] }]);
     expect(socket.closed).toBe(false);
   });
 
@@ -159,6 +159,7 @@ describe('P2pSignalingSession', () => {
 
     expect(adaSocket.messages()).toContainEqual({
       type: 'welcome',
+      screenSfu: null,
       peers: [{ identity: 'bob', nickname: 'Bob' }]
     });
     expect(harness.sockets.get('bob')!.messages()).toContainEqual({
@@ -171,10 +172,23 @@ describe('P2pSignalingSession', () => {
     const harness = createHarness();
     const { socket } = createSession(harness, 'ada', 'Ada');
 
-    expect(socket.messages()).toContainEqual({ type: 'welcome', peers: [] });
+    expect(socket.messages()).toContainEqual({ type: 'welcome', screenSfu: null, peers: [] });
     expect(socket.messages().filter((message) => message.type === 'peer-joined')).toEqual([]);
   });
 
+  it('includes current publication for late join and reconnect and broadcasts withdrawal', () => {
+    const harness = createHarness();
+    const publication = { shareId: 'share-1', sessionId: 'cf-publisher', sharerIdentity: 'ada', sharerName: 'Ada', tracks: [{ kind: 'video' as const, trackName: 'screen-video' }] };
+    harness.registry.setScreenSfu('meeting-a', publication);
+    const first = createSession(harness, 'bob', 'Bob');
+    expect(first.socket.messages()[0]).toMatchObject({ type: 'welcome', screenSfu: publication });
+    const second = createSession(harness, 'bob', 'Bob');
+    first.session.teardown();
+    expect(second.socket.messages()[0]).toMatchObject({ type: 'welcome', screenSfu: publication });
+    harness.registry.setScreenSfu('meeting-a', null);
+    expect(second.socket.messages().at(-1)).toEqual({ type: 'screen-sfu', publication: null });
+    expect(harness.registry.getScreenSfu('meeting-b')).toBeNull();
+  });
   it('answers ping with pong', () => {
     const harness = createHarness();
     const { session, socket } = createSession(harness, 'ada', 'Ada');

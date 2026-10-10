@@ -10,6 +10,7 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { AppConfig } from '../../config.js';
 import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { HostApplicationService } from '../../services/host-application-service.js';
@@ -27,6 +28,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   hosts: HostApplicationService;
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
+  screenSfu: CloudflareSfuService;
 }): void {
   app.post('/api/v1/meetings', {
     schema: { body: CreateMeetingRequestSchema, response: { 201: CreateMeetingResponseSchema } },
@@ -68,6 +70,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);
+    await dependencies.screenSfu.closeMeeting(value);
     dependencies.p2p.closeRoom(value, 'meeting ended');
     return reply.status(204).send();
   });
@@ -79,6 +82,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     const body = request.body as { adminPassword: string };
     const value = slug(request.params);
     await dependencies.hosts.endMeetingWithAdminPassword(value, body.adminPassword);
+    await dependencies.screenSfu.closeMeeting(value);
     dependencies.p2p.closeRoom(value, 'meeting ended');
     return reply.status(204).send();
   });
@@ -92,6 +96,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     // so `share-gone` is only announced when the kicked peer was the sharer.
     const wasSharer = dependencies.participants.getShareIdentity(value) === body.participantIdentity;
     await dependencies.hosts.kickParticipant(hostSession(request, dependencies.hosts, value), value, body.participantIdentity);
+    await dependencies.screenSfu.closeParticipant(value, body.participantIdentity);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
@@ -111,6 +116,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     // `share-gone` is only announced when the lock is actually released.
     const wasSharing = dependencies.participants.getShareIdentity(value) !== null;
     await dependencies.hosts.revokeShare(hostSession(request, dependencies.hosts, value), value);
+    await dependencies.screenSfu.reconcile(value);
     if (wasSharing) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });

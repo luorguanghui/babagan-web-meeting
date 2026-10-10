@@ -1,4 +1,5 @@
-import { P2P_TURN_PROVIDERS, type P2pTurnProvider } from '@meeting/contracts';
+import { P2P_TURN_PROVIDERS, CloudflareSfuPublicationSchema, type CloudflareSfuPublication, type P2pTurnProvider } from '@meeting/contracts';
+import { Value } from '@sinclair/typebox/value';
 import type { P2pClientMessage } from '@meeting/contracts';
 
 /** Interval at which the client pings the server to keep the connection alive. */
@@ -29,6 +30,7 @@ export interface Peer {
 }
 
 export interface P2pSignalingEvents {
+  onScreenSfu?(publication: CloudflareSfuPublication | null): void;
   onWelcome(peers: Peer[]): void;
   onPeerJoined(peer: Peer): void;
   onPeerLeft(peer: { identity: string }): void;
@@ -274,6 +276,7 @@ export class P2pSignalingClient {
         this.backoff = 0;
         this.ready = true;
         this.flushOutboundQueue();
+        if (message.screenSfu === null || Value.Check(CloudflareSfuPublicationSchema, message.screenSfu)) this.events.onScreenSfu?.(message.screenSfu as CloudflareSfuPublication | null);
         this.events.onWelcome(Array.isArray(peers) ? peers.filter(isPeer) : []);
         this.resolvePendingConnect();
         break;
@@ -283,6 +286,9 @@ export class P2pSignalingClient {
         if (isPeer(peer)) this.events.onPeerJoined(peer);
         break;
       }
+      case 'screen-sfu':
+        if (Object.keys(message).length === 2 && (message.publication === null || Value.Check(CloudflareSfuPublicationSchema, message.publication))) this.events.onScreenSfu?.(message.publication as CloudflareSfuPublication | null);
+        break;
       case 'peer-left': {
         const peer = message.peer;
         if (isIdentity(peer)) this.events.onPeerLeft({ identity: peer.identity });

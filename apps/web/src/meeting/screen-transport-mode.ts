@@ -2,7 +2,7 @@ import type { ViewerSessionState } from './p2p-share-controller.js';
 import type { ViewerP2pState } from './p2p-viewer-controller.js';
 import type { P2pTurnProvider } from '@meeting/contracts';
 
-export type ScreenTransportMode = 'negotiating' | 'p2p' | 'turn' | 'sfu' | 'mixed' | 'waiting';
+export type ScreenTransportMode = 'negotiating' | 'p2p' | 'turn' | 'sfu' | 'cloudflare-sfu' | 'mixed' | 'waiting';
 export type ScreenTurnProvider = P2pTurnProvider | 'mixed';
 
 export function canRetryViewerScreenTransport(state: ViewerP2pState): boolean {

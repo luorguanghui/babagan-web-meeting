@@ -2,7 +2,7 @@
 
 面向单个 4–5 人会议的自托管网页应用，仅提供实时语音、单人屏幕共享和电脑声音共享。系统不包含摄像头、聊天、录制、文件传输或其他协作功能。
 
-屏幕共享默认使用浏览器编码（默认 H.264）；项目 WASM 软件编码保留为共享前可手动选择的选项。
+屏幕共享默认使用浏览器编码（默认 H.264）；P2P 路径保留手动 WASM 编码。共享者也可选择 Cloudflare SFU，只上行一份屏幕视频／电脑声音，所有观看者从 SFU 订阅。新增“清晰动态”1080p60/detail档，60fps档选定源后明确请求60fps采集，不保证所有负载下实际达到60fps。
 
 ## 已确认的部署环境
 
@@ -47,9 +47,10 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 - React + TypeScript 构建网页界面。
 - Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
-- 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享（视频 + 音频）优先浏览器间 P2P 直连，无法直连时经 coturn 或 Cloudflare TURN 中继。连接失败时保留路径偏好并重试；屏幕 SFU 仅在观看者明确选择时按需发布，已确认的 TURN relay 不会自动切换 SFU。
-- P2P 屏幕共享使用可切换的 TURN provider：共享者在每次开始共享前可选“自动 / 服务器 coturn / Cloudflare TURN”，该选择保存在当前浏览器的 `babagan.screen-turn-provider`，并只作用于下一次共享。
-- API 默认保留 coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP 中继端口池），也支持服务端调用 Cloudflare Realtime TURN 生成短期凭据；`/api/v1/meetings/:slug/ice-servers` 会返回 `availableTurnProviders`、本次实际 `turnProvider` 和到期时间，Cloudflare 暂时不可用时回退 coturn。
+- 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享默认P2P直连，无法直连时经服务器coturn中继；观看者仍可显式选择LiveKit SFU。
+- Cloudflare SFU由共享者在共享前选择，最多四名观看者订阅同一份视频与电脑声音，发布端不再逐观看者编码。失败明确显示，不自动建立P2P／LiveKit屏幕副本。
+- 项目移除Cloudflare TURN凭据生成、选择器与探测控制。API保留coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP中继端口池）；旧Cloudflare TURN偏好回退自动/coturn。
+- Cloudflare SFU配置`CLOUDFLARE_SFU_APP_ID`和`CLOUDFLARE_SFU_APP_SECRET`，秘密仅后端读取；鉴权和会话请求直连Cloudflare，不使用代理。未配置时入口说明不可用。
 - 共享者发给观看者的 P2P `offer` 会携带实际 `turnProvider` metadata；观看者会据此重新拉取匹配 provider 的 ICE 配置，保证同一轮共享双方使用同一 provider。旧的无 metadata `offer` 仍按 coturn 兼容处理。
 - LiveKit 内置 TURN/UDP 443 与 RTC/TCP 7881 作为语音与回退屏幕的媒体兜底。
 - Caddy 负责 HTTPS、证书续期和反向代理。

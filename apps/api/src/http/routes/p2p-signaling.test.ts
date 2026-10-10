@@ -88,7 +88,7 @@ describe('P2P signaling websocket endpoint', () => {
     const inbox = collect(ws);
 
     expect(await inbox.waitFor((message) => message.type === 'welcome'))
-      .toEqual({ type: 'welcome', peers: [] });
+      .toEqual({ type: 'welcome', screenSfu: null, peers: [] });
 
     ws.send(JSON.stringify({ type: 'hello', participantIdentity: joined.identity }));
     ws.send(JSON.stringify({ type: 'ping' }));
@@ -123,7 +123,7 @@ describe('P2P signaling websocket endpoint', () => {
     expect(await inboxA.waitFor((message) => message.type === 'peer-joined'))
       .toEqual({ type: 'peer-joined', peer: { identity: bob.identity, nickname: 'Bob' } });
     expect(await inboxB.waitFor((message) => message.type === 'welcome'))
-      .toEqual({ type: 'welcome', peers: [{ identity: ada.identity, nickname: 'Ada' }] });
+      .toEqual({ type: 'welcome', screenSfu: null, peers: [{ identity: ada.identity, nickname: 'Ada' }] });
 
     wsB.close();
     expect(await inboxA.waitFor((message) => message.type === 'peer-left'))
@@ -150,14 +150,14 @@ describe('P2P signaling websocket endpoint', () => {
       type: 'offer',
       to: bob.identity,
       sdp: 'sdp-with-turn',
-      turnProvider: 'cloudflare'
+      turnProvider: 'coturn'
     }));
     expect(await inboxB.waitFor((message) => message.type === 'offer' && message.sdp === 'sdp-with-turn'))
       .toEqual({
         type: 'offer',
         to: bob.identity,
         sdp: 'sdp-with-turn',
-        turnProvider: 'cloudflare',
+        turnProvider: 'coturn',
         from: ada.identity
       });
 

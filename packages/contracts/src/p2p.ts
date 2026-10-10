@@ -2,6 +2,7 @@ import { Static, Type } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 
 import { SchemaError } from './errors.js';
+import { CloudflareSfuPublicationSchema } from './cloudflare-sfu.js';
 
 export const P2P_ICE_NEGOTIATION_TIMEOUT_MS = 8000;
 /** Deadline extension granted per ICE progress event while negotiating (candidate pair checks). */
@@ -22,7 +23,7 @@ export const P2P_TOTAL_UPLINK_BUDGET_BPS = 40_000_000;
 
 export type P2pScreenBitrate = typeof P2P_SCREEN_BITRATES[number];
 
-export const P2P_TURN_PROVIDERS = ['coturn', 'cloudflare'] as const;
+export const P2P_TURN_PROVIDERS = ['coturn'] as const;
 export type P2pTurnProvider = typeof P2P_TURN_PROVIDERS[number];
 
 const IdentitySchema = Type.String({ minLength: 1, maxLength: 256 });
@@ -44,10 +45,7 @@ export const P2pClientMessageSchema = Type.Union([
     to: IdentitySchema,
     sdp: SdpSchema,
     generation: Type.Optional(GenerationSchema),
-    turnProvider: Type.Optional(Type.Union([
-      Type.Literal('coturn'),
-      Type.Literal('cloudflare')
-    ]))
+    turnProvider: Type.Optional(Type.Literal('coturn'))
   }, { additionalProperties: false }),
   Type.Object({
     type: Type.Literal('answer'),
@@ -88,7 +86,12 @@ export type P2pClientMessage = Static<typeof P2pClientMessageSchema>;
 
 export const P2pServerMessageSchema = Type.Union([
   Type.Object({
+    type: Type.Literal('screen-sfu'),
+    publication: Type.Union([CloudflareSfuPublicationSchema, Type.Null()])
+  }, { additionalProperties: false }),
+  Type.Object({
     type: Type.Literal('welcome'),
+    screenSfu: Type.Optional(Type.Union([CloudflareSfuPublicationSchema, Type.Null()])),
     peers: Type.Array(Type.Object({
       identity: IdentitySchema,
       nickname: Type.String({ minLength: 1, maxLength: 40 })

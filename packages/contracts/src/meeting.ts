@@ -82,7 +82,8 @@ export type ScreenShareCodec = Static<typeof ScreenShareCodecSchema>;
 export const ScreenShareQualitySchema = Type.Union([
   Type.Literal('flow'),      // 720p30, resolution first (weak-network friendly)
   Type.Literal('standard'),  // 1080p30, frame-rate first (default)
-  Type.Literal('motion')     // 1080p60, frame-rate first (high motion)
+  Type.Literal('motion'),    // 1080p60, frame-rate first (high motion)
+  Type.Literal('detail60')   // 1080p60, resolution first (sharp detail)
 ]);
 
 export type ScreenShareQuality = Static<typeof ScreenShareQualitySchema>;

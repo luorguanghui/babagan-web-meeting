@@ -29,6 +29,9 @@ export interface MeetingControlsProps {
   screenShareBusy?: boolean;
   screenCodec?: ScreenShareCodec;
   screenEncodingEngine?: 'project' | 'browser';
+  screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
+  onScreenSourceTransportChange?: (transport: 'p2p' | 'cloudflare-sfu') => void;
+  cloudflareSfuAvailable?: boolean;
   onScreenEncodingEngineChange?: (value: 'project' | 'browser') => void;
   screenBitrate?: ScreenShareBitrate;
   screenQuality?: ScreenShareQuality;
@@ -169,9 +172,11 @@ export function MeetingSettings(props: MeetingControlsProps) {
   const { t } = useI18n();
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
-  const availableTurnProviders = props.availableTurnProviders ?? ['coturn'];
   const screenShareProviderDisabled = Boolean(props.screenShareActive || props.screenShareBusy);
   return <div className="meeting-settings-grid">
+    {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as 'p2p' | 'cloudflare-sfu')}>
+      <option value="p2p">{t('controls.screenSourceP2p')}</option><option value="cloudflare-sfu" disabled={props.cloudflareSfuAvailable === false}>{t('controls.screenSourceCloudflare')}</option>
+    </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}</label>}
     <label className="meeting-volume-control">
       <span className="meeting-volume-heading"><span>{t('controls.callAudioVolume')}</span><output>{props.callAudioVolume ?? 100}%</output></span>
       <input type="range" min="0" max="100" step="5" value={props.callAudioVolume ?? 100} aria-label={t('controls.callAudioVolume')} onChange={(event) => props.onCallAudioVolumeChange?.(Number(event.target.value))} />
@@ -192,15 +197,15 @@ export function MeetingSettings(props: MeetingControlsProps) {
       <option value="auto">{t('controls.viewerTransportAuto')}</option><option value="turn">{t('controls.viewerTransportTurn')}</option><option value="sfu">{t('controls.viewerTransportSfu')}</option>
     </select></label>}
     {props.screenShareTurnProviderVisible && props.onScreenShareTurnProviderChange && <label>{t('controls.screenShareTurnProvider')}<select aria-label={t('controls.screenShareTurnProvider')} value={props.screenShareTurnProvider ?? 'auto'} disabled={screenShareProviderDisabled} onChange={(event) => props.onScreenShareTurnProviderChange?.(event.target.value as ScreenShareTurnProviderPreference)}>
-      <option value="auto">{t('controls.screenShareTurnProviderAuto')}</option><option value="coturn">{t('controls.screenShareTurnProviderCoturn')}</option>{availableTurnProviders.includes('cloudflare') && <option value="cloudflare">{t('controls.screenShareTurnProviderCloudflare')}</option>}
+      <option value="auto">{t('controls.screenShareTurnProviderAuto')}</option><option value="coturn">{t('controls.screenShareTurnProviderCoturn')}</option>
     </select><span className="meeting-controls-hint">{t('controls.screenShareTurnProviderHint')}</span></label>}
     <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
-      <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option>
+      <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option><option value="detail60">{t('controls.detail60')}</option>
     </select></label>
     <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
       <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
     </select></label>
-    <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenEncodingEngine ?? 'browser'} disabled={props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
+    <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenSourceTransport === 'cloudflare-sfu' ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={props.screenSourceTransport === 'cloudflare-sfu' || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
       <option value="browser">{t('controls.browserEncoding')}</option><option value="project">{t('controls.projectEncoding')}</option>
     </select></label>
     <label>{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>

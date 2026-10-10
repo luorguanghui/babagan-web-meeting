@@ -28,20 +28,12 @@ args="$*"
 case "$args" in
   */health/live*) printf '%s\n' '{"status":"ok"}' ;;
   */health/ready*) printf '%s\n' '{"status":"ready"}' ;;
-  */api/v1/meetings/*/ice-servers*turnProvider=cloudflare*)
-    cat <<'JSON'
-HTTP/1.1 200 OK
-cache-control: no-store
-
-{"iceServers":[{"urls":["stun:stun.cloudflare.com:3478"]},{"urls":["turn:turn.cloudflare.com:3478?transport=udp"],"username":"opaque-user","credential":"c21va2U="}],"turnProvider":"cloudflare","turnCredentialsExpiresAt":9999999999}
-JSON
-    ;;
   */api/v1/meetings/*/ice-servers*turnProvider=coturn*)
-    cat <<'JSON'
+    cat <<JSON
 HTTP/1.1 200 OK
 cache-control: no-store
 
-{"iceServers":[{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"1234567890:expiry-user","credential":"c21va2U="}],"turnProvider":"cloudflare","turnCredentialsExpiresAt":9999999999}
+{"iceServers":[{"urls":["stun:stun.example.com:3478"]},{"urls":["turn:turn.example.com:3478?transport=udp"],"username":"1234567890:expiry-user","credential":"c21va2U="}],"turnProvider":"${MOCK_TURN_PROVIDER:-coturn}","turnCredentialsExpiresAt":9999999999}
 JSON
     ;;
   */api/v1/meetings/*/p2p*) printf '403' ;;
@@ -57,12 +49,12 @@ SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx \
 SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value \
 P2P_STUN_URLS=stun:stun.example.com:3478 \
 P2P_TURN_URLS=turn:turn.example.com:3478?transport=udp,turns:turn.example.com:5349?transport=tcp \
-P2P_TURN_PROVIDER=cloudflare \
-SMOKE_REQUESTED_TURN_PROVIDER=cloudflare \
+P2P_TURN_PROVIDER=coturn \
+SMOKE_REQUESTED_TURN_PROVIDER=coturn \
 SMOKE_NODE_IMAGE=meeting-api:test \
   bash "$root/scripts/smoke-test.sh" https://meet.example.com wss://rtc.example.com
 
-if PATH="$temp_dir/bin:$PATH" \
+if PATH="$temp_dir/bin:$PATH" MOCK_TURN_PROVIDER=unexpected \
 SMOKE_LIVEKIT_TOKEN=fresh.header.signature \
 SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx \
 SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value \
@@ -76,4 +68,4 @@ SMOKE_NODE_IMAGE=meeting-api:test \
   exit 1
 fi
 
-echo 'Cloudflare provider smoke regression passed'
+echo 'coturn provider smoke regression passed'

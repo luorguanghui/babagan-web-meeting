@@ -1,4 +1,4 @@
-import type { P2pServerMessage } from '@meeting/contracts';
+import type { CloudflareSfuPublication, P2pServerMessage } from '@meeting/contracts';
 
 /**
  * Minimal socket surface used by the registry and signaling sessions.
@@ -28,7 +28,18 @@ interface P2pRoomEntry {
  * the `welcome` message (client-side Task 4).
  */
 export class P2pRoomRegistry {
+  private readonly screenPublications = new Map<string, CloudflareSfuPublication>();
   private readonly rooms = new Map<string, Map<string, P2pRoomEntry>>();
+
+  getScreenSfu(slug: string): CloudflareSfuPublication | null {
+    return this.screenPublications.get(slug) ?? null;
+  }
+
+  setScreenSfu(slug: string, publication: CloudflareSfuPublication | null): void {
+    if (publication) this.screenPublications.set(slug, publication);
+    else this.screenPublications.delete(slug);
+    this.broadcast(slug, { type: 'screen-sfu', publication });
+  }
 
   join(slug: string, identity: string, nickname: string, socket: P2pSocket): void {
     let room = this.rooms.get(slug);
@@ -78,7 +89,7 @@ export class P2pRoomRegistry {
     const raw = JSON.stringify(message);
     for (const [identity, entry] of room) {
       if (identity === exceptIdentity) continue;
-      entry.socket.send(raw);
+      try { entry.socket.send(raw); } catch { /* a stale socket must not block room-wide discovery/cleanup */ }
     }
   }
 
@@ -89,6 +100,7 @@ export class P2pRoomRegistry {
 
   /** Terminates every signaling session for a meeting and forgets the room. */
   closeRoom(slug: string, reason: string): void {
+    this.setScreenSfu(slug, null);
     const room = this.rooms.get(slug);
     if (!room) return;
     // Delete first so synchronous socket close handlers cannot mutate a room

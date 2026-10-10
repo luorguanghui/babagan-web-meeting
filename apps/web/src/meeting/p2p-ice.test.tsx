@@ -16,15 +16,15 @@ describe('P2P ICE server configuration', () => {
     });
   });
 
-  it('uses the server-provided expiry for Cloudflare credentials', () => {
+  it('uses the server-provided expiry for coturn credentials', () => {
     const configuration = normalizeP2pIceServerConfiguration({
-      iceServers: [{ urls: ['turn:turn.cloudflare.com:3478'], username: 'opaque', credential: 'secret' }],
-      turnProvider: 'cloudflare',
-      availableTurnProviders: ['coturn', 'cloudflare'],
+      iceServers: [{ urls: ['turn:turn.example.test:3478'], username: 'opaque', credential: 'secret' }],
+      turnProvider: 'coturn',
+      availableTurnProviders: ['coturn'],
       turnCredentialsExpiresAt: 1_000 + 600
     });
 
-    expect(configuration.availableTurnProviders).toEqual(['coturn', 'cloudflare']);
+    expect(configuration.availableTurnProviders).toEqual(['coturn']);
     expect(iceConfigurationExpiresSoon(configuration, 1_000)).toBe(false);
     expect(iceConfigurationExpiresSoon(configuration, 1_540)).toBe(true);
   });
