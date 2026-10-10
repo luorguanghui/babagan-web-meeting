@@ -87,6 +87,32 @@ describe('loadConfig', () => {
   it('rejects partial SFU credentials', () => {
     expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_APP_ID: 'app' }))).toThrow(/both/);
   });
+  it.each([
+    'https://p2p.babagan.cloud/api/sfu',
+    'https://babagan-p2p.1312479965.workers.dev/api/sfu'
+  ])('loads the explicitly configured trusted SFU gateway %s', (gatewayUrl) => {
+    expect(loadConfig(validEnv({ CLOUDFLARE_SFU_GATEWAY_URL: gatewayUrl })))
+      .toMatchObject({ cloudflareSfuGatewayUrl: gatewayUrl });
+  });
+  it('keeps direct SFU access as the default and still rejects partial credentials in gateway mode', () => {
+    expect(loadConfig(validEnv()).cloudflareSfuGatewayUrl).toBeUndefined();
+    expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_APP_ID: 'app', CLOUDFLARE_SFU_GATEWAY_URL: 'https://p2p.babagan.cloud/api/sfu' }))).toThrow(/both/);
+  });
+  it.each([
+    'http://p2p.babagan.cloud/api/sfu',
+    'https://untrusted.example/api/sfu',
+    'https://p2p.babagan.cloud.evil.example/api/sfu',
+    'https://user:password@p2p.babagan.cloud/api/sfu',
+    'https://p2p.babagan.cloud:8443/api/sfu',
+    'https://p2p.babagan.cloud/api/sfu?destination=other',
+    'https://p2p.babagan.cloud/api/sfu#fragment',
+    'https://p2p.babagan.cloud/api/sfu/v1/apps/other',
+    'https://p2p.babagan.cloud/api/sfu/../meeting-sfu',
+    'https://p2p.babagan.cloud/api/sfu/',
+    'https://p2p.babagan.cloud/api/meeting-sfu'
+  ])('rejects unsafe or non-fixed SFU gateway URL %s', (gatewayUrl) => {
+    expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_APP_ID: 'app', CLOUDFLARE_SFU_APP_SECRET: 'secret', CLOUDFLARE_SFU_GATEWAY_URL: gatewayUrl }))).toThrow(/CLOUDFLARE_SFU_GATEWAY_URL/);
+  });
   it('rejects the retired Cloudflare TURN provider and ignores retired credentials', () => {
     expect(() => loadConfig(validEnv({ P2P_TURN_PROVIDER: 'cloudflare' }))).toThrow(/coturn/);
     expect(loadConfig(validEnv({ CLOUDFLARE_TURN_KEY_ID: 'old', CLOUDFLARE_TURN_API_TOKEN: 'old' }))).not.toHaveProperty('cloudflareTurnApiToken');

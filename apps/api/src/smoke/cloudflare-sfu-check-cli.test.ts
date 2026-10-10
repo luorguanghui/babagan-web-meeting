@@ -16,4 +16,12 @@ describe('deployment SFU authentication probe', () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ error: 'private-secret' }, { status: 401 })));
     await expect(verifyCloudflareSfu({ cloudflareSfuAppId: 'app', cloudflareSfuAppSecret: 'private-secret' })).rejects.toThrow('MEDIA_SERVICE_UNAVAILABLE');
   });
+  it('uses the configured gateway for the single deployment probe allocation', async () => {
+    const fetcher = vi.fn(async () => Response.json({ sessionId: 'private-session-id' }));
+    vi.stubGlobal('fetch', fetcher);
+    expect(await verifyCloudflareSfu({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu' })).toBe('CLOUDFLARE_SFU_AUTH_OK');
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0][0]).toBe('https://p2p.babagan.cloud/api/sfu/sessions/new');
+    expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('Authorization')).toBe(false);
+  });
 });

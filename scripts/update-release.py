@@ -294,7 +294,7 @@ def perform_update(options, app, env_file, state):
         with (release / 'smoke.log').open('w') as log:
             command(['bash', str(source / 'scripts/deployment-smoke.sh'), files[0], str(env_file), api_image,
                      public_base, public_base.replace('https://', 'wss://') + '/rtc'], output=log)
-        sfu_enabled = any(line.startswith('CLOUDFLARE_SFU_APP_ID=') and line.split('=', 1)[1].strip()
+        sfu_enabled = any(line.startswith(('CLOUDFLARE_SFU_APP_ID=', 'CLOUDFLARE_SFU_GATEWAY_URL=')) and line.split('=', 1)[1].strip()
                           for line in env_file.read_text().splitlines())
         sfu_verified = 'CLOUDFLARE_SFU_API_OK' in (release / 'smoke.log').read_text()
         if sfu_enabled and not sfu_verified:
@@ -319,7 +319,7 @@ def candidate_override(images):
         environment = {'P2P_TURN_PROVIDER': 'coturn'}
         for name in ('KEY_ID', 'API_TOKEN', 'TTL_SECONDS', 'CONNECT_IPS', 'HTTPS_PROXY'):
             environment['CLOUDFLARE_TURN_' + name] = None
-        for name in ('APP_ID', 'APP_SECRET'):
+        for name in ('APP_ID', 'APP_SECRET', 'GATEWAY_URL'):
             key = 'CLOUDFLARE_SFU_' + name
             environment[key] = '${' + key + ':-}'
         services['api']['environment'] = environment
