@@ -22,10 +22,10 @@ class Pc extends EventTarget {
   createAnswer = async () => ({ type: 'answer', sdp: 'answer' });
   setLocalDescription = async (d: typeof this.localDescription) => { this.localDescription = d; };
   setRemoteDescription = async (d: unknown) => { this.remoteDescription = d; };
-  getStats = async () => new Map([['video', { type: 'outbound-rtp', kind: 'video', framesSent: 1 }]]);
+  getStats = async (): Promise<Map<string, Record<string, unknown>>> => new Map([['video', { type: 'outbound-rtp', kind: 'video', framesSent: 1 }]]);
 }
 const publication = { shareId: 'share', sessionId: 'publisher', sharerIdentity: 'Ada', sharerName: 'Ada', tracks: [{ kind: 'video' as const, trackName: 'screen' }] };
-function setup(configure: (pc: Pc) => void = () => {}) {
+function setup(configure: (pc: Pc) => void = () => {}, onRecoveryNeeded = vi.fn()) {
   const pcs: Pc[] = [];
   const api: CloudflareScreenApi = {
     publish: vi.fn(async () => ({ sessionId: 'publisher', shareId: 'share', sessionDescription: { type: 'answer' as const, sdp: 'answer' }, tracks: [{ kind: 'video' as const, mid: '0', trackName: 'screen' }] })),
@@ -33,10 +33,72 @@ function setup(configure: (pc: Pc) => void = () => {}) {
     subscribe: vi.fn(async () => ({ sessionId: 'viewer', shareId: 'share', sessionDescription: { type: 'offer' as const, sdp: 'offer' }, tracks: [{ kind: 'video' as const, mid: '7', trackName: 'screen' }, { kind: 'audio' as const, mid: '8', trackName: 'audio' }] })),
     answer: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
-  const create = (onStream = vi.fn()) => new CloudflareScreenSession({ api, fetchIceServers: async () => [], createPeerConnection: () => { const pc = new Pc(); configure(pc); pcs.push(pc); return pc as unknown as RTCPeerConnection; }, createMediaStream: () => new Stream() as unknown as MediaStream, onStream });
-  return { pcs, api, create };
+  const create = (onStream = vi.fn()) => new CloudflareScreenSession({ api, fetchIceServers: async () => [], createPeerConnection: () => { const pc = new Pc(); configure(pc); pcs.push(pc); return pc as unknown as RTCPeerConnection; }, createMediaStream: () => new Stream() as unknown as MediaStream, onStream, onRecoveryNeeded });
+  return { pcs, api, create, onRecoveryNeeded };
 }
 describe('Cloudflare native screen session', () => {
+  it('protects the source resolution for a motion share while preserving its bitrate and frame target', async () => {
+    const { pcs, create } = setup(); const source = create();
+    await source.publish(new Stream([new Track('video')]) as unknown as MediaStream,
+      { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-framerate' });
+    const sender = pcs[0].transceivers[0].sender as { setParameters: ReturnType<typeof vi.fn> };
+    expect(sender.setParameters).toHaveBeenLastCalledWith(expect.objectContaining({
+      degradationPreference: 'maintain-resolution',
+      encodings: [expect.objectContaining({ maxBitrate: 8000000, maxFramerate: 60, scaleResolutionDownBy: 1 })]
+    }));
+    await source.close();
+  });
+  it.each(['packets', 'complete-frames', 'static', 'decoded', 'background'])(
+    'only requests bounded receiver recovery for sustained undecodable %s', async mode => {
+      vi.useFakeTimers();
+      const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue(mode === 'background' ? 'hidden' : 'visible');
+      const { create, onRecoveryNeeded } = setup(pc => {
+        pc.getStats = async () => new Map([['video', { id: 'video', ssrc: 1,
+          type: 'inbound-rtp', kind: 'video', timestamp: Date.now(),
+          bytesReceived: mode === 'static' ? 1000 : 1000 + Date.now(),
+          framesReceived: mode === 'complete-frames' || mode === 'decoded' ? 10 + Date.now() / 1000 : 10,
+          framesDecoded: mode === 'decoded' ? 10 + Date.now() / 1000 : 10 }]]);
+      });
+      const viewer = create();
+      try {
+        await viewer.subscribe(publication);
+        await vi.advanceTimersByTimeAsync(20000);
+        expect(onRecoveryNeeded).toHaveBeenCalledTimes(['packets', 'complete-frames'].includes(mode) ? 1 : 0);
+        await viewer.close();
+        await vi.advanceTimersByTimeAsync(20000);
+        expect(onRecoveryNeeded).toHaveBeenCalledTimes(['packets', 'complete-frames'].includes(mode) ? 1 : 0);
+      } finally { await viewer.close(); visibility.mockRestore(); vi.useRealTimers(); }
+    });
+  it('allows a transient disconnected receiver to recover before requesting a replacement', async () => {
+    vi.useFakeTimers();
+    const { create, pcs, onRecoveryNeeded } = setup(); const viewer = create();
+    try {
+      await viewer.subscribe(publication);
+      pcs[0].connectionState = 'disconnected'; pcs[0].dispatchEvent(new Event('connectionstatechange'));
+      await vi.advanceTimersByTimeAsync(2000);
+      pcs[0].connectionState = 'connected'; pcs[0].dispatchEvent(new Event('connectionstatechange'));
+      await vi.advanceTimersByTimeAsync(5000); expect(onRecoveryNeeded).not.toHaveBeenCalled();
+      pcs[0].connectionState = 'disconnected'; pcs[0].dispatchEvent(new Event('connectionstatechange'));
+      await vi.advanceTimersByTimeAsync(6000); expect(onRecoveryNeeded).toHaveBeenCalledOnce();
+    } finally { await viewer.close(); vi.useRealTimers(); }
+  });
+  it('does not count a suspended timer gap as six seconds of decoder failure', async () => {
+    vi.useFakeTimers();
+    const { create, onRecoveryNeeded } = setup(pc => {
+      pc.getStats = async () => new Map([['video', { id: 'video', ssrc: 1,
+        type: 'inbound-rtp', kind: 'video', timestamp: Date.now(), bytesReceived: Date.now(), framesDecoded: 10 }]]);
+    });
+    const viewer = create();
+    try {
+      await viewer.subscribe(publication);
+      await vi.advanceTimersByTimeAsync(1000);
+      vi.setSystemTime(Date.now() + 60000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(onRecoveryNeeded).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(5000); expect(onRecoveryNeeded).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1000); expect(onRecoveryNeeded).toHaveBeenCalledOnce();
+    } finally { await viewer.close(); vi.useRealTimers(); }
+  });
   it('accepts a slow successful allocation instead of aborting before the backend budget', async () => {
     vi.useFakeTimers();
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {

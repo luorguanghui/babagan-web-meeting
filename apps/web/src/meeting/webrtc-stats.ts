@@ -12,6 +12,10 @@ interface VideoFrameCounters {
   totalDecodeTime?: number;
   totalAssemblyTime?: number;
   framesAssembledFromMultiplePackets?: number;
+  packetsReceived?: number;
+  packetsLost?: number;
+  nackCount?: number;
+  pliCount?: number;
 }
 
 export interface WebRtcMediaStats {
@@ -41,6 +45,10 @@ export interface WebRtcMediaStats {
   qualityLimitationReason?: string;
   packetsLost?: number;
   packetsReceived?: number;
+  packetsReceivedInInterval?: number;
+  packetsLostInInterval?: number;
+  nackCountInInterval?: number;
+  pliCountInInterval?: number;
   roundTripTimeMs?: number;
   jitterMs?: number;
   averageJitterBufferDelayMs?: number;
@@ -62,8 +70,8 @@ export interface WebRtcStatsSnapshot {
   sender?: WebRtcMediaStats;
   receiver?: WebRtcMediaStats;
   counters: {
-    outbound?: { bytes: number; timestamp: number };
-    inbound?: { bytes: number; timestamp: number };
+    outbound?: { bytes: number; timestamp: number; id?: string; ssrc?: number };
+    inbound?: { bytes: number; timestamp: number; id?: string; ssrc?: number };
     outboundFrames?: VideoFrameCounters;
     inboundFrames?: VideoFrameCounters;
   };
@@ -106,7 +114,7 @@ export function summarizeWebRtcStats(
   if (outbound) {
     const bytes = numberValue(outbound.bytesSent);
     const timestamp = numberValue(outbound.timestamp) ?? sampledAt;
-    if (bytes !== undefined) counters.outbound = { bytes, timestamp };
+    if (bytes !== undefined) counters.outbound = { bytes, timestamp, id: stringValue(outbound.id), ssrc: numberValue(outbound.ssrc) };
     const frames = frameCounters(outbound, timestamp);
     counters.outboundFrames = frames;
     const sourceId = stringValue(outbound.mediaSourceId);
@@ -124,7 +132,7 @@ export function summarizeWebRtcStats(
       powerEfficientEncoder: typeof outbound.powerEfficientEncoder === 'boolean'
         ? outbound.powerEfficientEncoder : undefined,
       sentFramesPerSecond: frameRate(frames, previous?.counters.outboundFrames, 'framesSent'),
-      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.outbound),
+      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.outbound, frames),
       framesEncoded: numberValue(outbound.framesEncoded),
       framesSent: numberValue(outbound.framesSent),
       averageEncodeTimeMs: averageMilliseconds(outbound.totalEncodeTime, outbound.framesEncoded),
@@ -150,14 +158,14 @@ export function summarizeWebRtcStats(
   if (inbound) {
     const bytes = numberValue(inbound.bytesReceived);
     const timestamp = numberValue(inbound.timestamp) ?? sampledAt;
-    if (bytes !== undefined) counters.inbound = { bytes, timestamp };
+    if (bytes !== undefined) counters.inbound = { bytes, timestamp, id: stringValue(inbound.id), ssrc: numberValue(inbound.ssrc) };
     const frames = frameCounters(inbound, timestamp);
     counters.inboundFrames = frames;
     receiver = compact({
       codec: codecName(byId.get(stringValue(inbound.codecId) ?? '')),
       width: numberValue(inbound.frameWidth),
       height: numberValue(inbound.frameHeight),
-      framesPerSecond: numberValue(inbound.framesPerSecond),
+      framesPerSecond: frameRate(frames, previous?.counters.inboundFrames, 'framesDecoded') ?? numberValue(inbound.framesPerSecond),
       receivedFramesPerSecond: frameRate(frames, previous?.counters.inboundFrames, 'framesReceived'),
       averageDecodeTimeMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
         'totalDecodeTime', 'framesDecoded'),
@@ -166,12 +174,16 @@ export function summarizeWebRtcStats(
       decoderImplementation: stringValue(inbound.decoderImplementation),
       powerEfficientDecoder: typeof inbound.powerEfficientDecoder === 'boolean'
         ? inbound.powerEfficientDecoder : undefined,
-      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.inbound),
+      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.inbound, frames),
       framesDecoded: numberValue(inbound.framesDecoded),
       framesDropped: numberValue(inbound.framesDropped),
       freezeCount: numberValue(inbound.freezeCount),
       packetsLost: numberValue(inbound.packetsLost),
       packetsReceived: numberValue(inbound.packetsReceived),
+      packetsReceivedInInterval: frameDelta(frames, previous?.counters.inboundFrames, 'packetsReceived'),
+      packetsLostInInterval: frameDelta(frames, previous?.counters.inboundFrames, 'packetsLost'),
+      nackCountInInterval: frameDelta(frames, previous?.counters.inboundFrames, 'nackCount'),
+      pliCountInInterval: frameDelta(frames, previous?.counters.inboundFrames, 'pliCount'),
       roundTripTimeMs: secondsToMilliseconds(candidatePair?.currentRoundTripTime),
       jitterMs: secondsToMilliseconds(inbound.jitter),
       averageJitterBufferDelayMs: averageMilliseconds(inbound.jitterBufferDelay, inbound.jitterBufferEmittedCount),
@@ -199,7 +211,9 @@ function frameCounters(value: StatsRecord, timestamp: number): VideoFrameCounter
     framesDecoded: numberValue(value.framesDecoded),
     totalDecodeTime: numberValue(value.totalDecodeTime),
     totalAssemblyTime: numberValue(value.totalAssemblyTime),
-    framesAssembledFromMultiplePackets: numberValue(value.framesAssembledFromMultiplePackets)
+    framesAssembledFromMultiplePackets: numberValue(value.framesAssembledFromMultiplePackets),
+    packetsReceived: numberValue(value.packetsReceived), packetsLost: numberValue(value.packetsLost),
+    nackCount: numberValue(value.nackCount), pliCount: numberValue(value.pliCount)
   };
 }
 
@@ -217,7 +231,7 @@ function frameDelta(current: VideoFrameCounters, previous: VideoFrameCounters | 
 }
 
 function frameRate(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
-  key: 'framesSent' | 'framesReceived'): number | undefined {
+  key: 'framesSent' | 'framesReceived' | 'framesDecoded'): number | undefined {
   const count = frameDelta(current, previous, key);
   return count === undefined || !previous ? undefined
     : round(count * 1_000 / (current.timestamp - previous.timestamp), 1);
@@ -261,9 +275,12 @@ function toMbps(value: unknown): number | undefined {
 function bitrate(
   bytes: number | undefined,
   timestamp: number,
-  previous?: { bytes: number; timestamp: number }
+  previous?: { bytes: number; timestamp: number; id?: string; ssrc?: number },
+  current?: Pick<VideoFrameCounters, 'id' | 'ssrc'>
 ): number | undefined {
   if (bytes === undefined || !previous || timestamp <= previous.timestamp || bytes < previous.bytes) return undefined;
+  if ((previous.id !== undefined && current?.id !== previous.id)
+    || (previous.ssrc !== undefined && current?.ssrc !== previous.ssrc)) return undefined;
   return round((bytes - previous.bytes) * 8 / ((timestamp - previous.timestamp) * 1_000), 2);
 }
 

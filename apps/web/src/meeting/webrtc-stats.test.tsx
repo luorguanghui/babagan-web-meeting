@@ -12,6 +12,21 @@ function report(values: Record<string, Record<string, unknown>>): RTCStatsReport
 }
 
 describe('WebRTC screen-share statistics', () => {
+  it('shows arriving bytes and recent loss even when no frame can be decoded', () => {
+    const values = { id: 'video', ssrc: 123, type: 'inbound-rtp', kind: 'video', timestamp: 1000,
+      bytesReceived: 1000000, framesReceived: 100, framesDecoded: 100, framesPerSecond: 60,
+      packetsReceived: 1000, packetsLost: 800, nackCount: 900, pliCount: 30 };
+    const before = summarizeWebRtcStats([report({ video: values })]);
+    const current = summarizeWebRtcStats([report({ video: { ...values, timestamp: 2000,
+      bytesReceived: 1812500, packetsReceived: 1700, packetsLost: 802, nackCount: 903, pliCount: 31 } })], before);
+    expect(current.receiver).toMatchObject({ framesPerSecond: 0, receivedFramesPerSecond: 0,
+      bitrateMbps: 6.5, packetsReceivedInInterval: 700, packetsLostInInterval: 2,
+      nackCountInInterval: 3, pliCountInInterval: 1 });
+    const replacement = summarizeWebRtcStats([report({ video: { ...values, ssrc: 456, timestamp: 3000,
+      bytesReceived: 4000000, packetsReceived: 3000, packetsLost: 900 } })], current);
+    expect(replacement.receiver?.bitrateMbps).toBeUndefined();
+    expect(replacement.receiver?.packetsLostInInterval).toBeUndefined();
+  });
   it('distinguishes live capture from encoding drops and reports interval encode cost', () => {
     const values = (timestamp: number, framesEncoded: number, totalEncodeTime: number) => report({
       camera: { id: 'camera', type: 'media-source', kind: 'video', framesPerSecond: 30 },

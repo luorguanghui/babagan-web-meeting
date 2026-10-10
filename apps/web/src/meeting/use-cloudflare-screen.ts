@@ -11,9 +11,10 @@ export function useCloudflareScreen(slug: string, identity: string, fetchIceServ
   const [revision, setRevision] = useState(0);
   const viewer = useRef<CloudflareScreenSession | undefined>(undefined);
   const closeTail = useRef<Promise<void>>(Promise.resolve());
+  const recovery = useRef({ shareId: '', attempts: 0 });
   const api = useMemo(() => createCloudflareScreenApi(slug), [slug]);
   const reportError = useCallback((e: unknown) => setError(`Cloudflare SFU: ${e instanceof Error ? e.message : 'Screen connection failed.'}`), []);
-  const createSession = useCallback((onStream?: (s: MediaStream) => void, onError = reportError) => new CloudflareScreenSession({ api, fetchIceServers, onStream, onError }), [api, fetchIceServers, reportError]);
+  const createSession = useCallback((onStream?: (s: MediaStream) => void, onError = reportError, onRecoveryNeeded?: (e: Error) => void) => new CloudflareScreenSession({ api, fetchIceServers, onStream, onError, onRecoveryNeeded }), [api, fetchIceServers, reportError]);
   const announce = useCallback((next: CloudflareSfuPublication | null) => {
     publicationRef.current = next;
     setPublication(current => current?.shareId === next?.shareId ? current : next);
@@ -35,9 +36,21 @@ export function useCloudflareScreen(slug: string, identity: string, fetchIceServ
     setError(undefined);
     if (!publication || publication.sharerIdentity === identity)
       return;
+    if (recovery.current.shareId !== publication.shareId)
+      recovery.current = { shareId: publication.shareId, attempts: 0 };
     const session = createSession(s => { if (active)
       setStream(s); }, e => { if (active)
-      reportError(e); });
+      reportError(e); }, e => {
+        if (!active || viewer.current !== session) return;
+        reportError(e);
+        // Only established receiver/media failures reach this callback. HTTP
+        // allocations that failed or have an uncertain outcome are not retried.
+        // Rebuilding just this viewer obtains a fresh keyframe/decoder/ICE path.
+        if (recovery.current.attempts < 2) {
+          recovery.current.attempts++;
+          setRevision(r => r + 1);
+        }
+      });
     viewer.current = session;
     void closeTail.current.then(async () => {
       if (active)
@@ -52,7 +65,7 @@ export function useCloudflareScreen(slug: string, identity: string, fetchIceServ
       closeTail.current = Promise.all([preceding, session.close()]).then(() => undefined);
     };
   }, [createSession, identity, publication, reportError, revision]);
-  const retry = useCallback(() => { setRevision(r => r + 1); }, []);
+  const retry = useCallback(() => { recovery.current.attempts = 0; setRevision(r => r + 1); }, []);
   const close = useCallback(async () => { await viewer.current?.close(); viewer.current = undefined; }, []);
   const clearError = useCallback(() => setError(undefined), []);
   return { publication, publicationRef, stream, error, available, announce, createSession, viewer, reportError, clearError, retry, close };

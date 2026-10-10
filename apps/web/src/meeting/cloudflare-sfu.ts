@@ -17,6 +17,9 @@ export class CloudflareScreenSession {
   private readonly clones: MediaStreamTrack[] = [];
   private readonly remoteTracks = new Set<MediaStreamTrack>();
   private shown = false;
+  private receiving = false;
+  private healthTimer?: ReturnType<typeof setTimeout>;
+  private recoveryRequested = false;
   constructor(private readonly deps: {
     api: CloudflareScreenApi;
     fetchIceServers(): Promise<RTCIceServer[]>;
@@ -24,6 +27,7 @@ export class CloudflareScreenSession {
     createMediaStream?(): MediaStream;
     onStream?(stream: MediaStream): void;
     onError?(error: Error): void;
+    onRecoveryNeeded?(error: Error): void;
   }) { }
   publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void> {
     return this.negotiate(async (epoch) => {
@@ -37,7 +41,7 @@ export class CloudflareScreenSession {
         const clone = track.clone();
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
-        const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
+        const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate, scaleResolutionDownBy: 1 } : {}) }] });
         if (track.kind === 'video' && options.codec !== 'auto') {
           const codecs = globalThis.RTCRtpSender?.getCapabilities?.('video')?.codecs;
           const preferred = codecs?.filter(c => c.mimeType.toLowerCase() === `video/${options.codec}`);
@@ -65,8 +69,11 @@ export class CloudflareScreenSession {
         if (track.kind !== 'video')
           continue;
         const parameters = transceiver.sender.getParameters();
-        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }];
-        parameters.degradationPreference = options.degradationPreference;
+        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate, scaleResolutionDownBy: 1 }];
+        // Like direct P2P, keep the selected source dimensions. Motion still
+        // selects the motion content hint and 60fps target, but does not grant
+        // the browser permission to silently shrink the single SFU encoder.
+        parameters.degradationPreference = 'maintain-resolution';
         await transceiver.sender.setParameters(parameters);
       }
       await waitForPc(pc, 'connectionstatechange', () => pc.connectionState === 'connected', this.abort.signal, 20000);
@@ -76,6 +83,7 @@ export class CloudflareScreenSession {
     });
   }
   subscribe(publication: CloudflareSfuPublication): Promise<void> {
+    this.receiving = true;
     return this.negotiate(async (epoch) => {
       const pc = await this.create(epoch);
       if (!pc)
@@ -121,12 +129,14 @@ export class CloudflareScreenSession {
         return;
       await this.deps.api.answer(allocation.sessionId, description(pc, 'answer'));
       await waitForPc(pc, 'connectionstatechange', () => pc.connectionState === 'connected', this.abort.signal, 20000);
+      if (this.current(epoch)) this.monitorReceiver(pc, epoch);
     });
   }
   async getStatsReport(): Promise<RTCStatsReport | undefined> { return this.pc?.getStats(); }
   async close(): Promise<void> {
     this.epoch++;
     this.abort.abort();
+    this.stopHealthMonitor();
     this.pc?.close();
     this.pc = undefined;
     for (const track of this.clones)
@@ -146,13 +156,14 @@ export class CloudflareScreenSession {
       return;
     const pc = this.deps.createPeerConnection?.(ice) ?? new RTCPeerConnection({ iceServers: ice });
     this.pc = pc;
-    pc.addEventListener('connectionstatechange', () => { if (this.current(epoch) && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected'))
+    pc.addEventListener('connectionstatechange', () => { if (!this.receiving && this.current(epoch) && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected'))
       this.deps.onError?.(new Error('Cloudflare SFU media connection was lost. Select retry to reconnect.')); });
     return pc;
   }
   private negotiate(operation: (epoch: number) => Promise<void>): Promise<void> {
     const epoch = this.epoch;
     const task = this.tail.then(() => operation(epoch)).catch(async (error) => {
+      this.stopHealthMonitor();
       this.pc?.close();
       this.pc = undefined;
       for (const track of this.clones)
@@ -173,6 +184,81 @@ export class CloudflareScreenSession {
     this.sessionId = undefined;
     if (id)
       await this.deps.api.close(id).catch(() => undefined);
+  }
+  private stopHealthMonitor(): void {
+    clearTimeout(this.healthTimer);
+    this.healthTimer = undefined;
+  }
+  private monitorReceiver(pc: RTCPeerConnection, epoch: number): void {
+    type Sample = { id: string; ssrc?: number; timestamp: number; bytes: number; decoded: number };
+    let previous: Sample | undefined;
+    let stalledSince: number | undefined;
+    let disconnectedSince: number | undefined;
+    let lastSampledAt = Date.now();
+    const isHidden = () => document.visibilityState === 'hidden';
+    const requestRecovery = (message: string) => {
+      if (!this.current(epoch) || this.recoveryRequested) return;
+      this.recoveryRequested = true;
+      this.stopHealthMonitor();
+      (this.deps.onRecoveryNeeded ?? this.deps.onError)?.(new Error(message));
+    };
+    const sample = async () => {
+      if (!this.current(epoch) || this.pc !== pc || this.recoveryRequested) return;
+      try {
+        const now = Date.now();
+        if (now - lastSampledAt > 2500 || now < lastSampledAt) {
+          previous = undefined; stalledSince = undefined; disconnectedSince = undefined;
+        }
+        lastSampledAt = now;
+        // Suspended tabs and silent/static sources are not proof of a broken
+        // decoder. Require fresh RTP and sustained lack of decoded progress.
+        if (isHidden()) {
+          previous = undefined; stalledSince = undefined; disconnectedSince = undefined;
+          return;
+        }
+        if (pc.connectionState === 'failed') {
+          requestRecovery('SFU receiver connection failed.'); return;
+        }
+        if (pc.connectionState === 'disconnected') {
+          disconnectedSince ??= Date.now();
+          if (Date.now() - disconnectedSince >= 5000) requestRecovery('SFU receiver remained disconnected.');
+          previous = undefined; stalledSince = undefined;
+          return;
+        }
+        disconnectedSince = undefined;
+        if (pc.connectionState !== 'connected') return;
+        const report = await pc.getStats();
+        if (!this.current(epoch) || this.pc !== pc) return;
+        if (isHidden()) { previous = undefined; stalledSince = undefined; return; }
+        let current: Sample | undefined;
+        report.forEach(stat => {
+          if (stat.type === 'inbound-rtp' && (stat.kind === 'video' || stat.mediaType === 'video')
+            && Number.isFinite(stat.timestamp) && Number.isFinite(stat.bytesReceived) && Number.isFinite(stat.framesDecoded)) {
+            current = { id: stat.id, ssrc: stat.ssrc, timestamp: stat.timestamp, bytes: stat.bytesReceived, decoded: stat.framesDecoded };
+          }
+        });
+        if (!current) { previous = undefined; stalledSince = undefined; return; }
+        const before = previous;
+        previous = current;
+        if (!before || current.id !== before.id || current.ssrc !== before.ssrc
+          || current.timestamp <= before.timestamp || current.bytes < before.bytes || current.decoded < before.decoded) {
+          stalledSince = undefined; return;
+        }
+        if (current.decoded > before.decoded || current.bytes === before.bytes) {
+          stalledSince = undefined; return;
+        }
+        stalledSince ??= before.timestamp;
+        if (current.timestamp - stalledSince >= 6000) requestRecovery('SFU video packets arrived for 6 seconds without a decoded frame.');
+      } catch {
+        previous = undefined; stalledSince = undefined;
+      } finally {
+        // Schedule after completion: slow getStats cannot overlap itself or
+        // deliver stale samples out of order.
+        if (this.current(epoch) && this.pc === pc && !this.recoveryRequested)
+          this.healthTimer = setTimeout(() => void sample(), 1000);
+      }
+    };
+    void sample();
   }
 }
 function description(pc: RTCPeerConnection, type: 'offer' | 'answer'): RTCSessionDescriptionInit {

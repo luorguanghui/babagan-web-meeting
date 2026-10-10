@@ -85,6 +85,10 @@ function StatsSection({ title, stats, sender = false }: { title: string; stats: 
     [sender ? t('stats.actualOutgoing') : t('stats.bitrate'), unit(stats.bitrateMbps, 'Mbps')],
     [sender ? t('stats.encoderTarget') : t('stats.bitrate'), unit(stats.encoderTargetBitrateMbps, 'Mbps')],
     [t('stats.packetLoss'), format(stats.packetsLost)],
+    [t('stats.intervalPackets'), format(stats.packetsReceivedInInterval)],
+    [t('stats.intervalLoss'), format(stats.packetsLostInInterval)],
+    [t('stats.intervalFeedback'), stats.nackCountInInterval === undefined && stats.pliCountInInterval === undefined
+      ? undefined : `${stats.nackCountInInterval ?? '—'} / ${stats.pliCountInInterval ?? '—'}`],
     [t('stats.rtt'), unit(stats.roundTripTimeMs, 'ms')],
     [t('stats.droppedFrames'), format(stats.framesDropped)],
     [t('stats.freezes'), format(stats.freezeCount)],
