@@ -516,5 +516,7 @@ WASM 与逐帧 JS 适配层位于 `apps/web/public/screen-codecs`，SHA-256、�
 
 网页容器的 `infra/web/Caddyfile` 为页面和同源 Worker/WASM 提供 COOP `same-origin`、COEP `require-corp`。项目非隔离环境只能显式识别为单线程 WASM，不会暗中切换浏览器视频编码器。现有更新脚本替换 web 镜像即可更新这些头；如果修改的是外层 `infra/caddy/Caddyfile`，仍需按原流程更新 Caddy，不能声称 web-only 已应用外层变更。
 
-一键更新器会额外验证公共隔离头、两个编码包的清单与当前容器一致、编码模块的 HTTP 状态／SHA-256、WASM MIME 为 `application/wasm`；缺失或陈旧资源触发原有不可变镜像回滚。发布前需做真实 P2P/TURN、共享声音同步及长期资源稳定验收。开发用 `codec-test.html` 和 `p2p-codec-test.html` 位于 Vite 根目录，不包含在生产 dist 中。
+一键更新器会额外验证公共隔离头、两个编码包的清单与当前容器一致、编码模块及对应源码的 HTTP 状态／大小／SHA-256、WASM MIME 为 `application/wasm`；缺失或陈旧资源触发原有不可变镜像回滚。发布前需做真实 P2P/TURN、共享声音同步及长期资源稳定验收。开发用 `codec-test.html`、`p2p-codec-test.html` 和 `av-codec-test.html` 位于 Vite 根目录，不包含在生产 dist 中。
+
+更新后共享端和观看端都应刷新页面，以使用同一数据通道协议版本；旧页面可使用显式浏览器兼容编码。成功切换后只运行本次发布镜像，旧镜像作为不可变回滚备份保留，不再另外启动旧web实例。资源测试结果见 `docs/acceptance/wasm-screen-implementation-2026-10-10.md`，软件编码帧率不能以目标值或静态画面结果代替实际测量。
 
