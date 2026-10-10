@@ -1,4 +1,5 @@
 import { domainError } from '../domain/errors.js';
+import { validateCloudflareSfuGateway } from './cloudflare-sfu-gateway.js';
 
 export interface SfuTrack { location?: 'local' | 'remote'; kind?: 'video' | 'audio'; mid?: string; sessionId?: string; trackName?: string; errorCode?: string }
 export interface SfuResult { errorCode?: string; sessionId?: string; sessionDescription?: { type: 'offer' | 'answer'; sdp: string }; tracks?: SfuTrack[]; requiresImmediateRenegotiation?: boolean }
@@ -11,12 +12,23 @@ export interface CloudflareSfuApi {
   close?(): Promise<void>;
 }
 
-/** Fixed-origin SFU control API. Never retry allocations or log upstream bodies/SDP. */
+/** Fixed-origin SFU control API, optionally via the trusted Worker. Never retry allocations or log upstream bodies/SDP. */
 export class CloudflareSfuClient implements CloudflareSfuApi {
   private readonly base: string;
-  constructor(private readonly options: { appId: string; appSecret: string; timeoutMs?: number }) {
-    if (!/^[A-Za-z0-9_-]+$/.test(options.appId)) throw new Error('Invalid SFU application identifier');
-    this.base = `https://rtc.live.cloudflare.com/v1/apps/${options.appId}`;
+  private readonly timeoutMs: number;
+  private readonly authorization?: string;
+  constructor(options: { appId?: string; appSecret?: string; gatewayUrl?: string; timeoutMs?: number }) {
+    const gatewayUrl = validateCloudflareSfuGateway(options.gatewayUrl);
+    if (gatewayUrl) {
+      // The existing Worker selects its application and supplies its own token.
+      this.base = gatewayUrl;
+    } else {
+      if (!options.appId || !options.appSecret) throw new Error('Direct SFU credentials must both be configured');
+      if (!/^[A-Za-z0-9_-]+$/.test(options.appId)) throw new Error('Invalid SFU application identifier');
+      this.base = `https://rtc.live.cloudflare.com/v1/apps/${options.appId}`;
+      this.authorization = `Bearer ${options.appSecret}`;
+    }
+    this.timeoutMs = options.timeoutMs ?? (gatewayUrl ? 15_000 : 10_000);
   }
   async createSession(): Promise<string> {
     const result = await this.request('/sessions/new', 'POST');
@@ -42,12 +54,12 @@ export class CloudflareSfuClient implements CloudflareSfuApi {
   async close(): Promise<void> {}
   private async request(path: string, method: string, body?: unknown, allowTrackErrors = false): Promise<SfuResult> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 10_000);
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     timer.unref();
     try {
       const response = await fetch(this.base + path, {
         method, redirect: 'error', signal: controller.signal,
-        headers: { Authorization: `Bearer ${this.options.appSecret}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+        headers: { ...(this.authorization ? { Authorization: this.authorization } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       if (!response.ok) throw domainError('MEDIA_SERVICE_UNAVAILABLE');

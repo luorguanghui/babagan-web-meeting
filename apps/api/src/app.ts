@@ -62,8 +62,8 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   const p2p = dependencies.p2p ?? new P2pRoomRegistry();
   const screenSfu = dependencies.screenSfu ?? new CloudflareSfuService({
     participants: dependencies.participants, registry: p2p,
-    api: dependencies.config.cloudflareSfuAppId && dependencies.config.cloudflareSfuAppSecret
-      ? new CloudflareSfuClient({ appId: dependencies.config.cloudflareSfuAppId, appSecret: dependencies.config.cloudflareSfuAppSecret }) : undefined
+    api: dependencies.config.cloudflareSfuGatewayUrl || (dependencies.config.cloudflareSfuAppId && dependencies.config.cloudflareSfuAppSecret)
+      ? new CloudflareSfuClient({ appId: dependencies.config.cloudflareSfuAppId, appSecret: dependencies.config.cloudflareSfuAppSecret, gatewayUrl: dependencies.config.cloudflareSfuGatewayUrl }) : undefined
   });
   app.addHook('onClose', async () => { await screenSfu.close(); });
   const appDependencies = { ...dependencies, p2p, screenSfu };

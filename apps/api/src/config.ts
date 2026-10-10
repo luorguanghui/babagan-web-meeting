@@ -1,4 +1,5 @@
 import type { P2pTurnProvider } from '@meeting/contracts';
+import { validateCloudflareSfuGateway } from './services/cloudflare-sfu-gateway.js';
 
 export interface AppConfig {
   nodeEnv: 'development' | 'test' | 'production';
@@ -17,6 +18,7 @@ export interface AppConfig {
   p2pTurnProvider?: P2pTurnProvider;
   cloudflareSfuAppId?: string;
   cloudflareSfuAppSecret?: string;
+  cloudflareSfuGatewayUrl?: string;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -92,7 +94,8 @@ function parseCloudflareSfu(env: Environment) {
   const cloudflareSfuAppSecret = env.CLOUDFLARE_SFU_APP_SECRET?.trim() || undefined;
   if (!!cloudflareSfuAppId !== !!cloudflareSfuAppSecret) throw new Error('CLOUDFLARE_SFU_APP_ID and CLOUDFLARE_SFU_APP_SECRET must both be set or both be empty');
   if (cloudflareSfuAppId && !/^[A-Za-z0-9_-]+$/.test(cloudflareSfuAppId)) throw new Error('CLOUDFLARE_SFU_APP_ID must be an identifier');
-  return { cloudflareSfuAppId, cloudflareSfuAppSecret };
+  const cloudflareSfuGatewayUrl = validateCloudflareSfuGateway(env.CLOUDFLARE_SFU_GATEWAY_URL);
+  return { cloudflareSfuAppId, cloudflareSfuAppSecret, cloudflareSfuGatewayUrl };
 }
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';

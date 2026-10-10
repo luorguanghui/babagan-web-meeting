@@ -51,7 +51,7 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 - Cloudflare SFU由共享者在共享前选择，最多四名观看者订阅同一份视频与电脑声音，发布端不再逐观看者编码。失败明确显示，不自动建立P2P／LiveKit屏幕副本。
 - TURN 中继固定使用服务器 coturn，无需选择提供方。停止共享期间显示“正在停止共享”，旧发布和共享权限释放完成后才能再次开始；不同观看者的 SFU 协商独立进行。
 - 项目移除Cloudflare TURN凭据生成、选择器与探测控制。API保留coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP中继端口池）；旧Cloudflare TURN偏好回退自动/coturn。
-- Cloudflare SFU配置`CLOUDFLARE_SFU_APP_ID`和`CLOUDFLARE_SFU_APP_SECRET`，秘密仅后端读取；鉴权和会话请求直连Cloudflare，不使用代理。未配置时入口说明不可用。
+- Cloudflare SFU可成对配置`CLOUDFLARE_SFU_APP_ID`和`CLOUDFLARE_SFU_APP_SECRET`使用服务器直连；也可仅配置`CLOUDFLARE_SFU_GATEWAY_URL=https://p2p.babagan.cloud/api/sfu`，使用现有Worker内的应用凭证，无需服务器保存SFU密钥。两种模式均不把密钥发送给浏览器；未配置时入口说明不可用。
 - 共享者发给观看者的 P2P `offer` 会携带实际 `turnProvider` metadata；观看者会据此重新拉取匹配 provider 的 ICE 配置，保证同一轮共享双方使用同一 provider。旧的无 metadata `offer` 仍按 coturn 兼容处理。
 - LiveKit 内置 TURN/UDP 443 与 RTC/TCP 7881 作为语音与回退屏幕的媒体兜底。
 - Caddy 负责 HTTPS、证书续期和反向代理。

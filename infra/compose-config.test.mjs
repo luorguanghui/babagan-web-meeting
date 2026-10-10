@@ -52,6 +52,7 @@ export function assertProductionComposeConfig(config) {
   assert.equal(services.api.environment.P2P_TURN_TTL_SECONDS, '600');
   assert.ok(!('CLOUDFLARE_SFU_API_PROXY_URL' in services.api.environment));
   assert.equal(services.api.environment.CLOUDFLARE_SFU_APP_SECRET, '');
+  assert.equal(services.api.environment.CLOUDFLARE_SFU_GATEWAY_URL, '');
   assert.ok(!('CLOUDFLARE_TURN_API_TOKEN' in services.api.environment));
   assert.match(services.api.environment.P2P_TURN_URLS, /turns:turn\.babagan\.cloud:5349\?transport=tcp/);
   const livekitVersionMatch = services.livekit.image.match(/:v?(\d+)\.(\d+)\.(\d+)(?:@sha256:[0-9a-f]{64})?$/);

@@ -158,7 +158,9 @@ sudoedit infra/.env.production
 
 共享者在共享前选择 Cloudflare SFU 后，只发送一份屏幕视频与可选电脑声音；所有观看者从同一发布订阅，语音仍使用 LiveKit。P2P/服务器 TURN 与显式 LiveKit SFU 保留，Cloudflare TURN 不再可选。旧 `babagan.screen-turn-provider=cloudflare` 缓存会回退自动/coturn；升级时从当前 env 移除所有 `CLOUDFLARE_TURN_*`，设置 `P2P_TURN_PROVIDER=coturn`，先保留 mode-600 的 env 备份。不要删除 Cloudflare 账户中现有 TURN 应用。
 
-Cloudflare SFU 鉴权和会话请求由服务器直连 `https://rtc.live.cloudflare.com/v1`，浏览器媒体直接连接 SFU；不配置 SFU 代理，不关闭 TLS 验证。更新后的 smoke 会验证真实 SFU App Secret 鉴权及已认证项目 API 的 SFU 可用状态，配置存在但检查失败会回滚；旧的 Cloudflare TURN smoke 豁免不能用于 SFU。真实发布、订阅和媒体仍需会话验收。
+Cloudflare SFU 默认由服务器直连 `https://rtc.live.cloudflare.com/v1` 发起控制请求，浏览器媒体直接连接 SFU；不使用 VPN 代理，不关闭 TLS 验证。更新后的 smoke 会验证当前配置路径的真实 SFU 会话分配及已认证项目 API 的 SFU 可用状态，配置存在但检查失败会回滚；旧的 Cloudflare TURN smoke 豁免不能用于 SFU。真实发布、订阅和媒体仍需会话验收。
+
+若直连控制 API 不稳定，可复用现有 `babagan-p2p` Worker 的 `/api/sfu/` 路由：生产环境仅设置 `CLOUDFLARE_SFU_GATEWAY_URL=https://p2p.babagan.cloud/api/sfu`，移除服务器的 SFU App ID/Secret 配置。应用凭证继续由现有 Worker 配置管理，项目不会读取、替换或向 Worker 发送服务器密钥；服务器只转发已授权会议的 SDP 和会话操作。允许的入口只有该自定义域和 `https://babagan-p2p.1312479965.workers.dev/api/sfu`，不接受任意目标。浏览器媒体仍直连 SFU。控制请求不会在两种路径间自动重试，部署冒烟必须验证当前选中的入口成功。
 
 服务器 coturn 是唯一 TURN 提供方，界面不再显示提供方选择框；观看者仍可选择 TURN 接收路径。停止共享后，客户端等待旧发布和共享权限释放完成才允许下一次捕获，期间显示“正在停止共享”。SFU 上游操作按成员串行，不同观看者可并发协商；失效发布立即撤出发现目录，失败的轨道关闭仍保留后台清理。客户端会话请求最多等待 45 秒，以覆盖两次各 10 秒的上游调用及失败清理，不能把超时自动当成未分配成功并盲重试。
 

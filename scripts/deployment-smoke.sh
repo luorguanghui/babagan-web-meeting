@@ -82,9 +82,9 @@ P2P_TURN_URLS="$p2p_turn_urls" \
 P2P_TURN_PROVIDER="$turn_provider" \
 SMOKE_NODE_IMAGE="$api_image" \
   "$script_dir/smoke-test.sh" "$public_base" "$rtc_url"
-if grep -Eq '^CLOUDFLARE_SFU_APP_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_SFU_APP_SECRET=.+$' "$env_file"; then
-  # Read credentials only inside the running API. Do not echo them, and do
-  # not reuse the retired TURN waiver for this requested SFU integration.
+if grep -Eq '^CLOUDFLARE_SFU_GATEWAY_URL=.+$' "$env_file" || { grep -Eq '^CLOUDFLARE_SFU_APP_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_SFU_APP_SECRET=.+$' "$env_file"; }; then
+  # Verify the configured control path. Direct-mode secrets remain in the API;
+  # gateway mode uses the existing Worker's credentials without reading them.
   docker exec babagan-meeting-api-1 node dist/smoke/cloudflare-sfu-check-cli.js
   sfu_status=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
     -H "Origin: $public_base" -H "Cookie: $smoke_cookie" \

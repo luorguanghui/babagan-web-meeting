@@ -89,6 +89,14 @@ grep -Fc 'args=https://meet.example.com|wss://rtc.example.com' "$temp_dir/smoke.
 
 : >"$temp_dir/docker.log"
 : >"$temp_dir/smoke.log"
+sed -i '/^CLOUDFLARE_SFU_APP_/d' "$temp_dir/production.env"
+printf '%s\n' 'CLOUDFLARE_SFU_GATEWAY_URL=https://p2p.babagan.cloud/api/sfu' >>"$temp_dir/production.env"
+output="$(run_smoke)"
+grep -Fq 'CLOUDFLARE_SFU_API_OK' <<<"$output" \
+  || { echo 'gateway-only SFU configuration was not verified' >&2; exit 1; }
+grep -Fq 'cloudflare-sfu-check-cli.js' "$temp_dir/docker.log"
+: >"$temp_dir/docker.log"
+: >"$temp_dir/smoke.log"
 if MOCK_SFU_SHOULD_FAIL=1 run_smoke; then
   echo 'configured SFU failure did not block the deployment smoke' >&2
   exit 1

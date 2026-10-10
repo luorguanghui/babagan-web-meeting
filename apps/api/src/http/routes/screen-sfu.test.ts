@@ -54,6 +54,17 @@ describe('Cloudflare SFU broker routes', () => {
     return fixture.app.inject({ method, url: `/api/v1/meetings/${slug}/screen-sfu${suffix}`, headers: { cookie, origin: config.publicBaseUrl.origin }, ...(payload === undefined ? {} : { payload }) });
   }
   const offer = { sessionDescription: { type: 'offer', sdp: 'endpoint-sdp' }, tracks: [{ kind: 'video', mid: '0' }, { kind: 'audio', mid: '1' }] };
+  it('enables the app-created SFU service with gateway-only configuration', async () => {
+    await fixture.close();
+    fixture = await createFixture({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu' }, true);
+    const f = await setup();
+    expect((await call(f.slug, f.viewer)).json().available).toBe(true);
+    expect((await call(f.slug, f.publisher, '/publish', 'POST', offer)).statusCode).toBe(200);
+    expect(requests.map(({ url }) => url)).toEqual([
+      'https://p2p.babagan.cloud/api/sfu/sessions/new',
+      'https://p2p.babagan.cloud/api/sfu/sessions/cf-1/tracks/new'
+    ]);
+  });
   it('authenticates status and publish and enforces publisher lock', async () => {
     const f = await setup();
     expect((await call(f.slug, '')).statusCode).toBe(401);
@@ -410,7 +421,7 @@ interface IceFixture {
 
 type TestConfig = AppConfig;
 
-async function createFixture(overrides: Partial<TestConfig> = {}): Promise<IceFixture> {
+async function createFixture(overrides: Partial<TestConfig> = {}, useAppCreatedSfu = false): Promise<IceFixture> {
   const fixtureConfig: TestConfig = { ...config, ...overrides };
   const directory = mkdtempSync(join(tmpdir(), 'meeting-ice-'));
   const db = createDatabase(join(directory, 'meetings.sqlite'));
@@ -438,7 +449,7 @@ async function createFixture(overrides: Partial<TestConfig> = {}): Promise<IceFi
     api: fixtureConfig.cloudflareSfuAppId && fixtureConfig.cloudflareSfuAppSecret ? new CloudflareSfuClient({ appId: fixtureConfig.cloudflareSfuAppId, appSecret: fixtureConfig.cloudflareSfuAppSecret }) : undefined
   });
   const app = await buildApp({
-    config: fixtureConfig, meetings, hosts, participants, media, p2p, screenSfu, webhooks: new StubWebhookHandler()
+    config: fixtureConfig, meetings, hosts, participants, media, p2p, ...(useAppCreatedSfu ? {} : { screenSfu }), webhooks: new StubWebhookHandler()
   });
 
   return {

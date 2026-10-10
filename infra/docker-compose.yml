@@ -75,6 +75,7 @@ services:
       P2P_TURN_PROVIDER: ${P2P_TURN_PROVIDER:-coturn}
       CLOUDFLARE_SFU_APP_ID: ${CLOUDFLARE_SFU_APP_ID:-}
       CLOUDFLARE_SFU_APP_SECRET: ${CLOUDFLARE_SFU_APP_SECRET:-}
+      CLOUDFLARE_SFU_GATEWAY_URL: ${CLOUDFLARE_SFU_GATEWAY_URL:-}
       DATABASE_PATH: /data/meetings.sqlite
     volumes:
       - api-data:/data

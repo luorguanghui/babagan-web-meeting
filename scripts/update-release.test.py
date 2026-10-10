@@ -269,6 +269,7 @@ class CloudflareSfuComposeMigrationTests(unittest.TestCase):
         environment = override['services']['api']['environment']
         self.assertEqual(environment['P2P_TURN_PROVIDER'], 'coturn')
         self.assertEqual(environment['CLOUDFLARE_SFU_APP_SECRET'], '${CLOUDFLARE_SFU_APP_SECRET:-}')
+        self.assertEqual(environment['CLOUDFLARE_SFU_GATEWAY_URL'], '${CLOUDFLARE_SFU_GATEWAY_URL:-}')
         self.assertNotIn('CLOUDFLARE_SFU_API_PROXY_URL', environment)
         self.assertIsNone(environment['CLOUDFLARE_TURN_API_TOKEN'])
         self.assertIsNone(environment['CLOUDFLARE_TURN_HTTPS_PROXY'])

@@ -124,8 +124,8 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
       clock
     });
     const screenSfu = new CloudflareSfuService({ participants, registry: p2p,
-      api: config.cloudflareSfuAppId && config.cloudflareSfuAppSecret
-        ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret }) : undefined
+      api: config.cloudflareSfuGatewayUrl || (config.cloudflareSfuAppId && config.cloudflareSfuAppSecret)
+        ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret, gatewayUrl: config.cloudflareSfuGatewayUrl }) : undefined
     });
     const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu });
     const managed = await startManagedServer({
