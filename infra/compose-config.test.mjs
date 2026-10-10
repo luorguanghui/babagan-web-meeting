@@ -83,10 +83,10 @@ export function assertProductionComposeConfig(config) {
     ['backend', 'edge'],
     'API must keep its private application network and gain an egress route to the Docker host gateway'
   );
-  assert.equal(services.edge.ipam.config[0].subnet, '172.30.0.0/16');
-  assert.equal(services.edge.ipam.config[0].gateway, '172.30.0.1');
-  assert.equal(services.backend.ipam.config[0].subnet, '172.31.0.0/16');
-  assert.equal(services.backend.ipam.config[0].gateway, '172.31.0.1');
+  assert.equal(config.networks.edge.ipam.config[0].subnet, '172.30.0.0/16');
+  assert.equal(config.networks.edge.ipam.config[0].gateway, '172.30.0.1');
+  assert.equal(config.networks.backend.ipam.config[0].subnet, '172.31.0.0/16');
+  assert.equal(config.networks.backend.ipam.config[0].gateway, '172.31.0.1');
   for (const serviceName of ['api', 'caddy']) {
     const extraHosts = services[serviceName].extra_hosts ?? {};
     const edgeGateway = Array.isArray(extraHosts)
