@@ -50,8 +50,10 @@ document.querySelector('#start').onclick = async () => {
       if (!monitor && stream.getAudioTracks().length) {
         monitor = new AudioContext({ sampleRate:48000 }); await monitor.audioWorklet.addModule('/av-marker.worklet.js'); await monitor.resume();
         if (closed) { await monitor.close(); return; }
-        const anchor = performance.now() - monitor.currentTime * 1000;
-        observer = new AudioWorkletNode(monitor,'av-marker-monitor'); observer.port.onmessage=({data})=>record('audio',anchor+data.time*1000,cycle);
+        observer = new AudioWorkletNode(monitor,'av-marker-monitor');
+        // Observe the running graph. A resume-time zero clock is not a valid
+        // epoch for later PCM events, especially after reconnecting contexts.
+        observer.port.onmessage=({data})=>record('audio',performance.now()+(data.time-monitor.currentTime)*1000,cycle);
         const silent = monitor.createGain(); silent.gain.value=0; monitor.createMediaStreamSource(new MediaStream(stream.getAudioTracks())).connect(observer).connect(silent).connect(monitor.destination);
       }
     } });

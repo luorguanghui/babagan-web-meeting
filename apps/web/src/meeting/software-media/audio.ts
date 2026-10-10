@@ -30,10 +30,14 @@ export class ProjectAudioCapture {
     await context.audioWorklet.addModule(new URL('./audio-capture.worklet.js', import.meta.url));
     if (this.closed) { await context.close(); return; }
     await context.resume();
-    const anchor = performance.timeOrigin + performance.now() - context.currentTime * 1000;
+    // resume() can resolve while currentTime is still zero. Calibrate only
+    // once the worklet has processed real samples, avoiding a startup offset.
+    let anchor: number | undefined;
+    context.onstatechange = () => { anchor = undefined; };
     this.node = new AudioWorkletNode(context, 'project-share-capture', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2] });
     this.node.port.onmessage = ({ data }: MessageEvent<{ data: Float32Array<ArrayBuffer>; contextTime: number }>) => {
       if (this.closed || this.pending >= 8) return;
+      anchor ??= performance.timeOrigin + performance.now() - context.currentTime * 1000;
       this.pending++;
       worker.postMessage({ type: 'pcm', data: data.data, timestampUs: Math.round((anchor + data.contextTime * 1000) * 1000) }, [data.data.buffer]);
     };
@@ -58,7 +62,7 @@ export class ProjectAudioPlayback {
   private decoder?: AudioDecoder;
   private readonly timestamps: Array<{ timestampUs: number; used: number }> = [];
   private lastTimestampUs = -Infinity;
-  private anchor = 0;
+  private anchor?: number;
   private closed = false;
   track?: MediaStreamTrack;
   constructor(private readonly clock: PlaybackClock, private readonly onError: (message: string) => void) {}
@@ -71,7 +75,6 @@ export class ProjectAudioPlayback {
     this.node = new AudioWorkletNode(context, 'project-share-playback', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [2] });
     const destination = context.createMediaStreamDestination(); this.node.connect(destination);
     this.track = destination.stream.getAudioTracks()[0];
-    this.anchor = performance.timeOrigin + performance.now() - context.currentTime * 1000;
     void this.resume().catch(() => undefined);
     this.makeDecoder();
   }
@@ -82,6 +85,7 @@ export class ProjectAudioPlayback {
         if (data.numberOfFrames > 5760 || data.numberOfChannels !== 2) throw new Error('Unexpected shared Opus PCM format');
         const samples = new Float32Array(data.numberOfFrames * 2);
         data.copyTo(samples, { planeIndex: 0, format: 'f32' });
+        if (this.context.state !== 'suspended') this.anchor ??= performance.timeOrigin + performance.now() - this.context.currentTime * 1000;
         let offset = 0;
         while (offset < data.numberOfFrames) {
           const packet = this.timestamps[0];
@@ -90,7 +94,7 @@ export class ProjectAudioPlayback {
           const timestampUs = packet.timestampUs + packet.used * 1000000 / 48000;
           const now = performance.now(); this.clock.anchor(timestampUs, now);
           const due = this.clock.dueAt(timestampUs);
-          if (now - due <= 200) {
+          if (this.anchor !== undefined && this.context.state !== 'suspended' && now - due <= 200) {
             const segment = samples.slice(offset * 2, (offset + frames) * 2);
             const startFrame = Math.round((due + performance.timeOrigin - this.anchor) * 48);
             this.node.port.postMessage({ samples: segment, startFrame }, [segment.buffer]);
@@ -106,8 +110,9 @@ export class ProjectAudioPlayback {
   }
   async resume(): Promise<void> {
     if (!this.context || this.closed) return;
+    if (this.context.state === 'suspended') this.node?.port.postMessage({ type: 'clear' });
     await this.context.resume();
-    this.anchor = performance.timeOrigin + performance.now() - this.context.currentTime * 1000;
+    this.anchor = undefined;
   }
   packet(data: Uint8Array, timestampUs: number): void {
     if (this.closed || !this.decoder || this.decoder.state !== 'configured' || this.decoder.decodeQueueSize >= 8 || this.timestamps.length >= 8 || timestampUs <= this.lastTimestampUs) return;

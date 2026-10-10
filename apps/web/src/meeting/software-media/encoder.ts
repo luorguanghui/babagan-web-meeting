@@ -1,3 +1,4 @@
+import { FrameRateLimiter } from './frame-rate.js';
 export interface ProjectStats {
   audioBlocked?: boolean;
   rawFps?: number; encodedFps?: number; decodedFps?: number; renderedFps?: number; encodedBps?: number; sentBps?: number;
@@ -24,12 +25,13 @@ export class ProjectCaptureEncoder {
   private captureDrops = 0;
   private processingExpired = 0;
   private baseTimestamp?: number;
-  private lastSubmitted = -Infinity;
+  private readonly rateLimiter: FrameRateLimiter;
   private stopResolve?: () => void;
   readonly stats: ProjectStats;
   constructor(private readonly options: { codec: 'h264' | 'vp8'; frameRate: number; bitrate: number; threads: number },
     private readonly onPacket: (packet: VideoPacket) => void, private readonly onError: (message: string) => void) {
     this.stats = emptyStats(options.codec);
+    this.rateLimiter = new FrameRateLimiter(options.frameRate);
   }
   async start(original: MediaStreamTrack): Promise<void> {
     const Processor = (globalThis as unknown as { MediaStreamTrackProcessor?: ProcessorConstructor }).MediaStreamTrackProcessor;
@@ -72,10 +74,10 @@ export class ProjectCaptureEncoder {
       const now = performance.timeOrigin + performance.now();
       this.baseTimestamp ??= Math.round(now * 1000) - frame.timestamp;
       const timestampUs = this.baseTimestamp + frame.timestamp;
-      if (this.pending >= 2 || timestampUs - this.lastSubmitted < 1000000 / this.options.frameRate - 500) {
+      if (this.pending >= 2 || !this.rateLimiter.accept(timestampUs)) {
         frame.close(); this.captureDrops++; this.stats.queueDrops++; continue;
       }
-      this.lastSubmitted = timestampUs; this.pending++;
+      this.pending++;
       this.worker?.postMessage({ type: 'frame', frame, timestampUs, capturedAt: now }, [frame]);
     }
   }
