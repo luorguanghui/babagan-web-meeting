@@ -47,7 +47,7 @@ export class CloudflareScreenSession {
         return { track, transceiver };
       });
       await pc.setLocalDescription(await pc.createOffer());
-      await waitForPc(pc, 'icegatheringstatechange', () => pc.iceGatheringState === 'complete', this.abort.signal, 8000);
+      await waitForGatheredIce(pc, this.abort.signal);
       if (!this.current(epoch))
         return;
       const allocation = await this.deps.api.publish({ sessionDescription: description(pc, 'offer'), tracks: transceivers.map(({ track, transceiver }) => {
@@ -116,7 +116,7 @@ export class CloudflareScreenSession {
         accept(event);
       await pc.setRemoteDescription(allocation.sessionDescription);
       await pc.setLocalDescription(await pc.createAnswer());
-      await waitForPc(pc, 'icegatheringstatechange', () => pc.iceGatheringState === 'complete', this.abort.signal, 8000);
+      await waitForGatheredIce(pc, this.abort.signal);
       if (!this.current(epoch))
         return;
       await this.deps.api.answer(allocation.sessionId, description(pc, 'answer'));
@@ -180,7 +180,14 @@ function description(pc: RTCPeerConnection, type: 'offer' | 'answer'): RTCSessio
     throw new Error('Cloudflare SFU SDP is missing.');
   return { type, sdp: pc.localDescription.sdp };
 }
-function waitForPc(pc: RTCPeerConnection, event: string, done: () => boolean, signal: AbortSignal, timeout: number): Promise<void> {
+function waitForGatheredIce(pc: RTCPeerConnection, signal: AbortSignal): Promise<void> {
+  // A stalled STUN request may keep gathering active despite usable candidates.
+  // Cloudflare's bounded gathering pattern sends the candidates already in SDP;
+  // the subsequent connected/video deadlines still verify an actual media path.
+  return waitForPc(pc, 'icegatheringstatechange', () => pc.iceGatheringState === 'complete', signal, 8000,
+    () => /^a=candidate:/m.test(pc.localDescription?.sdp ?? ''));
+}
+function waitForPc(pc: RTCPeerConnection, event: string, done: () => boolean, signal: AbortSignal, timeout: number, readyAtTimeout?: () => boolean): Promise<void> {
   if (signal.aborted)
     return Promise.reject(new Error('Cloudflare SFU session stopped.'));
   if (done())
@@ -196,7 +203,11 @@ function waitForPc(pc: RTCPeerConnection, event: string, done: () => boolean, si
       cleanup();
       reject(new Error('Cloudflare SFU connection failed.'));
     } };
-    const timer = setTimeout(() => { cleanup(); reject(new Error('Cloudflare SFU negotiation timed out.')); }, timeout);
+    const timer = setTimeout(() => {
+      cleanup();
+      if (!signal.aborted && pc.connectionState !== 'closed' && pc.connectionState !== 'failed' && readyAtTimeout?.()) resolve();
+      else reject(new Error('Cloudflare SFU negotiation timed out.'));
+    }, timeout);
     pc.addEventListener(event, check);
     signal.addEventListener('abort', abort, { once: true });
     check();
