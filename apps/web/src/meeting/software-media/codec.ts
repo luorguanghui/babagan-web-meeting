@@ -89,6 +89,7 @@ export class ProjectVideoCodec {
   }
   async setBitrate(bps: number): Promise<void> {
     if (!Number.isSafeInteger(bps) || bps < 100000 || bps > 40000000) throw new Error('Invalid project bitrate');
+    if (bps === this.options.bitrate) return;
     this.options.bitrate = bps;
     if (this.module && this.module._screen_set_bitrate(this.handle, bps) !== 0) throw new Error('Project bitrate update failed');
     if (this.libav && this.encoder) {

@@ -1,0 +1,76 @@
+<!doctype html><meta charset="utf-8"><title>Actual stream AV acceptance</title>
+<button id="start">Start AV test</button><canvas id="source" width="1920" height="1080"></canvas><video id="received" autoplay muted playsinline></video><pre id="result">Ready</pre>
+<script type="module">
+import { ProjectPeerSender } from '/src/meeting/software-media/peer-sender.ts';
+import { ProjectPeerReceiver } from '/src/meeting/software-media/peer-receiver.ts';
+window.result = { status: 'ready' };
+document.querySelector('#start').onclick = async () => {
+  const samples = [], errors = [], cycles = [], markers = new Map();
+  const params = new URLSearchParams(location.search);
+  const duration = Number(params.get('duration') ?? 600000);
+  const canvas = document.querySelector('#source'), context = canvas.getContext('2d');
+  const sound = new AudioContext({ sampleRate: 48000 }); await sound.resume();
+  const destination = sound.createMediaStreamDestination(), tone = sound.createOscillator(), gain = sound.createGain();
+  tone.frequency.value = 1000; gain.gain.value = 0; tone.connect(gain).connect(destination); tone.start();
+  const epoch = performance.now() - sound.currentTime * 1000, start = performance.now(), first = start + 2000;
+  for (let at = first; at < start + duration; at += 5000) { const time = (at - epoch) / 1000; gain.gain.setValueAtTime(.2, time); gain.gain.setValueAtTime(0, time + .12); }
+  let frame = 0, current;
+  const timer = setInterval(() => {
+    const now = performance.now(), index = Math.floor((now - first) / 5000), elapsed = now - first - index * 5000;
+    const marked = index >= 0 && elapsed < 160;
+    context.fillStyle = `hsl(${frame++ * 3 % 360} 70% 35%)`; context.fillRect(0,0,1920,1080);
+    for (let x = 0; x < 20; x++) { context.fillStyle = '#ababab'; context.fillRect((x * 109 + frame * 13) % 1900, (x * 71 + frame * 7) % 1080, 90, 90); }
+    context.fillStyle = marked ? '#ffffff' : '#000000'; context.fillRect(0,0,128,128);
+  }, 1000 / 60);
+  const source = canvas.captureStream(60); source.addTrack(destination.stream.getAudioTracks()[0]);
+  const record = (kind, now, cycle) => {
+    const index = Math.round((now - first - 100) / 5000), key = `${cycle}:${index}`;
+    const item = markers.get(key) ?? { index, cycle }; item[kind] ??= now; markers.set(key,item);
+    if (item.video !== undefined && item.audio !== undefined && !item.recorded) { item.recorded = true; samples.push({ cycle,index,skewMs:item.video-item.audio,videoMs:item.video-start,audioMs:item.audio-start }); }
+  };
+  const onError = error => errors.push(String(error));
+  async function connect(cycle) {
+    const a = new RTCPeerConnection(), b = new RTCPeerConnection(), qa = [], qb = [];
+    a.onicecandidate = ({candidate}) => { if (candidate) b.remoteDescription ? b.addIceCandidate(candidate) : qb.push(candidate); };
+    b.onicecandidate = ({candidate}) => { if (candidate) a.remoteDescription ? a.addIceCandidate(candidate) : qa.push(candidate); };
+    let monitor, observer, reader, closed = false;
+    const receiver = new ProjectPeerReceiver({ pc:b,onError,onStream:async stream => {
+      const video = document.querySelector('#received'); video.srcObject = stream; await video.play();
+      if (!reader) {
+        reader = new MediaStreamTrackProcessor({ track:stream.getVideoTracks()[0] }).readable.getReader();
+        void (async () => { let marked = false; while (!closed) { const next = await reader.read(); if (next.done) break; const input = next.value;
+          try { const bytes = new Uint8Array(4); await input.copyTo(bytes,{format:'RGBA',rect:{x:32,y:32,width:1,height:1}}); const active=bytes[0]>180&&bytes[1]>180&&bytes[2]>180;
+            if(active&&!marked)record('video',performance.now(),cycle); marked=active;
+          } finally { input.close(); }
+        } })().catch(onError);
+      }
+      if (!monitor && stream.getAudioTracks().length) {
+        monitor = new AudioContext({ sampleRate:48000 }); await monitor.audioWorklet.addModule('/av-marker.worklet.js'); await monitor.resume();
+        if (closed) { await monitor.close(); return; }
+        const anchor = performance.now() - monitor.currentTime * 1000;
+        observer = new AudioWorkletNode(monitor,'av-marker-monitor'); observer.port.onmessage=({data})=>record('audio',anchor+data.time*1000,cycle);
+        const silent = monitor.createGain(); silent.gain.value=0; monitor.createMediaStreamSource(new MediaStream(stream.getAudioTracks())).connect(observer).connect(silent).connect(monitor.destination);
+      }
+    } });
+    const sender = new ProjectPeerSender({ pc:a,stream:source,options:{codec:params.get('codec')??'h264',frameRate:60,maxBitrate:8000000},onError });
+    await a.setLocalDescription(await a.createOffer());await b.setRemoteDescription(a.localDescription);await b.setLocalDescription(await b.createAnswer());await a.setRemoteDescription(b.localDescription);
+    for(const candidate of qa)await a.addIceCandidate(candidate);for(const candidate of qb)await b.addIceCandidate(candidate);
+    return {sender,receiver,a,b,async close(){ closed=true; await reader?.cancel(); observer?.disconnect(); await monitor?.close(); await sender.close(); await receiver.close();a.close();b.close(); }};
+  }
+  try {
+    current = await connect(0); window.result={status:'running'};
+    const reconnects=Number(params.get('reconnects')??0), interval=duration/(reconnects+1);
+    let last=-1;
+    const sampleTimer=setInterval(()=>{cycles.push({atMs:performance.now()-start,sent:current.sender.getStats(),received:current.receiver.getStats(),heap:performance.memory?.usedJSHeapSize});},10000);
+    window.check=()=>({elapsedMs:performance.now()-start,samples:samples.length,maxSkewMs:Math.max(0,...samples.map(x=>Math.abs(x.skewMs))),errors,cycles:cycles.length});
+    while(performance.now()-start<duration){
+      const elapsed=performance.now()-start, desired=Math.min(reconnects,Math.floor(elapsed/interval));
+      if(desired>last+1){await current.close();current=await connect(desired);last=desired-1;}
+      await new Promise(resolve=>setTimeout(resolve,500));
+    }
+    clearInterval(sampleTimer);await current.close();clearInterval(timer);source.getTracks().forEach(track=>track.stop());await sound.close();
+    window.result={status:'done',durationMs:performance.now()-start,samples,errors,cycles,reconnects,maxSkewMs:Math.max(0,...samples.map(x=>Math.abs(x.skewMs))),missingMarkers:[...markers.values()].filter(x=>!x.recorded)};
+    document.querySelector('#result').textContent=JSON.stringify(window.result);
+  } catch(error){window.result={status:'error',message:String(error),samples,errors};}
+};
+</script>

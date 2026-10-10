@@ -23,6 +23,7 @@ export class ProjectPeerReceiver {
   private readonly timer: ReturnType<typeof setInterval>;
   private readonly stats = emptyStats();
   private audio?: ProjectAudioPlayback;
+  private audioInitialization?: Promise<void>;
   private readonly sampler = new StatsSampler();
   constructor(private readonly deps: { pc: RTCPeerConnection; onStream: (stream: MediaStream) => void; onError: (message: string) => void }) {
     deps.pc.ondatachannel = event => this.acceptChannel(event.channel);
@@ -70,7 +71,14 @@ export class ProjectPeerReceiver {
     if (this.closed || this.generation !== message.generation) return;
     if (!support.supported) throw new Error('Project codec decoding unsupported; select compatibility/SFU');
     this.config = config; this.makeDecoder();
-    if (message.audio && !this.audio) { this.audio = new ProjectAudioPlayback(this.clock, this.deps.onError); await this.audio.initialize(); }
+    if (message.audio) {
+      if (!this.audio) { this.audio = new ProjectAudioPlayback(this.clock, this.deps.onError); this.audioInitialization = this.audio.initialize(); }
+      await this.audioInitialization;
+      if (this.closed || this.generation !== message.generation) return;
+      if (this.stream && this.audio.track && !this.stream.getAudioTracks().includes(this.audio.track)) {
+        this.stream.addTrack(this.audio.track); this.deps.onStream(this.stream);
+      }
+    }
     this.audio?.clear();
     this.stats.codec = message.codec === 'vp8' ? 'vp8' : 'h264'; this.stats.width = message.width; this.stats.height = message.height;
     if (this.control?.readyState === 'open') this.control.send(JSON.stringify({ type: 'ready', generation: this.generation }));

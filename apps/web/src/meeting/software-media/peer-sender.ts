@@ -83,7 +83,9 @@ export class ProjectPeerSender {
     this.lastKeyRequest = performance.now(); this.encoder.requestKeyframe();
   }
   setBudget(selected: number, viewers: number): void {
-    const budget = softwareBudget(selected, viewers); Object.assign(this.encoder.stats, budget);
+    const budget = softwareBudget(selected, viewers);
+    if (budget.videoBps === this.encoder.stats.videoBps && budget.wireBps === this.encoder.stats.wireBps) return;
+    Object.assign(this.encoder.stats, budget);
     this.encoder.setBitrate(budget.videoBps); this.pacer?.setBitrate(budget.wireBps);
   }
   getStats(): ProjectStats { return this.sampler.sample({ ...this.encoder.stats, sentBytes: this.pacer?.sentBytes ?? 0 }); }

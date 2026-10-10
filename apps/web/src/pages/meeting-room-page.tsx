@@ -228,6 +228,7 @@ export function MeetingRoomPage({
   const hostAuthorizedRef = useRef(false);
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
   const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('project');
+  const [projectMediaError, setProjectMediaError] = useState<string>();
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
   const screenBitrateTouchedRef = useRef(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(screenShareDefaultQuality);
@@ -317,6 +318,7 @@ export function MeetingRoomPage({
       const signaling = signalingRef.current;
       if (!signaling) throw new Error('P2P signaling is not connected.');
       share = createP2pShareController({
+        onProjectMediaError: setProjectMediaError,
         slug,
         signaling,
         fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
@@ -511,6 +513,7 @@ export function MeetingRoomPage({
       if (iceConfiguration === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
         const viewerController = new P2pViewerController(signaling, iceConfiguration.iceServers, {
+          onProjectMediaError: setProjectMediaError,
           iceTransportPolicy: viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
           turnProvider: iceConfiguration.turnProvider,
           onFallbackRequested: (complete) => {
@@ -1035,6 +1038,7 @@ export function MeetingRoomPage({
   const backToMore = () => { setMeetingPanelParent(null); setMeetingPanel('more'); };
 
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
+    {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
     <MeetingTopBar
       title={meetingName || t('room.heading', { name: join.participantName })}
       connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}

@@ -33,6 +33,7 @@ export interface P2pViewerSignaling {
 }
 
 export interface P2pViewerControllerDependencies {
+  onProjectMediaError?: (message: string) => void;
   /** PC factory; defaults to `window.RTCPeerConnection` with the given ICE servers and policy. */
   createPeerConnection?: (iceServers: RTCIceServer[], iceTransportPolicy?: RTCIceTransportPolicy) => RTCPeerConnection;
   /** ICE policy for the next peer connection. `relay` forces TURN. */
@@ -97,6 +98,7 @@ interface ViewerPcSession {
  * and rebuilt, never rejected or double-answered.
  */
 export class P2pViewerController {
+  private readonly onProjectMediaError?: (message: string) => void;
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private iceTransportPolicy: RTCIceTransportPolicy;
   private turnProvider: P2pTurnProvider;
@@ -129,6 +131,7 @@ export class P2pViewerController {
     this.iceTransportPolicy = dependencies.iceTransportPolicy ?? 'all';
     this.turnProvider = dependencies.turnProvider ?? 'coturn';
     this.onFallback = dependencies.onFallback;
+    this.onProjectMediaError = dependencies.onProjectMediaError;
     this.onFallbackRequested = dependencies.onFallbackRequested;
     this.healthSampleIntervalMs = dependencies.healthSampleIntervalMs ?? 1_000;
     this.now = dependencies.now ?? Date.now;
@@ -339,7 +342,10 @@ export class P2pViewerController {
           if (!this.ownsSession(session)) return;
           session.stream = stream; session.videoTrack = stream.getVideoTracks()[0]; this.stream = stream;
           this.emit(); this.armHealthMonitor(session); void this.queueMediaHealthSample(session);
-        }, onError: () => { if (this.ownsSession(session)) this.recoverPeer(session); } });
+        }, onError: message => {
+          if (!this.ownsSession(session)) return;
+          this.onProjectMediaError?.(message); this.teardownSession(); this.transition('idle');
+        } });
       session.project.acceptChannel(event.channel);
     };
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);

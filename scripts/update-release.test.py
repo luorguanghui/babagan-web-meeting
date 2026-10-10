@@ -18,6 +18,37 @@ spec.loader.exec_module(updater)
 
 
 class UpdateTests(unittest.TestCase):
+    def test_codec_http_check_rejects_missing_isolation_and_modified_wasm(self):
+        base = 'https://example.test'
+        data = b'wasm bytes'
+        record = {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}
+        manifest = {'releaseReady': True, 'sources': {'sources/source.tar.gz': record},
+                    'artifacts': {'encoder.wasm': record, 'encoder.mjs': record}}
+        def fetch(url):
+            return json.dumps(manifest).encode() if url.endswith('manifest.json') else data
+        good = lambda url: {'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp',
+                            'content-type': 'application/wasm'}
+        with self.assertRaises(RuntimeError):
+            updater.verify_codec_http(base, fetch, lambda url: {})
+        updater.verify_codec_http(base, fetch, good)
+        with self.assertRaises(RuntimeError):
+            updater.verify_codec_http(base, lambda url: fetch(url) if url.endswith('manifest.json') else b'changed', good)
+
+    def test_codec_http_rejects_empty_artifacts_and_unavailable_corresponding_source(self):
+        data = b'verified bytes'
+        record = {'sha256': hashlib.sha256(data).hexdigest(), 'bytes': len(data)}
+        manifest = {'releaseReady': True, 'sources': {'sources/source.tar.gz': record}, 'artifacts': {}}
+        good = lambda url: {'cross-origin-opener-policy': 'same-origin', 'cross-origin-embedder-policy': 'require-corp',
+                            'content-type': 'application/wasm'}
+        def fetch(url):
+            if url.endswith('manifest.json'):
+                return json.dumps(manifest).encode()
+            return b'404 source body' if '/sources/' in url else data
+        with self.assertRaisesRegex(RuntimeError, 'artifact'):
+            updater.verify_codec_http('https://example.test', fetch, good)
+        manifest['artifacts'] = {'encoder.wasm': record, 'encoder.mjs': record}
+        with self.assertRaisesRegex(RuntimeError, 'hash'):
+            updater.verify_codec_http('https://example.test', fetch, good)
     def test_compose_chain_preserves_overlays_and_rejects_other_projects(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

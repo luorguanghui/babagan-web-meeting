@@ -86,6 +86,7 @@ export interface P2pShareOptions {
  * decides whether to publish a LiveKit screen track for those viewers.
  */
 export interface P2pShareController {
+  getProjectMediaErrors?(): ReadonlyMap<string, string>;
   start(stream: MediaStream, options: P2pShareOptions, viewers: Peer[], recoverNegotiating?: boolean): Promise<void>;
   handleAnswer(from: string, sdp: string, generation?: string): Promise<void>;
   handleIce(from: string, candidate: string | null, generation?: string): Promise<void>;
@@ -193,6 +194,7 @@ export function deserializeIceCandidate(raw: string): RTCIceCandidateInit {
 interface ViewerSession {
   project?: Pick<ProjectPeerSender, 'setBudget' | 'getStats' | 'close'>;
   projectClose?: Promise<void>;
+  projectError?: string;
   identity: string;
   generation: string;
   pc: RTCPeerConnection;
@@ -449,6 +451,9 @@ class P2pShareControllerImpl implements P2pShareController {
     for (const [identity, session] of this.sessions) snapshot.set(identity, session.state);
     return snapshot;
   }
+  getProjectMediaErrors(): ReadonlyMap<string, string> {
+    return new Map([...this.sessions].filter(([, session]) => session.projectError).map(([identity, session]) => [identity, session.projectError!]));
+  }
 
   getViewerTurnProviders(): ReadonlyMap<string, P2pTurnProvider> {
     const snapshot = new Map<string, P2pTurnProvider>();
@@ -589,7 +594,11 @@ class P2pShareControllerImpl implements P2pShareController {
     };
     if (options.encodingEngine === 'project') {
       const factory = this.deps.createProjectSender ?? (settings => new ProjectPeerSender(settings));
-      session.project = factory({ pc, stream, options, onError: message => this.deps.onProjectMediaError?.(message) });
+      session.project = factory({ pc, stream, options, onError: message => {
+        if (session.pcClosed || this.sessions.get(identity) !== session) return;
+        session.projectError = message; this.clearTimers(session); this.closePc(session); session.state = 'closed';
+        this.deps.signaling.sendBye(identity, message.slice(0, 512)); this.emit(); this.deps.onProjectMediaError?.(message);
+      } });
     } else for (const track of stream.getVideoTracks().slice(0, 1)) {
       // A transceiver (not `addTrack`) so we can set codec preferences before
       // the offer is created; the bitrate/frame-rate cap is applied later via
@@ -760,6 +769,7 @@ class P2pShareControllerImpl implements P2pShareController {
       }
       const sender = inspectSenderVideoStats(report);
       this.syncSessionProviderFromStats(session, sender);
+      if (session.project) return;
       await this.adaptEncodingPressure(session, sender);
     } catch {
       // Candidate-pair stats may be briefly unavailable after media-ready.
