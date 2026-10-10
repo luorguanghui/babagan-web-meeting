@@ -33,3 +33,13 @@
 ## 发布状态
 
 用户已授权保留 `maintain-framerate`、部署其余恢复与统计修复。最终候选只更新 Web，API/媒体服务器/Worker 不需变更。发布后两端刷新并重新共享，使用原高动态画面检查最近解码与接收帧率和最近丢包；原设备的卡顿复测另行验收。
+
+### 2026-10-11 最终上线
+
+- 应用提交：`b162c78a242d5111cb9d60cebdc31bc22b802219`，2026-10-11 01:21:20 香港时间完成验证。
+- 发布目录：`/opt/babagan-web-meeting/var/releases/update-20261010T172004Z-3846242`；`current-update.json` 状态为 `deployed-and-verified`，`services=["web"]`。
+- 公网脚本 `/assets/index-BcATFqDB.js` 的 SHA-256：`a8d3fbbe372f6d542701af86b1af9245915b354bf5794c5a4d7d0776d0dfc108`。发布脚本核对其与运行容器一致，另从本机独立下载公网脚本确认相同摘要及新增接收恢复代码。服务器 Docker 构建产物与本机 Windows 构建的文件名/摘要不同，发布身份以服务器源码提交、运行容器与公网匹配为依据。
+- 五个服务健康；API、Caddy、LiveKit、coturn 容器 ID 与部署前一致，仅 Web 更新。无 `update-pending.json`，Cloudflare SFU API 冒烟验证为 true；公网网页与 `/health/ready` 均返回 200。
+- 运行版本源码仍是 `parameters.degradationPreference = options.degradationPreference`，标准/动态档保持 `maintain-framerate`。
+- 数据库备份、旧镜像及回滚脚本已保留。回滚脚本为发布目录下 `rollback.sh`。部署日志：`/opt/babagan-web-meeting/var/releases/sfu-receiver-recovery-20261011.log`。
+- 本地截图证据：`output/sfu-release/deployment-proof.png`。未将用户设备的实际卡顿复测标记为已通过。
