@@ -34,6 +34,20 @@ export async function frameToI420(frame: VideoFrame, width: number, height: numb
       resized = new VideoFrame(canvas, { timestamp: frame.timestamp, alpha: 'discard' });
     }
     const source = resized ?? frame;
+    const rect = source.visibleRect, color = source.colorSpace;
+    // Screen capture commonly already supplies I420. Expanding it to RGBA
+    // and converting every pixel back in JS dominated the encoding budget.
+    // Keep RGB conversion when resampling or changing matrix/range is needed;
+    // our codec package declares limited-range BT.601 output.
+    if (source.format === 'I420' && rect?.width === width && rect.height === height
+      && !(rect.x % 2) && !(rect.y % 2) && color.fullRange !== true
+      && (color.matrix === null || color.matrix === 'smpte170m' || color.matrix === 'bt470bg')) {
+      const size = width * height, output = new Uint8Array(size * 3 / 2);
+      await source.copyTo(output, { layout: [
+        { offset: 0, stride: width }, { offset: size, stride: width / 2 }, { offset: size * 5 / 4, stride: width / 2 }
+      ] });
+      return output;
+    }
     const rgba = new Uint8Array(source.allocationSize({ format: 'RGBA' }));
     const layout = await source.copyTo(rgba, { format: 'RGBA' });
     return rgbaToI420(rgba.subarray(layout[0].offset), width, height, layout[0].stride);
