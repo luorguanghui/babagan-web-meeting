@@ -69,7 +69,7 @@ grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$tem
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
 grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
 grep -Fqx 'provider=cloudflare' "$temp_dir/smoke.log"
-grep -Fqx 'requested=' "$temp_dir/smoke.log"
+grep -Fqx 'requested=auto' "$temp_dir/smoke.log"
 grep -Fqx 'requested=coturn' "$temp_dir/smoke.log"
 grep -Fqx 'requested=cloudflare' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.cloudflare.com:3478' "$temp_dir/smoke.log"
@@ -86,6 +86,7 @@ output="$(SKIP_CLOUDFLARE_SMOKE=1 run_smoke)"
 grep -Fq 'explicitly skipped' <<<"$output"
 [[ "$(grep -c '^args=' "$temp_dir/smoke.log")" == 2 ]] || { echo 'waiver must retain default and explicit coturn smoke' >&2; exit 1; }
 ! grep -Fqx 'requested=cloudflare' "$temp_dir/smoke.log" || { echo 'waived Cloudflare check still ran' >&2; exit 1; }
+! grep -Fqx 'requested=auto' "$temp_dir/smoke.log" || { echo 'waived default Cloudflare provider still ran through auto selection' >&2; exit 1; }
 : >"$temp_dir/docker.log"
 : >"$temp_dir/smoke.log"
 if SMOKE_SHOULD_FAIL=1 run_smoke; then
