@@ -214,13 +214,22 @@ class BrowserScreenShareController implements ScreenShareController {
         ? Math.round(sourceWidth / sourceScale) : portrait ? settings.height : settings.width;
       const maximumHeight = sourceScale && sourceHeight
         ? Math.round(sourceHeight / sourceScale) : portrait ? settings.width : settings.height;
-      await (typeof videoTrack.applyConstraints === 'function'
-        ? videoTrack.applyConstraints({
-          width: { max: maximumWidth },
-          height: { max: maximumHeight },
+      if (typeof videoTrack.applyConstraints === 'function') {
+        const compatibleConstraints = {
+          width: { max: maximumWidth }, height: { max: maximumHeight },
           frameRate: { ideal: settings.frameRate }
-        }).catch(() => undefined)
-        : undefined);
+        };
+        // min/max are allowed after source selection, not in getDisplayMedia.
+        // An ideal-only 60fps request can leave capture near 30fps even while
+        // the hardware encoder has headroom. Preserve the compatibility path
+        // for sources that cannot accept a 60fps minimum.
+        const motionCapture = settings.frameRate === 60;
+        await videoTrack.applyConstraints(motionCapture
+          ? { ...compatibleConstraints, frameRate: { min: 60, ideal: 60, max: 60 } }
+          : compatibleConstraints).catch(async () => {
+          if (motionCapture) await videoTrack.applyConstraints(compatibleConstraints).catch(() => undefined);
+        });
+      }
       // Set before publication so the encoder starts in the intended content
       // mode. Detail favors sharp individual frames and can drop motion frames
       // even while outbound qualityLimitationReason remains "none".
