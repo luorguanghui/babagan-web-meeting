@@ -47,6 +47,8 @@ Cloudflare TURN的旧“暂时忽略连接失败”不等于Cloudflare SFU可以
 
 ## 验收
 
+后续实施调整：用户在直连反复失败后要求复用已有 Worker，并明确保持 Worker 内的凭证和配置。增加受限的可选 `CLOUDFLARE_SFU_GATEWAY_URL`，当前使用现有 `/api/sfu/`；不发送服务器密钥，不自动切换或重试分配，媒体仍直连 SFU。协商改为按成员串行、成员间并发；停止状态等旧权限清理完毕，明确过期会话退出清理队列。详见 [最终发布记录](../../acceptance/2026-10-10-cloudflare-sfu-release.md)。用户接手剩余功能复测，记录中未完成项不得写成通过。
+
 1. 授权/隔离：未登录、非共享者发布、跨会议订阅/关闭、失效shareId、撤权时迟到响应、秘密脱敏。
 2. 真实协商/生命周期：publish-answer、subscribe-offer/answer、partial track错误、超时不盲重试、晚加入/重连、停止/踢出/结束清理。
 3. 一次编码：1到4名观看者收到画面/声音，发布端仅1 video sender/1session，不产生P2P或LiveKit屏幕副本；真实FPS/bitrate/帧输出采样。
