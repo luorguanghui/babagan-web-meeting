@@ -749,7 +749,7 @@ describe('controlled browser screen sharing', () => {
 
   it('requests adaptive 1080p60 capture in high-motion mode and prioritizes frame rate', async () => {
     const order: string[] = [];
-    const { stream } = displayStream({ audio: true });
+    const { stream, video } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
     const publish = vi.fn(async () => { order.push('publish'); });
     const controller = createScreenShareController({
@@ -784,6 +784,26 @@ describe('controlled browser screen sharing', () => {
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('motion');
     expect(stream.getAudioTracks()[0]?.contentHint).toBe('music');
+    expect(video.applyConstraints).toHaveBeenCalledWith({
+      width: { max: 1920 }, height: { max: 1080 }, frameRate: { min: 60, ideal: 60, max: 60 }
+    });
+  });
+
+  it('falls back to ideal capture cadence when the selected source rejects the 60fps minimum', async () => {
+    const { stream, video } = displayStream({ audio: false });
+    const apply = vi.mocked(video.applyConstraints).mockRejectedValueOnce(new DOMException('60fps unsupported', 'OverconstrainedError'));
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({ requestGrant: vi.fn(async () => undefined), releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream), publisher: { publish, release: vi.fn(async () => undefined) } });
+    await controller.start('h264', 8_000_000, 'motion', 'browser');
+    expect(apply.mock.calls).toEqual([
+      [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { min: 60, ideal: 60, max: 60 } }],
+      [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60 } }]
+    ]);
+    expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({ frameRate: 60, encodingEngine: 'browser' }));
+    expect(controller.getState().status).toBe('sharing');
+    expect(video.stop).not.toHaveBeenCalled();
+    await controller.stop();
   });
 
   it('captures and publishes at the flow preset (resolution first, 1080p30)', async () => {
