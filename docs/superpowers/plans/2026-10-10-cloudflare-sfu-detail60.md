@@ -27,23 +27,23 @@
 
 ### Task 1: 共享contracts与设计接口
 
-- [ ] 读取Spec和官方OpenAPI，确定schemas及HTTP/WS接口。
-- [ ] 在`packages/contracts/src/cloudflare-sfu.ts`定义publication/request/response schemas与类型，`index.ts`导出；TDD边界和额外字段拒绝。
-- [ ] 将任务责任拆分：后端拥有`apps/api/**`；前端拥有`apps/web/**`和既有contracts p2p/quality更新；主任务拥有新contracts、部署脚本/infra/docs和真实验收。
+- [x] 读取Spec和官方OpenAPI，确定schemas及HTTP/WS接口。
+- [x] 在`packages/contracts/src/cloudflare-sfu.ts`定义publication/request/response schemas与类型，`index.ts`导出；TDD边界和额外字段拒绝。
+- [x] 将任务责任拆分：后端拥有`apps/api/**`；前端拥有`apps/web/**`和既有contracts p2p/quality更新；主任务拥有新contracts、部署脚本/infra/docs和真实验收。
 
 ### Task 2: 后端SFU broker和Cloudflare TURN移除
 
-- [ ] 成对配置/代理验证RED→GREEN，移除旧TURN credential配置与服务、ice route只保留coturn。
-- [ ] 固定CF client以及session/resource registry、认证路由、超时/partial错误/停止/prune闭环RED→GREEN。
-- [ ] P2P registry记录并广播screen-sfu、welcome快照，撤权/结束/离会清理，secret不出现在公共响应/日志。
-- [ ] 运行API相关测试和类型检查，报告接口与清理证据。
+- [x] 成对配置/直连验证RED→GREEN，移除旧TURN credential配置与服务、ice route只保留coturn；SFU不配置代理。
+- [x] 固定CF client以及session/resource registry、认证路由、超时/partial错误/停止/prune闭环RED→GREEN。
+- [x] P2P registry记录并广播screen-sfu、welcome快照，撤权/结束/离会清理，secret不出现在公共响应/日志。
+- [x] 运行API相关测试和类型检查，报告接口与清理证据。
 
 ### Task 3: 前端SFU媒体及detail60
 
-- [ ] 原生publisher/viewer PC与同源API、协商、stats、epoch关闭回归RED→GREEN。
-- [ ] 新共享传输选项与CF强制原生编码、stage/name/audio/latejoin/reconnect；确保无P2P/LiveKit副本。
-- [ ] 清除前端Cloudflare TURN选项、cache迁移、probe/control、labels及不再有效的测试；保留coturn。
-- [ ] quality/detail60 schema/preset/UI，60约束和detail提示回归；运行Web/contracts测试与类型检查。
+- [x] 原生publisher/viewer PC与同源API、协商、stats、epoch关闭回归RED→GREEN。
+- [x] 新共享传输选项与CF强制原生编码、stage/name/audio/latejoin/reconnect；确保无P2P/LiveKit副本。
+- [x] 清除前端Cloudflare TURN选项、cache迁移、probe/control、labels及不再有效的测试；保留coturn。
+- [x] quality/detail60 schema/preset/UI，60约束和detail提示回归；运行Web/contracts测试与类型检查。
 
 ### Task 4: 集成、配置与真实验证
 

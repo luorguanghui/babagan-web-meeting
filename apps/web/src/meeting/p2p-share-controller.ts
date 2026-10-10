@@ -20,22 +20,11 @@ import {
   type SenderVideoStats
 } from './p2p-media-health.js';
 import {
-  computeCloudflareSourceShortSide,
-  createCloudflareEncodingState,
-  updateCloudflareEncoding,
-  type CloudflareEncodingState
-} from './cloudflare-adaptive-encoding.js';
-import {
   computeP2pMaximumScale,
   createP2pAdaptiveResolutionState,
   updateP2pAdaptiveResolution,
   type P2pAdaptiveResolutionState
 } from './p2p-adaptive-resolution.js';
-import {
-  createCloudflareTurnPathProbe,
-  type CloudflareTurnPathProbe
-} from './cloudflare-turn-path-probe.js';
-import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import type { Peer } from './p2p-signaling.js';
 import { ProjectPeerSender } from './software-media/peer-sender.js';
 import type { ProjectStats } from './software-media/encoder.js';
@@ -45,15 +34,7 @@ export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallb
 /** Lower bound used only when the selected aggregate budget can afford it. */
 export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
 
-/**
- * Coturn sender-side pressure adaptation: when the encoder reports
- * `bandwidth` limitation (with a collapsed frame rate) for this many
- * consecutive samples, the session switches from the user's degradation
- * preference to `balanced` so motion stays smooth and the picture avoids
- * blocky quantization. Cloudflare relay sessions use the continuous controller
- * below instead. The fixed policy restores the user's preference after a
- * longer run of unconstrained samples.
- */
+
 export const P2P_SENDER_PRESSURE_SAMPLE_LIMIT = 3;
 export const P2P_SENDER_RECOVER_SAMPLE_LIMIT = 5;
 /** Frame-rate collapse ratio that counts as "motion is starving" under a bandwidth limit. */
@@ -100,10 +81,6 @@ export interface P2pShareController {
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
   getEncodingDiagnostics?(): ReadonlyMap<string, P2pEncodingDiagnostics>;
-  /** Current TURN path probe snapshot, or an idle snapshot before the first probe. */
-  getTurnPathProbeSnapshot?(): TurnPathProbeSnapshot;
-  /** Subscribes to immutable TURN path probe snapshots; never mutates senders. */
-  subscribeTurnPathProbe?(listener: (snapshot: TurnPathProbeSnapshot) => void): () => void;
 
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
@@ -143,13 +120,7 @@ export interface P2pShareControllerDependencies {
   onAllViewersClosed?: () => void;
   /** Injectable scheduler used by tests; production samples the selected ICE pair once per second. */
   scheduleTransportChecks?: (check: () => Promise<void>, intervalMs: number) => () => void;
-  /** TURN path probe factory; defaults to the browser relay-to-relay loopback probe. */
-  createTurnPathProbe?: () => CloudflareTurnPathProbe;
-  /**
-   * `'observe'` (default) publishes probe snapshots without letting them touch
-   * sender parameters; `'control'` lets the probe drive per-viewer transport caps.
-   */
-  cloudflareTurnControlMode?: 'observe' | 'control';
+
   /** Monotonic clock (ms); defaults to `Date.now`. Injectable for deadline tests. */
   now?: () => number;
 }
@@ -160,11 +131,8 @@ export const IceServersResponseSchema = Type.Object({
     username: Type.Optional(Type.String()),
     credential: Type.Optional(Type.String())
   })),
-  availableTurnProviders: Type.Optional(Type.Array(Type.Union([
-    Type.Literal('coturn'),
-    Type.Literal('cloudflare')
-  ]))),
-  turnProvider: Type.Optional(Type.Union([Type.Literal('coturn'), Type.Literal('cloudflare')])),
+  availableTurnProviders: Type.Optional(Type.Array(Type.Literal('coturn'))),
+  turnProvider: Type.Optional(Type.Literal('coturn')),
   turnCredentialsExpiresAt: Type.Optional(Type.Integer())
 });
 
@@ -227,46 +195,34 @@ interface ViewerSession {
   degradationRelaxed: boolean;
   bandwidthLimitedSamples: number;
   recoveredSamples: number;
-  /** Keeps non-Cloudflare P2P/TURN sessions from staying on a tiny browser layer. */
+
   resolutionProtected: boolean;
   directLowResolutionSamples: number;
   directHealthyResolutionSamples: number;
   directEncoderRecoveryAttempted: boolean;
   directEncoderRecoveryPending: boolean;
   directEncoderRecoveryRetryAt?: number;
-  /** Smoothed per-connection Cloudflare relay encoding state. */
-  cloudflareEncodingState?: CloudflareEncodingState;
+
   /** Smoothed per-connection P2P / direct encoding state for dynamic resolution scaling. */
   p2pEncodingState?: P2pAdaptiveResolutionState;
   /** Previous outbound sample used to derive the actual video bitrate. */
   lastSenderBytesSent?: number;
   lastSenderStatsTimestamp?: number;
-  /** Previous ICE-layer discard counter; the delta is the per-sample pressure. */
-  lastPacketsDiscardedOnSend?: number;
-  /** Previous remote reception counters used to derive per-sample loss. */
-  lastRemotePacketsLost?: number;
-  lastRemotePacketsReceived?: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private readonly fetchIceServers: () => Promise<RTCIceServer[] | P2pIceServerConfiguration>;
   private readonly scheduleTransportChecks: (check: () => Promise<void>, intervalMs: number) => () => void;
-  private readonly createTurnPathProbe: () => CloudflareTurnPathProbe;
-  private readonly cloudflareTurnControlMode: 'observe' | 'control';
   private readonly nowMs: () => number;
   private readonly sessions = new Map<string, ViewerSession>();
   private readonly listeners = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
-  private readonly probeListeners = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
   private iceConfiguration?: P2pIceServerConfiguration;
   private iceRefreshTimer?: ReturnType<typeof setTimeout>;
   /** The captured share the sessions publish; kept for retry re-drives. */
   private activeStream?: MediaStream;
   /** The selected per-viewer P2P tier; the aggregate of all session caps stays under the uplink budget. */
   private activeOptions?: P2pShareOptions;
-  private turnPathProbe?: CloudflareTurnPathProbe;
-  private turnPathProbeIceServers?: RTCIceServer[];
-  private turnPathProbeUnsubscribe?: () => void;
   private nextGeneration = 0;
   private nextRetryToken = 0;
   private readonly pendingRetryTokens = new Map<string, number>();
@@ -279,8 +235,6 @@ class P2pShareControllerImpl implements P2pShareController {
       const timer = setInterval(() => { void check(); }, intervalMs);
       return () => clearInterval(timer);
     });
-    this.createTurnPathProbe = deps.createTurnPathProbe ?? (() => createCloudflareTurnPathProbe());
-    this.cloudflareTurnControlMode = deps.cloudflareTurnControlMode ?? 'observe';
     this.nowMs = deps.now ?? Date.now;
   }
 
@@ -394,7 +348,7 @@ class P2pShareControllerImpl implements P2pShareController {
     if (current) this.closeSession(current);
     const session = this.createSession(from, this.activeStream, this.activeOptions, iceConfiguration);
     session.recoveringTurn = recoveringTurn;
-    this.reconcileTurnPathProbe();
+
     this.emit();
     await this.rebalanceBitrates();
     await this.establishSession(session);
@@ -416,9 +370,7 @@ class P2pShareControllerImpl implements P2pShareController {
       const session = this.createSession(viewer.identity, this.activeStream, this.activeOptions, iceConfiguration);
       sessionsToEstablish.push(session);
     }
-    // Every old session is gone; the probe restarts only once a viewer is on
-    // the Cloudflare relay again.
-    this.reconcileTurnPathProbe();
+
     this.emit();
     await this.rebalanceBitrates();
     const establishes = sessionsToEstablish.map((session) => this.establishSession(session));
@@ -430,7 +382,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.iceRefreshTimer = undefined;
     this.activeStream = undefined;
     this.activeOptions = undefined;
-    this.stopTurnPathProbe();
+
     this.pendingRetryTokens.clear();
     for (const session of this.sessions.values()) {
       if (session.state !== 'closed') this.deps.signaling.sendBye(session.identity);
@@ -467,30 +419,17 @@ class P2pShareControllerImpl implements P2pShareController {
     const snapshot = new Map<string, P2pEncodingDiagnostics>();
     for (const [identity, session] of this.sessions) {
       if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') continue;
-      const isCloudflareTurn = session.state === 'turn' && session.turnProvider === 'cloudflare';
-      const encoding = isCloudflareTurn ? session.cloudflareEncodingState : undefined;
       const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
       snapshot.set(identity, {
         ...(session.project ? { project: session.project.getStats() } : {}),
-        profileTargetBitrateBps: encoding?.profileTargetBitrateBps
-          ?? this.activeOptions?.maxBitrate
+        profileTargetBitrateBps: this.activeOptions?.maxBitrate
           ?? session.options.maxBitrate,
-        transportBitrateCapBps: encoding?.transportBitrateCapBps ?? session.options.maxBitrate,
-        scaleResolutionDownBy: encoding?.scaleResolutionDownBy ?? sourceScale,
+        transportBitrateCapBps: session.options.maxBitrate,
+        scaleResolutionDownBy: sourceScale,
         ...(session.state === 'turn' ? { provider: session.turnProvider } : {})
       });
     }
     return snapshot;
-  }
-
-  getTurnPathProbeSnapshot(): TurnPathProbeSnapshot {
-    return this.turnPathProbe?.getSnapshot() ?? { status: 'idle', probeTargetBps: 2_000_000 };
-  }
-
-  subscribeTurnPathProbe(listener: (snapshot: TurnPathProbeSnapshot) => void): () => void {
-    this.probeListeners.add(listener);
-    listener(this.getTurnPathProbeSnapshot());
-    return () => this.probeListeners.delete(listener);
   }
 
   refreshIceServers(configuration: P2pIceServerConfiguration): void {
@@ -506,8 +445,7 @@ class P2pShareControllerImpl implements P2pShareController {
       }
     }
     this.armIceRefresh(configuration);
-    // Refreshed Cloudflare credentials invalidate the running probe's path.
-    this.reconcileTurnPathProbe();
+
   }
 
   async getStatsReports(): Promise<RTCStatsReport[]> {
@@ -548,7 +486,6 @@ class P2pShareControllerImpl implements P2pShareController {
       this.refreshIceServers(normalizeP2pIceServerConfiguration(await this.fetchIceServers()));
     } catch {
       // A transient provider outage must not tear down a healthy session. Try
-      // again shortly; existing coturn/Cloudflare allocations keep flowing.
       this.iceRefreshTimer = setTimeout(() => {
         this.iceRefreshTimer = undefined;
         void this.refreshIceServersFromProvider();
@@ -779,15 +716,13 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private syncSessionProviderFromStats(session: ViewerSession, sender: SenderVideoStats): void {
     if (session.state !== 'turn' || sender.selectedLocalCandidateUrl === undefined) return;
-    const provider: P2pTurnProvider | undefined = sender.selectedLocalCandidateUrl.includes('turn.cloudflare.com')
-      ? 'cloudflare'
-      : /^turns?:/i.test(sender.selectedLocalCandidateUrl)
+    const provider: P2pTurnProvider | undefined = /^turns?:/i.test(sender.selectedLocalCandidateUrl)
         ? 'coturn'
         : undefined;
     if (provider === undefined || provider === session.turnProvider) return;
     session.turnProvider = provider;
     this.emit();
-    this.reconcileTurnPathProbe();
+
   }
 
   /**
@@ -801,19 +736,6 @@ class P2pShareControllerImpl implements P2pShareController {
   private async adaptEncodingPressure(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
     if (session.state !== 'p2p' && session.state !== 'turn') return;
-    if (session.state === 'turn' && session.turnProvider === 'cloudflare') {
-      await this.adaptCloudflareEncoding(session, sender);
-      const isCollapsed = this.hasCollapsedResolution(session, sender);
-      if (isCollapsed && !session.resolutionProtected) {
-        session.resolutionProtected = true;
-        await this.applySenderParameters(session);
-      } else if (!isCollapsed && session.resolutionProtected) {
-        session.resolutionProtected = false;
-        await this.applySenderParameters(session);
-      }
-      return;
-    }
-
     if (session.state === 'p2p') {
       // Repair the requested direct layer regardless of bitrate, frame rate
       // or limitation label, before considering a bounded encoder re-drive.
@@ -926,59 +848,6 @@ class P2pShareControllerImpl implements P2pShareController {
     if (encodingChanged) await this.applySenderParameters(session);
   }
 
-  /**
-   * Cloudflare relay sessions are controlled per connection. The fixed quality
-   * tier is the profile target; the dynamic transport cap follows the measured
-   * Cloudflare capacity and corroborated congestion only. In `'control'` mode
-   * the independent TURN path probe drives the cap; `'observe'` publishes the
-   * probe without allowing it to mutate sender parameters.
-   */
-  private async adaptCloudflareEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
-    const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
-    const sourceSettings = session.videoSender?.track?.getSettings?.() ?? {};
-    const sourceShortSide = computeCloudflareSourceShortSide(sourceSettings);
-    const created = session.cloudflareEncodingState === undefined;
-    // The profile target is the user's share-level tier, NOT session.options:
-    // a Cloudflare session budgeted while still negotiating would otherwise
-    // inherit a squeezed aggregate share as its permanent quality target.
-    const profileTargetBps = this.activeOptions?.maxBitrate ?? session.options.maxBitrate;
-    const previous = session.cloudflareEncodingState
-      ?? createCloudflareEncodingState(profileTargetBps);
-    const controlMode = this.cloudflareTurnControlMode === 'control';
-    const discardedDelta = deltaOf(sender.packetsDiscardedOnSend, session.lastPacketsDiscardedOnSend);
-    session.lastPacketsDiscardedOnSend = sender.packetsDiscardedOnSend;
-    const next = updateCloudflareEncoding({
-      previous,
-      measurement: {
-        turnProbe: controlMode
-          ? this.getTurnPathProbeSnapshot()
-          : idleTurnPathProbeSnapshot(),
-        availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
-        actualOutgoingBitrateBps,
-        encoderTargetBitrateBps: sender.encoderTargetBitrateBps,
-        roundTripTimeMs: sender.roundTripTimeMs,
-        packetLossRatio: sampleRemoteLossRatio(session, sender),
-        packetsDiscardedOnSendDelta: discardedDelta,
-        qualityLimitationReason: sender.qualityLimitationReason,
-        framesPerSecond: sender.framesPerSecond,
-        targetFrameRate: session.options.frameRate,
-        frameWidth: sender.frameWidth,
-        frameHeight: sender.frameHeight
-      },
-      ...(sourceShortSide === undefined ? {} : { sourceShortSide })
-    });
-    session.cloudflareEncodingState = next;
-    if (controlMode && previous.bandwidthPressureSamples === 0
-      && next.bandwidthPressureSamples === 1) {
-      // Pressure just began on this viewer: ask the probe for fresh windows.
-      this.turnPathProbe?.requestVerification();
-    }
-    const encodingChanged = next.transportBitrateCapBps !== previous.transportBitrateCapBps
-      || next.scaleResolutionDownBy !== previous.scaleResolutionDownBy
-      || next.resolutionRecoveryActive !== previous.resolutionRecoveryActive
-      || next.hardResolutionProtection !== previous.hardResolutionProtection;
-    if (controlMode && (created || encodingChanged)) await this.applySenderParameters(session);
-  }
 
   private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
     const bytesSent = sender.bytesSent;
@@ -1062,21 +931,11 @@ class P2pShareControllerImpl implements P2pShareController {
       try {
         const { options } = session;
         const currentParameters = session.videoSender.getParameters();
-        const cloudflareAdaptive = this.cloudflareTurnControlMode === 'control'
-          && session.state === 'turn'
-          && session.turnProvider === 'cloudflare'
-          && session.cloudflareEncodingState !== undefined;
-        const cloudflareObserved = this.cloudflareTurnControlMode === 'observe'
-          && session.state === 'turn'
-          && session.turnProvider === 'cloudflare';
-        const p2pAdaptive = session.state === 'turn' && session.turnProvider !== 'cloudflare'
-          && session.p2pEncodingState !== undefined;
+        const p2pAdaptive = session.state === 'turn' && session.p2pEncodingState !== undefined;
         const baseScale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
         const resolutionFirst = session.state === 'negotiating' || session.state === 'p2p';
         const scale = resolutionFirst
           ? baseScale ?? 1
-          : cloudflareAdaptive
-          ? session.cloudflareEncodingState!.scaleResolutionDownBy
           : p2pAdaptive
             ? session.p2pEncodingState!.scaleResolutionDownBy
             : baseScale;
@@ -1087,20 +946,12 @@ class P2pShareControllerImpl implements P2pShareController {
             // Keep negotiated rid/active/priority and browser-specific fields;
             // dropping them can make setParameters reject the entire update.
             ...currentParameters.encodings[0],
-            maxBitrate: cloudflareAdaptive
-              ? session.cloudflareEncodingState!.transportBitrateCapBps
-              : options.maxBitrate,
+            maxBitrate: options.maxBitrate,
             maxFramerate: options.frameRate,
-            ...(cloudflareObserved || scale === undefined ? {} : { scaleResolutionDownBy: scale })
+            ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
           }],
           degradationPreference: resolutionFirst
             ? 'maintain-resolution'
-            : cloudflareObserved
-            ? currentParameters.degradationPreference ?? options.degradationPreference
-            : cloudflareAdaptive
-            ? (session.cloudflareEncodingState!.hardResolutionProtection || session.cloudflareEncodingState!.resolutionRecoveryActive
-              ? 'maintain-resolution'
-              : 'maintain-framerate')
             : session.resolutionProtected
               ? 'maintain-resolution'
               : (p2pAdaptive && isActivelyDownscaled)
@@ -1134,22 +985,14 @@ class P2pShareControllerImpl implements P2pShareController {
     await session.transportSampleTail;
   }
 
-  /**
-   * Allocates the per-viewer encoding cap for direct, coturn and negotiating
-   * sessions. Cloudflare relay sessions are deliberately excluded: their
-   * per-connection controller follows the relay estimate and the selected
-   * Cloudflare policy explicitly accepts aggregate uplink contention.
-   */
+
   private async rebalanceBitrates(): Promise<void> {
     const selected = this.activeOptions;
     if (selected === undefined) return;
     const active = [...this.sessions.values()].filter((session) => !session.pcClosed
       && (session.state === 'negotiating' || session.state === 'p2p' || session.state === 'turn'));
     if (active.length === 0) return;
-    const budgeted = active.filter((session) => !(session.state === 'turn' && session.turnProvider === 'cloudflare'));
-    const cloudflareRelays = active.filter(
-      (session) => session.state === 'turn' && session.turnProvider === 'cloudflare'
-    );
+    const budgeted = active;
     const fairShare = Math.floor(P2P_TOTAL_UPLINK_BUDGET_BPS / Math.max(1, budgeted.length));
     const perViewer = Math.min(selected.maxBitrate, fairShare);
     const maxBitrate = selected.maxBitrate >= P2P_VIEWER_BITRATE_FLOOR * Math.max(1, budgeted.length)
@@ -1160,14 +1003,6 @@ class P2pShareControllerImpl implements P2pShareController {
         session.options = { ...selected, maxBitrate };
         await this.applySenderParameters(session);
       }),
-      ...cloudflareRelays.map(async (session) => {
-        // A Cloudflare relay may have been squeezed while it was still
-        // negotiating. Once classified, restore the selected profile tier.
-        // In control mode applySenderParameters still uses the independent
-        // dynamic transport cap instead of overwriting it.
-        session.options = { ...selected };
-        await this.applySenderParameters(session);
-      })
     ]);
   }
 
@@ -1273,49 +1108,9 @@ class P2pShareControllerImpl implements P2pShareController {
     session.state = state;
     this.emit();
     void this.rebalanceBitrates();
-    this.reconcileTurnPathProbe();
+
   }
 
-  /**
-   * Keeps exactly one TURN path probe alive while (and only while) some viewer
-   * is on a Cloudflare TURN relay. The probe follows the controller's current
-   * Cloudflare ICE credentials; refreshed credentials rebuild it. Observation
-   * mode only publishes snapshots — senders are never touched from here.
-   */
-  private reconcileTurnPathProbe(): void {
-    const configuration = this.iceConfiguration;
-    const hasCloudflareViewer = configuration?.turnProvider === 'cloudflare'
-      && [...this.sessions.values()].some(
-      (session) => session.state === 'turn' && session.turnProvider === 'cloudflare' && !session.pcClosed
-      );
-    if (!hasCloudflareViewer) {
-      this.stopTurnPathProbe();
-      return;
-    }
-    const iceServers = this.iceConfiguration?.iceServers;
-    if (iceServers === undefined) return;
-    if (this.turnPathProbe !== undefined && this.turnPathProbeIceServers === iceServers) return;
-
-    // New credentials (or a first start): rebuild the probe on the fresh path.
-    this.stopTurnPathProbe();
-    const probe = this.createTurnPathProbe();
-    this.turnPathProbe = probe;
-    this.turnPathProbeIceServers = iceServers;
-    this.turnPathProbeUnsubscribe = probe.subscribe((snapshot) => {
-      for (const listener of [...this.probeListeners]) listener(snapshot);
-    });
-    void probe.start(iceServers).catch(() => undefined);
-  }
-
-  private stopTurnPathProbe(): void {
-    const probe = this.turnPathProbe;
-    if (probe === undefined) return;
-    this.turnPathProbe = undefined;
-    this.turnPathProbeIceServers = undefined;
-    this.turnPathProbeUnsubscribe?.();
-    this.turnPathProbeUnsubscribe = undefined;
-    void probe.stop().catch(() => undefined);
-  }
 
   private allViewersClosed(): boolean {
     return this.sessions.size > 0 && [...this.sessions.values()].every((session) => session.state === 'closed');
@@ -1331,34 +1126,6 @@ function pressureDegradationPreference(
   preference: RTCDegradationPreference
 ): RTCDegradationPreference {
   return preference === 'maintain-framerate' ? 'maintain-framerate' : 'balanced';
-}
-
-function idleTurnPathProbeSnapshot(): TurnPathProbeSnapshot {
-  return { status: 'idle', probeTargetBps: 2_000_000 };
-}
-
-/** Per-sample increase of a cumulative counter; undefined until a baseline exists. */
-function deltaOf(current: number | undefined, previous: number | undefined): number | undefined {
-  if (current === undefined) return undefined;
-  if (previous === undefined || current < previous) return undefined;
-  return current - previous;
-}
-
-/** Remote reception loss ratio for this sample; undefined until a baseline exists. */
-function sampleRemoteLossRatio(session: ViewerSession, sender: SenderVideoStats): number | undefined {
-  const lost = sender.remotePacketsLost;
-  const received = sender.remotePacketsReceived;
-  const previousLost = session.lastRemotePacketsLost;
-  const previousReceived = session.lastRemotePacketsReceived;
-  if (lost !== undefined && lost >= 0) session.lastRemotePacketsLost = lost;
-  if (received !== undefined && received >= 0) session.lastRemotePacketsReceived = received;
-  if (lost === undefined || received === undefined || lost < 0 || received < 0
-    || previousLost === undefined || previousReceived === undefined
-    || lost < previousLost || received < previousReceived) return undefined;
-  const lostDelta = lost - previousLost;
-  const receivedDelta = received - previousReceived;
-  const total = lostDelta + receivedDelta;
-  return total > 0 ? lostDelta / total : undefined;
 }
 
 /**

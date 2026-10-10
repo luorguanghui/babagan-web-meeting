@@ -424,6 +424,19 @@ describe('server lifecycle', () => {
     vi.useRealTimers();
   });
 
+  it('waits for asynchronous SFU cleanup before starting and completing cleanup work', async () => {
+    const cleanup = deferred<void>();
+    const began = deferred<void>();
+    const app = { listen: vi.fn(async () => undefined), close: vi.fn(async () => undefined), log: { error: vi.fn() } };
+    const start = startManagedServer({ app, database: { close() {} }, meetings: { runCleanup: async () => ['ended-meeting'] }, onMeetingsCleaned: async () => { began.resolve(); await cleanup.promise; } });
+    await began.promise;
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(app.listen).not.toHaveBeenCalled();
+    cleanup.resolve();
+    const managed = await start;
+    expect(app.listen).toHaveBeenCalledOnce();
+    await managed.shutdown();
+  });
   it('reports every slug returned by scheduled cleanup', async () => {
     vi.useFakeTimers();
     const onMeetingsCleaned = vi.fn();

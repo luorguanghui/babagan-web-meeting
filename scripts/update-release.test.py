@@ -242,7 +242,7 @@ class UpdateTests(unittest.TestCase):
                 return ''
             def fetch(args):
                 return b'<script type="module" src="/assets/index-new.js"></script>' if args[-1].endswith('/') else (b'stale public JavaScript' if mismatch else asset)
-            options = SimpleNamespace(ref='main', commit=None, web_only=web_only, skip_cloudflare_smoke=False)
+            options = SimpleNamespace(ref='main', commit=None, web_only=web_only)
             with patch.object(updater, 'command', side_effect=run), patch.object(updater.subprocess, 'check_output', side_effect=fetch):
                 if mismatch:
                     with self.assertRaisesRegex(RuntimeError, 'Public JavaScript'):
@@ -262,6 +262,21 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(env.read_text(), 'PUBLIC_BASE_URL=https://meet.example.test\nCOOKIE_SECRET=private-value\n')
             self.assertNotIn('private-value', json.dumps(record))
 
+
+class CloudflareSfuComposeMigrationTests(unittest.TestCase):
+    def test_api_override_exposes_sfu_credentials_and_unsets_retired_turn_keys(self):
+        override = json.loads(updater.candidate_override({'api': 'candidate-api', 'web': 'candidate-web'}))
+        environment = override['services']['api']['environment']
+        self.assertEqual(environment['P2P_TURN_PROVIDER'], 'coturn')
+        self.assertEqual(environment['CLOUDFLARE_SFU_APP_SECRET'], '${CLOUDFLARE_SFU_APP_SECRET:-}')
+        self.assertNotIn('CLOUDFLARE_SFU_API_PROXY_URL', environment)
+        self.assertIsNone(environment['CLOUDFLARE_TURN_API_TOKEN'])
+        self.assertIsNone(environment['CLOUDFLARE_TURN_HTTPS_PROXY'])
+        self.assertEqual(override['services']['web'], {'image': 'candidate-web'})
+
+    def test_web_only_override_does_not_reconfigure_api(self):
+        override = json.loads(updater.candidate_override({'web': 'candidate-web'}))
+        self.assertEqual(override, {'services': {'web': {'image': 'candidate-web'}}})
 
 if __name__ == '__main__':
     unittest.main()

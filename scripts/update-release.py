@@ -246,7 +246,7 @@ def perform_update(options, app, env_file, state):
     require_no_meeting(database)
     rollback = write_rollback(release, compose, before, selected)
     override = release / 'override.yml'
-    override.write_text('services:\n' + ''.join(f'  {s}:\n    image: {images[s]}\n' for s in selected))
+    override.write_text(candidate_override(images))
     override.chmod(0o600)
     candidate = compose + ['-f', str(override)]
     command(candidate + ['config', '-q'])
@@ -291,19 +291,39 @@ def perform_update(options, app, env_file, state):
                     raise RuntimeError('Public codec manifest does not match the running container')
         proof.update(publicAsset=asset, publicAssetSha256=digest, containers=container_metadata(after))
         api_image = images.get('api') or next(c['Image'] for c in before if c['Name'] == '/babagan-meeting-api-1')
-        smoke_env = dict(os.environ, SKIP_CLOUDFLARE_SMOKE='1' if options.skip_cloudflare_smoke else '0')
         with (release / 'smoke.log').open('w') as log:
             command(['bash', str(source / 'scripts/deployment-smoke.sh'), files[0], str(env_file), api_image,
-                     public_base, public_base.replace('https://', 'wss://') + '/rtc'], output=log, env=smoke_env)
+                     public_base, public_base.replace('https://', 'wss://') + '/rtc'], output=log)
+        sfu_enabled = any(line.startswith('CLOUDFLARE_SFU_APP_ID=') and line.split('=', 1)[1].strip()
+                          for line in env_file.read_text().splitlines())
+        sfu_verified = 'CLOUDFLARE_SFU_API_OK' in (release / 'smoke.log').read_text()
+        if sfu_enabled and not sfu_verified:
+            raise RuntimeError('Configured Cloudflare SFU API verification did not pass')
+        proof['cloudflareSfuApiVerified'] = sfu_verified
     activate(candidate, selected, rollback, verify, release)
     record = {'status': 'deployed-and-verified', 'commit': sha, 'services': selected,
               'verifiedAtUtc': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'rollbackScript': str(rollback), 'composeFiles': files + [str(override)],
-              'cloudflareSmokeSkipped': options.skip_cloudflare_smoke, **backup_record, **proof}
+              **backup_record, **proof}
     save(release / 'release.json', record)
     save(state / 'current-update.json', record)
     pending.rename(release / 'pending-completed.json')
     print(f'UPDATE SUCCEEDED: {sha}\nRelease record: {release / "release.json"}\nRollback: {rollback}', flush=True)
+
+
+def candidate_override(images):
+    services = {name: {'image': image} for name, image in images.items()}
+    if 'api' in services:
+        # Installed Compose overlays can predate SFU support. Migrate only
+        # the retired TURN settings and current server-only SFU credentials.
+        environment = {'P2P_TURN_PROVIDER': 'coturn'}
+        for name in ('KEY_ID', 'API_TOKEN', 'TTL_SECONDS', 'CONNECT_IPS', 'HTTPS_PROXY'):
+            environment['CLOUDFLARE_TURN_' + name] = None
+        for name in ('APP_ID', 'APP_SECRET'):
+            key = 'CLOUDFLARE_SFU_' + name
+            environment[key] = '${' + key + ':-}'
+        services['api']['environment'] = environment
+    return json.dumps({'services': services}, indent=2) + '\n'
 
 
 def main():
@@ -312,7 +332,6 @@ def main():
     parser.add_argument('--ref', default='main', help='reviewed remote branch (default: main)')
     parser.add_argument('--commit', help='optional exact reviewed 40-character commit')
     parser.add_argument('--web-only', action='store_true', help='only update the static web service')
-    parser.add_argument('--skip-cloudflare-smoke', action='store_true', help='explicitly waive only the Cloudflare provider check')
     options = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*', options.ref) or '..' in options.ref:
         parser.error('invalid branch name')

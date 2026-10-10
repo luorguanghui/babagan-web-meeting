@@ -51,12 +51,7 @@ need_file "$env_file"; [[ "$(stat -c '%a' "$env_file")" == 600 ]] || fail 'produ
 grep -Eq 'replace-with|development-only|change-me|example-'secret "$env_file" && fail 'production environment contains example values'
 for key in PUBLIC_BASE_URL LIVEKIT_URL LIVEKIT_INTERNAL_URL LIVEKIT_NODE_IP LIVEKIT_API_KEY LIVEKIT_API_SECRET ADMIN_PASSWORD_HASH COOKIE_SECRET P2P_STUN_URLS P2P_TURN_URLS P2P_TURN_SECRET P2P_TURN_TTL_SECONDS TURN_SHARED_SECRET TURN_EXTERNAL_IP TURN_RELAY_IP; do grep -Eq "^${key}=.+" "$env_file" || fail "missing $key"; done
 turn_provider="$(sed -n 's/^P2P_TURN_PROVIDER=//p' "$env_file")"; turn_provider="${turn_provider:-coturn}"
-[[ "$turn_provider" == coturn || "$turn_provider" == cloudflare ]] || fail 'P2P_TURN_PROVIDER must be coturn or cloudflare'
-if [[ "$turn_provider" == cloudflare ]]; then
-  grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_KEY_ID'
-  grep -Eq '^CLOUDFLARE_TURN_API_TOKEN=.+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_API_TOKEN'
-  grep -Eq '^CLOUDFLARE_TURN_TTL_SECONDS=[0-9]+$' "$env_file" || fail 'missing CLOUDFLARE_TURN_TTL_SECONDS'
-fi
+[[ "$turn_provider" == coturn ]] || fail 'P2P_TURN_PROVIDER must be coturn'
 [[ "$(grep -c '^LIVEKIT_IMAGE=' "$env_file")" -le 1 ]] || fail 'LIVEKIT_IMAGE must appear at most once'
 livekit_image="$(sed -n 's/^LIVEKIT_IMAGE=//p' "$env_file")"
 livekit_image="${livekit_image:-livekit/livekit-server:v1.11.0@sha256:100b9a870616d02f5e3795b34e0b593b5054a26f8131a94fd3fa322ed3154b16}"

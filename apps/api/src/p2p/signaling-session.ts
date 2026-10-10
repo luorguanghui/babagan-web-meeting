@@ -88,6 +88,7 @@ export class P2pSignalingSession {
     this.registry.join(this.slug, this.identity, this.nickname, this.socket);
     this.send({
       type: 'welcome',
+      screenSfu: this.registry.getScreenSfu(this.slug),
       peers: this.registry.listPeers(this.slug).filter((peer) => peer.identity !== this.identity)
     });
     this.registry.broadcast(this.slug, {

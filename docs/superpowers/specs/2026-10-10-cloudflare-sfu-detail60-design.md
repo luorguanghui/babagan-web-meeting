@@ -41,9 +41,9 @@ Cloudflare已存在应用`babagan-sfu`。连接API为`https://rtc.live.cloudflar
 
 ## 配置与部署
 
-新增可选成对`CLOUDFLARE_SFU_APP_ID`/`CLOUDFLARE_SFU_APP_SECRET`，及可选server-only HTTP(S)信令代理`CLOUDFLARE_SFU_API_PROXY_URL`。无配置时available=false，UI解释未配置而非空白。不使用旧TURN token代替App Secret。部署API+web并迁移env，P2P_TURN_PROVIDER=coturn；保护性备份env和数据库/镜像，更新器沿用验证与回滚，不绕过活动会议检查。
+新增可选成对`CLOUDFLARE_SFU_APP_ID`/`CLOUDFLARE_SFU_APP_SECRET`。用户明确要求SFU鉴权/会话请求不用代理：后端固定HTTPS直连，不提供SFU代理配置。无配置时available=false，UI解释未配置而非空白。不使用旧TURN token代替App Secret。部署API+web并迁移env，P2P_TURN_PROVIDER=coturn；保护性备份env和数据库/镜像，更新器沿用验证与回滚，不绕过活动会议检查。
 
-Cloudflare TURN的旧“暂时忽略连接失败”不等于Cloudflare SFU可以跳过验收：必须验证后端实际SFU鉴权/协商与真实浏览器媒体。服务器到rtc.live.cloudflare.com曾有连接问题，优先复用经过验证的server代理配置，保持TLS验证；不可声称仅单元测试即已上线可用。
+Cloudflare TURN的旧“暂时忽略连接失败”不等于Cloudflare SFU可以跳过验收：必须验证后端实际SFU鉴权/协商与真实浏览器媒体。服务器到rtc.live.cloudflare.com曾有连接问题，按用户要求检查和解决直连连通性，保持TLS验证；不可擅自改用代理，也不可声称仅单元测试即已上线可用。
 
 ## 验收
 

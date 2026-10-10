@@ -7,6 +7,7 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { MeetingService } from '../../services/meeting-service.js';
 import type { HostApplicationService } from '../../services/host-application-service.js';
@@ -25,6 +26,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   hosts: HostApplicationService;
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
+  screenSfu: CloudflareSfuService;
 }): void {
   app.post('/api/v1/meetings/:slug/join', {
     schema: { params: SlugParamsSchema, body: JoinMeetingRequestSchema, response: { 200: JoinMeetingResponseSchema } },
@@ -59,6 +61,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     // read the holder first so `share-gone` is only announced in that case.
     const wasSharer = dependencies.participants.getShareIdentity(value) === participant.identity;
     await dependencies.meetings.leaveMeeting(value, participant.identity);
+    await dependencies.screenSfu.closeParticipant(value, participant.identity);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
@@ -71,6 +74,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     // lock is actually released.
     const wasSharer = dependencies.participants.getShareIdentity(value) === active.identity;
     await dependencies.hosts.releaseParticipantShare(value, active.identity);
+    await dependencies.screenSfu.reconcile(value);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });

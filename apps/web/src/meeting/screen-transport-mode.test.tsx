@@ -59,15 +59,15 @@ describe('screen transport mode', () => {
   });
 
   it('keeps the actual TURN provider visible for viewers and sharers', () => {
-    expect(deriveViewerTurnProvider('turn', 'cloudflare')).toBe('cloudflare');
-    expect(deriveViewerTurnProvider('p2p', 'cloudflare')).toBeUndefined();
+    expect(deriveViewerTurnProvider('turn', 'coturn')).toBe('coturn');
+    expect(deriveViewerTurnProvider('p2p', 'coturn')).toBeUndefined();
     expect(deriveSharerTurnProvider(
       new Map([['viewer-1', 'turn'], ['viewer-2', 'turn']]),
-      new Map([['viewer-1', 'cloudflare'], ['viewer-2', 'cloudflare']])
-    )).toBe('cloudflare');
+      new Map([['viewer-1', 'coturn'], ['viewer-2', 'coturn']])
+    )).toBe('coturn');
     expect(deriveSharerTurnProvider(
       new Map([['viewer-1', 'turn'], ['viewer-2', 'turn']]),
-      new Map([['viewer-1', 'cloudflare'], ['viewer-2', 'coturn']])
-    )).toBe('mixed');
+      new Map([['viewer-1', 'coturn'], ['viewer-2', 'coturn']])
+    )).toBe('coturn');
   });
 });

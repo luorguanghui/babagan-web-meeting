@@ -6,6 +6,9 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { CloudflareSfuClient } from './services/cloudflare-sfu-client.js';
+import { CloudflareSfuService } from './services/cloudflare-sfu.js';
+import { registerScreenSfuRoutes } from './http/routes/screen-sfu.js';
 import type { AppConfig } from './config.js';
 import { registerErrorHandler } from './http/error-handler.js';
 import { registerStrictOriginValidation } from './http/origin.js';
@@ -32,6 +35,7 @@ export interface AppDependencies {
   webhooks: WebhookHandler;
   /** Shared P2P room registry; created per-app when not provided. */
   p2p?: P2pRoomRegistry;
+  screenSfu?: CloudflareSfuService;
 }
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
@@ -56,12 +60,19 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     new Set(['/internal/livekit/webhook'])
   );
   const p2p = dependencies.p2p ?? new P2pRoomRegistry();
-  const appDependencies = { ...dependencies, p2p };
+  const screenSfu = dependencies.screenSfu ?? new CloudflareSfuService({
+    participants: dependencies.participants, registry: p2p,
+    api: dependencies.config.cloudflareSfuAppId && dependencies.config.cloudflareSfuAppSecret
+      ? new CloudflareSfuClient({ appId: dependencies.config.cloudflareSfuAppId, appSecret: dependencies.config.cloudflareSfuAppSecret }) : undefined
+  });
+  app.addHook('onClose', async () => { await screenSfu.close(); });
+  const appDependencies = { ...dependencies, p2p, screenSfu };
+  registerScreenSfuRoutes(app, appDependencies);
   registerMeetingRoutes(app, appDependencies);
   registerParticipantRoutes(app, appDependencies);
   registerP2pStatsRoutes(app, appDependencies);
   registerIceServersRoutes(app, dependencies);
-  registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p);
+  registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p, screenSfu);
   registerP2pSignalingRoute(app, appDependencies);
   registerHealthRoutes(app, dependencies);
   await app.ready();

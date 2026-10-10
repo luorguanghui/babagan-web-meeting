@@ -19,10 +19,16 @@ import {
 } from './index.js';
 
 describe('P2P signaling contract types', () => {
+  it('carries SFU discovery in welcome and updates, and rejects removed TURN provider', () => {
+    const publication = { shareId: 'share', sessionId: 'session', sharerIdentity: 'Ada', sharerName: 'Ada', tracks: [{ kind: 'video', trackName: 'screen' }] };
+    expect(Value.Check(P2pServerMessageSchema, { type: 'welcome', peers: [], screenSfu: publication })).toBe(true);
+    expect(Value.Check(P2pServerMessageSchema, { type: 'screen-sfu', publication: null })).toBe(true);
+    expect(Value.Check(P2pClientMessageSchema, { type: 'offer', to: 'viewer', sdp: 'sdp', turnProvider: 'cloudflare' })).toBe(false);
+  });
   it('exports the exact client-message discriminated union', () => {
     expectTypeOf<P2pClientMessage>().toEqualTypeOf<
       | { type: 'hello'; participantIdentity: string }
-      | { type: 'offer'; to: string; sdp: string; generation?: string; turnProvider?: 'coturn' | 'cloudflare' }
+      | { type: 'offer'; to: string; sdp: string; generation?: string; turnProvider?: 'coturn' }
       | { type: 'answer'; to: string; sdp: string; generation?: string }
       | { type: 'ice'; to: string; candidate: string | null; generation?: string } // null = end-of-candidates
       | { type: 'media-ready'; to: string; generation?: string }
@@ -35,7 +41,8 @@ describe('P2P signaling contract types', () => {
 
   it('exports the exact server-message discriminated union', () => {
     expectTypeOf<P2pServerMessage>().toEqualTypeOf<
-      | { type: 'welcome'; peers: Array<{ identity: string; nickname: string }> }
+      | { type: 'welcome'; peers: Array<{ identity: string; nickname: string }>; screenSfu?: import('./cloudflare-sfu.js').CloudflareSfuPublication | null }
+      | { type: 'screen-sfu'; publication: import('./cloudflare-sfu.js').CloudflareSfuPublication | null }
       | { type: 'peer-joined'; peer: { identity: string; nickname: string } }
       | { type: 'peer-left'; peer: { identity: string } }
       | { type: 'pong' }
@@ -81,7 +88,7 @@ describe('P2P client message schema', () => {
       type: 'offer',
       to: 'viewer-1',
       sdp: 'v=0 ...',
-      turnProvider: 'cloudflare'
+      turnProvider: 'coturn'
     })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toBe(true);
     expect(Value.Check(P2pClientMessageSchema, { type: 'ice', to: 'sharer-1', candidate: 'candidate:1 1 udp 2130706431 192.0.2.1 54666 typ host' })).toBe(true);
@@ -124,12 +131,12 @@ describe('parseP2pClientMessage', () => {
       type: 'offer',
       to: 'viewer-1',
       sdp: 'v=0 ...',
-      turnProvider: 'cloudflare'
+      turnProvider: 'coturn'
     })).toEqual({
       type: 'offer',
       to: 'viewer-1',
       sdp: 'v=0 ...',
-      turnProvider: 'cloudflare'
+      turnProvider: 'coturn'
     });
     expect(parseP2pClientMessage({ type: 'answer', to: 'sharer-1', sdp: 'v=0 ...' })).toEqual({
       type: 'answer', to: 'sharer-1', sdp: 'v=0 ...'

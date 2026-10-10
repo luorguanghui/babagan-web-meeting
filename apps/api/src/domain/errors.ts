@@ -7,6 +7,7 @@ export type DomainErrorCode =
   | 'INVALID_MEETING_PASSWORD'
   | 'SHARE_ALREADY_ACTIVE'
   | 'SHARE_NOT_AUTHORIZED'
+  | 'UNSUPPORTED_CLIENT'
   | 'MEDIA_SERVICE_UNAVAILABLE';
 
 export class DomainError extends Error {
@@ -18,4 +19,8 @@ export class DomainError extends Error {
 
 export function domainError(code: DomainErrorCode): DomainError {
   return new DomainError(code);
+}
+
+export class SfuCleanupPendingError extends DomainError {
+  constructor() { super('MEDIA_SERVICE_UNAVAILABLE'); }
 }

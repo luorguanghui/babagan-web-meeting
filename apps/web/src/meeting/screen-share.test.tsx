@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ComponentType } from 'react';
 
 import { HostMenu } from '../components/host-menu.js';
-import { MeetingControls } from '../components/meeting-controls.js';
+import { MeetingControls, MeetingSettings } from '../components/meeting-controls.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { LanguageProvider } from '../i18n/i18n.js';
@@ -17,7 +17,6 @@ import {
   type P2pShareSignaling,
   type ViewerSessionState
 } from './p2p-share-controller.js';
-import type { TurnPathProbeSnapshot } from './cloudflare-turn-capacity.js';
 import type { Peer, P2pSignalingClient, P2pSignalingEvents } from './p2p-signaling.js';
 import {
   createRoomController,
@@ -42,6 +41,13 @@ afterEach(() => {
 });
 
 describe('controlled browser screen sharing', () => {
+  it('offers Cloudflare SFU at the source and locks software encoding for that choice', () => {
+    render(<LanguageProvider><MeetingSettings connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]} leaving={false}
+      screenSourceTransport="cloudflare-sfu" onScreenSourceTransportChange={vi.fn()} onMicrophoneToggle={vi.fn()} onMicrophoneDeviceChange={vi.fn()} onSpeakerDeviceChange={vi.fn()} onResumeAudio={vi.fn()} onLeave={vi.fn()} /></LanguageProvider>);
+    expect(screen.getByRole('option', { name: 'Cloudflare SFU (browser encoding)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Detail (1080p60, resolution first)' })).toBeVisible();
+    expect(screen.getByLabelText('Screen encoding engine')).toBeDisabled();
+  });
   it('puts a subscribed remote screen track into room state without changing remote audio handling', async () => {
     const room = {
       connect: vi.fn(async () => undefined), disconnect: vi.fn(async () => undefined),
@@ -518,48 +524,6 @@ describe('controlled browser screen sharing', () => {
     expect(onTransportChange).toHaveBeenCalledWith('turn');
   });
 
-  it('shows a sharer TURN provider selector only when available and disables it during sharing', async () => {
-    const onScreenShareTurnProviderChange = vi.fn();
-    const common = {
-      connection: 'connected' as const,
-      microphoneEnabled: false,
-      audioPlaybackBlocked: false,
-      devices: [],
-      leaving: false,
-      screenShareAuthorized: true,
-      screenShareBusy: false,
-      screenShareTurnProvider: 'auto' as const,
-      screenShareTurnProviderVisible: true,
-      availableTurnProviders: ['coturn', 'cloudflare'] as const,
-      onScreenShareTurnProviderChange,
-      onMicrophoneToggle: () => undefined,
-      onMicrophoneDeviceChange: () => undefined,
-      onSpeakerDeviceChange: () => undefined,
-      onResumeAudio: () => undefined,
-      onScreenShareToggle: () => undefined,
-      onLeave: () => undefined
-    };
-    const rendered = render(<MeetingControls {...common} screenShareActive={false} />);
-
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
-    const selector = screen.getByLabelText('Screen-share TURN provider');
-    expect(within(selector).getByRole('option', { name: 'Auto' })).toBeVisible();
-    expect(within(selector).getByRole('option', { name: 'Server coturn' })).toBeVisible();
-    expect(within(selector).getByRole('option', { name: 'Cloudflare TURN' })).toBeVisible();
-
-    await userEvent.selectOptions(selector, 'cloudflare');
-    expect(onScreenShareTurnProviderChange).toHaveBeenCalledWith('cloudflare');
-
-    rendered.rerender(<MeetingControls {...common} screenShareActive />);
-    expect(screen.getByLabelText('Screen-share TURN provider')).toBeDisabled();
-
-    rendered.rerender(<MeetingControls
-      {...common}
-      screenShareActive={false}
-      availableTurnProviders={['coturn']}
-    />);
-    expect(within(screen.getByLabelText('Screen-share TURN provider')).queryByRole('option', { name: 'Cloudflare TURN' })).not.toBeInTheDocument();
-  });
 
   it('lets a receiver adjust the aggregate call-audio volume', async () => {
     const onCallAudioVolumeChange = vi.fn();
@@ -796,6 +760,65 @@ describe('controlled browser screen sharing', () => {
     const controller = createScreenShareController({ requestGrant: vi.fn(async () => undefined), releaseGrant: vi.fn(async () => undefined),
       getDisplayMedia: vi.fn(async () => stream), publisher: { publish, release: vi.fn(async () => undefined) } });
     await controller.start('h264', 8_000_000, 'motion', 'browser');
+    expect(apply.mock.calls).toEqual([
+      [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { min: 60, ideal: 60, max: 60 } }],
+      [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60 } }]
+    ]);
+    expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({ frameRate: 60, encodingEngine: 'browser' }));
+    expect(controller.getState().status).toBe('sharing');
+    expect(video.stop).not.toHaveBeenCalled();
+    await controller.stop();
+  });
+
+  it('requests adaptive 1080p60 capture in detail60 mode and preserves resolution', async () => {
+    const order: string[] = [];
+    const { stream, video } = displayStream({ audio: true });
+    const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
+    const publish = vi.fn(async () => { order.push('publish'); });
+    const controller = createScreenShareController({
+      requestGrant: vi.fn(async () => { order.push('grant'); }),
+      releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia,
+      publisher: { publish, release: vi.fn(async () => undefined) }
+    });
+
+    await controller.start('h264', 8_000_000, 'detail60');
+
+    expect(order).toEqual(['grant', 'capture', 'publish']);
+    expect(getDisplayMedia).toHaveBeenCalledWith({
+      video: {
+        frameRate: { ideal: 60 }
+      },
+      audio: {
+        autoGainControl: false,
+        echoCancellation: false,
+        noiseSuppression: false,
+        restrictOwnAudio: true
+      },
+      systemAudio: 'include',
+      windowAudio: 'window',
+      selfBrowserSurface: 'exclude'
+    });
+    expect(publish).toHaveBeenCalledWith(stream, {
+      maxBitrate: 8_000_000,
+      frameRate: 60,
+      degradationPreference: 'maintain-resolution',
+      codec: 'h264'
+    });
+    expect(stream.getVideoTracks()[0]?.contentHint).toBe('detail');
+    expect(stream.getAudioTracks()[0]?.contentHint).toBe('music');
+    expect(video.applyConstraints).toHaveBeenCalledWith({
+      width: { max: 1920 }, height: { max: 1080 }, frameRate: { min: 60, ideal: 60, max: 60 }
+    });
+  });
+
+  it('falls back to ideal cadence in detail60 when the source rejects the 60fps minimum', async () => {
+    const { stream, video } = displayStream({ audio: false });
+    const apply = vi.mocked(video.applyConstraints).mockRejectedValueOnce(new DOMException('60fps unsupported', 'OverconstrainedError'));
+    const publish = vi.fn(async () => undefined);
+    const controller = createScreenShareController({ requestGrant: vi.fn(async () => undefined), releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: vi.fn(async () => stream), publisher: { publish, release: vi.fn(async () => undefined) } });
+    await controller.start('h264', 8_000_000, 'detail60', 'browser');
     expect(apply.mock.calls).toEqual([
       [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { min: 60, ideal: 60, max: 60 } }],
       [{ width: { max: 1920 }, height: { max: 1080 }, frameRate: { ideal: 60 } }]
@@ -1384,197 +1407,10 @@ describe('screen stage', () => {
     expect(screen.getByText('TURN 中继')).toBeVisible();
   });
 
-  it.each([
-    ['en', 'Encoded frame rate', 'Sent frame rate (latest interval)', 'Decoded frame rate',
-      'Complete frames received per second (latest interval)', 'Average decode time (latest interval)', 'No'],
-    ['zh-CN', '编码帧率', '实际发送帧率（最近采样）', '解码帧率',
-      '完整帧接收速率（最近采样）', '平均解码耗时（最近采样）', '否']
-  ] as const)('distinguishes send, receive and decode rates in %s diagnostics',
-    (locale, encoded, sent, decoded, received, decodeTime, no) => {
-      render(<LanguageProvider initialLocale={locale}>
-        <WebRtcStatsPanel requestedCodec="h264" mode="p2p" embedded snapshot={{
-          sampledAt: 2_000, counters: {},
-          sender: { framesPerSecond: 60, sentFramesPerSecond: 60, sourceFramesPerSecond: 60,
-            averageIntervalEncodeTimeMs: 3.5, encoderImplementation: 'ExternalEncoder' },
-          receiver: { framesPerSecond: 17, receivedFramesPerSecond: 60,
-            averageDecodeTimeMs: 50, decoderImplementation: 'FFmpeg', powerEfficientDecoder: false }
-        }} />
-      </LanguageProvider>);
-      const row = (label: string) => screen.getByText(label).closest('div')!;
-      expect(within(row(encoded)).getByText('60')).toBeVisible();
-      expect(within(row(sent)).getByText('60')).toBeVisible();
-      expect(within(row(locale === 'en' ? 'Actual capture frame rate' : '实际采集帧率')).getByText('60')).toBeVisible();
-      expect(screen.getByText('3.5 ms')).toBeVisible();
-      expect(screen.getByText('ExternalEncoder')).toBeVisible();
-      expect(within(row(decoded)).getByText('17')).toBeVisible();
-      expect(within(row(received)).getByText('60')).toBeVisible();
-      expect(within(row(decodeTime)).getByText('50 ms')).toBeVisible();
-      expect(screen.getByText('FFmpeg')).toBeVisible();
-      expect(screen.getByText(no)).toBeVisible();
-    }
-  );
 
-  it('shows the actual Cloudflare TURN provider in WebRTC diagnostics', () => {
-    const StatsPanelWithProvider = WebRtcStatsPanel as ComponentType<{
-      requestedCodec: 'h264'; mode: 'turn'; turnProvider: 'cloudflare';
-    }>;
-    render(<LanguageProvider initialLocale="zh-CN">
-      <StatsPanelWithProvider requestedCodec="h264" mode="turn" turnProvider="cloudflare" />
-    </LanguageProvider>);
 
-    expect(screen.getByText('TURN 中继 · Cloudflare')).toBeVisible();
-  });
 
-  it('keeps TURN capacity separate from profile, cap, encoder, and RTC diagnostics', () => {
-    const StatsPanelWithDiagnostics = WebRtcStatsPanel as ComponentType<{
-      requestedCodec: 'h264';
-      mode: 'turn';
-      turnProvider: 'cloudflare';
-      embedded: true;
-      turnProbe: TurnPathProbeSnapshot;
-      encodingDiagnostics: ReadonlyMap<string, {
-        profileTargetBitrateBps: number;
-        transportBitrateCapBps: number;
-        scaleResolutionDownBy: number;
-        provider: 'cloudflare';
-      }>;
-      snapshot: {
-        sampledAt: number;
-        sender: {
-          bitrateMbps: number;
-          encoderTargetBitrateMbps: number;
-          availableOutgoingBitrateMbps: number;
-          selectedCandidateType: string;
-          selectedCandidateUrl: string;
-          relayProtocol: string;
-        };
-        counters: Record<string, never>;
-      };
-    }>;
-    render(<StatsPanelWithDiagnostics
-      requestedCodec="h264"
-      mode="turn"
-      turnProvider="cloudflare"
-      embedded
-      turnProbe={{
-        status: 'ready',
-        probeTargetBps: 4_000_000,
-        stableCapacityBps: 12_400_000,
-        selectedProtocol: 'tcp',
-        sampledAt: 1_000
-      }}
-      encodingDiagnostics={new Map([['viewer-1', {
-        profileTargetBitrateBps: 8_000_000,
-        transportBitrateCapBps: 9_200_000,
-        scaleResolutionDownBy: 1.1,
-        provider: 'cloudflare'
-      }]])}
-      snapshot={{
-        sampledAt: 1_000,
-        sender: {
-          bitrateMbps: 6.2,
-          encoderTargetBitrateMbps: 7.5,
-          availableOutgoingBitrateMbps: 12,
-          selectedCandidateType: 'relay',
-          selectedCandidateUrl: 'turn:turn.cloudflare.com:443?transport=tcp',
-          relayProtocol: 'tcp'
-        },
-        counters: {}
-      }}
-    />);
 
-    expect(screen.getByText('TURN path diagnostics')).toBeVisible();
-    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
-    expect(screen.getByText('1970-01-01T00:00:01.000Z')).toBeVisible();
-    expect(screen.getByText('12.4 Mbps')).toBeVisible();
-    expect(screen.getByText('Fixed profile target')).toBeVisible();
-    expect(screen.getByText('8 Mbps')).toBeVisible();
-    expect(screen.getByText('Dynamic transport cap')).toBeVisible();
-    expect(screen.getByText('9.2 Mbps')).toBeVisible();
-    expect(screen.getByText('Selected provider')).toBeVisible();
-    expect(screen.getByText('cloudflare')).toBeVisible();
-    expect(screen.getByText('Encoder target bitrate')).toBeVisible();
-    expect(screen.getByText('7.5 Mbps')).toBeVisible();
-    expect(screen.getByText('RTC available estimate')).toBeVisible();
-    expect(screen.getByText('Selected candidate')).toBeVisible();
-    expect(screen.getByText('relay')).toBeVisible();
-    expect(screen.getAllByText('Relay protocol')).toHaveLength(2);
-    expect(screen.getAllByText('tcp')).toHaveLength(2);
-  });
-
-  it('does not label a calibration-only measurement as verified TURN capacity', () => {
-    render(<WebRtcStatsPanel
-      requestedCodec="h264"
-      mode="turn"
-      turnProvider="cloudflare"
-      embedded
-      turnProbe={{
-        status: 'probing',
-        probeTargetBps: 4_000_000,
-        offeredBps: 2_000_000,
-        measuredCapacityBps: 1_800_000,
-        sampledAt: 1_000
-      }}
-    />);
-
-    expect(screen.getByText('Probe status')).toBeVisible();
-    expect(screen.queryByText('Verified TURN capacity')).not.toBeInTheDocument();
-    expect(screen.queryByText('1.8 Mbps')).not.toBeInTheDocument();
-  });
-
-  it('keeps Cloudflare probe diagnostics visible for mixed TURN shares', () => {
-    const MixedStatsPanel = WebRtcStatsPanel as ComponentType<{
-      requestedCodec: 'h264';
-      mode: 'mixed';
-      turnProvider: 'mixed';
-      embedded: true;
-      turnProbe: TurnPathProbeSnapshot;
-      snapshot: { sampledAt: number; sender: Record<string, never>; counters: Record<string, never> };
-    }>;
-    render(<MixedStatsPanel
-      requestedCodec="h264"
-      mode="mixed"
-      turnProvider="mixed"
-      embedded
-      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
-      snapshot={{ sampledAt: 1_000, sender: {}, counters: {} }}
-    />);
-
-    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
-  });
-
-  it('shows independent TURN diagnostics when media stats are unavailable', () => {
-    const StatsPanelWithoutMedia = WebRtcStatsPanel as ComponentType<{
-      requestedCodec: 'h264';
-      mode: 'turn';
-      turnProvider: 'cloudflare';
-      embedded: true;
-      turnProbe: TurnPathProbeSnapshot;
-      encodingDiagnostics: ReadonlyMap<string, {
-        profileTargetBitrateBps: number;
-        transportBitrateCapBps: number;
-        scaleResolutionDownBy: number;
-        provider: 'cloudflare';
-      }>;
-    }>;
-    render(<StatsPanelWithoutMedia
-      requestedCodec="h264"
-      mode="turn"
-      turnProvider="cloudflare"
-      embedded
-      turnProbe={{ status: 'ready', probeTargetBps: 4_000_000, stableCapacityBps: 12_400_000 }}
-      encodingDiagnostics={new Map([['viewer-1', {
-        profileTargetBitrateBps: 8_000_000,
-        transportBitrateCapBps: 8_000_000,
-        scaleResolutionDownBy: 1,
-        provider: 'cloudflare'
-      }]])}
-    />);
-
-    expect(screen.getByText('Verified TURN capacity')).toBeVisible();
-    expect(screen.getByText('Fixed profile target')).toBeVisible();
-    expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
-  });
 
   it('reports the replacement source ready only after its probe renders a frame', () => {
     const first = displayStream({ audio: false }).stream;
@@ -1820,6 +1656,87 @@ describe('on-demand screen share publisher', () => {
 });
 
 describe('P2P-first screen sharing in the room', () => {
+  it('waits for the first stale allocation to close across multiple rapid SFU generations', async () => {
+    CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc); vi.stubGlobal('MediaStream', CfPageStream);
+    const late = deferred<Response>(); const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input); requests.push(path);
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (path.includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      if (path.endsWith('/subscribe')) {
+        const shareId = JSON.parse(String(init?.body)).shareId as string;
+        if (shareId === 'first') return late.promise;
+        return Response.json({ sessionId: shareId, shareId, sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ kind: 'video', mid: '7', trackName: 'screen' }] });
+      }
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient(); renderP2pRoom({ createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    const publication = { shareId: 'first', sessionId: 'publisher', sharerIdentity: 'Ben', sharerName: 'Ben', tracks: [{ kind: 'video' as const, trackName: 'screen' }] };
+    act(() => signaling.screenSfu(publication)); await waitFor(() => expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(1));
+    await act(async () => signaling.screenSfu({ ...publication, shareId: 'second' }));
+    await act(async () => signaling.screenSfu({ ...publication, shareId: 'third' }));
+    expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(1);
+    await act(async () => late.resolve(Response.json({ sessionId: 'late-first', shareId: 'first', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ kind: 'video', mid: '7', trackName: 'screen' }] })));
+    await waitFor(() => expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(2));
+    expect(requests.some(p => p.endsWith('/sessions/late-first'))).toBe(true);
+  });
+  it('publishes Cloudflare once before viewers arrive and never creates peer or LiveKit backups', async () => {
+    CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc);
+    const requests: Array<{ path: string; body?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input); requests.push({ path, body: typeof init?.body === 'string' ? init.body : undefined });
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (path.endsWith('/ice-servers') || path.includes('/ice-servers?')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      if (path.endsWith('/publish')) return Response.json({ sessionId: 'source', shareId: 'share', sessionDescription: { type: 'answer', sdp: 'answer' }, tracks: [{ kind: 'video', mid: '0', trackName: 'screen' }] });
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient(); const controller = meetingController(); const share = fakeShareController(); const { stream } = displayStream({ audio: false });
+    renderP2pRoom({ controller, getDisplayMedia: async () => stream, createSignalingClient: signaling.factory, shareControllerFactory: () => share.controller });
+    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.selectOptions(screen.getByLabelText('Screen-share transport'), 'cloudflare-sfu');
+    await userEvent.click(screen.getByRole('button', { name: 'Close panel' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Share screen' }));
+    await waitFor(() => expect(requests.filter(r => r.path.endsWith('/publish/ready'))).toHaveLength(1));
+    act(() => signaling.welcome(fourViewers)); act(() => signaling.transport('viewer-1', 'sfu'));
+    expect(requests.filter(r => r.path.endsWith('/publish'))).toHaveLength(1); expect(CfPagePc.instances).toHaveLength(1);
+    expect(CfPagePc.instances[0].senders).toHaveLength(1); expect(share.start).not.toHaveBeenCalled(); expect(controller.publishScreenShare).not.toHaveBeenCalled();
+    act(() => { CfPagePc.instances[0].connectionState = 'failed'; CfPagePc.instances[0].dispatchEvent(new Event('connectionstatechange')); });
+    expect(screen.getByRole('alert')).toHaveTextContent('Cloudflare SFU');
+    await userEvent.click(screen.getByRole('button', { name: 'Retry Cloudflare SFU' }));
+    await waitFor(() => expect(requests.filter(r => r.path.endsWith('/publish/ready'))).toHaveLength(2));
+    expect(CfPagePc.instances[0].close).toHaveBeenCalled(); expect(share.start).not.toHaveBeenCalled(); expect(controller.publishScreenShare).not.toHaveBeenCalled();
+    expect(stream.getVideoTracks()[0].stop).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'Stop sharing screen' }));
+    await waitFor(() => expect(requests.some(r => r.path.endsWith('/sessions/source'))).toBe(true));
+  });
+  it('subscribes from a late-join snapshot once, waits for real video and restores future viewer preference on withdrawal', async () => {
+    CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc); vi.stubGlobal('MediaStream', CfPageStream);
+    window.localStorage.setItem('babagan.viewer-transport', 'sfu'); const requests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input); requests.push(path);
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (path.includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      if (path.endsWith('/subscribe')) return Response.json({ sessionId: 'receiver', shareId: 'share', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ kind: 'video', mid: '7', trackName: 'screen' }] });
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient(); const controller = meetingController();
+    renderP2pRoom({ controller, createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    const publication = { shareId: 'share', sessionId: 'publisher', sharerIdentity: 'Ben', sharerName: 'Ben', tracks: [{ kind: 'video' as const, trackName: 'screen' }] };
+    act(() => { signaling.screenSfu(publication); signaling.welcome([]); });
+    await waitFor(() => expect(requests.some(p => p.endsWith('/sessions/receiver/answer'))).toBe(true));
+    act(() => { signaling.screenSfu(publication); signaling.welcome([]); });
+    expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(1);
+    const track = Object.assign(eventTrack('video'), { muted: true, readyState: 'live' });
+    act(() => CfPagePc.instances[0].ontrack?.({ track, transceiver: { mid: '7' } } as unknown as RTCTrackEvent));
+    expect(screen.queryByLabelText("Ben's shared screen")).not.toBeInTheDocument();
+    act(() => { track.muted = false; track.dispatchEvent(new Event('unmute')); });
+    expect(screen.queryByText('Now sharing: Ben')).not.toBeInTheDocument();
+    const video = await screen.findByLabelText("Ben's shared screen"); act(() => video.dispatchEvent(new Event('playing')));
+    expect(screen.getByText('Now sharing: Ben')).toBeVisible();
+    act(() => signaling.screenSfu(null));
+    await waitFor(() => expect(controller.setRemoteScreenShareSubscribed).toHaveBeenLastCalledWith(true));
+    expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(1);
+  });
   it('reasserts an explicit SFU choice while waiting for a share without needing a peer offer', async () => {
     vi.useFakeTimers();
     window.localStorage.setItem('babagan.viewer-transport', 'sfu');
@@ -1834,227 +1751,12 @@ describe('P2P-first screen sharing in the room', () => {
     } finally { cleanup(); vi.useRealTimers(); }
   });
 
-  it('starts P2P negotiation without an SFU backup when viewers are online', async () => {
-    const order: string[] = [];
-    const { stream } = displayStream({ audio: true });
-    const controller = meetingController();
-    const publishScreenShare = vi.fn(async () => { order.push('sfu'); });
-    controller.publishScreenShare = publishScreenShare;
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    let productionControlMode: unknown;
-    share.start.mockImplementation(async () => { order.push('p2p'); });
-    const meetingApi = {
-      authorizeHost: vi.fn(async () => undefined),
-      verifyParticipantShare: vi.fn(async () => undefined),
-      grantShare: vi.fn(async () => { order.push('grant'); }),
-      releaseOwnShare: vi.fn(async () => undefined),
-      revokeShare: vi.fn(async () => undefined),
-      kick: vi.fn(async () => undefined),
-      end: vi.fn(async () => undefined)
-    };
 
-    renderP2pRoom({
-      controller,
-      meetingApi,
-      getDisplayMedia: async () => { order.push('capture'); return stream; },
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => {
-        productionControlMode = (deps as typeof deps & {
-          cloudflareTurnControlMode?: 'observe' | 'control';
-        }).cloudflareTurnControlMode;
-        share.installHooks(deps);
-        return share.controller;
-      }
-    });
-    act(() => signaling.welcome(p2pViewers));
 
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
 
-    await waitFor(() => expect(order).toEqual(['grant', 'capture', 'p2p']));
-    expect(productionControlMode).toBe('control');
-    expect(publishScreenShare).not.toHaveBeenCalled();
 
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
-    expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
-  });
 
-  it('shows the verified TURN path probe capacity in the meeting-room sharing label', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
 
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 12_400_000,
-      sampledAt: 1_000
-    }));
-
-    expect(await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
-  });
-
-  it('keeps the sharing label in measuring state until TURN capacity is stable', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
-
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({
-      status: 'probing',
-      probeTargetBps: 4_000_000,
-      offeredBps: 2_000_000,
-      measuredCapacityBps: 1_800_000,
-      sampledAt: 1_000
-    }));
-
-    expect(await screen.findByText(
-      'Cloudflare TURN path probe: measuring…',
-      { selector: '.meeting-turn-probe-badge' }
-    )).toBeVisible();
-    expect(screen.queryByText(/last 1\.8 Mbps/)).not.toBeInTheDocument();
-  });
-
-  it('shows remeasuring copy while the probe revalidates a previous result', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
-
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 12_400_000,
-      sampledAt: 1_000
-    }));
-    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
-    act(() => share.triggerProbeSnapshot({
-      status: 'stale',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 12_400_000,
-      sampledAt: 61_000
-    }));
-
-    expect(await screen.findByText('Cloudflare TURN path probe: remeasuring (last 12.4 Mbps)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
-  });
-
-  it('shows the unavailable probe copy without blaming the TURN connection', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
-
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({ status: 'error', probeTargetBps: 2_000_000 }));
-
-    expect(await screen.findByText('Cloudflare TURN path probe unavailable (does not affect the TURN connection)', { selector: '.meeting-turn-probe-badge' })).toBeVisible();
-  });
-
-  it('never requests speed.cloudflare.com from the room page', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'cloudflare']]);
-    const fetchSpy = vi.spyOn(globalThis, 'fetch');
-
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 12_400_000,
-      sampledAt: 1_000
-    }));
-    await screen.findByText('Cloudflare TURN path probe: 12.4 Mbps', { selector: '.meeting-turn-probe-badge' });
-
-    const requestedUrls = fetchSpy.mock.calls.map((call) => String(call[0]));
-    expect(requestedUrls.some((url) => url.includes('speed.cloudflare.com'))).toBe(false);
-    fetchSpy.mockRestore();
-  });
-
-  it('hides the probe badge for coturn relays and while watching a remote share', async () => {
-    const { stream } = displayStream({ audio: true });
-    const signaling = fakeSignalingClient();
-    const share = fakeShareController();
-    share.controller.getViewerTurnProviders = () => new Map([['viewer-1', 'coturn']]);
-
-    renderP2pRoom({
-      getDisplayMedia: async () => stream,
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: (deps) => { share.installHooks(deps); return share.controller; }
-    });
-    act(() => signaling.welcome([p2pViewers[0]]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-    act(() => share.triggerStates([['viewer-1', 'turn']]));
-    act(() => share.triggerProbeSnapshot({
-      status: 'ready',
-      probeTargetBps: 4_000_000,
-      stableCapacityBps: 12_400_000,
-      sampledAt: 1_000
-    }));
-
-    expect(document.querySelector('.meeting-turn-probe-badge')).toBeNull();
-  });
 
   it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
     const signaling = fakeSignalingClient();
@@ -2287,113 +1989,8 @@ describe('P2P-first screen sharing in the room', () => {
     ]));
   });
 
-  it('refreshes viewer ICE with the provider carried by an offer before accepting it', async () => {
-    const fetchCalls: string[] = [];
-    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
-    const cloudflareIceServers = [{
-      urls: ['turn:turn.cloudflare.com:3478'],
-      username: 'cloudflare-user',
-      credential: 'cloudflare-secret'
-    }];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchCalls.push(url);
-      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: cloudflareIceServers,
-          turnProvider: 'cloudflare'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url.includes('/ice-servers')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: coturnIceServers,
-          turnProvider: 'coturn'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }));
-    vi.stubGlobal('RTCPeerConnection', PageFakePc);
-    const signaling = fakeSignalingClient();
-    renderP2pRoom({
-      meetingApi: authorizedMeetingApi(),
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: fakeShareControllerFactory
-    });
-    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
 
-    act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
 
-    await waitFor(() => expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true));
-    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
-    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
-  });
-
-  it('does not let a late auto ICE response overwrite a newer provider-specific viewer config', async () => {
-    const autoIceResponse = deferred<Response>();
-    const fetchCalls: string[] = [];
-    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
-    const cloudflareIceServers = [{
-      urls: ['turn:turn.cloudflare.com:3478'],
-      username: 'cloudflare-user',
-      credential: 'cloudflare-secret'
-    }];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchCalls.push(url);
-      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: cloudflareIceServers,
-          turnProvider: 'cloudflare'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url.includes('/ice-servers')) return autoIceResponse.promise;
-      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }));
-    vi.stubGlobal('RTCPeerConnection', PageFakePc);
-    const signaling = fakeSignalingClient();
-    renderP2pRoom({
-      meetingApi: authorizedMeetingApi(),
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: fakeShareControllerFactory
-    });
-    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
-
-    act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
-
-    await waitFor(() => expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true));
-    await waitFor(() => expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]));
-    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
-
-    await act(async () => {
-      autoIceResponse.resolve(new Response(JSON.stringify({
-        iceServers: coturnIceServers,
-        turnProvider: 'coturn'
-      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      await Promise.resolve();
-    });
-
-    expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
-    expect(PageFakePc.instances[0]?.configurationHistory).toEqual([
-      { iceServers: cloudflareIceServers, iceTransportPolicy: 'all' }
-    ]);
-  });
-
-  it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {
-    vi.useFakeTimers();
-    const fetchIce = vi.fn(async () => new Response('{}', { status }));
-    vi.stubGlobal('fetch', fetchIce);
-    const signaling = fakeSignalingClient();
-    const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
-      shareControllerFactory: fakeShareControllerFactory });
-    try {
-      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
-      expect(fetchIce).toHaveBeenCalledTimes(1);
-      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
-      await act(async () => signaling.offer('sharer-1', 'offer', undefined, 'cloudflare'));
-      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
-      expect(fetchIce).toHaveBeenCalledTimes(1);
-    } finally { rendered.unmount(); vi.useRealTimers(); }
-  });
 
   it('stops expired-session ICE refresh retries but preserves transient recovery', async () => {
     vi.useFakeTimers();
@@ -2403,7 +2000,7 @@ describe('P2P-first screen sharing in the room', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 503 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(configuration), { status: 200 }))
       .mockImplementation(async () => new Response('{}', { status: 401 }));
-    vi.stubGlobal('fetch', fetchIce);
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(new Response(JSON.stringify({ available: false, publication: null }))) : fetchIce(input));
     const signaling = fakeSignalingClient();
     const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });
@@ -2417,206 +2014,8 @@ describe('P2P-first screen sharing in the room', () => {
     } finally { rendered.unmount(); vi.useRealTimers(); }
   });
 
-  it('waits for the requested provider configuration before accepting an offer after a refresh failure', async () => {
-    const fetchCalls: string[] = [];
-    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
-    const cloudflareIceServers = [{
-      urls: ['turn:turn.cloudflare.com:3478'],
-      username: 'cloudflare-user',
-      credential: 'cloudflare-secret'
-    }];
-    let cloudflareAttempts = 0;
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchCalls.push(url);
-      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
-        cloudflareAttempts += 1;
-        if (cloudflareAttempts === 1) return Promise.reject(new Error('cloudflare unavailable'));
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: cloudflareIceServers,
-          turnProvider: 'cloudflare'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url.includes('/ice-servers')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: coturnIceServers,
-          turnProvider: 'coturn'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }));
-    vi.stubGlobal('RTCPeerConnection', PageFakePc);
-    const signaling = fakeSignalingClient();
-    renderP2pRoom({
-      meetingApi: authorizedMeetingApi(),
-      createSignalingClient: signaling.factory,
-      shareControllerFactory: fakeShareControllerFactory
-    });
-    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(1));
 
-    vi.useFakeTimers();
-    try {
-      act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
 
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(1);
-      expect(PageFakePc.instances).toHaveLength(0);
-      expect(signaling.client.sendAnswer).not.toHaveBeenCalled();
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2_000);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(2);
-      expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]);
-      expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
-      expect(signaling.client.sendAnswer).toHaveBeenCalledWith('sharer-1', 'answer-sdp');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('retries a provider-specific offer when its ICE fetch loses to a later auto retry', async () => {
-    const staleCloudflareIceResponse = deferred<Response>();
-    const fetchCalls: string[] = [];
-    const coturnIceServers = [{ urls: ['turn:turn.example.test:3478'], username: 'coturn-user', credential: 'coturn-secret' }];
-    const cloudflareIceServers = [{
-      urls: ['turn:turn.cloudflare.com:3478'],
-      username: 'cloudflare-user',
-      credential: 'cloudflare-secret'
-    }];
-    let autoAttempts = 0;
-    let cloudflareAttempts = 0;
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchCalls.push(url);
-      if (url.includes('/ice-servers?turnProvider=cloudflare')) {
-        cloudflareAttempts += 1;
-        if (cloudflareAttempts === 1) return staleCloudflareIceResponse.promise;
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: cloudflareIceServers,
-          turnProvider: 'cloudflare'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      if (url.includes('/ice-servers')) {
-        autoAttempts += 1;
-        if (autoAttempts === 1) return Promise.reject(new Error('auto unavailable'));
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: coturnIceServers,
-          turnProvider: 'coturn'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }));
-    vi.stubGlobal('RTCPeerConnection', PageFakePc);
-    const signaling = fakeSignalingClient();
-    vi.useFakeTimers();
-    try {
-      renderP2pRoom({
-        meetingApi: authorizedMeetingApi(),
-        createSignalingClient: signaling.factory,
-        shareControllerFactory: fakeShareControllerFactory
-      });
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers') && !call.includes('turnProvider=')).length).toBe(1);
-
-      act(() => signaling.offer('sharer-1', 'offer-sdp', undefined, 'cloudflare'));
-      await act(async () => {
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(1);
-      expect(PageFakePc.instances).toHaveLength(0);
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2_000);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers') && !call.includes('turnProvider=')).length).toBe(2);
-      expect(PageFakePc.instances).toHaveLength(0);
-
-      await act(async () => {
-        staleCloudflareIceResponse.resolve(new Response(JSON.stringify({
-          iceServers: cloudflareIceServers,
-          turnProvider: 'cloudflare'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(PageFakePc.instances).toHaveLength(0);
-
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(2_000);
-        await Promise.resolve();
-        await Promise.resolve();
-      });
-
-      expect(fetchCalls.filter((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toHaveLength(2);
-      expect(PageFakePc.instances[0]?.remoteDescriptions).toEqual([{ type: 'offer', sdp: 'offer-sdp' }]);
-      expect(PageFakePc.instances[0]?.config).toEqual({ iceServers: cloudflareIceServers, iceTransportPolicy: 'all' });
-      expect(signaling.client.sendAnswer).toHaveBeenCalledWith('sharer-1', 'answer-sdp');
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('requests the persisted TURN provider when starting a share', async () => {
-    window.localStorage.setItem('babagan.screen-turn-provider', 'cloudflare');
-    const fetchCalls: string[] = [];
-    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
-      const url = String(input);
-      fetchCalls.push(url);
-      if (url.includes('/ice-servers')) {
-        return Promise.resolve(new Response(JSON.stringify({
-          iceServers: [{ urls: ['stun:stun.example.test:3478'] }],
-          turnProvider: url.includes('turnProvider=cloudflare') ? 'cloudflare' : 'coturn'
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-      }
-      return Promise.resolve(new Response('{}', { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    }));
-    vi.stubGlobal('RTCPeerConnection', HybridShareFakePc as unknown as typeof RTCPeerConnection);
-    const signaling = fakeSignalingClient();
-    const { stream } = displayStream({ audio: true });
-
-    render(<MeetingRoomPage
-      slug="meeting-slug"
-      join={{
-        participantIdentity: 'participant-1',
-        participantName: 'Ada',
-        livekitUrl: 'wss://rtc.example.test',
-        token: 'token',
-        meetingExpiresAt: 10_000,
-        permissions: { publishSources: ['microphone'] }
-      }}
-      controller={meetingController()}
-      meetingApi={authorizedMeetingApi()}
-      getDisplayMedia={async () => stream}
-      createSignalingClient={signaling.factory}
-      listDevices={async () => []}
-    />);
-    await waitFor(() => expect(signaling.client.connect).toHaveBeenCalled());
-    act(() => signaling.welcome([{ identity: 'viewer-1', nickname: 'Bob' }]));
-
-    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
-    await waitFor(() => expect(shareButton).toBeEnabled());
-    await userEvent.click(shareButton);
-
-    await waitFor(() => expect(fetchCalls.filter((call) => call.includes('/ice-servers'))).toHaveLength(2));
-    expect(fetchCalls.some((call) => call.includes('/ice-servers?turnProvider=cloudflare'))).toBe(true);
-  });
 
   it('cancels queued viewer signaling when the page unmounts', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -2800,6 +2199,66 @@ describe('P2P-first screen sharing in the room', () => {
 
     expect(share.handleViewerLeft).toHaveBeenCalledWith('viewer-2');
   });
+  it('starts P2P negotiation without an SFU backup when viewers are online', async () => {
+    const order: string[] = [];
+    const { stream } = displayStream({ audio: true });
+    const controller = meetingController();
+    const publishScreenShare = vi.fn(async () => { order.push('sfu'); });
+    controller.publishScreenShare = publishScreenShare;
+    const signaling = fakeSignalingClient();
+    const share = fakeShareController();
+    share.start.mockImplementation(async () => { order.push('p2p'); });
+    const meetingApi = {
+      authorizeHost: vi.fn(async () => undefined),
+      verifyParticipantShare: vi.fn(async () => undefined),
+      grantShare: vi.fn(async () => { order.push('grant'); }),
+      releaseOwnShare: vi.fn(async () => undefined),
+      revokeShare: vi.fn(async () => undefined),
+      kick: vi.fn(async () => undefined),
+      end: vi.fn(async () => undefined)
+    };
+
+    renderP2pRoom({
+      controller,
+      meetingApi,
+      getDisplayMedia: async () => { order.push('capture'); return stream; },
+      createSignalingClient: signaling.factory,
+      shareControllerFactory: (deps) => {
+        share.installHooks(deps);
+        return share.controller;
+      }
+    });
+    act(() => signaling.welcome(p2pViewers));
+
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(shareButton);
+
+    await waitFor(() => expect(order).toEqual(['grant', 'capture', 'p2p']));
+    expect(publishScreenShare).not.toHaveBeenCalled();
+
+    act(() => share.triggerStates([['viewer-1', 'turn']]));
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
+  });
+  it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {
+    vi.useFakeTimers();
+    const fetchIce = vi.fn(async () => new Response('{}', { status }));
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(Response.json({ available: false, publication: null })) : fetchIce());
+    const signaling = fakeSignalingClient();
+    const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory });
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      expect(fetchIce).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+      await act(async () => signaling.offer('sharer-1', 'offer', undefined, 'coturn'));
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(fetchIce).toHaveBeenCalledTimes(1);
+    } finally { rendered.unmount(); vi.useRealTimers(); }
+  });
+
 });
 
 describe('private P2P quality stats in the room', () => {
@@ -2981,15 +2440,12 @@ interface FakeShareController {
   triggerFallback(identity: string): void;
   triggerAllViewersClosed(): void;
   triggerStates(states: Array<[string, ViewerSessionState]>): void;
-  triggerProbeSnapshot(snapshot: TurnPathProbeSnapshot): void;
 }
 
 function fakeShareController(): FakeShareController {
   let fallback: ((identity: string) => void) | undefined;
   let allClosed: (() => void) | undefined;
   const subscribers = new Set<(states: ReadonlyMap<string, ViewerSessionState>) => void>();
-  const probeSubscribers = new Set<(snapshot: TurnPathProbeSnapshot) => void>();
-  let probeSnapshot: TurnPathProbeSnapshot = { status: 'idle', probeTargetBps: 2_000_000 };
   const start = vi.fn(async () => undefined);
   const stop = vi.fn(async () => undefined);
   const handleAnswer = vi.fn(async () => undefined);
@@ -3014,12 +2470,7 @@ function fakeShareController(): FakeShareController {
       listener(new Map());
       return () => { subscribers.delete(listener); };
     },
-    getTurnPathProbeSnapshot: () => probeSnapshot,
-    subscribeTurnPathProbe: (listener) => {
-      probeSubscribers.add(listener);
-      listener(probeSnapshot);
-      return () => { probeSubscribers.delete(listener); };
-    }
+
   };
   return {
     controller,
@@ -3036,10 +2487,7 @@ function fakeShareController(): FakeShareController {
       const snapshot = new Map(states);
       for (const subscriber of subscribers) subscriber(snapshot);
     },
-    triggerProbeSnapshot: (snapshot) => {
-      probeSnapshot = snapshot;
-      for (const subscriber of [...probeSubscribers]) subscriber(snapshot);
-    }
+
   };
 }
 
@@ -3108,6 +2556,26 @@ class HybridShareFakePc {
   }
 }
 
+class CfPageStream {
+  private tracks: MediaStreamTrack[] = [];
+  getTracks() { return this.tracks; }
+  getVideoTracks() { return this.tracks.filter(t => t.kind === 'video'); }
+  getAudioTracks() { return this.tracks.filter(t => t.kind === 'audio'); }
+  addTrack(t: MediaStreamTrack) { this.tracks.push(t); }
+}
+class CfPagePc extends EventTarget {
+  static instances: CfPagePc[] = [];
+  connectionState = 'connected'; iceGatheringState = 'complete';
+  localDescription?: RTCSessionDescriptionInit; ontrack?: (event: RTCTrackEvent) => void;
+  senders: MediaStreamTrack[] = [];
+  constructor() { super(); CfPagePc.instances.push(this); }
+  addTransceiver(track: MediaStreamTrack) { this.senders.push(track); return { mid: String(this.senders.length - 1), setCodecPreferences: vi.fn(), sender: { getParameters: () => ({ encodings: [{}] }), setParameters: async () => {} } }; }
+  createOffer = async () => ({ type: 'offer', sdp: 'offer' });
+  createAnswer = async () => ({ type: 'answer', sdp: 'answer' });
+  setLocalDescription = async (description: RTCSessionDescriptionInit) => { this.localDescription = description; };
+  setRemoteDescription = async () => {};
+  close = vi.fn(); getStats = async () => new Map([['video', { type: 'outbound-rtp', kind: 'video', framesSent: 1 }]]);
+}
 class PageFakePc {
   static instances: PageFakePc[] = [];
   static remoteDescriptionGate: Promise<void> | undefined;
@@ -3187,6 +2655,7 @@ function fakeSignalingClient() {
     sendBye: vi.fn()
   } as unknown as P2pSignalingClient;
   return {
+    screenSfu: (publication: import('@meeting/contracts').CloudflareSfuPublication | null) => wiring.events?.onScreenSfu?.(publication),
     client,
     factory: (_slug: string, _identity: string, events: P2pSignalingEvents) => {
       wiring.events = events;
@@ -3195,7 +2664,7 @@ function fakeSignalingClient() {
     welcome: (peers: Peer[]) => wiring.events?.onWelcome(peers),
     peerJoined: (peer: Peer) => wiring.events?.onPeerJoined(peer),
     peerLeft: (identity: string) => wiring.events?.onPeerLeft({ identity }),
-    offer: (from: string, sdp: string, generation?: string, turnProvider?: 'coturn' | 'cloudflare') =>
+    offer: (from: string, sdp: string, generation?: string, turnProvider?: 'coturn') =>
       wiring.events?.onOffer(from, sdp, generation, turnProvider),
     ice: (from: string, candidate: string | null) => wiring.events?.onIce(from, candidate),
     transport: (from: string, transport: 'peer' | 'sfu') => wiring.events?.onScreenTransport?.(from, transport),

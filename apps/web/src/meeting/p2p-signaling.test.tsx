@@ -99,6 +99,14 @@ afterEach(() => {
 });
 
 describe('p2p signaling client', () => {
+  it('recovers SFU discovery from welcome and forwards withdrawal', async () => {
+    const events = eventHandlers(); events.onScreenSfu = vi.fn(); const client = createClient(events);
+    const connecting = client.connect(); const socket = lastSocket(); socket.open();
+    const publication = { shareId: 'share', sessionId: 'session', sharerIdentity: 'Ada', sharerName: 'Ada', tracks: [{ kind: 'video', trackName: 'screen' }] };
+    socket.message({ type: 'welcome', peers: [], screenSfu: publication }); await connecting;
+    expect(events.onScreenSfu).toHaveBeenCalledWith(publication);
+    socket.message({ type: 'screen-sfu', publication: null }); expect(events.onScreenSfu).toHaveBeenLastCalledWith(null);
+  });
   it('sends a screen transport request without selecting or trusting a sharer identity', async () => {
     const client = createClient();
     const socket = await connectClient(client);
@@ -250,7 +258,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(createClient(handlers));
     const sdp = 'v=0\r\no=- 1 1 IN IP4 0.0.0.0';
 
-    socket.message({ type: 'offer', to: 'participant-1', sdp, turnProvider: 'cloudflare', from: 'sharer' });
+    socket.message({ type: 'offer', to: 'participant-1', sdp, turnProvider: 'coturn', from: 'sharer' });
     socket.message({ type: 'answer', to: 'participant-1', sdp, from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: 'candidate:1', from: 'sharer' });
     socket.message({ type: 'ice', to: 'participant-1', candidate: null, from: 'sharer' });
@@ -263,7 +271,7 @@ describe('p2p signaling client', () => {
     socket.message({ type: 'share-gone', reason: 'sharer left' });
     socket.message({ type: 'error', code: 'RATE_LIMITED', message: 'slow down' });
 
-    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp, undefined, 'cloudflare');
+    expect(handlers.onOffer).toHaveBeenCalledWith('sharer', sdp, undefined, 'coturn');
     expect(handlers.onAnswer).toHaveBeenCalledWith('sharer', sdp);
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', 'candidate:1');
     expect(handlers.onIce).toHaveBeenCalledWith('sharer', null);
@@ -429,7 +437,7 @@ describe('p2p signaling client', () => {
     const socket = await connectClient(client);
 
     client.sendOffer('sharer', 'offer-sdp');
-    client.sendOffer('viewer-1', 'offer-sdp-turn', undefined, 'cloudflare');
+    client.sendOffer('viewer-1', 'offer-sdp-turn', undefined, 'coturn');
     client.sendAnswer('sharer', 'answer-sdp');
     client.sendIce('sharer', 'candidate:1');
     client.sendIce('sharer', null);
@@ -441,7 +449,7 @@ describe('p2p signaling client', () => {
     expect(socket.sent).toEqual([
       { type: 'hello', participantIdentity: 'participant-1' },
       { type: 'offer', to: 'sharer', sdp: 'offer-sdp' },
-      { type: 'offer', to: 'viewer-1', sdp: 'offer-sdp-turn', turnProvider: 'cloudflare' },
+      { type: 'offer', to: 'viewer-1', sdp: 'offer-sdp-turn', turnProvider: 'coturn' },
       { type: 'answer', to: 'sharer', sdp: 'answer-sdp' },
       { type: 'ice', to: 'sharer', candidate: 'candidate:1' },
       { type: 'ice', to: 'sharer', candidate: null },

@@ -74,7 +74,8 @@ need "$rollback" 'wss://meet.babagan.cloud/rtc'
 need "$deploy" 'compose config | awk -v service="$1"'
 need "$deploy" 'image_ref="babagan-meeting-$1:latest"'
 need "$root/scripts/smoke-test.sh" 'SMOKE_REQUESTED_TURN_PROVIDER'
-need "$deployment_smoke" 'SMOKE_REQUESTED_TURN_PROVIDER=cloudflare'
+need "$deployment_smoke" 'cloudflare-sfu-check-cli.js'
+need "$deployment_smoke" 'CLOUDFLARE_SFU_API_OK'
 
 # The recovery path must be explicit; a normal rollback cannot accidentally use
 # a pending deployment. Both database and image provenance are checked before
