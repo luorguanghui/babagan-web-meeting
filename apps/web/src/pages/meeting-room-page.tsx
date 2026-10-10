@@ -65,6 +65,7 @@ import {
 } from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
+import type { ProjectStats } from '../meeting/software-media/encoder.js';
 import {
   readViewerTransportPreference,
   saveViewerTransportPreference,
@@ -226,6 +227,7 @@ export function MeetingRoomPage({
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
+  const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('project');
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
   const screenBitrateTouchedRef = useRef(false);
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(screenShareDefaultQuality);
@@ -253,6 +255,7 @@ export function MeetingRoomPage({
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
+  const [projectReceiverStats, setProjectReceiverStats] = useState<ProjectStats>();
   const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
   const [turnPathProbeSnapshot, setTurnPathProbeSnapshot] = useState<TurnPathProbeSnapshot>(() => ({
     status: 'idle',
@@ -810,7 +813,7 @@ export function MeetingRoomPage({
     setNotice(undefined);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenCodec, screenBitrate, screenQuality);
+      else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenEncodingEngine);
     } catch {
       setNotice(t('room.shareFailed'));
     }
@@ -922,6 +925,7 @@ export function MeetingRoomPage({
   useEffect(() => {
     if (!hasActiveScreenShare) {
       setScreenStats(undefined);
+      setProjectReceiverStats(undefined);
       setEncodingDiagnostics(new Map());
       return;
     }
@@ -949,6 +953,7 @@ export function MeetingRoomPage({
         if (cancelled) return;
         previous = summarizeWebRtcStats(reports, previous);
         setScreenStats(previous);
+        setProjectReceiverStats(viewerP2pRef.current?.getProjectStats());
         setEncodingDiagnostics(new Map(
           screenState.status === 'sharing'
             ? p2pShareRef.current?.getEncodingDiagnostics?.() ?? []
@@ -980,6 +985,8 @@ export function MeetingRoomPage({
     screenShareActive: screenState.status === 'sharing',
     screenShareBusy: screenState.status === 'starting',
     screenCodec,
+    screenEncodingEngine,
+    onScreenEncodingEngineChange: setScreenEncodingEngine,
     screenBitrate,
     screenQuality,
     screenShareTurnProvider,
@@ -987,7 +994,7 @@ export function MeetingRoomPage({
     onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
     onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
     onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
-    onResumeAudio: () => void controller.resumeAudioPlayback(),
+    onResumeAudio: () => { void controller.resumeAudioPlayback(); void viewerP2pRef.current?.resumeProjectAudio(); },
     onCallAudioVolumeChange: (volume) => {
       setCallAudioVolume(volume);
       controller.setCallAudioVolume(volume / 100);
@@ -1154,6 +1161,8 @@ export function MeetingRoomPage({
       turnProbe={screenState.status === 'sharing' ? turnPathProbeSnapshot : undefined}
       encodingDiagnostics={screenState.status === 'sharing' ? encodingDiagnostics : undefined}
       requestedCodec={screenCodec}
+      projectReceiver={projectReceiverStats}
+      onProjectAudioResume={() => { void viewerP2pRef.current?.resumeProjectAudio(); }}
       mode={screenTransportMode}
       turnProvider={screenTurnProvider}
     /></MeetingDrawer>}

@@ -1,0 +1,17 @@
+{
+  "openh264": {
+    "version": "2.6.0",
+    "repository": "https://github.com/cisco/openh264.git",
+    "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+  },
+  "emsdk": {
+    "version": "4.0.23",
+    "repository": "https://github.com/emscripten-core/emsdk.git",
+    "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+    "release": "aaa43392544d695232b70eda706d751f18980c2a"
+  },
+  "libav": {
+    "package": "@libav.js/variant-vp8-opus",
+    "version": "6.10.9"
+  }
+}

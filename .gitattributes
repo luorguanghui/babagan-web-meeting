@@ -1,2 +1,3 @@
 # Preserve exact measured manifest bytes, including the recorded digest.
 docs/benchmarks/*-build.json -text whitespace=cr-at-eol
+apps/web/public/screen-codecs/** -text whitespace=-trailing-space,cr-at-eol

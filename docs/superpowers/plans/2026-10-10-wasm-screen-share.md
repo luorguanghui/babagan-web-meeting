@@ -4,7 +4,7 @@
 
 **Goal:** 用项目自带的 H.264（默认）和 VP8 编码替换 P2P 屏幕视频的浏览器编码，并保留声音、恢复和显式兼容路径。
 
-**Architecture:** 一个采集源进入一个编码 Worker，逐帧码流经每位观看者的数据通道分发。接收端有界组装、浏览器解码、共同音视频播放时钟；原有浏览器编码只用于显式兼容和 SFU。
+**Architecture:** 用户修订：共享采集授权一次，每位观看者独立编码 Worker／数据通道及码率／路径／恢复，最多四路，沿用现有逐观看者控制逻辑。接收端有界组装、浏览器解码、共同音视频播放时钟；原有浏览器编码只用于显式兼容和 SFU。
 
 **Tech Stack:** TypeScript、React、OpenH264 v2.6.0、Emscripten、libav.js vp8-opus 6.10.9、RTCDataChannel、WebCodecs、AudioWorklet。
 
@@ -17,7 +17,7 @@
 - 原始队列最多 6 帧、年龄 150 ms；媒体消息最多 12 KiB、单帧 2 MiB、分片 256；组装最多 8 帧/8 MiB/150 ms。
 - 单观看者缓冲 256 KiB、等待 150 ms；关键帧请求间隔至少 500 ms；总上行 40 Mbps。
 - Opus 48 kHz 双声道、20 ms、128 kbps；播放缓冲 100 ms，最大 200 ms。
-- 180 秒 1080p60 真实高动态输入编码/解码平均 >=57 fps、端到端 p95 <=250 ms；30 fps >=28.5 fps。不达标不切换生产默认。
+- 180 秒真实输入测量保留 57 fps / p95 <=250 ms 目标，用户已允许按当前约44 fps 原型继续集成；发布报告真实帧率，不保证45/60。实际 5/8/10 Mbps 与总40 Mbps限制必须通过（含音频／开销），不得发送原型超高码率。
 - 音视频 10 分钟偏差 <=80 ms，5 次重连恢复，30 分钟无无界增长；自托管资源、许可与哈希，隔离头变更必须实际部署。
 
 ## Review Focus
@@ -38,7 +38,7 @@
 - [ ] Run `node scripts/test-screen-codecs.mjs`; Expected: fails because compiled adapters are absent.
 - [ ] Pin official compiler and source versions; build single-thread and pthread artifacts plus licenses/source metadata. Test real memory ownership and release. No product integration before baseline.
 - [ ] Run the ABI tests; Expected: successful decode with no skipped outputs. Run benchmark in actual Edge on static, moving texture and high-motion 1080p input, report throughput, p50/p95 and memory for 1–4 threads. Expected: measured evidence, never manufactured pass.
-- [ ] Commit artifacts/build/test/report. If performance fails, record limitation and investigate within this task before any default switch.
+- [ ] Correct quantizer/time-base/rate control and add actual-rate regression tests before integration. Measure one and four independent encoders. Commit artifacts/build/test/report; user accepts continuing software route with actual fps reported, while actual bitrate remains a hard release gate.
 
 ### Task 2: 有界媒体协议与网络分发
 
@@ -58,7 +58,7 @@
 
 **Interfaces:** Consumes Task 1 ABI and Task 2 frame/control types. Produces `SoftwareScreenEncoder.start(track,options,onFrame)`, `requestKeyframe()`, `setBitrate(bps)`, `stop()`, actual capture/encode/drop statistics. P2P controller owns one encoder and per-viewer channels.
 
-- [ ] Write tests for actual frame counters, queue 6/150 ms, close each frame exactly once, init error, resize, stop/restart, one encoder/four viewers and zero video RTP transceivers in software mode.
+- [ ] Write tests for actual frame counters, queue 6/150 ms, close each frame exactly once, init error, resize, stop/restart, independent encoder per viewer and zero video RTP transceivers in software mode.
 - [ ] Run targeted sharing tests; Expected: assertions fail with current native path.
 - [ ] Implement Worker capture/conversion and codecs, explicit engine option; preserve native and explicit SFU modes. Data-channel open is not media-ready.
 - [ ] Run targeted tests and actual two-peer Worker/DC/decode baseline; Expected: decoded distinct frames, no VideoEncoder/MediaRecorder/video RTP sender.

@@ -9,7 +9,8 @@ import { verifyCodecArtifacts, sha256 } from '../media/codec-artifacts.mjs';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const routes = [
   ['/screen-codecs/', resolve(root, 'artifacts/screen-codecs')],
-  ['/fixtures/', resolve(root, 'scripts/fixtures')]
+  ['/fixtures/', resolve(root, 'scripts/fixtures')],
+  ['/media/', resolve(root, 'media')]
 ];
 const verifiedFiles = new Map();
 for (const name of ['openh264-2.6.0', 'libav-6.10.9']) {

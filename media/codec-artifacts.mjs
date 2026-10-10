@@ -18,9 +18,12 @@ export async function verifyCodecArtifacts(directory) {
     }
   }
   if (!manifest.artifacts || Object.keys(manifest.artifacts).length === 0) throw new Error('empty artifact manifest');
+  if (manifest.releaseReady && (!manifest.sources || !Object.keys(manifest.sources).length)) throw new Error('missing corresponding sources');
   const files = new Map([[join(root, 'manifest.json'), sha256(manifestBytes)]]);
-  for (const [name, record] of Object.entries(manifest.artifacts)) {
-    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(name)) throw new Error('invalid artifact filename');
+  for (const [name, record] of [...Object.entries(manifest.artifacts), ...Object.entries(manifest.sources ?? {})]) {
+    const validName = /^[a-z0-9][a-z0-9._-]*$/i.test(name) || (name.startsWith('sources/') &&
+      name.split('/').every(part => /^[a-z0-9][a-z0-9._-]*$/i.test(part)));
+    if (!validName) throw new Error('invalid artifact filename');
     if (!Number.isSafeInteger(record.bytes) || record.bytes < 1 || record.bytes > 32 * 1024 * 1024 ||
       !/^[0-9a-f]{64}$/.test(record.sha256)) throw new Error('invalid artifact size or hash');
     const path = await realpath(join(root, name));

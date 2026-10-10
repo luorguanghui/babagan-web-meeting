@@ -11,7 +11,8 @@ export default tseslint.config(
       '**/test-results/**',
       '**/.superpowers/**',
       '**/artifacts/**',
-      '**/.playwright-cli/**'
+      '**/.playwright-cli/**',
+      '**/public/screen-codecs/**'
     ]
   },
   js.configs.recommended,

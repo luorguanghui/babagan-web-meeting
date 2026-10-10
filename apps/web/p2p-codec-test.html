@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Project P2P integration test</title><button id="start">Start test</button><canvas id="source" width="640" height="360"></canvas><video id="received" autoplay muted playsinline></video><pre id="result">Ready</pre>
+<script type="module">
+window.result = { status: 'ready' };
+document.querySelector('#start').onclick = async () => {
+  try {
+    const { ProjectPeerSender } = await import('/src/meeting/software-media/peer-sender.ts');
+    const { ProjectPeerReceiver } = await import('/src/meeting/software-media/peer-receiver.ts');
+    const a = new RTCPeerConnection(), b = new RTCPeerConnection();
+    const queuedA = [], queuedB = [];
+    a.onicecandidate = ({candidate}) => { if (candidate) { if (b.remoteDescription) b.addIceCandidate(candidate); else queuedB.push(candidate); } };
+    b.onicecandidate = ({candidate}) => { if (candidate) { if (a.remoteDescription) a.addIceCandidate(candidate); else queuedA.push(candidate); } };
+    const params = new URLSearchParams(location.search);
+    const canvas = document.querySelector('#source');canvas.width=Number(params.get('width')??640);canvas.height=Number(params.get('height')??360);
+    const context = canvas.getContext('2d');const fps=Number(params.get('fps')??30);
+    let id = 0;
+    const timer = setInterval(() => { context.fillStyle = `hsl(${id++*7%360} 80% 40%)`; context.fillRect(0,0,canvas.width,canvas.height);for(let x=0;x<20;x++){context.fillStyle=`hsl(${(x*31+id*3)%360} 90% 50%)`;context.fillRect((x*89+id*17)%canvas.width,(x*71+id*13)%canvas.height,120,150);}context.fillStyle='white';context.font='60px monospace';context.fillText(String(id),20,90); }, 1000/fps);
+    const source = canvas.captureStream(fps);
+    let sound;
+    if (new URLSearchParams(location.search).get('audio') === '1') {
+      sound = new AudioContext({sampleRate:48000});await sound.resume();
+      const destination=sound.createMediaStreamDestination();const tone=sound.createOscillator();const gain=sound.createGain();gain.gain.value=.2;tone.frequency.value=440;tone.connect(gain).connect(destination);tone.start();source.addTrack(destination.stream.getAudioTracks()[0]);
+    }
+    const codec = new URLSearchParams(location.search).get('codec') ?? 'h264';
+    const onError = error => { window.result = {status:'error', message:String(error)}; };
+    const receiver = new ProjectPeerReceiver({ pc:b, onStream(stream){ const video=document.querySelector('#received');video.srcObject=stream;video.play(); },onError });
+    const bitrate=Number(params.get('bitrate')??1000000);
+    const sender = new ProjectPeerSender({ pc:a, stream:source, options:{codec,frameRate:fps,maxBitrate:bitrate}, onError });
+    await a.setLocalDescription(await a.createOffer());await b.setRemoteDescription(a.localDescription);
+    await b.setLocalDescription(await b.createAnswer());await a.setRemoteDescription(b.localDescription);
+    for (const candidate of queuedA) await a.addIceCandidate(candidate);for(const candidate of queuedB) await b.addIceCandidate(candidate);
+    const pairs=[{a,b,sender,receiver}];
+    const viewers=Number(params.get('viewers')??1);
+    for(let index=1;index<viewers;index++){
+      const tx=new RTCPeerConnection(),rx=new RTCPeerConnection();const qa=[],qb=[];
+      tx.onicecandidate=({candidate})=>{if(candidate){if(rx.remoteDescription)rx.addIceCandidate(candidate);else qb.push(candidate);}};
+      rx.onicecandidate=({candidate})=>{if(candidate){if(tx.remoteDescription)tx.addIceCandidate(candidate);else qa.push(candidate);}};
+      const video=document.createElement('video');video.autoplay=true;video.muted=true;document.body.append(video);
+      const receive=new ProjectPeerReceiver({pc:rx,onStream(stream){video.srcObject=stream;video.play();},onError});
+      const send=new ProjectPeerSender({pc:tx,stream:source,options:{codec,frameRate:fps,maxBitrate:bitrate},onError});
+      await tx.setLocalDescription(await tx.createOffer());await rx.setRemoteDescription(tx.localDescription);await rx.setLocalDescription(await rx.createAnswer());await tx.setRemoteDescription(rx.localDescription);
+      for(const candidate of qa)await tx.addIceCandidate(candidate);for(const candidate of qb)await rx.addIceCandidate(candidate);
+      pairs.push({a:tx,b:rx,sender:send,receiver:receive});
+    }
+    pairs.forEach(pair=>pair.sender.setBudget(bitrate,viewers));
+    window.result = {status:'running'};
+    window.check = () => pairs.map(pair=>({sent:pair.sender.getStats(),received:pair.receiver.getStats(),videoSenders:pair.a.getSenders().filter(s=>s.track?.kind==='video').length}));
+    setTimeout(async()=>{const stats=window.check();await Promise.all(pairs.map(async pair=>{await pair.sender.close();await pair.receiver.close();pair.a.close();pair.b.close();}));clearInterval(timer);source.getTracks().forEach(t=>t.stop());await sound?.close();window.result={status:'done',pairs:stats};document.querySelector('#result').textContent=JSON.stringify(window.result);},Number(params.get('duration')??5000));
+  } catch(error) { window.result={status:'error',message:String(error)};document.querySelector('#result').textContent=JSON.stringify(window.result); }
+};
+</script>

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
+import { vp8EncoderOptions } from '../media/codec-options.mjs';
 
 const artifact = new URL('../artifacts/screen-codecs/openh264-2.6.0/encoder-single.mjs', import.meta.url);
 
@@ -45,10 +46,7 @@ test('OpenH264 outputs each input without rate-control skipping and forces recov
 test('libvpx realtime adapter emits sixty distinct decodable VP8 frames', async () => {
   const { LibAV } = await import('../apps/web/node_modules/@libav.js/variant-vp8-opus/dist/libav-vp8-opus.mjs');
   const libav = await LibAV({ noworker: true });
-  const [, context, frame, packet] = await libav.ff_init_encoder('libvpx', {
-    ctx: { width: 320, height: 180, pix_fmt: libav.AV_PIX_FMT_YUV420P, bit_rate: 500000, time_base: [1, 60], framerate: [60, 1], gop_size: 120 },
-    options: { deadline: 'realtime', 'cpu-used': '8', 'lag-in-frames': '0', 'auto-alt-ref': '0', 'dropframe-threshold': '0' }
-  });
+  const [, context, frame, packet] = await libav.ff_init_encoder('libvpx', vp8EncoderOptions({ width: 320, height: 180, fps: 60, bitrate: 500000 }));
   const [, decoder, decodePacket, decodedFrame] = await libav.ff_init_decoder('libvpx');
   try {
     const values = new Set();

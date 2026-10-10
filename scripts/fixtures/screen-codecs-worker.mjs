@@ -1,5 +1,6 @@
 /* global self, VideoFrame, VideoDecoder, EncodedVideoChunk, crossOriginIsolated, performance, navigator, setTimeout, fetch, crypto, TextDecoder */
 // No browser video encoder is used; VideoFrame copy and VideoDecoder are allowed.
+import { vp8EncoderOptions } from '/media/codec-options.mjs';
 self.VideoEncoder = class { constructor() { throw new Error('Browser video encoder prohibited in benchmark'); } };
 self.MediaRecorder = class { constructor() { throw new Error('Browser recorder prohibited in benchmark'); } };
 
@@ -55,10 +56,7 @@ self.onmessage = async ({ data: options }) => {
     } else {
       const { LibAV } = await import('/screen-codecs/libav-6.10.9/libav-6.10.9.0-vp8-opus.mjs');
       libav = await LibAV({ noworker: true, yesthreads: threads > 1 });
-      encoder = await libav.ff_init_encoder('libvpx', {
-        ctx: { width, height, pix_fmt: libav.AV_PIX_FMT_YUV420P, bit_rate: bitrate, time_base: [1, fps], framerate: [fps, 1], gop_size: fps * 2 },
-        options: { threads: String(threads), deadline: 'realtime', 'cpu-used': '8', 'lag-in-frames': '0', 'auto-alt-ref': '0', 'dropframe-threshold': '0' }
-      });
+      encoder = await libav.ff_init_encoder('libvpx', vp8EncoderOptions({ width, height, fps, bitrate, threads }));
     }
     let decodeError;
     const decodeStart = new Map();

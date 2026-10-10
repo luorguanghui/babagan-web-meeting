@@ -1,0 +1,89 @@
+{
+  "source": {
+    "openh264": {
+      "version": "2.6.0",
+      "repository": "https://github.com/cisco/openh264.git",
+      "commit": "652bdb7719f30b52b08e506645a7322ff1b2cc6f"
+    },
+    "emsdk": {
+      "version": "4.0.23",
+      "repository": "https://github.com/emscripten-core/emsdk.git",
+      "commit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+      "release": "aaa43392544d695232b70eda706d751f18980c2a"
+    },
+    "libav": {
+      "package": "@libav.js/variant-vp8-opus",
+      "version": "6.10.9"
+    }
+  },
+  "flags": [
+    "-O3",
+    "-flto",
+    "-msimd128",
+    "-std=c++17",
+    "-DNDEBUG",
+    "-fno-rtti"
+  ],
+  "includePaths": [
+    "codec/api/wels",
+    "codec/common/inc",
+    "codec/encoder/core/inc",
+    "codec/encoder/plus/inc",
+    "codec/processing/interface",
+    "codec/processing/src/common",
+    "codec/processing/src/adaptivequantization",
+    "codec/processing/src/downsample",
+    "codec/processing/src/scrolldetection",
+    "codec/processing/src/vaacalc"
+  ],
+  "wrapperSha256": "caf8951ede7a8f9c111faeaaa128fbc82dde039d0e131b93d3e02cf9b5b572e2",
+  "toolchain": {
+    "version": "4.0.23",
+    "versionOutput": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 4.0.23 (7a5d93b50f6a3a35e85a0d2fc9e667b8498e6aed)\nCopyright (C) 2026 the Emscripten authors (see AUTHORS.txt)\nThis is free and open source software under the MIT license.\nThere is NO warranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.",
+    "emsdkCommit": "c0bb220cb6e6f4e0fabb6f6db9efd53390ef5e56",
+    "sdkRelease": "releases-aaa43392544d695232b70eda706d751f18980c2a-64bit",
+    "emccSha256": "6cbb02e7e6d685ccbb41b11729ea9718fe5acfe999378a54f0a1c2efcc619d2e"
+  },
+  "releaseReady": true,
+  "artifacts": {
+    "encoder-single.mjs": {
+      "bytes": 11864,
+      "sha256": "6fc83cdefd2352d61bf6cbf29912a1e181719842bcf29c516140e98ffaeeb9cc"
+    },
+    "encoder-single.wasm": {
+      "bytes": 456290,
+      "sha256": "a95809a5a476e943009ffe601b1ee80f7fea0e030df747c277e8d7bf0c9cdd44"
+    },
+    "encoder-threads.mjs": {
+      "bytes": 26511,
+      "sha256": "2973c3416102555f49dd55249f83a345e4e9d4b602bf58700b9d799b2deb6523"
+    },
+    "encoder-threads.wasm": {
+      "bytes": 473414,
+      "sha256": "b817919c6f9983a1df94e9680567e144d9f8391ffe6c6f4b64a64b60560975eb"
+    },
+    "LICENSE": {
+      "bytes": 1317,
+      "sha256": "1ca9a98d1b5c6d6f0411c6cb8732299670fafbc33b92fedeca8a86b1e4d3d72e"
+    }
+  },
+  "sources": {
+    "sources/build-screen-codecs.py": {
+      "bytes": 6008,
+      "sha256": "fcf01e088c60d7c37f42f9cebee6999079946d8e49578058777bb5a1c015a67a"
+    },
+    "sources/codecs.lock.json": {
+      "bytes": 476,
+      "sha256": "c6205a300c753b95deb994041b5e2e0f6ddea58ba2453dbc0051bc5b4077cbf5"
+    },
+    "sources/openh264-2.6.0.tar.gz": {
+      "bytes": 1023020,
+      "sha256": "852a15952ac2b8bf24170953641f8078688c9addec41532852c067f8c4e6d215"
+    },
+    "sources/project-encoder.cpp": {
+      "bytes": 10374,
+      "sha256": "caf8951ede7a8f9c111faeaaa128fbc82dde039d0e131b93d3e02cf9b5b572e2"
+    }
+  },
+  "releaseSourcesArchiveSha256": null
+}

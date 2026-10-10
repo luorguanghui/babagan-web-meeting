@@ -59,3 +59,12 @@ test('rejects stale OpenH264 metadata and compiler identity mismatch', async () 
     assert.equal((await verifyCodecArtifacts(directory)).manifest.toolchain.emsdkCommit, 'abc');
   });
 });
+
+test('rejects a distributable package without its corresponding sources', async () => {
+  const { verifyCodecArtifacts } = await import('../media/codec-artifacts.mjs');
+  await fixture(async (directory, manifest) => {
+    manifest.releaseReady = true;
+    await writeFile(join(directory, 'manifest.json'), JSON.stringify(manifest));
+    await assert.rejects(verifyCodecArtifacts(directory), /corresponding sources/);
+  });
+});
