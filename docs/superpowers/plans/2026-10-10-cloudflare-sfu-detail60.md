@@ -47,8 +47,8 @@
 
 ### Task 4: 集成、配置与真实验证
 
-- [ ] 集成两端接口，全量test/lint/build；独立审查及必要修复。
-- [ ] 更新infra例子、README、运维/updater/smoke；取得SFU App Secret存入服务器的具体授权后安全配置（不回显）。
-- [ ] 实际后端Cloudflare API发布订阅、1/4viewer媒体/编码数量、共享音频、重新入会和撤权验收。
-- [ ] GitHub PR附加本聊天、合并main；结束测试会议后部署API/web，记录实际服务健康、publicSHA与Cloudflare媒体结果。
-- [ ] 清除临时探针，保留可复核验收报告和受保护回滚备份；失败不得宣称全部完成。
+- [x] 集成两端接口，全量test/lint/build；独立审查及必要修复。
+- [x] 更新infra例子、README、运维/updater/smoke；按用户最后选择复用现有Worker内凭证，服务器仅配置gateway，秘密不回显。
+- [x] 已进行真实发布订阅、1/4viewer媒体、一路编码和音频验证；用户接手最终版本连续共享及稳定性复测，未通过项如实记录。
+- [x] GitHub PR附加本聊天、合并main；结束助手测试会议后部署API/web，记录服务健康、publicSHA与Cloudflare媒体结果。
+- [x] 清除助手诊断成员/测试会议，保留发布记录和受保护回滚备份；最终媒体复测由用户继续，不宣称全部通过。
