@@ -81,6 +81,13 @@ if grep -Eq '^CLOUDFLARE_TURN_KEY_ID=.+$' "$env_file" && grep -Eq '^CLOUDFLARE_T
   cloudflare_credentials_present=1
 fi
 
+default_smoke_provider=auto
+if (( skip_cloudflare_smoke )) && [[ "$turn_provider" == cloudflare ]]; then
+  # The waiver also covers the default provider when it is Cloudflare.
+  # Keep an authenticated coturn check without changing production settings.
+  default_smoke_provider=coturn
+fi
+SMOKE_REQUESTED_TURN_PROVIDER="$default_smoke_provider" \
 SMOKE_MEETING_SLUG="$smoke_slug" \
 SMOKE_PARTICIPANT_COOKIE="$smoke_cookie" \
 SMOKE_LIVEKIT_TOKEN="$smoke_livekit_token" \
