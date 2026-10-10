@@ -13,11 +13,13 @@ type Session = {
   expiresAt: number; mids: string[]; tracks: CloudflareSfuSessionResponse['tracks'];
 };
 
-/** Meeting-scoped mutation queues also serialize close behind in-flight allocations. */
+/** Per-owner queues serialize a connection's mutations without blocking other viewers. */
 export class CloudflareSfuService {
   private readonly closedSessions = new Map<string, { slug: string; identity: string; tokenHash: string; expiresAt: number }>();
   private readonly sessions = new Map<string, Session>();
   private readonly mutex = new KeyedMutex();
+  private readonly activeOwners = new Map<string, { slug: string; identity: string; pending: number }>();
+  private readonly creating = new Map<string, { slug: string; identity: string; role: Session['role']; shareId: string }>();
   private readonly timer: NodeJS.Timeout;
   private sweepPromise?: Promise<void>;
   private shuttingDown = false;
@@ -33,8 +35,8 @@ export class CloudflareSfuService {
     return { available: !!this.dependencies.api, publication: this.dependencies.registry.getScreenSfu(slug) };
   }
   publish(slug: string, owner: ActiveParticipantSession, input: CloudflareSfuPublishRequest): Promise<CloudflareSfuSessionResponse> {
-    return this.mutex.runExclusive(slug, async () => {
-      await this.prune(slug);
+    return this.runOwner(slug, owner.identity, async () => {
+      await this.pruneOwner(slug, owner.identity);
       this.assertPublisher(slug, owner);
       if (input.tracks.filter((t) => t.kind === 'video').length !== 1 || input.tracks.filter((t) => t.kind === 'audio').length > 1 || new Set(input.tracks.map((t) => t.mid)).size !== input.tracks.length) throw domainError('UNSUPPORTED_CLIENT');
       const tracks = input.tracks.map((t) => ({ ...t, trackName: `screen_${randomUUID().replaceAll('-', '')}_${t.kind}` }));
@@ -42,8 +44,8 @@ export class CloudflareSfuService {
     });
   }
   ready(slug: string, owner: ActiveParticipantSession, id: string): Promise<void> {
-    return this.mutex.runExclusive(slug, async () => {
-      await this.prune(slug);
+    return this.runOwner(slug, owner.identity, async () => {
+      await this.pruneOwner(slug, owner.identity);
       const session = this.owned(slug, owner, id);
       if (session.role !== 'publisher' || session.state === 'closing') throw domainError('SHARE_NOT_AUTHORIZED');
       this.assertPublisher(slug, owner);
@@ -53,8 +55,8 @@ export class CloudflareSfuService {
     });
   }
   subscribe(slug: string, owner: ActiveParticipantSession, shareId: string): Promise<CloudflareSfuSessionResponse> {
-    return this.mutex.runExclusive(slug, async () => {
-      await this.prune(slug);
+    return this.runOwner(slug, owner.identity, async () => {
+      await this.pruneOwner(slug, owner.identity);
       this.assertActive(slug, owner);
       const publication = this.dependencies.registry.getScreenSfu(slug);
       if (!publication || publication.shareId !== shareId || publication.sharerIdentity === owner.identity) throw domainError('SHARE_NOT_AUTHORIZED');
@@ -62,8 +64,8 @@ export class CloudflareSfuService {
     });
   }
   answer(slug: string, owner: ActiveParticipantSession, id: string, description: { type: 'answer'; sdp: string }): Promise<void> {
-    return this.mutex.runExclusive(slug, async () => {
-      await this.prune(slug);
+    return this.runOwner(slug, owner.identity, async () => {
+      await this.pruneOwner(slug, owner.identity);
       const session = this.owned(slug, owner, id);
       if (session.role !== 'viewer' || session.state !== 'pending') throw domainError('SHARE_NOT_AUTHORIZED');
       try {
@@ -74,7 +76,7 @@ export class CloudflareSfuService {
     });
   }
   stop(slug: string, owner: ActiveParticipantSession, id: string): Promise<void> {
-    return this.mutex.runExclusive(slug, async () => {
+    return this.runOwner(slug, owner.identity, async () => {
       const session = this.sessions.get(id);
       if (!session) {
         const closed = this.closedSessions.get(id);
@@ -85,30 +87,35 @@ export class CloudflareSfuService {
       await this.remove(session);
     });
   }
-  reconcile(slug: string): Promise<void> { return this.mutex.runExclusive(slug, () => this.prune(slug)); }
+  async reconcile(slug: string): Promise<void> {
+    await Promise.all(this.ownerIdentities(slug).map(identity => this.runOwner(slug, identity, () => this.pruneOwner(slug, identity))));
+  }
   closeParticipant(slug: string, identity: string): Promise<void> {
-    return this.mutex.runExclusive(slug, async () => {
+    return this.runOwner(slug, identity, async () => {
       for (const session of [...this.sessions.values()]) if (session.slug === slug && session.owner.identity === identity) await this.remove(session);
     });
   }
-  closeMeeting(slug: string): Promise<void> {
-    return this.mutex.runExclusive(slug, async () => {
-      this.dependencies.registry.setScreenSfu(slug, null);
-      for (const session of [...this.sessions.values()]) if (session.slug === slug) await this.remove(session);
-    });
+  async closeMeeting(slug: string): Promise<void> {
+    this.dependencies.registry.setScreenSfu(slug, null);
+    await Promise.all(this.ownerIdentities(slug).map(identity => this.runOwner(slug, identity, async () => {
+      for (const session of [...this.sessions.values()]) if (session.slug === slug && session.owner.identity === identity) await this.remove(session);
+    })));
+    // Child work scheduled by publishers must drain after all held owner locks
+    // have been released. Never await one owner while holding another's lock.
+    await Promise.all(this.ownerIdentities(slug).map(identity => this.runOwner(slug, identity, async () => {})));
   }
   sweep(): Promise<void> {
     if (this.sweepPromise) return this.sweepPromise;
     this.sweepPromise = Promise.resolve().then(async () => {
       try {
-        for (const slug of new Set([...this.sessions.values()].map((s) => s.slug))) await this.reconcile(slug);
+        for (const slug of this.slugs()) await this.reconcile(slug);
       } finally { this.sweepPromise = undefined; }
     });
     return this.sweepPromise;
   }
   async close(): Promise<void> {
     this.shuttingDown = true; clearInterval(this.timer);
-    for (const slug of new Set([...this.sessions.values()].map((s) => s.slug))) await this.closeMeeting(slug);
+    for (const slug of this.slugs()) await this.closeMeeting(slug);
     await this.dependencies.api?.close?.();
   }
   private async allocate(slug: string, owner: ActiveParticipantSession, role: Session['role'], shareId: string, tracks: SfuTrack[], description?: { type: 'offer'; sdp: string }): Promise<CloudflareSfuSessionResponse> {
@@ -116,8 +123,14 @@ export class CloudflareSfuService {
     // Reconnecting replaces the owner's prior connection, never accumulates senders.
     for (const old of [...this.sessions.values()]) if (old.slug === slug && old.owner.identity === owner.identity && old.role === role) await this.remove(old);
     if ([...this.sessions.values()].some((s) => s.slug === slug && s.owner.identity === owner.identity && s.role === role)) throw new SfuCleanupPendingError();
-    if ([...this.sessions.values()].filter((s) => s.slug === slug).length >= 5) throw domainError('MEETING_FULL');
-    const id = await api.createSession();
+    // Reserve capacity synchronously before awaiting session creation, whose
+    // returned ID is not yet available for the normal resource registry.
+    if ([...this.sessions.values(), ...this.creating.values()].filter((s) => s.slug === slug).length >= 5) throw domainError('MEETING_FULL');
+    const key = this.ownerKey(slug, owner.identity);
+    this.creating.set(key, { slug, identity: owner.identity, role, shareId });
+    let id: string;
+    try { id = await api.createSession(); }
+    finally { this.creating.delete(key); }
     const session: Session = { slug, owner, id, role, shareId, state: 'pending', expiresAt: this.now() + 30_000, mids: tracks.flatMap((t) => t.mid ? [t.mid] : []), tracks: [] };
     this.sessions.set(id, session);
     try {
@@ -152,9 +165,9 @@ export class CloudflareSfuService {
       mids.add(matched.mid);
     }
   }
-  private async prune(slug: string): Promise<void> {
+  private async pruneOwner(slug: string, identity: string): Promise<void> {
     for (const session of [...this.sessions.values()]) {
-      if (session.slug !== slug) continue;
+      if (session.slug !== slug || session.owner.identity !== identity) continue;
       let invalid = session.state === 'closing' || (session.state === 'pending' && this.now() >= session.expiresAt);
       try { this.assertCurrent(session); } catch { invalid = true; }
       if (invalid) await this.remove(session);
@@ -164,7 +177,17 @@ export class CloudflareSfuService {
     session.state = 'closing';
     if (session.role === 'publisher') {
       if (this.dependencies.registry.getScreenSfu(session.slug)?.shareId === session.shareId) this.dependencies.registry.setScreenSfu(session.slug, null);
-      for (const child of [...this.sessions.values()]) if (child.role === 'viewer' && child.slug === session.slug && child.shareId === session.shareId) await this.remove(child);
+      const children = new Set([
+        ...[...this.sessions.values()].filter(s => s.role === 'viewer' && s.slug === session.slug && s.shareId === session.shareId).map(s => s.owner.identity),
+        ...[...this.creating.values()].filter(s => s.role === 'viewer' && s.slug === session.slug && s.shareId === session.shareId).map(s => s.identity)
+      ]);
+      // Mark withdrawal immediately, then queue cleanup behind each child's
+      // in-flight mutation without holding this owner while awaiting another.
+      // Former sharers can also be viewers; nested locks would form a cycle.
+      for (const child of this.sessions.values()) if (child.role === 'viewer' && child.slug === session.slug && child.shareId === session.shareId) child.state = 'closing';
+      for (const identity of children) void this.runOwner(session.slug, identity, async () => {
+        for (const child of [...this.sessions.values()]) if (child.role === 'viewer' && child.slug === session.slug && child.shareId === session.shareId && child.owner.identity === identity) await this.remove(child);
+      }).catch(() => {});
     }
     try {
       let inspected = true;
@@ -202,4 +225,22 @@ export class CloudflareSfuService {
   }
   private api(): CloudflareSfuApi { if (!this.dependencies.api) throw domainError('MEDIA_SERVICE_UNAVAILABLE'); return this.dependencies.api; }
   private now(): number { return this.dependencies.now?.() ?? Date.now(); }
+  private ownerKey(slug: string, identity: string): string { return JSON.stringify([slug, identity]); }
+  private ownerIdentities(slug: string): string[] {
+    return [...new Set([
+      ...[...this.sessions.values()].filter(s => s.slug === slug).map(s => s.owner.identity),
+      ...[...this.activeOwners.values()].filter(s => s.slug === slug).map(s => s.identity)
+    ])];
+  }
+  private slugs(): Set<string> { return new Set([...this.sessions.values(), ...this.activeOwners.values()].map(s => s.slug)); }
+  private runOwner<T>(slug: string, identity: string, operation: () => Promise<T>): Promise<T> {
+    const key = this.ownerKey(slug, identity);
+    const owner = this.activeOwners.get(key) ?? { slug, identity, pending: 0 };
+    owner.pending++;
+    this.activeOwners.set(key, owner);
+    return this.mutex.runExclusive(key, operation).finally(() => {
+      owner.pending--;
+      if (!owner.pending) this.activeOwners.delete(key);
+    });
+  }
 }

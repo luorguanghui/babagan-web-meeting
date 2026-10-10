@@ -55,7 +55,7 @@ export const sfuScreenShareBitrates = [10_000_000, 13_000_000, 15_000_000] as co
 /** Bitrate ceiling used when the share runs over the SFU fallback path. */
 export const sfuScreenShareFallbackBitrate = 10_000_000;
 
-export type ScreenShareStatus = 'idle' | 'starting' | 'sharing';
+export type ScreenShareStatus = 'idle' | 'starting' | 'sharing' | 'stopping';
 export type UnrestrictedSystemAudioChoice = 'share-audio' | 'video-only' | 'cancel';
 
 export interface ScreenShareState {
@@ -120,6 +120,7 @@ class BrowserScreenShareController implements ScreenShareController {
     quality: ScreenShareQuality = screenShareDefaultQuality,
     encodingEngine?: 'project' | 'browser'
   ): Promise<void> {
+    if (this.stopPromise) await this.stopPromise;
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const myGen = ++this.startGen;
     this.cancelRequested = false;
@@ -301,7 +302,6 @@ class BrowserScreenShareController implements ScreenShareController {
     this.endedCleanup?.();
     this.endedCleanup = undefined;
     this.activeStream = undefined;
-    this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
     for (const track of stream.getTracks()) track.stop();
     const publication = this.publication;
     this.stopPromise = (publication?.catch(() => undefined) ?? Promise.resolve())
@@ -313,7 +313,9 @@ class BrowserScreenShareController implements ScreenShareController {
       .finally(() => {
         if (this.publication === publication) this.publication = undefined;
         this.stopPromise = undefined;
+        this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       });
+    this.update({ status: 'stopping', stream: undefined, audioGuidance: undefined });
     return this.stopPromise;
   }
 

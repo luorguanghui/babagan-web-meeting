@@ -2,7 +2,7 @@
 
 面向单个 4–5 人会议的自托管网页应用，仅提供实时语音、单人屏幕共享和电脑声音共享。系统不包含摄像头、聊天、录制、文件传输或其他协作功能。
 
-屏幕共享默认使用浏览器编码（默认 H.264）；P2P 路径保留手动 WASM 编码。共享者也可选择 Cloudflare SFU，只上行一份屏幕视频／电脑声音，所有观看者从 SFU 订阅。新增“清晰动态”1080p60/detail档，60fps档选定源后明确请求60fps采集，不保证所有负载下实际达到60fps。
+屏幕共享默认使用浏览器编码（默认 H.264）；P2P 路径保留手动 WASM 编码。共享者也可选择 Cloudflare SFU，只上行一份屏幕视频／电脑声音，所有观看者从 SFU 订阅。新增“细节”1080p60/detail档，60fps档选定源后明确请求60fps采集，不保证所有负载下实际达到60fps。
 
 ## 已确认的部署环境
 
@@ -49,6 +49,7 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 - SQLite 保存短期会议元数据，不保存媒体。
 - 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享默认P2P直连，无法直连时经服务器coturn中继；观看者仍可显式选择LiveKit SFU。
 - Cloudflare SFU由共享者在共享前选择，最多四名观看者订阅同一份视频与电脑声音，发布端不再逐观看者编码。失败明确显示，不自动建立P2P／LiveKit屏幕副本。
+- TURN 中继固定使用服务器 coturn，无需选择提供方。停止共享期间显示“正在停止共享”，旧发布和共享权限释放完成后才能再次开始；不同观看者的 SFU 协商独立进行。
 - 项目移除Cloudflare TURN凭据生成、选择器与探测控制。API保留coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP中继端口池）；旧Cloudflare TURN偏好回退自动/coturn。
 - Cloudflare SFU配置`CLOUDFLARE_SFU_APP_ID`和`CLOUDFLARE_SFU_APP_SECRET`，秘密仅后端读取；鉴权和会话请求直连Cloudflare，不使用代理。未配置时入口说明不可用。
 - 共享者发给观看者的 P2P `offer` 会携带实际 `turnProvider` metadata；观看者会据此重新拉取匹配 provider 的 ICE 配置，保证同一轮共享双方使用同一 provider。旧的无 metadata `offer` 仍按 coturn 兼容处理。

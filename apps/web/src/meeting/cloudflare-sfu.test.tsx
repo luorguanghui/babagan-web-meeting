@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { CloudflareScreenSession, type CloudflareScreenApi } from './cloudflare-sfu.js';
+import { CloudflareScreenSession, createCloudflareScreenApi, type CloudflareScreenApi } from './cloudflare-sfu.js';
 
 class Track extends EventTarget {
   muted = false; readyState = 'live'; contentHint = ''; stop = vi.fn();
@@ -37,6 +37,23 @@ function setup(configure: (pc: Pc) => void = () => {}) {
   return { pcs, api, create };
 }
 describe('Cloudflare native screen session', () => {
+  it('accepts a slow successful allocation instead of aborting before the backend budget', async () => {
+    vi.useFakeTimers();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('Timeout', 'TimeoutError')), ms);
+      return controller.signal;
+    });
+    vi.stubGlobal('fetch', vi.fn((_url, init: RequestInit) => new Promise<Response>((resolve, reject) => {
+      const timer = setTimeout(() => resolve(Response.json({ sessionId: 'publisher', shareId: 'share', sessionDescription: { type: 'answer', sdp: 'answer' }, tracks: [{ kind: 'video', mid: '0', trackName: 'screen' }] })), 17000);
+      init.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(init.signal!.reason); }, { once: true });
+    })));
+    try {
+      const result = createCloudflareScreenApi('meeting').publish({}).catch(e => ({ failed: e.name }));
+      await vi.advanceTimersByTimeAsync(17000);
+      expect(await result).toMatchObject({ sessionId: 'publisher', shareId: 'share' });
+    } finally { timeout.mockRestore(); vi.unstubAllGlobals(); vi.useRealTimers(); }
+  });
   it('continues with gathered candidates when a slow ICE server has not completed', async () => {
     vi.useFakeTimers();
     try {
