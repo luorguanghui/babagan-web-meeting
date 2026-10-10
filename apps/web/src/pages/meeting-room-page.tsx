@@ -227,7 +227,7 @@ export function MeetingRoomPage({
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
-  const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('project');
+  const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('browser');
   const [projectMediaError, setProjectMediaError] = useState<string>();
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
   const screenBitrateTouchedRef = useRef(false);

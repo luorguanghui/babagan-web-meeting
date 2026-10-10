@@ -508,7 +508,7 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 
 ## 9. 项目 WASM 屏幕编码资源
 
-屏幕共享新增项目编码路径，H.264 默认、VP8 可选；浏览器原生编码为显式兼容选项，SFU 仍使用浏览器编码。P2P 每位观看者独立编码、数据通道和码率控制，最多四路，语音麦克风仍走 LiveKit。实际帧率取决于设备、场景和观看者数量，不保证 45／60 fps。
+屏幕共享默认使用浏览器编码，H.264 默认、VP8 可选；项目 WASM 软件编码保留为手动选项。每次进入会议默认选中浏览器编码，无需清除本地存储。浏览器 P2P 使用原生媒体轨道，软件 P2P 每位观看者独立编码、数据通道和码率控制，最多四路；SFU 使用浏览器编码，语音麦克风仍走 LiveKit。实际帧率取决于设备、场景和观看者数量，不保证 45／60 fps。
 
 WASM 与逐帧 JS 适配层位于 `apps/web/public/screen-codecs`，SHA-256、源码版本及对应源代码清单位于各包 `manifest.json`。保持该目录原始字节，禁止格式化、压缩重写或换行转换；Git 属性已单独配置。完整对应源代码在各包 `sources` 下提供，运行时不从 CDN 加载编码器。
 
@@ -518,5 +518,5 @@ WASM 与逐帧 JS 适配层位于 `apps/web/public/screen-codecs`，SHA-256、�
 
 一键更新器会额外验证公共隔离头、两个编码包的清单与当前容器一致、编码模块及对应源码的 HTTP 状态／大小／SHA-256、WASM MIME 为 `application/wasm`；缺失或陈旧资源触发原有不可变镜像回滚。发布前需做真实 P2P/TURN、共享声音同步及长期资源稳定验收。开发用 `codec-test.html`、`p2p-codec-test.html` 和 `av-codec-test.html` 位于 Vite 根目录，不包含在生产 dist 中。
 
-更新后共享端和观看端都应刷新页面，以使用同一数据通道协议版本；旧页面可使用显式浏览器兼容编码。成功切换后只运行本次发布镜像，旧镜像作为不可变回滚备份保留，不再另外启动旧web实例。资源测试结果见 `docs/acceptance/wasm-screen-implementation-2026-10-10.md`，软件编码帧率不能以目标值或静态画面结果代替实际测量。
+更新后共享端和观看端都应刷新页面；进入会议后默认选中浏览器编码，软件编码需在共享前手动选择。成功切换后只运行本次发布镜像，旧镜像作为不可变回滚备份保留，不再另外启动旧web实例。资源测试结果见 `docs/acceptance/wasm-screen-implementation-2026-10-10.md`，软件编码帧率不能以目标值或静态画面结果代替实际测量。
 
