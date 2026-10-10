@@ -40,3 +40,31 @@ it('stops queued traffic and reports failure after channel closure', async () =>
   expect(await sender.send(video)).toBe(false);
   expect(link.sent.length).toBe(0);
 });
+it.each([8, 16])('sustains below-budget 60fps traffic with %ims minimum browser wakeups', async wakeupMs => {
+  let now = 0;
+  const sent: Array<{ at: number; bytes: number }> = [];
+  const sender = new ChannelSender({ bufferedAmount: 0, readyState: 'open', send(data) { sent.push({ at: now, bytes: data.byteLength }); } },
+    7, () => 12288, 8000000, { now: () => now, async sleep(ms) { now += Math.max(wakeupMs, ms); } });
+  let dropped = 0;
+  // 7.426 Mbps including framing and 12% transport allowance, below 8 Mbps.
+  for (let index = 0; index < 600; index++) {
+    now = Math.max(now, index * 1000 / 60);
+    if (!await sender.send({ ...video, id: index, data: new Uint8Array(13750) })) dropped++;
+  }
+  expect(dropped).toBe(0);
+  expect(now).toBeLessThan(10150);
+  expect(sent.length).toBe(1200);
+  const wireBytes = sent.reduce((sum, fragment) => sum + fragment.bytes, 0) * 1.12;
+  expect(wireBytes * 8).toBeLessThan(8000000 * (now / 1000) + 2 * 12288 * 1.12 * 8);
+});
+it('bounds catch-up after a long idle interval instead of releasing an unlimited burst', async () => {
+  const link = connection();
+  const sender = new ChannelSender(link.channel, 7, () => 12288, 8000000, link.clock);
+  await sender.send({ ...video, data: new Uint8Array(1000) });
+  await link.clock.sleep(10000);
+  const start = link.now();
+  expect(await sender.send({ ...video, id: 2, data: new Uint8Array(100000) })).toBe(true);
+  const burst = link.sent.filter(fragment => fragment.at === start);
+  expect(burst.reduce((sum, fragment) => sum + fragment.bytes, 0)).toBeLessThanOrEqual(2 * 12288);
+  expect(link.now() - start).toBeGreaterThan(80);
+});

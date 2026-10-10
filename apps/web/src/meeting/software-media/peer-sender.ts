@@ -60,7 +60,7 @@ export class ProjectPeerSender {
     this.timer = setInterval(() => {
       const s = this.encoder.stats;
       if (this.control.readyState === 'open' && s.width) this.control.send(JSON.stringify({ type: 'stats', generation: this.generation,
-        rawFrames: s.rawFrames, encodedFrames: s.encodedFrames, encodedBytes: s.encodedBytes, queueDrops: s.queueDrops,
+        rawFrames: s.rawFrames, encodedFrames: s.encodedFrames, encodedBytes: s.encodedBytes, queueDrops: s.queueDrops + s.droppedFrames,
         expiredDrops: s.expiredDrops, encodeMs: s.encodeMs, filter: s.filter, width: s.width, height: s.height }));
     }, 1000);
   }
