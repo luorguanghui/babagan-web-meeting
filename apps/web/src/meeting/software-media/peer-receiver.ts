@@ -91,7 +91,11 @@ export class ProjectPeerReceiver {
       if (frame.displayWidth > 3840 || frame.displayHeight > 2160) { frame.close(); this.requestKey(); return; }
       this.stats.decodedFrames++;
       this.clock.anchor(frame.timestamp, performance.now());
-      if (this.display.length >= 6) { this.display.shift()!.frame.close(); this.stats.droppedFrames++; }
+      // A 100ms playout buffer already needs more than six frames at 60fps
+      // when decoder output runs before the timer. Six caused the oldest
+      // frame to be evicted just before it became due, including the first
+      // frame of a new viewer. Twelve covers the bounded 200ms video buffer.
+      if (this.display.length >= 12) { this.display.shift()!.frame.close(); this.stats.droppedFrames++; }
       this.display.push({ frame, due: this.clock.dueAt(frame.timestamp) });
     }, error: () => { this.waitingKey = true; this.requestKey(); } });
     this.decoder = decoder; decoder.configure(this.config!);
@@ -125,7 +129,8 @@ export class ProjectPeerReceiver {
       const { frame, due } = this.display.shift()!;
       if (now - due > 200) { frame.close(); this.stats.droppedFrames++; continue; }
       this.canvas ??= document.createElement('canvas');
-      this.canvas.width = frame.displayWidth; this.canvas.height = frame.displayHeight;
+      if (this.canvas.width !== frame.displayWidth) this.canvas.width = frame.displayWidth;
+      if (this.canvas.height !== frame.displayHeight) this.canvas.height = frame.displayHeight;
       this.canvas.getContext('2d')?.drawImage(frame, 0, 0); frame.close();
       if (!this.stream) { this.stream = this.canvas.captureStream(0); if (this.audio?.track) this.stream.addTrack(this.audio.track); this.deps.onStream(this.stream); }
       (this.stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack).requestFrame();
