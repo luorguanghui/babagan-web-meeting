@@ -75,3 +75,18 @@ On the final product code and assets:
 - [x] Restrained motion and reduced-motion CSS.
 - [x] Isolated tests/build, visual comparisons and cloud-browser interaction QA.
 - [x] Reviewable patch and source/evidence bundle; feature-branch publication authorized separately, with no merge or deployment.
+
+## Selected-icon replacement — 2026-10-13
+
+The later user-selected `image(5).png` replaces the initial abstract B mark. Its approved silhouette is an olive rounded open screen/window, detached upper-right curved segment and inset lower-right leaf. The transparent extracted mark is delivered as PNG and an embedded-PNG SVG wrapper, not as vector paths. The approved rounded Babagan wordmark files remain byte-for-byte unchanged.
+
+- Updated the meeting rail mark to its landscape aspect ratio (44×37 CSS pixels).
+- Added production SVG/32px browser favicons and a 180px warm-white home-screen icon; no manifest, service worker, installation flow or new persistence.
+- The isolated QA pages use the same selected favicon.
+- Inspected the selected source and actual Chinese receiver screenshot at 1488×1056; the three identifying shape features remain readable at rail size. Inspected the 32px favicon and home-screen icon separately. Captured the unchanged rounded wordmark in the 390×844 mobile lobby.
+- Actual screenshots: `babagan-icon-qa/receiver-desktop-zh.png` and `babagan-icon-qa/lobby-mobile-zh.png` in the delivery workspace. The cloud preview runs the clean updater worktree at base `e470eee1a7598fc84ae592ef7252df176b48f430` plus the icon-only changes.
+- Single Volume button smoke-tested: its two guarded source sliders still open at 100%. No media capture or live service is used.
+- New asset/link tests were observed failing before implementation and passing after it. Final test count for this replacement is 895 tests in 65 files; lint, typecheck and build pass, with the same large-chunk warning.
+- No provider, device, quality, codec, bitrate, audio default, authorization, motion, network or update-script code was changed in this replacement.
+
+Icon replacement final result: passed.

@@ -50,7 +50,7 @@ export function MeetingTopBar({
       {participants.slice(0, 5).map((participant, index) => <span className="participant-avatar" data-tone={index % 4} key={participant.identity} title={participant.name}>{Array.from(participant.name.trim())[0]?.toUpperCase()}</span>)}
     </div>
     <nav className="meeting-topbar-actions meeting-navigation-rail" aria-label={navigationLabel}>
-      <span className="meeting-brand-mark"><img src="/brand/babagan-icon.svg" alt="Babagan" width="37" height="44" /></span>
+      <span className="meeting-brand-mark"><img src="/brand/babagan-icon.svg" alt="Babagan" width="44" height="37" /></span>
       <button ref={participantButtonRef} type="button" className="meeting-topbar-action" aria-label={participantLabel} aria-pressed={activePanel === 'participants'} onClick={onParticipants}>
         <Users aria-hidden="true" size={24} />
         <span>{participantLabel}</span>
