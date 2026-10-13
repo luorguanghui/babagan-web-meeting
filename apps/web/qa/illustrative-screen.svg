@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900">
+  <rect width="1600" height="900" fill="#f8f5ef"/>
+  <path d="M1050 0H1600V900H1050Z" fill="#e6ede2"/>
+  <circle cx="1320" cy="350" r="195" fill="#c5d9ba"/>
+  <path d="M1080 655L1220 310L1360 655Z" fill="#55745b"/>
+  <path d="M1250 655L1405 255L1560 655Z" fill="#7c9976"/>
+  <circle cx="1415" cy="160" r="46" fill="#e2b15c"/>
+  <path d="M1050 675C1220 605 1370 755 1600 655V900H1050Z" fill="#91ac85"/>
+  <g fill="#253a30" font-family="Arial, sans-serif">
+    <text x="110" y="130" font-size="24" letter-spacing="5">ILLUSTRATIVE DESIGN WORKSHOP</text>
+    <text x="105" y="330" font-size="92" font-weight="600">A little more</text>
+    <text x="105" y="438" font-size="92" font-weight="600">room to think.</text>
+    <text x="110" y="540" font-size="29" fill="#687167">Clear ideas. Shared perspectives.</text>
+    <text x="110" y="583" font-size="29" fill="#687167">A calmer way to work together.</text>
+    <text x="110" y="796" font-size="22" fill="#687167">FICTIONAL CONTENT · LOCAL QA POSTER</text>
+    <text x="920" y="796" font-size="22" fill="#687167">01</text>
+  </g>
+</svg>

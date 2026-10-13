@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head><meta charset="utf-8"><title>Babagan · isolated responsive QA</title>
+    <style>html,body{margin:0;background:#e9ebe5}iframe{display:block;border:0;background:#faf9f6}</style>
+  </head>
+  <body><iframe title="Isolated Babagan preview"></iframe>
+    <script type="module">
+      const params = new URLSearchParams(location.search);
+      const frame = document.querySelector('iframe');
+      frame.width = String(Math.min(1920, Math.max(320, Number(params.get('width')) || 1488)));
+      frame.height = String(Math.min(1200, Math.max(480, Number(params.get('height')) || 1056)));
+      const scale = Math.min(1, Math.max(.5, Number(params.get('scale')) || 1));
+      frame.style.transform = `scale(${scale})`;
+      frame.style.transformOrigin = 'top left';
+      frame.src = `./preview.html?scene=${encodeURIComponent(params.get('scene') || 'receiver')}&lang=${encodeURIComponent(params.get('lang') || 'zh-CN')}`;
+    </script>
+  </body>
+</html>

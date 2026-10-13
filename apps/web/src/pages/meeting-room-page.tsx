@@ -21,6 +21,7 @@ import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
+import { useExitPresence } from '../components/use-exit-presence.js';
 import { type MessageKey, type Translate, useI18n } from '../i18n/i18n.js';
 import { createP2pSignalingClient, type Peer, type P2pSignalingClient, type P2pSignalingEvents } from '../meeting/p2p-signaling.js';
 import {
@@ -217,9 +218,15 @@ export function MeetingRoomPage({
   const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
   const [meetingPanel, setMeetingPanel] = useState<MeetingPanel>(null);
   const [meetingPanelParent, setMeetingPanelParent] = useState<'more' | null>(null);
+  const panelPresence = useExitPresence(useMemo(() => meetingPanel === null ? null : {
+    panel: meetingPanel, parent: meetingPanelParent
+  }, [meetingPanel, meetingPanelParent]), 200);
+  const displayedPanel = panelPresence.value?.panel;
+  const displayedPanelParent = panelPresence.value?.parent;
   const participantButtonRef = useRef<HTMLButtonElement>(null);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
+  const statsButtonRef = useRef<HTMLButtonElement>(null);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -261,6 +268,7 @@ export function MeetingRoomPage({
   const [projectReceiverStats, setProjectReceiverStats] = useState<ProjectStats>();
   const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
+  const audioDecisionPresence = useExitPresence(systemAudioDecision ?? null, 200);
   const systemAudioDecisionResolver = useRef<((choice: UnrestrictedSystemAudioChoice) => void) | undefined>(undefined);
   const authorizeHost = useCallback(() => meetingApi.authorizeHost(slug), [meetingApi, slug]);
   const requestMeetingIceServers = useCallback(async (
@@ -887,10 +895,12 @@ export function MeetingRoomPage({
     saveScreenShareTurnProviderPreference(window.localStorage, preference);
   }, []);
 
-  const hostParticipants: ParticipantSummary[] = state.participants.map((participant) => ({
+  const hostParticipants: Array<ParticipantSummary & { isLocal: boolean; microphoneEnabled: boolean }> = state.participants.map((participant) => ({
     identity: participant.identity,
     name: participant.name,
-    isSharing: participant.isSharing
+    isSharing: participant.isSharing,
+    isLocal: participant.isLocal,
+    microphoneEnabled: participant.microphoneEnabled
   }));
   // SFU is shown only after explicit selection. Peer renegotiation may retain
   // the last peer frame, but never substitutes a LiveKit backup behind it.
@@ -1056,11 +1066,7 @@ export function MeetingRoomPage({
   const closeMeetingPanel = () => { setMeetingPanel(null); setMeetingPanelParent(null); };
   const backToMore = () => { setMeetingPanelParent(null); setMeetingPanel('more'); };
 
-  return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`}>
-    {cf.error && <p role="alert">{cf.error}</p>}
-    {cf.error && screenState.stream && screenSourceTransport === 'cloudflare-sfu' && <button type="button" disabled={cfRetrying} onClick={() => void retryCloudflareSource()}>{t('controls.cloudflareSfuRetry')}</button>}
-    {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
-    {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
+  return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`} data-panel={meetingPanel ?? undefined} data-displayed-panel={displayedPanel}>
     <MeetingTopBar
       title={meetingName || t('room.heading', { name: join.participantName })}
       connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}
@@ -1073,18 +1079,31 @@ export function MeetingRoomPage({
       onSettings={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
       participantButtonRef={participantButtonRef}
       settingsButtonRef={settingsButtonRef}
+      statsButtonRef={statsButtonRef}
+      statsLabel={t('controls.webrtcData')}
+      onStats={() => { setMeetingPanelParent(null); setMeetingPanel('stats'); }}
+      activePanel={meetingPanel}
+      participants={state.participants}
+      showTransport={hasActiveScreenShare}
     />
     <section className="meeting-notices" aria-live="polite">
+      {cf.error && <p role="alert">{cf.error}</p>}
+      {cf.error && screenState.stream && screenSourceTransport === 'cloudflare-sfu' && <button type="button" disabled={cfRetrying} onClick={() => void retryCloudflareSource()}>{t('controls.cloudflareSfuRetry')}</button>}
+      {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
+      {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
       {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
-      {systemAudioDecision && <section
+      {audioDecisionPresence.value && <section
         className="system-audio-warning"
+        data-state={audioDecisionPresence.exiting ? 'exiting' : 'open'}
+        inert={audioDecisionPresence.exiting || undefined}
+        aria-hidden={audioDecisionPresence.exiting || undefined}
         role="dialog"
-        aria-modal="true"
+        aria-modal={audioDecisionPresence.exiting ? undefined : true}
         aria-labelledby="system-audio-warning-title"
       >
         <h2 id="system-audio-warning-title">{t('audioWarning.heading')}</h2>
-        <p>{t('audioWarning.description', { surface: systemAudioDecision.displaySurface })}</p>
+        <p>{t('audioWarning.description', { surface: audioDecisionPresence.value.displaySurface })}</p>
         <button type="button" onClick={() => resolveSystemAudioDecision('video-only')}>{t('audioWarning.videoOnly')}</button>
         <button type="button" onClick={() => resolveSystemAudioDecision('share-audio')}>{t('audioWarning.continue')}</button>
         <button type="button" onClick={() => resolveSystemAudioDecision('cancel')}>{t('audioWarning.cancel')}</button>
@@ -1117,18 +1136,19 @@ export function MeetingRoomPage({
         />
       </div>
     </div>
-    {meetingPanel === 'participants' && <MeetingDrawer
+    {displayedPanel === 'participants' && <MeetingDrawer
+      exiting={panelPresence.exiting}
       title={t('participants.label')}
       closeLabel={t('controls.closePanel')}
-      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
-      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={displayedPanelParent === 'more' ? backToMore : undefined}
       onClose={closeMeetingPanel}
-      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : participantButtonRef}
+      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : participantButtonRef}
     >
-      <ParticipantList participants={state.participants} />
-      <details className="meeting-management">
-        <summary>{t('room.management')}</summary>
+      {hostAuthorized ? <>
+        <p className="meeting-management-heading">{t('room.management')}</p>
         <HostMenu
+          unified
           participants={hostParticipants}
           authorizeHost={authorizeHost}
           authorized={hostAuthorized}
@@ -1138,6 +1158,10 @@ export function MeetingRoomPage({
           onEndMeeting={() => meetingApi.end(slug)}
           onEnded={() => onTerminal?.('ended')}
         />
+      </> : <>
+        <ParticipantList participants={state.participants} />
+        <details className="meeting-management">
+          <summary>{t('room.management')}</summary>
         {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
           <h2>{t('adminEnd.heading')}</h2>
           <AdminEndMeetingForm
@@ -1146,17 +1170,20 @@ export function MeetingRoomPage({
             onEnded={() => onTerminal?.('ended')}
           />
         </section>}
-      </details>
+        </details>
+      </>}
     </MeetingDrawer>}
-    {meetingPanel === 'settings' && <MeetingDrawer
+    {displayedPanel === 'settings' && <MeetingDrawer
+      exiting={panelPresence.exiting}
       title={t('controls.settings')}
       closeLabel={t('controls.closePanel')}
-      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
-      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={displayedPanelParent === 'more' ? backToMore : undefined}
       onClose={closeMeetingPanel}
-      returnFocusRef={meetingPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
+      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
     ><MeetingSettings {...meetingControlsProps} /></MeetingDrawer>}
-    {meetingPanel === 'more' && <MeetingDrawer
+    {displayedPanel === 'more' && <MeetingDrawer
+      exiting={panelPresence.exiting}
       title={t('controls.more')}
       closeLabel={t('controls.closePanel')}
       onClose={closeMeetingPanel}
@@ -1168,13 +1195,14 @@ export function MeetingRoomPage({
       { action: 'webrtc-stats', label: t('controls.webrtcData') },
       { action: 'leave', label: t('controls.leave') }
     ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
-    {meetingPanel === 'stats' && <MeetingDrawer
+    {displayedPanel === 'stats' && <MeetingDrawer
+      exiting={panelPresence.exiting}
       title={t('controls.webrtcData')}
       closeLabel={t('controls.closePanel')}
-      backLabel={meetingPanelParent === 'more' ? t('controls.backToMore') : undefined}
-      onBack={meetingPanelParent === 'more' ? backToMore : undefined}
+      backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
+      onBack={displayedPanelParent === 'more' ? backToMore : undefined}
       onClose={closeMeetingPanel}
-      returnFocusRef={moreButtonRef}
+      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : statsButtonRef}
     ><WebRtcStatsPanel
       embedded
       active={hasActiveScreenShare}

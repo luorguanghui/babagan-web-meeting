@@ -10,6 +10,7 @@ export function MeetingDrawer({
   onBack,
   onClose,
   returnFocusRef,
+  exiting = false,
   children
 }: {
   title: string;
@@ -18,6 +19,7 @@ export function MeetingDrawer({
   onBack?: () => void;
   onClose: () => void;
   returnFocusRef?: RefObject<HTMLButtonElement | null>;
+  exiting?: boolean;
   children: ReactNode;
 }) {
   const headingId = useId();
@@ -33,12 +35,16 @@ export function MeetingDrawer({
     queueMicrotask(() => focusTarget?.focus());
   }, []);
   useEffect(() => {
+    if (exiting) return;
     const drawer = drawerRef.current;
     const room = drawer?.closest('.meeting-room');
     const background = room
       ? Array.from(room.children).filter((element) => element !== drawer && !element.classList.contains('meeting-drawer-backdrop'))
       : [];
-    background.forEach((element) => element.setAttribute('inert', ''));
+    const priorAccessibility = background.map((element) => ({
+      element, inert: element.hasAttribute('inert'), ariaHidden: element.getAttribute('aria-hidden')
+    }));
+    background.forEach((element) => { element.setAttribute('inert', ''); element.setAttribute('aria-hidden', 'true'); });
     closeButtonRef.current?.focus();
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -62,11 +68,15 @@ export function MeetingDrawer({
     document.addEventListener('keydown', keydown);
     return () => {
       document.removeEventListener('keydown', keydown);
-      background.forEach((element) => element.removeAttribute('inert'));
+      priorAccessibility.forEach(({ element, inert, ariaHidden }) => {
+        if (!inert) element.removeAttribute('inert');
+        if (ariaHidden === null) element.removeAttribute('aria-hidden');
+        else element.setAttribute('aria-hidden', ariaHidden);
+      });
     };
-  }, [close]);
-  return <><div className="meeting-drawer-backdrop" data-state="open" aria-hidden="true" onClick={close} />
-  <aside ref={drawerRef} className="meeting-drawer" data-state="open" role="dialog" aria-modal="true" aria-labelledby={headingId}>
+  }, [close, exiting]);
+  return <><div className="meeting-drawer-backdrop" data-state={exiting ? 'exiting' : 'open'} aria-hidden="true" onClick={exiting ? undefined : close} />
+  <aside ref={drawerRef} className="meeting-drawer" data-state={exiting ? 'exiting' : 'open'} inert={exiting || undefined} aria-hidden={exiting || undefined} role="dialog" aria-modal={exiting ? undefined : true} aria-labelledby={headingId}>
     <header className="meeting-drawer-header">
       {onBack && <button type="button" className="meeting-drawer-back" aria-label={backLabel} onClick={onBack}>
         <ArrowLeft aria-hidden="true" size={20} />

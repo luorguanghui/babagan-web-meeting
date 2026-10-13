@@ -1,10 +1,12 @@
 import type { ParticipantSummary } from '@meeting/contracts';
+import { Mic, MicOff } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { ApiRequestError } from '../api/client.js';
 import { useI18n } from '../i18n/i18n.js';
 
 interface HostMenuProps {
-  participants: ParticipantSummary[];
+  participants: Array<ParticipantSummary & { isLocal?: boolean; microphoneEnabled?: boolean }>;
+  unified?: boolean;
   authorizeHost: () => Promise<void>;
   authorized?: boolean;
   onGrantShare: (identity: string) => Promise<void>;
@@ -18,6 +20,7 @@ interface HostMenuProps {
 
 export function HostMenu({
   participants,
+  unified = false,
   authorizeHost,
   authorized: controlledAuthorized,
   onGrantShare,
@@ -77,21 +80,33 @@ export function HostMenu({
     if (ended) onEnded?.();
   }
 
-  return <section className="host-menu" aria-labelledby="host-controls-heading">
+  return <section className={`host-menu${unified ? ' host-menu-unified meeting-management' : ''}`} aria-labelledby="host-controls-heading">
     <h2 id="host-controls-heading">{t('host.heading')}</h2>
+    {unified && <p className="meeting-member-hint">{t('host.singleShare')}</p>}
     {error && <p role="alert">{error}</p>}
-    <ul aria-label={t('host.listLabel')}>
-      {participants.map((participant) => <li key={participant.identity}>
-        <span>{participant.name}</span>
+    <ul aria-label={t(unified ? 'participants.label' : 'host.listLabel')}>
+      {participants.map((participant, index) => <li key={participant.identity}>
+        {unified && <span className="participant-avatar" data-tone={index % 4} aria-hidden="true">{Array.from(participant.name.trim())[0]?.toUpperCase()}</span>}
+        <div className="participant-identity"><span className="participant-name">{participant.name}{unified && participant.isLocal && ` (${t('participants.you')})`}</span>
+          {unified && <span className="participant-detail">{participant.isLocal ? t('participants.host') : sharingIdentity === participant.identity ? t('participants.sharing') : participant.microphoneEnabled ? t('participants.microphoneOn') : t('participants.muted')}</span>}
+        </div>
+        {unified && <span className="participant-microphone" role="img" data-muted={!participant.microphoneEnabled} aria-label={t('controls.microphoneStatus', { state: participant.microphoneEnabled ? t('common.on') : t('common.muted') })}>
+          {participant.microphoneEnabled ? <Mic aria-hidden="true" size={19} /> : <MicOff aria-hidden="true" size={19} />}
+        </span>}
+        <div className="participant-host-actions">
         {sharingIdentity === participant.identity
-          ? <button type="button" onClick={() => void revoke()}>{t('host.revoke', { name: participant.name })}</button>
-          : <button type="button" disabled={sharingIdentity !== undefined} onClick={() => void grant(participant.identity)}>{t('host.grant', { name: participant.name })}</button>}
-        <button type="button" className="danger" onClick={() => void act(() => onKick(participant.identity))}>{t('host.kick', { name: participant.name })}</button>
+          ? <button type="button" aria-label={t('host.revoke', { name: participant.name })} onClick={() => void revoke()}>{unified ? t('host.revokeShort') : t('host.revoke', { name: participant.name })}</button>
+          : <button type="button" aria-label={t('host.grant', { name: participant.name })} disabled={sharingIdentity !== undefined} onClick={() => void grant(participant.identity)}>{unified ? t('host.grantShort') : t('host.grant', { name: participant.name })}</button>}
+        <button type="button" className="danger" aria-label={t('host.kick', { name: participant.name })} onClick={() => void act(() => onKick(participant.identity))}>{unified ? t('host.kickShort') : t('host.kick', { name: participant.name })}</button>
+        </div>
       </li>)}
     </ul>
+    <div className="meeting-end-section">
     <button type="button" className="danger" disabled={ending} onClick={() => {
       const confirmed = confirmEnd ? confirmEnd() : window.confirm(t('host.confirmEnd'));
       if (confirmed) void endMeeting();
     }}>{ending ? t('host.ending') : t('host.end')}</button>
+    {unified && <p>{t('host.endHint')}</p>}
+    </div>
   </section>;
 }

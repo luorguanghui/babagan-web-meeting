@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp, Ellipsis, LogOut, Mic, MicOff, MonitorUp, Volum
 import { useEffect, useId, useRef, useState, type RefObject } from 'react';
 
 import { useI18n } from '../i18n/i18n.js';
+import { useExitPresence } from './use-exit-presence.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { ScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
 import type { ViewerTransportPreference } from '../meeting/viewer-transport-preference.js';
@@ -65,6 +66,8 @@ export interface MeetingControlsProps {
 export function MeetingControls(props: MeetingControlsProps) {
   const { t } = useI18n();
   const [volumePanel, setVolumePanel] = useState<'call' | 'shared' | null>(null);
+  // Allow one paint before the 140 ms CSS exit finishes.
+  const volumePresence = useExitPresence(volumePanel, 180);
   const volumePanelId = useId();
   const volumeActionsRef = useRef<HTMLDivElement>(null);
   const volumeTriggerRef = useRef<HTMLButtonElement>(null);
@@ -96,7 +99,8 @@ export function MeetingControls(props: MeetingControlsProps) {
     volumeTriggerRef.current = trigger;
     setVolumePanel((current) => current === panel ? null : panel);
   };
-  const mobileDockWrapped = Boolean(props.sharedAudioVolumeVisible || (props.p2pRetryVisible && props.onP2pRetry));
+  const combinedVolumeEntry = props.includeSettings === false;
+  const mobileDockWrapped = Boolean((!combinedVolumeEntry && props.sharedAudioVolumeVisible) || (props.p2pRetryVisible && props.onP2pRetry));
   return <footer className={['meeting-controls', props.className].filter(Boolean).join(' ')} aria-label={t('controls.label')} data-mobile-wrapped={mobileDockWrapped ? 'true' : 'false'}>
     <div className="meeting-control-status">
       <p role="status"><span className="meeting-status-dot" aria-hidden="true" />{t('controls.connection', { state: props.connection })}</p>
@@ -111,6 +115,42 @@ export function MeetingControls(props: MeetingControlsProps) {
           <MicrophoneIcon aria-hidden="true" size={19} />
           <span>{props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}</span>
         </button>
+        <div ref={volumeActionsRef} className="meeting-volume-actions" data-combined-volume={combinedVolumeEntry ? 'true' : 'false'}>
+          <div className="meeting-volume-button-row">
+            <button
+              type="button"
+              className="meeting-action meeting-action-volume"
+              aria-controls={volumePanelId}
+              aria-expanded={volumePanel !== null}
+              onClick={(event) => openVolumePanel('call', event.currentTarget)}
+              aria-label={combinedVolumeEntry ? t('controls.volume') : t('controls.callAudioVolume')}
+            ><Volume2 aria-hidden="true" size={19} /><span>{combinedVolumeEntry ? t('controls.volume') : t('controls.callAudioShort')}</span>{volumePanel === 'call' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>
+            {!combinedVolumeEntry && props.sharedAudioVolumeVisible && <button
+              type="button"
+              className="meeting-action meeting-action-volume meeting-action-shared-volume"
+              aria-controls={volumePanelId}
+              aria-expanded={volumePanel !== null}
+              onClick={(event) => openVolumePanel('shared', event.currentTarget)}
+              aria-label={t('controls.sharedAudioVolume')}
+            ><Volume2 aria-hidden="true" size={19} /><span>{t('controls.sharedAudioShort')}</span>{volumePanel === 'shared' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>}
+          </div>
+          {volumePresence.value !== null && <div
+            id={volumePanelId}
+            className="meeting-volume-popover"
+            data-state={volumePresence.exiting ? 'exiting' : 'open'}
+            inert={volumePresence.exiting}
+            aria-hidden={volumePresence.exiting || undefined}
+            role="group"
+            aria-label={t('controls.volumeQuickMenu')}
+          >
+            <div className="meeting-volume-popover-heading">
+              <span>{t('controls.volumeQuickMenu')}</span>
+              {!combinedVolumeEntry && <span className="meeting-volume-popover-hint">{volumePresence.value === 'shared' && props.sharedAudioVolumeVisible ? t('controls.sharedAudioVolume') : t('controls.callAudioVolume')}</span>}
+            </div>
+            <VolumeSlider label={t('controls.callAudioVolume')} displayLabel={t('controls.callAudioShort')} kind="call" value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
+            {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} displayLabel={t('controls.sharedAudioShort')} kind="shared" value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
+          </div>}
+        </div>
         <button
           type="button"
           className="meeting-action meeting-action-share"
@@ -120,34 +160,6 @@ export function MeetingControls(props: MeetingControlsProps) {
           disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
           onClick={props.onScreenShareToggle}
         ><MonitorUp aria-hidden="true" size={19} /><span>{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span></button>
-        <div ref={volumeActionsRef} className="meeting-volume-actions">
-          <div className="meeting-volume-button-row">
-            <button
-              type="button"
-              className="meeting-action meeting-action-volume"
-              aria-controls={volumePanelId}
-              aria-expanded={volumePanel !== null}
-              onClick={(event) => openVolumePanel('call', event.currentTarget)}
-              aria-label={t('controls.callAudioVolume')}
-            ><Volume2 aria-hidden="true" size={19} /><span>{t('controls.callAudioShort')}</span>{volumePanel === 'call' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>
-            {props.sharedAudioVolumeVisible && <button
-              type="button"
-              className="meeting-action meeting-action-volume meeting-action-shared-volume"
-              aria-controls={volumePanelId}
-              aria-expanded={volumePanel !== null}
-              onClick={(event) => openVolumePanel('shared', event.currentTarget)}
-              aria-label={t('controls.sharedAudioVolume')}
-            ><Volume2 aria-hidden="true" size={19} /><span>{t('controls.sharedAudioShort')}</span>{volumePanel === 'shared' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>}
-          </div>
-          {volumePanel !== null && <div id={volumePanelId} className="meeting-volume-popover" role="group" aria-label={t('controls.volumeQuickMenu')}>
-            <div className="meeting-volume-popover-heading">
-              <span>{t('controls.volumeQuickMenu')}</span>
-              <span className="meeting-volume-popover-hint">{volumePanel === 'shared' && props.sharedAudioVolumeVisible ? t('controls.sharedAudioVolume') : t('controls.callAudioVolume')}</span>
-            </div>
-            <VolumeSlider label={t('controls.callAudioVolume')} value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
-            {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
-          </div>}
-        </div>
         {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}
         {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" onClick={props.onMore}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
         <button type="button" className="danger meeting-leave-action" onClick={props.onLeave} disabled={props.leaving}>
@@ -162,52 +174,69 @@ export function MeetingControls(props: MeetingControlsProps) {
   </footer>;
 }
 
-function VolumeSlider({ label, value, onChange }: { label: string; value: number; onChange?: (volume: number) => void }) {
-  return <label className="meeting-volume-control">
-    <span className="meeting-volume-heading"><span>{label}</span><output>{value}%</output></span>
-    <input type="range" min="0" max="100" step="5" value={value} aria-label={label} onChange={(event) => onChange?.(Number(event.target.value))} />
+function VolumeSlider({ label, displayLabel, kind, value, onChange }: { label: string; displayLabel?: string; kind: 'call' | 'shared'; value: number; onChange?: (volume: number) => void }) {
+  const Icon = kind === 'shared' ? MonitorUp : Volume2;
+  return <label className="meeting-volume-control" data-volume={kind}>
+    <span className="meeting-volume-heading"><span>{displayLabel ?? label}</span><output>{value}%</output></span>
+    <span className="meeting-volume-track">
+      <Icon aria-hidden="true" size={19} />
+      <input type="range" min="0" max="100" step="5" value={value} aria-label={label} onChange={(event) => onChange?.(Number(event.target.value))} />
+    </span>
   </label>;
 }
 
 export function MeetingSettings(props: MeetingControlsProps) {
   const { t } = useI18n();
+  const audioHeadingId = useId();
+  const receivingHeadingId = useId();
+  const sharingHeadingId = useId();
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
   const screenShareProviderDisabled = Boolean(props.screenShareActive || props.screenShareBusy);
   return <div className="meeting-settings-grid">
-    {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as 'p2p' | 'cloudflare-sfu')}>
-      <option value="p2p">{t('controls.screenSourceP2p')}</option><option value="cloudflare-sfu" disabled={props.cloudflareSfuAvailable === false}>{t('controls.screenSourceCloudflare')}</option>
-    </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}</label>}
-    <label className="meeting-volume-control">
-      <span className="meeting-volume-heading"><span>{t('controls.callAudioVolume')}</span><output>{props.callAudioVolume ?? 100}%</output></span>
-      <input type="range" min="0" max="100" step="5" value={props.callAudioVolume ?? 100} aria-label={t('controls.callAudioVolume')} onChange={(event) => props.onCallAudioVolumeChange?.(Number(event.target.value))} />
-    </label>
-    {props.sharedAudioVolumeVisible && <label className="meeting-volume-control">
-      <span className="meeting-volume-heading"><span>{t('controls.sharedAudioVolume')}</span><output>{props.sharedAudioVolume ?? 100}%</output></span>
-      <input type="range" min="0" max="100" step="5" value={props.sharedAudioVolume ?? 100} aria-label={t('controls.sharedAudioVolume')} onChange={(event) => props.onSharedAudioVolumeChange?.(Number(event.target.value))} />
-    </label>}
-    <label>{t('controls.microphoneDevice')}<select aria-label={t('controls.microphoneDevice')} defaultValue="" onChange={(event) => props.onMicrophoneDeviceChange(event.target.value)}>
-      <option value="" disabled>{t('controls.selectMicrophone')}</option>
-      {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.microphone')}</option>)}
-    </select></label>
-    <label>{t('controls.speakerDevice')}<select aria-label={t('controls.speakerDevice')} defaultValue="" onChange={(event) => props.onSpeakerDeviceChange(event.target.value)}>
-      <option value="" disabled>{t('controls.selectSpeaker')}</option>
-      {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
-    </select></label>
-    {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <label>{t('controls.viewerTransport')}<select aria-label={t('controls.viewerTransport')} value={props.viewerTransportPreference ?? 'auto'} onChange={(event) => props.onViewerTransportPreferenceChange?.(event.target.value as ViewerTransportPreference)}>
-      <option value="auto">{t('controls.viewerTransportAuto')}</option><option value="turn">{t('controls.viewerTransportTurn')}</option><option value="sfu">{t('controls.viewerTransportSfu')}</option>
-    </select></label>}
-    <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
-      <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option><option value="detail60">{t('controls.detail60')}</option>
-    </select></label>
-    <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
-      <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
-    </select></label>
-    <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenSourceTransport === 'cloudflare-sfu' ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={props.screenSourceTransport === 'cloudflare-sfu' || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
-      <option value="browser">{t('controls.browserEncoding')}</option><option value="project">{t('controls.projectEncoding')}</option>
-    </select></label>
-    <label>{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>
-      {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}
-    </select><span className="meeting-controls-hint">{t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0) / 1_000_000 })}</span></label>
+    <section className="meeting-settings-section" data-section="audio" aria-labelledby={audioHeadingId}>
+      <h3 className="meeting-settings-section-heading" id={audioHeadingId}>{t('controls.audioDevices')}</h3>
+      <div className="meeting-settings-section-grid">
+        <VolumeSlider label={t('controls.callAudioVolume')} displayLabel={t('controls.callAudioShort')} kind="call" value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
+        {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} displayLabel={t('controls.sharedAudioShort')} kind="shared" value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
+        <label>{t('controls.microphoneDevice')}<select aria-label={t('controls.microphoneDevice')} defaultValue="" onChange={(event) => props.onMicrophoneDeviceChange(event.target.value)}>
+          <option value="" disabled>{t('controls.selectMicrophone')}</option>
+          {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.microphone')}</option>)}
+        </select></label>
+        <label>{t('controls.speakerDevice')}<select aria-label={t('controls.speakerDevice')} defaultValue="" onChange={(event) => props.onSpeakerDeviceChange(event.target.value)}>
+          <option value="" disabled>{t('controls.selectSpeaker')}</option>
+          {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
+        </select></label>
+      </div>
+    </section>
+    {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <section className="meeting-settings-section" data-section="receiving" aria-labelledby={receivingHeadingId}>
+      <h3 className="meeting-settings-section-heading" id={receivingHeadingId}>{t('controls.receivingScreen')}</h3>
+      <div className="meeting-settings-section-grid">
+        <label className="meeting-settings-field-wide">{t('controls.viewerTransport')}<select aria-label={t('controls.viewerTransport')} value={props.viewerTransportPreference ?? 'auto'} onChange={(event) => props.onViewerTransportPreferenceChange?.(event.target.value as ViewerTransportPreference)}>
+          <option value="auto">{t('controls.viewerTransportAuto')}</option><option value="turn">{t('controls.viewerTransportTurn')}</option><option value="sfu">{t('controls.viewerTransportSfu')}</option>
+        </select></label>
+      </div>
+    </section>}
+    <section className="meeting-settings-section" data-section="sharing" aria-labelledby={sharingHeadingId}>
+      <h3 className="meeting-settings-section-heading" id={sharingHeadingId}>{t('controls.startingShare')}</h3>
+      <div className="meeting-settings-section-grid">
+        {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as 'p2p' | 'cloudflare-sfu')}>
+          <option value="p2p">{t('controls.screenSourceP2p')}</option><option value="cloudflare-sfu" disabled={props.cloudflareSfuAvailable === false}>{t('controls.screenSourceCloudflare')}</option>
+        </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}</label>}
+        <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
+          <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option><option value="detail60">{t('controls.detail60')}</option>
+        </select></label>
+        <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
+          <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
+        </select></label>
+        <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenSourceTransport === 'cloudflare-sfu' ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={props.screenSourceTransport === 'cloudflare-sfu' || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
+          <option value="browser">{t('controls.browserEncoding')}</option><option value="project">{t('controls.projectEncoding')}</option>
+        </select></label>
+        <label className="meeting-settings-field-wide">{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>
+          {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}
+        </select><span className="meeting-controls-hint">{t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0) / 1_000_000 })}</span></label>
+      </div>
+      <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>
+    </section>
   </div>;
 }

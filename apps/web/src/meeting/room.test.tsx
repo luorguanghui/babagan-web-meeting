@@ -507,6 +507,28 @@ describe('meeting room UI', () => {
 
     expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+    expect(drawer).toHaveAttribute('data-state', 'exiting');
+    expect(drawer).toHaveAttribute('inert');
+    expect(document.querySelector('.meeting-workspace')).not.toHaveAttribute('inert');
+    await waitFor(() => expect(drawer).not.toBeInTheDocument());
+  });
+
+  it('replaces a closing panel immediately without stale cleanup or disconnecting the room', async () => {
+    const { controller } = renderRoom();
+    const participantsTrigger = await screen.findByRole('button', { name: 'Participants' });
+    fireEvent.click(participantsTrigger);
+    const oldDrawer = screen.getByRole('dialog', { name: 'Participants' });
+    fireEvent.click(document.querySelector('.meeting-drawer-backdrop')!);
+    expect(oldDrawer).toHaveAttribute('aria-hidden', 'true');
+    expect(oldDrawer).toHaveAttribute('inert');
+    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    const settings = screen.getByRole('dialog', { name: 'Audio and sharing settings' });
+    expect(settings).toHaveAttribute('data-state', 'open');
+    expect(settings).not.toHaveAttribute('inert');
+    expect(oldDrawer).not.toBeInTheDocument();
+    await act(() => new Promise(resolve => setTimeout(resolve, 230)));
+    expect(settings).toBeInTheDocument();
+    expect(controller.disconnectCount).toBe(0);
   });
 
   it('keeps focus inside a drawer when live meeting state rerenders the page', async () => {
