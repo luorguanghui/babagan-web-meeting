@@ -292,12 +292,14 @@ sudo bash -c '
 set -Eeuo pipefail
 install -d -m 700 /opt/babagan-web-meeting/var/updater
 candidate=$(mktemp -d /opt/babagan-web-meeting/var/updater/main-XXXXXX)
-git clone --depth 1 --branch main https://github.com/luorguanghui/babagan-web-meeting.git "$candidate/source"
-bash "$candidate/source/scripts/update.sh" --app-dir /opt/babagan-web-meeting --commit "$(git -C "$candidate/source" rev-parse HEAD)"
+ref=main # 如需未合并版本，显式替换为已审查的发布分支
+git clone --depth 1 --branch "$ref" https://github.com/luorguanghui/babagan-web-meeting.git "$candidate/source"
+printf "Updater source: %s\n" "$candidate/source"
+bash "$candidate/source/scripts/update.sh" --app-dir /opt/babagan-web-meeting --ref "$ref" --commit "$(git -C "$candidate/source" rev-parse HEAD)"
 '
 ~~~
 
-此快照的更新器可再次调用。记下终端打印的 `candidate` 目录或用 `find var/updater -name update.sh` 定位；原安装更新过脚本后可直接使用根目录 `scripts/update.sh`。
+此快照的更新器可再次调用。记下终端打印的 `Updater source` 目录或用 `find var/updater -name update.sh` 定位。更新器不会覆盖原安装源码，因此应用更新成功不代表根目录的旧更新器也已升级；需要更新器新功能时重新获取已审查快照。未合并的功能分支必须显式选择，默认不会自动切换到它。
 
 ### 4.2 常规更新和选项
 
@@ -307,11 +309,15 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --web-only
 # 固定一个完整、已审查的 Git 提交：
 sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --commit '<40 位小写 SHA>'
+# 显式选择未合并的已审查分支（默认仍是 main）：
+sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --ref '<发布分支>' --commit '<40 位小写 SHA>'
 ~~~
 
-需要 Python 3、Git、Docker Compose、SQLite、curl、util-linux 的 flock，以及 mode-600 的 `infra/.env.production`。两种部署入口共享 `/run/lock/babagan-meeting-update.lock` 非阻塞事务锁，避免候选构建期间并发迁移或替换容器。更新前结束处于 created/active/grace 的会议。默认更新 API 和 web；Caddy、LiveKit、coturn 保留当前容器和配置。候选源码从 `origin` 获取，主工作树、生产 env 与历史发布均保留。构建期间若生产 env 或当前容器发生变化，候选保留但不会激活。
+以 sudo 运行；需要 Python 3、Git、可用的 Docker daemon / Compose、SQLite、curl 和基础 Linux 工具，以及 mode-600 的 `infra/.env.production`、mode-700 的 `var/releases`。构建前要求至少 10 GiB 可用磁盘和 1100 MiB 可用内存；不自动安装依赖、清理旧镜像或删除备份。两种部署入口共享 `/run/lock/babagan-meeting-update.lock` 非阻塞事务锁，避免候选构建期间并发迁移或替换容器。更新前结束处于 created/active/grace 的会议。默认更新 API 和 web；Caddy、LiveKit、coturn 保留当前容器和配置。候选源码从 `origin` 获取，主工作树、生产 env 与历史发布均保留。构建、迁移和激活前会复核生产 env 的内容/权限、活动 Compose 链每个文件的内容及当前容器身份/健康。发生变化时停止并保留证据，不带着变化后的配置继续部署。锁由内核在进程退出时释放，残留的锁文件不表示仍在运行，不要删除锁文件绕过互斥。
 
-更新过程：验证现有服务及配置 → 独立 Git 快照 → SQLite 在线备份 → 固定版本 Dockerfile 构建 → 再检查会议及当前容器 → API 更新时执行迁移 → 仅替换目标应用容器 → 等待五服务健康 → 公网 JavaScript 与容器文件 SHA-256 比对 → 新签发 Token 的鉴权 ICE/RTC 冒烟 → 写发布记录。
+更新过程：检查依赖/资源和现有配置 → 按实际运行镜像核对来源 → 获取完整 Git 历史并核对候选版本 → 固定版本 Dockerfile 构建 → 再检查会议/配置/容器并做 SQLite 在线备份 → API 更新时执行迁移 → 激活前再次核对 → 仅替换目标应用容器 → 等待五服务健康 → 公网 JavaScript 与容器文件 SHA-256 比对 → 新签发 Token 的鉴权 ICE/RTC 冒烟 → 最后复核配置与容器 → 原子写入发布记录。
+
+版本检查按 API / web 分别进行，`--web-only` 不会把 API 冒认为网页的新版本。选中服务都已运行目标提交时打印 `ALREADY CURRENT`，不备份、不构建、不迁移、不重启。仍需读取运行状态及远端源码；这不是离线检查。其他更新要求目标为每个选中服务当前提交的 Git 后代，`--commit` 也不能绕过降级保护。已部署功能分支而 `main` 尚未包含它时，默认更新会拒绝，需显式选择包含现有版本的分支/提交；不要重置服务器工作树或强行回到旧 main。
 
 默认检测已配置的Cloudflare SFU并要求鉴权检查通过。旧Cloudflare TURN的`--skip-cloudflare-smoke`参数已移除，不适用于SFU。API更新override向当前Compose链注入服务端SFU密钥引用并取消旧TURN配置，web-only不重配API。配置Cloudflare SFU或移除旧TURN时必须更新API和web。
 
@@ -319,9 +325,20 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting --commit '<40 位
 
 更新记录位于 `var/releases/update-<UTC>-<PID>/release.json`，最新记录为 `var/releases/current-update.json`。部署前的实际镜像 ID、完整 Compose 配置链、备份及 SHA-256、构建／迁移／激活／回滚／smoke 日志和 `rollback.sh` 均保存在该发布目录，权限为 600/700。没有成功日志时不能把候选镜像当作已验收。
 
-激活或验证失败时仅恢复之前的应用镜像；不自动替换数据库、不删除镜像和备份。`var/releases/update-pending.json` 保留本次候选与备份位置，阻止再次更新。先确认旧应用健康，检查 `failure.json`、迁移及备份，再依据该记录决定恢复数据库或向前修复；处理完成后把 pending 归档到原发布目录。不要直接删除 pending 以绕过恢复。
+激活或验证失败时，仅在配置仍与更新前一致的情况下尝试恢复之前的应用镜像；等待健康检查并核对旧镜像 ID、非目标容器未被替换，全部通过才记录 `applicationImagesRestored=true`。它只证明应用镜像和容器健康已恢复，不表示数据库已回到备份时刻；不自动替换数据库、不删除镜像和备份。配置变化时不使用变化后的 Compose 盲目回退。`var/releases/update-pending.json` 保留本次候选与备份位置，阻止再次更新。终端会提示失败阶段和证据目录，`failure.json` 同时保留初始错误与回退错误；记录写入失败也不会覆盖原始错误。迁移失败或激活前检测到变更时同样保留 pending，停止/中断后不能盲目重跑。先核对当前容器实际状态、`failure.json`、迁移日志及备份校验值，再依据该记录决定恢复数据库或向前修复；确认恢复完成后把 pending 归档到原发布目录。不要直接删除 pending 以绕过恢复。
 
-该流程的回滚使用记录目录里的 `rollback.sh`，它引用部署前真实镜像的不可变 ID。`scripts/rollback.sh` 只适用于下面完整部署流程生成的 `current-release.env`，不能用旧 `.env` 记录回滚新的一键更新。
+来源校验优先使用受保护的 `current-update.json` / 历史 `update-*/release.json`，兼容完整部署生成的 `current-release.env`；只有其中记录的不可变镜像 ID 与实际运行一致时才认可提交。旧安装若缺少来源记录或有未记录热修复，会在构建和迁移前停止。先从原始部署备份恢复真实记录，并核对 API/web 镜像 ID 与记录的完整 SHA；无法取得可信来源时需人工查明该版本的构建/发布证据。不要用安装目录的 `git HEAD`、镜像 tag、手工编造记录或 `--commit` 绕过核验。
+
+失败排查可先运行只读命令（发布目录使用失败输出的真实路径）：
+
+~~~bash
+sudo docker inspect --format '{{.Name}} {{.Image}} {{json .State.Health}}' babagan-meeting-api-1 babagan-meeting-web-1
+sudo cat '/opt/babagan-web-meeting/var/releases/update-<UTC>-<PID>/failure.json'
+~~~
+
+日志和记录留在服务器受保护目录，不要把生产 env、Token 或原始日志上传到公开位置。
+
+该流程的回滚使用记录目录里的 `rollback.sh`，它引用部署前真实镜像的不可变 ID。自动回退由更新器持锁并负责核验；单独执行该脚本只是镜像恢复命令，不包含数据库恢复或完整健康验收。人工执行前必须先确认无其他部署、配置未变、未发生更晚发布，执行后重新核对旧镜像及健康，不能把历史脚本作为任意降级入口。`scripts/rollback.sh` 只适用于下面完整部署流程生成的 `current-release.env`，不能用旧 `.env` 记录回滚新的一键更新。
 
 ## 4A. 已有服务器完整部署流程
 

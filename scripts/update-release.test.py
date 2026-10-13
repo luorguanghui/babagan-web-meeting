@@ -175,7 +175,152 @@ class UpdateTests(unittest.TestCase):
     def test_public_hash_mismatch_rolls_back_and_never_marks_release_successful(self):
         self.run_complete_update(web_only=True, mismatch=True)
 
-    def run_complete_update(self, web_only, mismatch=False):
+    def test_same_version_skips_backup_build_and_restart(self):
+        self.run_complete_update(web_only=False, scenario='same')
+
+    def test_unknown_legacy_provenance_refuses_to_guess_from_checkout(self):
+        self.run_complete_update(web_only=False, scenario='unknown')
+
+    def test_default_target_cannot_downgrade_running_feature_branch(self):
+        self.run_complete_update(web_only=False, scenario='downgrade')
+
+    def test_compose_change_during_build_refuses_activation(self):
+        self.run_complete_update(web_only=False, scenario='config-change')
+
+    def test_failed_restore_health_is_not_reported_as_restored(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory)
+            with patch.object(updater, 'command', return_value=''):
+                with self.assertRaisesRegex(RuntimeError, 'both failed'):
+                    updater.activate(['docker', 'compose'], ['web'], release / 'rollback.sh',
+                                     lambda: (_ for _ in ()).throw(RuntimeError('public check failed')),
+                                     release, verify_rollback=lambda: (_ for _ in ()).throw(RuntimeError('old web unhealthy')))
+            self.assertFalse(json.loads((release / 'failure.json').read_text())['applicationImagesRestored'])
+
+    def test_record_write_failure_keeps_previous_valid_record(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'record.json'
+            updater.save(target, {'old': True})
+            with patch.object(updater.os, 'replace', side_effect=OSError('disk failure')):
+                with self.assertRaises(OSError):
+                    updater.save(target, {'new': True})
+            self.assertEqual(json.loads(target.read_text()), {'old': True})
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+
+    def test_failure_evidence_error_does_not_mask_primary_error(self):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory)
+            with patch.object(updater, 'command', return_value=''), patch.object(updater, 'save', side_effect=OSError('disk failure')):
+                with self.assertRaisesRegex(RuntimeError, 'public check failed'):
+                    updater.activate(['docker', 'compose'], ['web'], release / 'rollback.sh',
+                                     lambda: (_ for _ in ()).throw(RuntimeError('public check failed')), release)
+
+    def test_preflight_fails_early_for_missing_dependencies(self):
+        with patch.object(updater.shutil, 'which', return_value=None), patch.object(updater, 'command') as run:
+            with self.assertRaisesRegex(RuntimeError, 'required'):
+                updater.preflight(Path('/tmp'))
+            run.assert_not_called()
+
+    def test_migration_failure_retains_pending_and_records_failed_stage(self):
+        self.run_complete_update(web_only=False, scenario='migration-failure')
+
+    def test_configuration_change_during_migration_stops_activation(self):
+        self.run_complete_update(web_only=False, scenario='migration-change')
+
+    def test_mixed_web_only_history_retains_api_version(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            before = [{'Name': '/babagan-meeting-' + service + '-1', 'Image': service + '-image'} for service in ('api', 'web')]
+            updater.save(state / 'current-update.json', {
+                'status': 'deployed-and-verified', 'commit': 'b' * 40, 'services': ['web'],
+                'containers': [{'name': c['Name'], 'imageId': c['Image']} for c in before]})
+            historical = state / 'update-20260101/release.json'
+            historical.parent.mkdir()
+            updater.save(historical, {'status': 'deployed-and-verified', 'commit': 'a' * 40,
+                'services': ['api', 'web'], 'containers': [{'name': c['Name'], 'imageId': c['Image']} for c in before]})
+            self.assertEqual(updater.running_commits(state, before, ['api', 'web']), {'api': 'a' * 40, 'web': 'b' * 40})
+            (state / 'current-update.json').unlink()
+            before[0]['Image'] = 'unrecorded-hotfix'
+            with self.assertRaisesRegex(RuntimeError, 'provenance'):
+                updater.running_commits(state, before, ['api'])
+
+    def test_legacy_record_requires_matching_images_and_never_executes_shell(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory)
+            marker = state / 'must-not-exist'
+            record = state / 'current-release.env'
+            record.write_text('RELEASE_SHA=' + 'a' * 40 + '\nAPI_IMAGE_ID=api-image\nWEB_IMAGE_ID=web-image\nIGNORED=$(touch ' + str(marker) + ')\n')
+            record.chmod(0o600)
+            before = [{'Name': '/babagan-meeting-' + service + '-1', 'Image': service + '-image'} for service in ('api', 'web')]
+            self.assertEqual(updater.running_commits(state, before, ['api']), {'api': 'a' * 40, 'web': 'a' * 40})
+            self.assertFalse(marker.exists())
+            before[0]['Image'] = 'hotfix'
+            with self.assertRaisesRegex(RuntimeError, 'provenance'):
+                updater.running_commits(state, before, ['api'])
+
+    def test_real_git_ancestry_accepts_forward_rejects_old_or_divergent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            origin = Path(directory) / 'origin'
+            source = Path(directory) / 'source'
+            subprocess.run(['git', 'init', '-q', str(origin)], check=True)
+            git = lambda *args: subprocess.check_output(['git', '-C', str(origin), *args], text=True).strip()
+            git('config', 'user.email', 'test@example.test')
+            git('config', 'user.name', 'Test')
+            git('commit', '--allow-empty', '-qm', 'base')
+            base = git('rev-parse', 'HEAD')
+            git('commit', '--allow-empty', '-qm', 'new')
+            newer = git('rev-parse', 'HEAD')
+            git('checkout', '-q', '--detach', base)
+            git('commit', '--allow-empty', '-qm', 'other branch')
+            divergent = git('rev-parse', 'HEAD')
+            subprocess.run(['git', 'clone', '-q', str(origin), str(source)], check=True, capture_output=True)
+            updater.require_forward_update(source, {'web': base}, newer, ['web'])
+            for current, candidate in [(newer, base), (newer, divergent)]:
+                with self.assertRaisesRegex(RuntimeError, 'downgrade'):
+                    updater.require_forward_update(source, {'web': current}, candidate, ['web'])
+
+    def test_rollback_verifies_old_images_and_preserves_nonselected_containers(self):
+        before = [{'Name': '/babagan-meeting-' + service + '-1', 'Id': service, 'Image': service + '-old',
+                   'State': {'Health': {'Status': 'healthy'}}} for service in ('web', 'api', 'coturn')]
+        after = json.loads(json.dumps(before))
+        after[0]['Id'] = 'recovered-web'
+        updater.verify_containers(before, after, {'web': 'web-old'})
+        after[0]['Image'] = 'wrong-image'
+        with self.assertRaisesRegex(RuntimeError, 'candidate image'):
+            updater.verify_containers(before, after, {'web': 'web-old'})
+        after[0]['Image'] = 'web-old'
+        after[2]['Id'] = 'replaced-coturn'
+        with self.assertRaisesRegex(RuntimeError, 'unexpectedly replaced'):
+            updater.verify_containers(before, after, {'web': 'web-old'})
+
+    def test_rollback_is_refused_when_configuration_changed_after_activation(self):
+        self.run_complete_update(web_only=True, scenario='post-activation-change')
+
+    def test_backup_is_taken_after_build_before_migration(self):
+        self.run_complete_update(web_only=False, scenario='backup-order')
+
+    def test_service_replaced_during_smoke_is_not_recorded_as_success(self):
+        self.run_complete_update(web_only=True, scenario='smoke-change')
+
+    def test_preflight_reports_docker_resource_and_privilege_blockers(self):
+        with patch.object(updater.shutil, 'which', return_value='/fake/tool'), patch.object(updater, 'command', return_value=''), patch.object(updater.os, 'geteuid', return_value=1):
+            with self.assertRaisesRegex(RuntimeError, 'sudo'):
+                updater.preflight(Path('/tmp'))
+        with patch.object(updater.shutil, 'which', return_value='/fake/tool'), patch.object(updater, 'command', return_value=''), patch.object(updater.os, 'geteuid', return_value=0), patch.object(updater.shutil, 'disk_usage', return_value=SimpleNamespace(free=1)):
+            with self.assertRaisesRegex(RuntimeError, '10 GiB'):
+                updater.preflight(Path('/tmp'))
+        with patch.object(updater.shutil, 'which', return_value='/fake/tool'), patch.object(updater, 'command', return_value=''), patch.object(updater.os, 'geteuid', return_value=0), patch.object(updater.shutil, 'disk_usage', return_value=SimpleNamespace(free=100 * 1024 ** 3)), patch.object(Path, 'read_text', return_value='MemAvailable: 100 kB'):
+            with self.assertRaisesRegex(RuntimeError, 'memory'):
+                updater.preflight(Path('/tmp'))
+
+    def test_health_wait_is_bounded_and_missing_health_is_not_success(self):
+        unhealthy = [{'State': {}}]
+        with patch.object(updater.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError, '120 seconds'):
+                updater.wait_healthy(lambda: unhealthy)
+            self.assertEqual(sleep.call_count, 59)
+
+    def run_complete_update(self, web_only, mismatch=False, scenario=None):
         with tempfile.TemporaryDirectory() as directory:
             app = Path(directory)
             state = app / 'var/releases'
@@ -183,6 +328,7 @@ class UpdateTests(unittest.TestCase):
             env = app / 'infra/.env.production'
             env.parent.mkdir()
             env.write_text('PUBLIC_BASE_URL=https://meet.example.test\nCOOKIE_SECRET=private-value\n')
+            env.chmod(0o600)
             base = env.with_name('docker-compose.yml')
             base.write_text('services: {}')
             overlay = state / 'old-override.yml'
@@ -199,12 +345,20 @@ class UpdateTests(unittest.TestCase):
                                   'Labels': {'com.docker.compose.project': 'babagan-meeting',
                                              'com.docker.compose.project.config_files': f'{base},{overlay}'}},
                        'State': {'Health': {'Status': 'healthy'}}} for service in updater.SERVICES]
+            old_commit = 'b' * 40
+            record = {'status': 'deployed-and-verified', 'commit': old_commit,
+                      'services': ['api', 'web'], 'containers': updater.container_metadata(before)}
+            if scenario == 'same':
+                record['commit'] = 'a' * 40
+            if scenario != 'unknown':
+                updater.save(state / 'current-update.json', record)
             activated = False
+            smoke_changed = False
             calls = []
             asset = b'candidate JavaScript'
             digest = hashlib.sha256(asset).hexdigest()
             def run(args, output=None, env=None):
-                nonlocal activated
+                nonlocal activated, smoke_changed
                 calls.append(args)
                 if args[:2] == ['docker', 'inspect']:
                     after = json.loads(json.dumps(before))
@@ -214,6 +368,8 @@ class UpdateTests(unittest.TestCase):
                         if not web_only:
                             after[0]['Id'] = 'api-new'
                             after[0]['Image'] = 'sha256:api-new'
+                    if smoke_changed:
+                        after[4]['Id'] = 'externally-replaced-coturn'
                     return json.dumps(after)
                 if args[:3] == ['docker', 'volume', 'inspect']:
                     return str(database.parent)
@@ -223,6 +379,10 @@ class UpdateTests(unittest.TestCase):
                     Path(args[-1]).mkdir()
                 if 'rev-parse' in args:
                     return 'a' * 40
+                if 'merge-base' in args:
+                    return 'a' * 40 if scenario == 'downgrade' else old_commit
+                if args[:2] == ['docker', 'build'] and scenario == 'config-change':
+                    overlay.write_text('services: {api: {image: changed}}')
                 if args[:1] == ['bash'] and args[1].endswith('rollback.sh'):
                     activated = False
                 if args[:1] == ['bash'] and args[1].endswith('backup.sh'):
@@ -235,23 +395,72 @@ class UpdateTests(unittest.TestCase):
                     return 'Backup created: ' + str(backup)
                 if args[:3] == ['docker', 'image', 'inspect']:
                     return 'sha256:api-new' if 'meeting-api:' in args[3] else 'sha256:web-new'
+                if args[:1] == ['bash'] and args[1].endswith('deployment-smoke.sh') and scenario == 'smoke-change':
+                    smoke_changed = True
+                if args[:3] == ['docker', 'run', '--rm'] and scenario == 'migration-failure':
+                    raise RuntimeError('migration failed')
+                if args[:3] == ['docker', 'run', '--rm'] and scenario == 'migration-change':
+                    overlay.write_text('services: {api: {image: changed}}')
                 if args[:2] == ['docker', 'exec']:
                     return digest + '  /srv/assets/index-new.js'
                 if args[:2] == ['docker', 'compose'] and 'up' in args:
                     activated = True
+                    if scenario == 'post-activation-change':
+                        overlay.write_text('services: {api: {image: changed}}')
                 return ''
             def fetch(args):
                 return b'<script type="module" src="/assets/index-new.js"></script>' if args[-1].endswith('/') else (b'stale public JavaScript' if mismatch else asset)
             options = SimpleNamespace(ref='main', commit=None, web_only=web_only)
             with patch.object(updater, 'command', side_effect=run), patch.object(updater.subprocess, 'check_output', side_effect=fetch):
+                if scenario == 'smoke-change':
+                    with self.assertRaisesRegex(RuntimeError, 'both failed'):
+                        updater.perform_update(options, app, env, state)
+                    self.assertEqual(json.loads((state / 'current-update.json').read_text())['commit'], old_commit)
+                    self.assertTrue((state / 'update-pending.json').exists())
+                    return
+                if scenario == 'post-activation-change':
+                    with self.assertRaisesRegex(RuntimeError, 'rollback'):
+                        updater.perform_update(options, app, env, state)
+                    self.assertTrue(activated)
+                    self.assertFalse(any(args[:1] == ['bash'] and args[1].endswith('rollback.sh') for args in calls))
+                    return
+                if scenario in ('migration-failure', 'migration-change'):
+                    with self.assertRaisesRegex(RuntimeError, 'migration failed|configuration'):
+                        updater.perform_update(options, app, env, state)
+                    self.assertFalse(activated)
+                    self.assertTrue((state / 'update-pending.json').exists())
+                    release = Path(json.loads((state / 'update-pending.json').read_text())['releaseDirectory'])
+                    failure = json.loads((release / 'failure.json').read_text())
+                    self.assertIn(failure['stage'], ('migration', 'activation-preflight'))
+                    self.assertFalse(failure['databaseAutomaticallyRestored'])
+                    return
+                if scenario in ('unknown', 'downgrade', 'config-change'):
+                    expected = {'unknown': 'provenance', 'downgrade': 'downgrade', 'config-change': 'configuration'}[scenario]
+                    with self.assertRaisesRegex(RuntimeError, expected):
+                        updater.perform_update(options, app, env, state)
+                    self.assertFalse(activated)
+                    self.assertFalse((state / 'update-pending.json').exists())
+                    return
+                if scenario == 'same':
+                    updater.perform_update(options, app, env, state)
+                    self.assertFalse(any(args[:2] == ['docker', 'build'] for args in calls))
+                    self.assertFalse(any(args[:1] == ['bash'] and args[1].endswith('backup.sh') for args in calls))
+                    self.assertFalse(activated)
+                    return
                 if mismatch:
                     with self.assertRaisesRegex(RuntimeError, 'Public JavaScript'):
                         updater.perform_update(options, app, env, state)
                     self.assertFalse(activated)
                     self.assertTrue((state / 'update-pending.json').exists())
-                    self.assertFalse((state / 'current-update.json').exists())
+                    self.assertEqual(json.loads((state / 'current-update.json').read_text())['commit'], old_commit)
                     return
                 updater.perform_update(options, app, env, state)
+            if scenario == 'backup-order':
+                backup_index = next(i for i, args in enumerate(calls) if args[:1] == ['bash'] and args[1].endswith('backup.sh'))
+                last_build = max(i for i, args in enumerate(calls) if args[:2] == ['docker', 'build'])
+                migration_index = next(i for i, args in enumerate(calls) if args[:3] == ['docker', 'run', '--rm'])
+                self.assertLess(last_build, backup_index)
+                self.assertLess(backup_index, migration_index)
             record = json.loads((state / 'current-update.json').read_text())
             self.assertEqual(record['status'], 'deployed-and-verified')
             self.assertEqual(record['composeFiles'][:2], [str(base), str(overlay)])
