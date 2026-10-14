@@ -322,6 +322,9 @@ const fakeStats = () => createP2pStatsCollector({ slug, sessionId: 'isolated-qa'
 
 function RoomScene({ scene }: { scene: Scene }) {
   const [fixture] = useState(() => createFixtureController(scene));
+  // Reserve the space occupied by stacked notices / system-audio warnings.
+  // This QA-only constraint checks short windows without initiating capture.
+  const noticeHeight = Math.min(320, Math.max(0, Number(new URLSearchParams(location.search).get('noticeHeight')) || 0));
   useEffect(() => {
     if (scene !== 'settings' && scene !== 'host') return;
     // Open via the real navigation event, not by altering component state.
@@ -335,7 +338,9 @@ function RoomScene({ scene }: { scene: Scene }) {
     }, 50);
     return () => clearTimeout(timer);
   }, [scene]);
-  return <LanguageProvider><AppShell><MeetingRoomPage
+  return <LanguageProvider><AppShell>
+    {noticeHeight > 0 && <style>{`.meeting-notices { display: grid !important; min-height: ${noticeHeight}px; }`}</style>}
+    <MeetingRoomPage
     slug={slug}
     meetingName={createdMeetingName}
     join={join}

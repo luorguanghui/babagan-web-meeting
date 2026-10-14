@@ -154,6 +154,8 @@ sudoedit infra/.env.production
 
 至少替换：PUBLIC_BASE_URL、LIVEKIT_URL、LIVEKIT_INTERNAL_URL、LIVEKIT_NODE_IP、LIVEKIT_API_KEY、LIVEKIT_API_SECRET、ADMIN_PASSWORD_HASH、COOKIE_SECRET、P2P_STUN_URLS、P2P_TURN_URLS、P2P_TURN_SECRET、P2P_TURN_TTL_SECONDS=600、P2P_TURN_PROVIDER=coturn、TURN_SHARED_SECRET、TURN_EXTERNAL_IP、TURN_RELAY_IP。P2P TURN 只使用服务器 coturn；项目已移除 Cloudflare TURN 凭据生成、选项和探测功能。
 
+`LIVEKIT_URL` 是浏览器客户端使用的 WSS 基地址，例如 `wss://meet.babagan.cloud` 或 `wss://rtc.babagan.cloud`。客户端会自行追加 `/rtc`，不要将同源基地址填成 `wss://meet.babagan.cloud/rtc`，否则真实入会会请求重复路径。部署冒烟使用的直接 WebSocket 探测地址 `wss://meet.babagan.cloud/rtc` 与这个客户端基地址用途不同。上线后还要在真实浏览器静音入会，确认列表至少包含本地参会者、麦克风按钮可用；单次 WebSocket 握手不能证明完整入会正常。
+
 如需 Cloudflare SFU，在受保护的生产 env 中成对配置 `CLOUDFLARE_SFU_APP_ID` 与 `CLOUDFLARE_SFU_APP_SECRET`。这里的秘密是 SFU 应用 App Secret，不是旧 Cloudflare TURN Key token，也不是 Cloudflare 用户 API token。App Secret 只由 API 后端读取，不发送到浏览器、Git 或日志。没有这对配置时 Cloudflare SFU 入口显示未配置。
 
 共享者在共享前选择 Cloudflare SFU 后，只发送一份屏幕视频与可选电脑声音；所有观看者从同一发布订阅，语音仍使用 LiveKit。P2P/服务器 TURN 与显式 LiveKit SFU 保留，Cloudflare TURN 不再可选。旧 `babagan.screen-turn-provider=cloudflare` 缓存会回退自动/coturn；升级时从当前 env 移除所有 `CLOUDFLARE_TURN_*`，设置 `P2P_TURN_PROVIDER=coturn`，先保留 mode-600 的 env 备份。不要删除 Cloudflare 账户中现有 TURN 应用。

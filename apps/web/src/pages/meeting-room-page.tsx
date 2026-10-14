@@ -1069,7 +1069,7 @@ export function MeetingRoomPage({
   return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`} data-panel={meetingPanel ?? undefined} data-displayed-panel={displayedPanel}>
     <MeetingTopBar
       title={meetingName || t('room.heading', { name: join.participantName })}
-      connection={<ConnectionBanner state={reconnectState} online={online} rateLimited={reconnectRateLimited} />}
+      connection={<ConnectionBanner state={reconnectState} connection={state.connection} online={online} rateLimited={reconnectRateLimited} />}
       transportLabel={screenTransportLabel}
       participantCount={state.participants.length}
       navigationLabel={t('controls.navigation')}
@@ -1111,11 +1111,11 @@ export function MeetingRoomPage({
     </section>
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
-        {hasActiveScreenShare && (!cf.publication || screenState.stream || cfReadyStream === cf.stream) && <p className="meeting-sharing-label">
-          <MonitorUp aria-hidden="true" size={18} />
-          <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
-        </p>}
         <section className="meeting-stage-shell">
+          {hasActiveScreenShare && (!cf.publication || screenState.stream || cfReadyStream === cf.stream) && <p className="meeting-sharing-label">
+            <MonitorUp aria-hidden="true" size={18} />
+            <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
+          </p>}
           <ScreenStage
             stream={stageStream}
             track={stageTrack}

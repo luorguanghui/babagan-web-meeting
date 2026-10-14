@@ -8,8 +8,8 @@
     <script type="module">
       const params = new URLSearchParams(location.search);
       const frame = document.querySelector('iframe');
-      frame.width = String(Math.min(1920, Math.max(320, Number(params.get('width')) || 1488)));
-      frame.height = String(Math.min(1200, Math.max(480, Number(params.get('height')) || 1056)));
+      frame.width = String(Math.min(3840, Math.max(320, Number(params.get('width')) || 1488)));
+      frame.height = String(Math.min(2160, Math.max(480, Number(params.get('height')) || 1056)));
       const scale = Math.min(1, Math.max(.5, Number(params.get('scale')) || 1));
       frame.style.transform = `scale(${scale})`;
       frame.style.transformOrigin = 'top left';

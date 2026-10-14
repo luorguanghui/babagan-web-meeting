@@ -1,4 +1,5 @@
 import { type CSSProperties, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { MonitorUp } from 'lucide-react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 
@@ -229,7 +230,12 @@ export function ScreenStage({
   }, [audioTrack, sharedAudioVolume, stream, track]);
 
   if (!stream && !track) return <section className="screen-stage screen-stage-empty" aria-label={t('screen.stage')}>
-    <p>{t('screen.empty')}</p>
+    <div className="screen-empty-content">
+      <span className="screen-empty-icon"><MonitorUp aria-hidden="true" size={28} /></span>
+      <h2>{t('screen.emptyTitle')}</h2>
+      <p>{t('screen.empty')}</p>
+      <p className="screen-empty-hint">{t('screen.emptyHint')}</p>
+    </div>
   </section>;
 
   const name = sharerName ?? t('screen.participant');

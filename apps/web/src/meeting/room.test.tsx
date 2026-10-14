@@ -360,6 +360,44 @@ describe('room controller', () => {
     await expect(controller.switchAudioOutput('speaker-2')).rejects.toThrow('not connected');
   });
 
+  it('shows connecting until the initial SDK connection really completes', async () => {
+    let resolveConnect!: () => void;
+    const room = roomAdapter();
+    vi.mocked(room.connect).mockImplementation(() => new Promise<void>((resolve) => { resolveConnect = resolve; }));
+    const controller = createRoomController(() => room);
+    render(<MeetingRoomPage
+      slug="meeting-slug" join={join} controller={controller} listDevices={async () => []}
+      meetingApi={{
+        authorizeHost: async () => { throw new Error('not host'); }, verifyParticipantShare: async () => undefined,
+        grantShare: async () => undefined, releaseOwnShare: async () => undefined, revokeShare: async () => undefined,
+        kick: async () => undefined, end: async () => undefined
+      }}
+    />);
+    expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText('Connecting to the meeting…')).toBeVisible();
+    expect(screen.getByRole('button', { name: 'Unmute microphone' })).toBeDisabled();
+    await act(async () => { resolveConnect(); });
+    await waitFor(() => expect(screen.getByText('Connected', { exact: true })).toBeVisible());
+    expect(screen.getByRole('button', { name: 'Unmute microphone' })).toBeEnabled();
+  });
+
+  it('never claims to be connected after the initial SDK connection fails', async () => {
+    const room = roomAdapter();
+    vi.mocked(room.connect).mockRejectedValue(new Error('signaling unavailable'));
+    const controller = createRoomController(() => room);
+    render(<MeetingRoomPage
+      slug="meeting-slug" join={join} controller={controller} listDevices={async () => []}
+      meetingApi={{
+        authorizeHost: async () => { throw new Error('not host'); }, verifyParticipantShare: async () => undefined,
+        grantShare: async () => undefined, releaseOwnShare: async () => undefined, revokeShare: async () => undefined,
+        kick: async () => undefined, end: async () => undefined
+      }}
+    />);
+    await waitFor(() => expect(screen.getByText('The meeting connection could not be established.')).toBeVisible());
+    expect(screen.queryByText('Connected', { exact: true })).not.toBeInTheDocument();
+    expect(screen.getByText('Not connected to the meeting.')).toBeVisible();
+  });
+
   it('does not restore a connected room after meeting UI unmounts during a pending SDK connect', async () => {
     let resolveConnect!: () => void;
     const room = roomAdapter();
