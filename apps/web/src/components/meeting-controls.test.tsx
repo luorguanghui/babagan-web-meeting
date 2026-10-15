@@ -152,9 +152,23 @@ describe('meeting dock audio controls', () => {
 });
 
 describe('grouped meeting settings', () => {
+  it('keeps advanced controls collapsed while quality stays visible with complete selected details', async () => {
+    render(<MeetingSettings {...baseProps} onScreenSourceTransportChange={() => undefined} />);
+    const quality = screen.getByRole('combobox', { name: 'Screen quality' });
+    expect(quality).toHaveAccessibleDescription('Standard (1080p30, frame rate first)');
+    expect(quality.closest('label')).toHaveClass('meeting-settings-field-wide');
+    const advanced = screen.getByText('Advanced settings').closest('details');
+    expect(advanced).not.toHaveAttribute('open');
+    expect(advanced).toContainElement(screen.getByLabelText('Screen-share codec'));
+    await userEvent.click(screen.getByText('Advanced settings'));
+    expect(advanced).toHaveAttribute('open');
+    expect(screen.getByRole('combobox', { name: 'Screen-share codec' })).toHaveValue('h264');
+  });
+
   it('separates audio and devices from starting-share settings without changing defaults', () => {
     render(<MeetingSettings {...baseProps} sharedAudioVolumeVisible onScreenSourceTransportChange={() => undefined} />);
 
+    fireEvent.click(screen.getByText('Advanced settings'));
     const audio = screen.getByRole('region', { name: 'Audio and devices' });
     expect(within(audio).getByRole('slider', { name: 'Call audio volume' })).toHaveValue('100');
     expect(within(audio).getByRole('slider', { name: 'Shared audio volume' })).toHaveValue('100');
@@ -163,7 +177,7 @@ describe('grouped meeting settings', () => {
 
     const sharing = screen.getByRole('region', { name: 'Starting my share' });
     expect(within(sharing).getByRole('combobox', { name: 'Screen-share transport' })).toHaveValue('p2p');
-    expect(within(sharing).getByRole('combobox', { name: 'Screen quality' })).toHaveValue('standard');
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toHaveValue('standard');
     expect(within(sharing).getByRole('combobox', { name: 'Screen-share codec' })).toHaveValue('h264');
     expect(within(sharing).getByRole('combobox', { name: 'Screen encoding engine' })).toHaveValue('browser');
     expect(within(sharing).getByRole('combobox', { name: 'Maximum screen-share bitrate' })).toHaveValue('8000000');
@@ -177,6 +191,7 @@ describe('grouped meeting settings', () => {
     expect(screen.queryByRole('region', { name: 'Receiving a screen' })).not.toBeInTheDocument();
 
     view.rerender(<MeetingSettings {...props} viewerTransportPreferenceVisible />);
+    fireEvent.click(screen.getByText('Advanced settings'));
     const receiving = screen.getByRole('region', { name: 'Receiving a screen' });
     expect(within(receiving).getByRole('combobox', { name: 'Viewer screen transport' })).toHaveValue('turn');
     expect(within(receiving).getAllByRole('combobox')).toHaveLength(1);
@@ -188,7 +203,9 @@ describe('grouped meeting settings', () => {
   it.each([{ screenShareActive: true }, { screenShareBusy: true }])('keeps starting-share controls locked while sharing is active or busy: %j', (state) => {
     render(<MeetingSettings {...baseProps} {...state} onScreenSourceTransportChange={() => undefined} />);
 
+    fireEvent.click(screen.getByText('Advanced settings'));
     const sharing = screen.getByRole('region', { name: 'Starting my share' });
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toBeDisabled();
     for (const selector of within(sharing).getAllByRole('combobox')) expect(selector).toBeDisabled();
     const audio = screen.getByRole('region', { name: 'Audio and devices' });
     expect(within(audio).getByRole('slider', { name: 'Call audio volume' })).not.toBeDisabled();
@@ -199,6 +216,7 @@ describe('grouped meeting settings', () => {
     render(<LanguageProvider initialLocale="zh-CN"><MeetingSettings {...baseProps}
       viewerTransportPreferenceVisible onViewerTransportPreferenceChange={() => undefined} /></LanguageProvider>);
 
+    fireEvent.click(screen.getByText('高级设置'));
     expect(screen.getByRole('region', { name: '音频与设备' })).toBeVisible();
     expect(screen.getByRole('region', { name: '接收屏幕' })).toBeVisible();
     expect(screen.getByRole('region', { name: '我发起共享时' })).toBeVisible();

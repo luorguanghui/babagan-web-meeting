@@ -190,6 +190,8 @@ export function MeetingSettings(props: MeetingControlsProps) {
   const audioHeadingId = useId();
   const receivingHeadingId = useId();
   const sharingHeadingId = useId();
+  const qualityDescriptionId = useId();
+  const quality = props.screenQuality ?? screenShareDefaultQuality;
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
   const screenShareProviderDisabled = Boolean(props.screenShareActive || props.screenShareBusy);
@@ -209,6 +211,18 @@ export function MeetingSettings(props: MeetingControlsProps) {
         </select></label>
       </div>
     </section>
+    <section className="meeting-settings-section" aria-label={t('controls.screenQuality')}>
+      <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>
+      <div className="meeting-settings-section-grid">
+        <label className="meeting-settings-field-wide">{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} aria-describedby={qualityDescriptionId} value={quality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
+          <option value="flow">{t('controls.flowShort')}</option><option value="standard">{t('controls.standardShort')}</option><option value="motion">{t('controls.motionShort')}</option><option value="detail60">{t('controls.detail60Short')}</option>
+        </select><span id={qualityDescriptionId}>{t(`controls.${quality}`)}</span></label>
+      </div>
+      <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>
+    </section>
+    <details className="meeting-settings-advanced">
+      <summary>{t('controls.advancedSettings')}<ChevronDown aria-hidden="true" size={18} /></summary>
+      <p className="meeting-settings-advanced-hint">{t('controls.advancedSettingsHint')}</p>
     {props.viewerTransportPreferenceVisible && props.onViewerTransportPreferenceChange && <section className="meeting-settings-section" data-section="receiving" aria-labelledby={receivingHeadingId}>
       <h3 className="meeting-settings-section-heading" id={receivingHeadingId}>{t('controls.receivingScreen')}</h3>
       <div className="meeting-settings-section-grid">
@@ -223,9 +237,6 @@ export function MeetingSettings(props: MeetingControlsProps) {
         {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as 'p2p' | 'cloudflare-sfu')}>
           <option value="p2p">{t('controls.screenSourceP2p')}</option><option value="cloudflare-sfu" disabled={props.cloudflareSfuAvailable === false}>{t('controls.screenSourceCloudflare')}</option>
         </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}</label>}
-        <label>{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} value={props.screenQuality ?? screenShareDefaultQuality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
-          <option value="flow">{t('controls.flow')}</option><option value="standard">{t('controls.standard')}</option><option value="motion">{t('controls.motion')}</option><option value="detail60">{t('controls.detail60')}</option>
-        </select></label>
         <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
           <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
         </select></label>
@@ -238,5 +249,6 @@ export function MeetingSettings(props: MeetingControlsProps) {
       </div>
       <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>
     </section>
+    </details>
   </div>;
 }

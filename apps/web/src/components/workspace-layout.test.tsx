@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { createRef, useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,24 @@ import { MeetingTopBar } from './meeting-top-bar.js';
 afterEach(cleanup);
 
 describe('meeting workspace presentation', () => {
+  it('wraps keyboard focus around visible controls when advanced settings are collapsed', () => {
+    render(<MeetingDrawer title="Settings" closeLabel="Close panel" onClose={() => undefined}>
+      <input aria-label="Quality" />
+      <details><summary>Advanced settings</summary><select aria-label="Bitrate"><option>8 Mbps</option></select></details>
+    </MeetingDrawer>);
+    const close = screen.getByRole('button', { name: 'Close panel' });
+    const summary = screen.getByText('Advanced settings');
+    close.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(summary).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+    fireEvent.click(summary);
+    close.focus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(screen.getByRole('combobox', { name: 'Bitrate' })).toHaveFocus();
+  });
+
   it('keeps connection feedback visible and exposes diagnostics in the navigation rail', async () => {
     const onStats = vi.fn();
     render(<MeetingTopBar

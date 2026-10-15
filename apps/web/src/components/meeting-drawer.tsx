@@ -55,7 +55,18 @@ export function MeetingDrawer({
       if (event.key !== 'Tab' || !drawer) return;
       const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [href], [tabindex]:not([tabindex="-1"])'
-      )).filter((element) => !element.hidden);
+      )).filter((element) => {
+        if (element.hidden) return false;
+        // Closed disclosures keep their controls mounted but out of the tab order.
+        // Check every ancestor so nested summaries cannot escape a closed parent.
+        let details = element.closest('details');
+        while (details) {
+          const summary = details.querySelector(':scope > summary');
+          if (!details.open && !summary?.contains(element)) return false;
+          details = details.parentElement?.closest('details') ?? null;
+        }
+        return true;
+      });
       const first = focusable[0];
       const last = focusable.at(-1);
       if (!first || !last) return;

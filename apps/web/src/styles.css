@@ -134,9 +134,9 @@ meter { height: 1rem; width: 100%; }
 .meeting-workspace { grid-row: 3; min-height: 0; min-width: 0; }
 .meeting-stage-column { align-items: center; display: flex; flex-direction: column; gap: 24px; height: 100%; justify-content: safe center; min-width: 0; padding: 16px 0 20px; position: relative; }
 .meeting-sharing-label { align-items: center; background: #282e2d; color: #f5f6f2; display: flex; font-size: .85rem; gap: .6rem; left: 16px; margin: 0; max-width: calc(100% - 140px); padding: .65rem .8rem; position: absolute; top: 12px; z-index: 3; }
-.meeting-stage-shell { align-items: center; background: #f6f5f1; border: 1px solid var(--border); border-radius: 20px; container-type: size; display: flex; flex: 0 1 auto; height: 300px; justify-content: center; max-width: 48rem; min-height: 220px; min-width: 0; overflow: hidden; padding: 24px; position: relative; width: 100%; }
-.meeting-room-sharing .meeting-stage-shell { background: #282e2d; border-color: #282e2d; height: min(68dvh, calc(100dvh - 196px)); max-width: 1440px; min-height: 220px; padding: 52px 12px 12px; }
-.screen-stage { align-items: center; aspect-ratio: var(--stage-aspect-ratio, 1.7777777778); display: flex; flex: 0 1 auto; height: min(100cqh, calc(100cqw / var(--stage-aspect-ratio, 1.7777777778))); justify-content: center; max-height: 100%; max-width: 100%; overflow: hidden; width: min(100cqw, calc(100cqh * var(--stage-aspect-ratio, 1.7777777778))); }
+.meeting-stage-shell { align-items: center; background: #f6f5f1; border: 1px solid var(--border); border-radius: 20px; container-type: inline-size; display: flex; flex: 0 1 auto; height: 300px; justify-content: center; max-width: 48rem; min-height: 220px; min-width: 0; overflow: hidden; padding: 24px; position: relative; width: 100%; }
+.meeting-room-sharing .meeting-stage-shell { background: #282e2d; border-color: #282e2d; height: auto; max-width: 1440px; min-height: 0; padding: 52px 12px 12px; }
+.screen-stage { align-items: center; aspect-ratio: var(--stage-aspect-ratio, 1.7777777778); display: flex; flex: 0 1 auto; height: min(calc(68dvh - 64px), calc(100cqw / var(--stage-aspect-ratio, 1.7777777778))); justify-content: center; max-height: 100%; max-width: 100%; overflow: hidden; width: min(100cqw, calc((68dvh - 64px) * var(--stage-aspect-ratio, 1.7777777778))); }
 .screen-stage video { background: #282e2d; display: block; height: 100%; object-fit: contain; width: 100%; }
 .screen-stage-empty { aspect-ratio: auto; color: var(--muted); font-size: 1.05rem; height: 100%; line-height: 1.6; text-align: center; width: 100%; }
 .screen-empty-content { align-items: center; display: flex; flex-direction: column; gap: .6rem; max-width: 30rem; }
@@ -204,6 +204,11 @@ meter { height: 1rem; width: 100%; }
 .meeting-settings-section:last-child { border-bottom: 0; }
 .meeting-settings-section-heading { font-size: 1rem; font-weight: 650; margin: 0 0 1.2rem; }
 .meeting-settings-section-grid { align-items: start; display: grid; gap: 1.1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.meeting-settings-advanced { padding: 1.1rem 0; }
+.meeting-settings-advanced > summary { align-items: center; color: var(--text); cursor: pointer; display: flex; font-size: .9rem; font-weight: 600; justify-content: space-between; list-style: none; min-height: 44px; }
+.meeting-settings-advanced > summary::-webkit-details-marker { display: none; }
+.meeting-settings-advanced[open] > summary svg { rotate: 180deg; }
+.meeting-settings-advanced-hint { color: var(--muted); font-size: .75rem; line-height: 1.5; margin: 0 0 .5rem; }
 .meeting-settings-section-grid label { font-size: .875rem; font-weight: 500; }
 .meeting-settings-section-grid select { font-size: .875rem; }
 .meeting-settings-section-grid label > span:not(.meeting-volume-heading):not(.meeting-volume-track) { color: var(--muted); font-size: .72rem; font-weight: 400; line-height: 1.5; }
@@ -282,7 +287,9 @@ meter { height: 1rem; width: 100%; }
   .task-context .lede { margin-bottom: 0; }
   .task-context-content { margin-top: 1rem; }
   .task-surface { align-content: start; padding: 1.5rem 1.25rem max(2rem, env(safe-area-inset-bottom)); }
-  .meeting-room { --rail-width: 0px; height: auto; min-height: 100dvh; padding: 0 12px calc(130px + env(safe-area-inset-bottom)); }
+  .meeting-room { --mobile-status-height: 0px; --rail-width: 0px; height: 100dvh; min-height: 480px; padding: 0 12px calc(94px + var(--mobile-status-height) + env(safe-area-inset-bottom)); }
+  .meeting-room:has(.meeting-resume-audio) { --mobile-status-height: 56px; }
+  .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) { padding-bottom: calc(152px + var(--mobile-status-height) + env(safe-area-inset-bottom)); }
   .meeting-topbar { flex-wrap: wrap; gap: .4rem; min-height: 78px; padding: 10px 0; }
   .meeting-room-title { flex: 1; gap: .4rem; }
   .meeting-topbar h1 { flex-basis: 100%; font-size: 1.1rem; }
@@ -293,12 +300,12 @@ meter { height: 1rem; width: 100%; }
   .meeting-navigation-rail > button { gap: 0; min-height: 44px; padding: .6rem; }
   .meeting-topbar-action > span:not(.meeting-participant-count) { position: absolute; clip: rect(0,0,0,0); height: 1px; width: 1px; overflow: hidden; }
   .meeting-participant-count { right: -2px; top: -2px; }
-  .meeting-stage-column { gap: 16px; height: auto; padding: 12px 0; }
+  .meeting-stage-column { gap: 16px; height: 100%; padding: 12px 0; }
   .meeting-stage-shell { aspect-ratio: auto; border-radius: 16px; height: clamp(220px, 40dvh, 300px); min-height: 220px; padding: 16px; }
-  .meeting-room-sharing .meeting-stage-shell { aspect-ratio: 16 / 10; height: auto; max-height: 58dvh; padding: 42px 6px 6px; }
-  .meeting-stage-shell:has(.screen-stage[data-orientation='portrait']) { aspect-ratio: auto; height: 58dvh; }
-  .meeting-sharing-label { font-size: .7rem; left: 6px; padding: .5rem; top: 4px; }
-  .screen-stage-fullscreen { font-size: .7rem; min-height: 32px; padding: .3rem .6rem; right: 6px; top: 6px; }
+  .meeting-room-sharing .meeting-stage-shell { aspect-ratio: auto; height: auto; max-height: none; padding: 56px 6px 6px; }
+  .meeting-room-sharing .screen-stage:not(:fullscreen):not(:-webkit-full-screen) { height: min(calc(58dvh - 62px), calc(100cqw / var(--stage-aspect-ratio, 1.7777777778))); width: min(100cqw, calc((58dvh - 62px) * var(--stage-aspect-ratio, 1.7777777778))); }
+  .meeting-sharing-label { font-size: .7rem; left: 6px; padding: .5rem; top: 12px; }
+  .screen-stage-fullscreen { font-size: .75rem; min-height: 44px; padding: .3rem .6rem; right: 6px; top: 6px; }
   .screen-stage-empty { font-size: .9rem; }
   .meeting-control-dock { background: var(--canvas); border: 0; border-radius: 0; border-top: 1px solid var(--border); bottom: 0; box-shadow: none; left: 0; margin: 0; padding: 12px 12px max(12px, env(safe-area-inset-bottom)); position: fixed; right: 0; width: auto; z-index: 22; }
   .meeting-primary-actions { display: grid; gap: .45rem; grid-template-columns: repeat(4, minmax(0, 1fr)); }
@@ -311,10 +318,10 @@ meter { height: 1rem; width: 100%; }
   .meeting-volume-popover { bottom: calc(100% + 12px); }
   .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) .meeting-volume-popover { bottom: calc(100% + 12px); }
   .meeting-controls[data-mobile-wrapped='true'] .meeting-primary-actions { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .meeting-drawer { border: 1px solid var(--border); border-radius: 18px 18px 0 0; bottom: calc(82px + env(safe-area-inset-bottom)); left: 0; max-height: 72dvh; right: 0; top: auto; width: 100%; }
+  .meeting-drawer { border: 1px solid var(--border); border-radius: 18px 18px 0 0; bottom: calc(82px + var(--mobile-status-height) + env(safe-area-inset-bottom)); left: 0; max-height: min(72dvh, calc(100dvh - 98px - var(--mobile-status-height) - env(safe-area-inset-bottom))); right: 0; top: auto; width: 100%; }
   .meeting-drawer[data-state='exiting'] { translate: 0 12px; }
   @starting-style { .meeting-drawer[data-state='open'] { opacity: 0; translate: 0 12px; } }
-  .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) .meeting-drawer { bottom: calc(140px + env(safe-area-inset-bottom)); max-height: calc(100dvh - 165px - env(safe-area-inset-bottom)); }
+  .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) .meeting-drawer { bottom: calc(140px + var(--mobile-status-height) + env(safe-area-inset-bottom)); max-height: calc(100dvh - 165px - var(--mobile-status-height) - env(safe-area-inset-bottom)); }
   .meeting-drawer-header { min-height: 64px; padding: 12px 16px; }
   .meeting-drawer-header h2 { font-size: 1.05rem; }
   .meeting-settings-grid, .participant-list, .host-menu, .webrtc-stats-panel { padding-inline: 20px; }

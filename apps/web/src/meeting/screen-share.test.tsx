@@ -73,8 +73,9 @@ describe('controlled browser screen sharing', () => {
   it('offers Cloudflare SFU at the source and locks software encoding for that choice', () => {
     render(<LanguageProvider><MeetingSettings connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]} leaving={false}
       screenSourceTransport="cloudflare-sfu" onScreenSourceTransportChange={vi.fn()} onMicrophoneToggle={vi.fn()} onMicrophoneDeviceChange={vi.fn()} onSpeakerDeviceChange={vi.fn()} onResumeAudio={vi.fn()} onLeave={vi.fn()} /></LanguageProvider>);
+    fireEvent.click(screen.getByText('Advanced settings'));
     expect(screen.getByRole('option', { name: 'Cloudflare SFU (browser encoding)' })).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Detail (1080p60, resolution first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Detail · 1080p60' })).toBeVisible();
     expect(screen.getByLabelText('Screen encoding engine')).toBeDisabled();
   });
   it('puts a subscribed remote screen track into room state without changing remote audio handling', async () => {
@@ -504,6 +505,7 @@ describe('controlled browser screen sharing', () => {
     />);
 
     await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Screen-share codec');
     expect(selector).toHaveValue('h264');
     expect(screen.getByRole('option', { name: 'Auto' })).toBeVisible();
@@ -545,6 +547,7 @@ describe('controlled browser screen sharing', () => {
     />);
 
     await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Viewer screen transport');
     expect(screen.getByRole('option', { name: 'TURN relay' })).toBeVisible();
     expect(screen.getByRole('option', { name: 'SFU relay' })).toBeVisible();
@@ -716,14 +719,15 @@ describe('controlled browser screen sharing', () => {
     const rendered = render(<MeetingControls {...common} screenShareActive={false} />);
 
     await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Advanced settings'));
     const primaryActions = screen.getByRole('group', { name: 'Primary meeting actions' });
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Unmute microphone' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Share screen' }));
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Leave meeting' }));
     expect(screen.getByText('Adaptive screen share · 30–60 fps')).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Flow (1080p30, resolution first)' })).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Standard (1080p30, frame rate first)' })).toBeVisible();
-    expect(screen.getByRole('option', { name: 'Motion (1080p60, frame rate first)' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Flow · 1080p30' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Standard · 1080p30' })).toBeVisible();
+    expect(screen.getByRole('option', { name: 'Motion · 1080p60' })).toBeVisible();
 
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
     expect(selector).toHaveValue('8000000');
@@ -1797,6 +1801,7 @@ describe('P2P-first screen sharing in the room', () => {
     act(() => signaling.welcome(fourViewers));
 
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
     await waitFor(() => expect(selector).toHaveValue('5000000'));
