@@ -7,13 +7,13 @@ export function ParticipantList({ participants }: { participants: MeetingPartici
   return <section className="participant-list" aria-labelledby="participant-heading">
     <h2 id="participant-heading">{t('participants.heading', { count: participants.length })}</h2>
     <ul aria-label={t('participants.label')}>
-      {participants.slice(0, 5).map((participant, index) => {
+      {participants.map((participant, index) => {
         const microphone = participant.microphoneEnabled ? t('participants.microphoneOn').toLowerCase() : t('participants.microphoneMuted');
         const label = t('participants.itemLabel', { name: participant.name, you: participant.isLocal ? 1 : 0, microphone });
         return <li key={participant.identity} aria-label={label}>
           <span className="participant-avatar" data-tone={index % 4} aria-hidden="true">{Array.from(participant.name.trim())[0]?.toUpperCase()}</span>
           <div className="participant-identity"><span className="participant-name">{participant.name}{participant.isLocal && ` (${t('participants.you')})`}</span>
-            <span className="participant-detail">{participant.isSharing ? t('participants.sharing') : microphone}</span>
+            <span className="participant-detail" data-sharing={participant.isSharing || undefined}>{participant.isSharing ? t('participants.sharing') : microphone}</span>
           </div>
           <span className="participant-microphone" data-muted={!participant.microphoneEnabled} aria-hidden="true">{participant.microphoneEnabled ? <Mic size={19} /> : <MicOff size={19} />}</span>
         </li>;

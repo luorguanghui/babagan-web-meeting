@@ -28,7 +28,7 @@ describe('meeting dock audio controls', () => {
 
     const toolbar = screen.getByRole('toolbar', { name: 'Primary meeting controls' });
     expect(within(toolbar).queryByRole('slider')).not.toBeInTheDocument();
-    await userEvent.click(within(toolbar).getByRole('button', { name: 'Volume' }));
+    await userEvent.click(within(toolbar).getByRole('button', { name: 'Audio and devices' }));
     expect(within(toolbar).getByRole('slider', { name: 'Call audio volume' })).toHaveValue('100');
     expect(within(toolbar).queryByRole('slider', { name: 'Shared audio volume' })).not.toBeInTheDocument();
   });
@@ -43,8 +43,8 @@ describe('meeting dock audio controls', () => {
     }
     render(<ReceiverControls />);
     const toolbar = screen.getByRole('toolbar', { name: 'Primary meeting controls' });
-    expect(within(toolbar).getAllByRole('button', { name: /volume/i })).toHaveLength(1);
-    await userEvent.click(within(toolbar).getByRole('button', { name: 'Volume' }));
+    expect(within(toolbar).getAllByRole('button', { name: 'Audio and devices' })).toHaveLength(1);
+    await userEvent.click(within(toolbar).getByRole('button', { name: 'Audio and devices' }));
 
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     const call = within(menu).getByRole('slider', { name: 'Call audio volume' });
@@ -63,7 +63,7 @@ describe('meeting dock audio controls', () => {
     render(<MeetingControls {...baseProps} includeSettings={false} sharedAudioVolumeVisible />);
 
     expect(screen.queryByRole('slider')).not.toBeInTheDocument();
-    const trigger = screen.getByRole('button', { name: 'Volume' });
+    const trigger = screen.getByRole('button', { name: 'Audio and devices' });
     await userEvent.click(trigger);
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     expect(within(menu).getAllByRole('slider')).toHaveLength(2);
@@ -79,7 +79,7 @@ describe('meeting dock audio controls', () => {
 
   it('removes shared volume when a remote share ends without removing call volume', async () => {
     const view = render(<MeetingControls {...baseProps} includeSettings={false} sharedAudioVolumeVisible />);
-    await userEvent.click(screen.getByRole('button', { name: 'Volume' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
 
     view.rerender(<MeetingControls {...baseProps} includeSettings={false} sharedAudioVolumeVisible={false} />);
 
@@ -92,7 +92,7 @@ describe('meeting dock audio controls', () => {
   it('keeps a closed popover only for its noninteractive 180 ms exit and returns focus immediately', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     render(<MeetingControls {...baseProps} includeSettings={false} sharedAudioVolumeVisible />);
-    const trigger = screen.getByRole('button', { name: 'Volume' });
+    const trigger = screen.getByRole('button', { name: 'Audio and devices' });
     fireEvent.click(trigger);
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     within(menu).getByRole('slider', { name: 'Call audio volume' }).focus();
@@ -115,7 +115,7 @@ describe('meeting dock audio controls', () => {
   it('reopens a closing popover without a stale removal or duplicate sliders', () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     render(<MeetingControls {...baseProps} includeSettings={false} sharedAudioVolumeVisible />);
-    const trigger = screen.getByRole('button', { name: 'Volume' });
+    const trigger = screen.getByRole('button', { name: 'Audio and devices' });
     fireEvent.click(trigger);
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     fireEvent.click(trigger);
@@ -143,8 +143,8 @@ describe('meeting dock audio controls', () => {
     render(<LanguageProvider initialLocale="zh-CN"><MeetingControls {...baseProps} includeSettings={false} /></LanguageProvider>);
 
     const toolbar = screen.getByRole('toolbar', { name: '主要会议控制' });
-    expect(within(toolbar).getAllByRole('button', { name: /音量/ })).toHaveLength(1);
-    await userEvent.click(within(toolbar).getByRole('button', { name: '音量' }));
+    expect(within(toolbar).getAllByRole('button', { name: '音频与设备' })).toHaveLength(1);
+    await userEvent.click(within(toolbar).getByRole('button', { name: '音频与设备' }));
     const menu = screen.getByRole('group', { name: '快速音量控制' });
     expect(within(menu).getByRole('slider', { name: '通话音频音量' })).toHaveValue('100');
     expect(within(menu).queryByRole('slider', { name: '共享音频音量' })).not.toBeInTheDocument();
@@ -220,5 +220,108 @@ describe('grouped meeting settings', () => {
     expect(screen.getByRole('region', { name: '音频与设备' })).toBeVisible();
     expect(screen.getByRole('region', { name: '接收屏幕' })).toBeVisible();
     expect(screen.getByRole('region', { name: '我发起共享时' })).toBeVisible();
+  });
+});
+
+
+describe('split microphone and share quick controls', () => {
+  it('keeps microphone and direct share actions separate from their adjacent settings triggers', async () => {
+    const onMicrophoneToggle = vi.fn();
+    const onScreenShareToggle = vi.fn();
+    render(<MeetingControls {...baseProps} includeSettings={false} screenShareAuthorized onMicrophoneToggle={onMicrophoneToggle} onScreenShareToggle={onScreenShareToggle} />);
+    const mic = screen.getByRole('button', { name: 'Unmute microphone' });
+    const audio = screen.getByRole('button', { name: 'Audio and devices' });
+    const share = screen.getByRole('button', { name: 'Share screen' });
+    const shareSettings = screen.getByRole('button', { name: 'Screen sharing settings' });
+    expect(mic.parentElement).toBe(audio.parentElement);
+    expect(share.parentElement).toBe(shareSettings.parentElement);
+    await userEvent.click(audio);
+    expect(onMicrophoneToggle).not.toHaveBeenCalled();
+    expect(screen.getByRole('combobox', { name: 'Microphone device' })).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Screen quality' })).not.toBeInTheDocument();
+    await userEvent.click(mic);
+    expect(onMicrophoneToggle).toHaveBeenCalledOnce();
+    await userEvent.click(share);
+    expect(onScreenShareToggle).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('group', { name: 'Screen sharing settings' })).not.toBeInTheDocument();
+    await userEvent.click(shareSettings);
+    expect(onScreenShareToggle).toHaveBeenCalledOnce();
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toBeVisible();
+    expect(screen.queryByRole('combobox', { name: 'Microphone device' })).not.toBeInTheDocument();
+  });
+
+  it('shows only one quick panel and restores its trigger on Escape and an outside pointer', async () => {
+    render(<MeetingControls {...baseProps} includeSettings={false} />);
+    const audio = screen.getByRole('button', { name: 'Audio and devices' });
+    const share = screen.getByRole('button', { name: 'Screen sharing settings' });
+    await userEvent.click(audio);
+    await userEvent.click(share);
+    expect(audio).toHaveAttribute('aria-expanded', 'false');
+    expect(share).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+    screen.getByRole('combobox', { name: 'Screen quality' }).focus();
+    await userEvent.keyboard('{Escape}');
+    expect(share).toHaveFocus();
+    await userEvent.click(audio);
+    screen.getByRole('combobox', { name: 'Microphone device' }).focus();
+    await act(async () => { fireEvent.pointerDown(document.body); });
+    expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+    expect(audio).toHaveFocus();
+  });
+
+  it('supports controlled panels so More and page settings can dismiss quick controls', async () => {
+    const onQuickPanelChange = vi.fn();
+    const view = render(<MeetingControls {...baseProps} includeSettings={false} quickPanel={null} onQuickPanelChange={onQuickPanelChange} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
+    expect(onQuickPanelChange).toHaveBeenCalledWith('audio');
+    expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
+    view.rerender(<MeetingControls {...baseProps} includeSettings={false} quickPanel="share" onQuickPanelChange={onQuickPanelChange} />);
+    expect(screen.getByRole('group', { name: 'Screen sharing settings' })).toBeVisible();
+    await userEvent.keyboard('{Escape}');
+    expect(onQuickPanelChange).toHaveBeenLastCalledWith(null);
+    view.rerender(<MeetingControls {...baseProps} includeSettings={false} quickPanel={null} onQuickPanelChange={onQuickPanelChange} />);
+    expect(screen.queryByRole('group', { name: 'Screen sharing settings' })).not.toBeInTheDocument();
+  });
+
+  it('remembers selected real audio devices after closing and switching quick panels', async () => {
+    const devices = [
+      { deviceId: 'mic-1', kind: 'audioinput', label: 'USB microphone' },
+      { deviceId: 'speaker-1', kind: 'audiooutput', label: 'Desk speakers' }
+    ] as MediaDeviceInfo[];
+    const onMicrophoneDeviceChange = vi.fn();
+    const onSpeakerDeviceChange = vi.fn();
+    render(<MeetingControls {...baseProps} includeSettings={false} devices={devices} onMicrophoneDeviceChange={onMicrophoneDeviceChange} onSpeakerDeviceChange={onSpeakerDeviceChange} />);
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Microphone device' }), 'mic-1');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Speaker device' }), 'speaker-1');
+    expect(onMicrophoneDeviceChange).toHaveBeenCalledWith('mic-1');
+    expect(onSpeakerDeviceChange).toHaveBeenCalledWith('speaker-1');
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
+    expect(screen.getByRole('combobox', { name: 'Microphone device' })).toHaveValue('mic-1');
+    expect(screen.getByRole('combobox', { name: 'Speaker device' })).toHaveValue('speaker-1');
+  });
+
+  it('only shows a locked hint while this user is sharing or a share operation is busy', () => {
+    const view = render(<MeetingSettings {...baseProps} section="share" sharedAudioVolumeVisible />);
+    expect(screen.queryByText('Sharing settings cannot be changed during a share.')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toBeEnabled();
+    view.rerender(<MeetingSettings {...baseProps} section="share" screenShareActive />);
+    expect(screen.getByText('Sharing settings cannot be changed during a share.')).toBeVisible();
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toBeDisabled();
+  });
+
+  it('keeps general settings receiver-only with a working diagnostics action', async () => {
+    const onOpenDiagnostics = vi.fn();
+    const onViewerTransportPreferenceChange = vi.fn();
+    render(<MeetingSettings {...baseProps} section="general" viewerTransportPreferenceVisible viewerTransportPreference="turn" onViewerTransportPreferenceChange={onViewerTransportPreferenceChange} onOpenDiagnostics={onOpenDiagnostics} />);
+    expect(screen.getByRole('combobox', { name: 'Viewer screen transport' })).toHaveValue('turn');
+    expect(screen.queryByRole('combobox', { name: 'Screen quality' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Microphone device' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Advanced settings')).not.toBeInTheDocument();
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Viewer screen transport' }), 'sfu');
+    expect(onViewerTransportPreferenceChange).toHaveBeenCalledWith('sfu');
+    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    expect(onOpenDiagnostics).toHaveBeenCalledOnce();
   });
 });

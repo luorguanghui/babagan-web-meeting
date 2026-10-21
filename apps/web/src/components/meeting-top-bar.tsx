@@ -1,5 +1,5 @@
 import { ChartNoAxesColumnIncreasing, Settings, Users } from 'lucide-react';
-import type { ReactNode, RefObject } from 'react';
+import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 
 export function MeetingTopBar({
   title,
@@ -17,7 +17,6 @@ export function MeetingTopBar({
   onStats,
   statsButtonRef,
   activePanel,
-  participants = [],
   showTransport = false
 }: {
   title: string;
@@ -38,31 +37,33 @@ export function MeetingTopBar({
   participants?: ReadonlyArray<{ identity: string; name: string }>;
   showTransport?: boolean;
 }) {
+  const [startedAt] = useState(() => Date.now());
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+  const duration = [Math.floor(elapsed / 3600), Math.floor(elapsed / 60) % 60, elapsed % 60].map(value => String(value).padStart(2, '0')).join(':');
   return <header className="meeting-topbar meeting-room-header">
+    <div className="meeting-brand"><img src="/brand/babagan-wordmark.svg" alt="Babagan" width="138" height="35" /></div>
     <div className="meeting-room-title">
       <h1>{title}</h1>
       <div className="meeting-connection">{connection}</div>
+      <time className="meeting-duration" aria-label={duration}>{duration}</time>
     </div>
     {showTransport && <div className="meeting-topbar-status" aria-hidden="true">
-      <ChartNoAxesColumnIncreasing size={19} /><span>{transportLabel}</span>
+      <ChartNoAxesColumnIncreasing size={16} /><span>{transportLabel}</span>
     </div>}
-    <div className="meeting-presence" aria-hidden="true">
-      {participants.slice(0, 5).map((participant, index) => <span className="participant-avatar" data-tone={index % 4} key={participant.identity} title={participant.name}>{Array.from(participant.name.trim())[0]?.toUpperCase()}</span>)}
-    </div>
-    <nav className="meeting-topbar-actions meeting-navigation-rail" aria-label={navigationLabel}>
-      <span className="meeting-brand-mark"><img src="/brand/babagan-icon.svg" alt="Babagan" width="44" height="37" /></span>
-      <button ref={participantButtonRef} type="button" className="meeting-topbar-action" aria-label={participantLabel} aria-pressed={activePanel === 'participants'} onClick={onParticipants}>
-        <Users aria-hidden="true" size={24} />
-        <span>{participantLabel}</span>
-        <span className="meeting-participant-count" aria-hidden="true">{participantCount}</span>
+    <nav className="meeting-topbar-actions" aria-label={navigationLabel}>
+      <button ref={participantButtonRef} type="button" className="meeting-topbar-action meeting-members-toggle" aria-label={participantLabel} aria-pressed={activePanel === 'participants'} onClick={onParticipants}>
+        <Users aria-hidden="true" size={20} /><span>{participantLabel}</span><span className="meeting-participant-count" aria-hidden="true">{participantCount}</span>
       </button>
-      <button ref={settingsButtonRef} type="button" className="meeting-topbar-action" aria-pressed={activePanel === 'settings'} onClick={onSettings}>
-        <Settings aria-hidden="true" size={24} />
-        <span>{settingsLabel}</span>
-      </button>
-      {onStats && <button ref={statsButtonRef} type="button" className="meeting-topbar-action meeting-nav-stats" aria-pressed={activePanel === 'stats'} onClick={onStats}>
-        <ChartNoAxesColumnIncreasing aria-hidden="true" size={24} /><span>{statsLabel}</span>
+      {onStats && <button ref={statsButtonRef} type="button" className="meeting-topbar-action meeting-nav-stats" aria-label={statsLabel} aria-pressed={activePanel === 'stats'} onClick={onStats}>
+        <ChartNoAxesColumnIncreasing aria-hidden="true" size={20} /><span>{statsLabel}</span>
       </button>}
+      <button ref={settingsButtonRef} type="button" className="meeting-topbar-action" aria-label={settingsLabel} aria-pressed={activePanel === 'settings'} onClick={onSettings}>
+        <Settings aria-hidden="true" size={20} /><span>{settingsLabel}</span>
+      </button>
     </nav>
   </header>;
 }

@@ -231,7 +231,7 @@ describe('controlled browser screen sharing', () => {
     expect(stage.parentElement?.parentElement).toHaveClass('meeting-stage-column');
     expect(stage.parentElement?.parentElement?.parentElement).toHaveClass('meeting-workspace');
     await userEvent.click(screen.getByRole('button', { name: 'Participants' }));
-    const participantDrawer = screen.getByRole('dialog', { name: 'Participants' });
+    const participantDrawer = screen.getByRole('complementary', { name: 'Participants' });
     expect(participantDrawer).toContainElement(screen.getByRole('list', { name: 'Participants' }));
     await userEvent.click(screen.getByText('Meeting management'));
     expect(participantDrawer).toContainElement(await screen.findByRole('heading', { name: 'Host controls' }));
@@ -504,7 +504,7 @@ describe('controlled browser screen sharing', () => {
       onLeave={() => undefined}
     />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Meeting settings'));
     await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Screen-share codec');
     expect(selector).toHaveValue('h264');
@@ -546,7 +546,7 @@ describe('controlled browser screen sharing', () => {
       onLeave={() => undefined}
     />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Meeting settings'));
     await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Viewer screen transport');
     expect(screen.getByRole('option', { name: 'TURN relay' })).toBeVisible();
@@ -574,7 +574,7 @@ describe('controlled browser screen sharing', () => {
       onLeave={() => undefined}
     />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Meeting settings'));
     const slider = screen.queryByRole('slider', { name: 'Call audio volume' });
     expect(slider).toHaveValue('100');
     if (!slider) return;
@@ -601,7 +601,7 @@ describe('controlled browser screen sharing', () => {
     };
     const rendered = render(<MeetingControls {...common} sharedAudioVolumeVisible={false} />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Meeting settings'));
     expect(screen.queryByRole('slider', { name: 'Shared audio volume' })).not.toBeInTheDocument();
 
     rendered.rerender(<MeetingControls {...common} sharedAudioVolumeVisible />);
@@ -613,7 +613,7 @@ describe('controlled browser screen sharing', () => {
     expect(onSharedAudioVolumeChange).toHaveBeenCalledWith(45);
   });
 
-  it('opens an inline call-volume control from the primary dock', async () => {
+  it('opens inline call-volume control from the microphone settings chevron', async () => {
     const onCallAudioVolumeChange = vi.fn();
     render(<MeetingControls
       connection="connected"
@@ -631,7 +631,7 @@ describe('controlled browser screen sharing', () => {
     />);
 
     expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Call audio volume' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
 
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     expect(menu).toBeVisible();
@@ -643,10 +643,10 @@ describe('controlled browser screen sharing', () => {
 
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('group', { name: 'Quick audio controls' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Call audio volume' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Audio and devices' })).toHaveFocus();
   });
 
-  it('shows a shared-volume shortcut and slider only for a remote share', async () => {
+  it('shows shared volume in microphone settings only for a remote share', async () => {
     const onSharedAudioVolumeChange = vi.fn();
     const common = {
       connection: 'connected' as const,
@@ -666,7 +666,7 @@ describe('controlled browser screen sharing', () => {
 
     expect(screen.queryByRole('button', { name: 'Shared audio volume' })).not.toBeInTheDocument();
     rendered.rerender(<MeetingControls {...common} sharedAudioVolumeVisible />);
-    await userEvent.click(screen.getByRole('button', { name: 'Shared audio volume' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
 
     const menu = screen.getByRole('group', { name: 'Quick audio controls' });
     const slider = within(menu).getByRole('slider', { name: 'Shared audio volume' });
@@ -718,7 +718,7 @@ describe('controlled browser screen sharing', () => {
     };
     const rendered = render(<MeetingControls {...common} screenShareActive={false} />);
 
-    await userEvent.click(screen.getByText('Audio and sharing settings'));
+    await userEvent.click(screen.getByText('Meeting settings'));
     await userEvent.click(screen.getByText('Advanced settings'));
     const primaryActions = screen.getByRole('group', { name: 'Primary meeting actions' });
     expect(primaryActions).toContainElement(screen.getByRole('button', { name: 'Unmute microphone' }));
@@ -1357,7 +1357,7 @@ describe('screen stage', () => {
 
     await act(async () => { document.dispatchEvent(new Event('fullscreenchange')); });
 
-    expect(screen.getByRole('button', { name: 'View shared screen fullscreen' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Exit full screen' })).toBeInTheDocument();
     Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: null });
   });
 
@@ -1725,9 +1725,10 @@ describe('P2P-first screen sharing in the room', () => {
     }));
     const signaling = fakeSignalingClient(); const controller = meetingController(); const share = fakeShareController(); const { stream } = displayStream({ audio: false });
     renderP2pRoom({ controller, getDisplayMedia: async () => stream, createSignalingClient: signaling.factory, shareControllerFactory: () => share.controller });
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
     await userEvent.selectOptions(screen.getByLabelText('Screen-share transport'), 'cloudflare-sfu');
-    await userEvent.click(screen.getByRole('button', { name: 'Close panel' }));
+    await userEvent.keyboard('{Escape}');
     await userEvent.click(screen.getByRole('button', { name: 'Share screen' }));
     await waitFor(() => expect(requests.filter(r => r.path.endsWith('/publish/ready'))).toHaveLength(1));
     act(() => signaling.welcome(fourViewers)); act(() => signaling.transport('viewer-1', 'sfu'));
@@ -1800,7 +1801,7 @@ describe('P2P-first screen sharing in the room', () => {
     });
     act(() => signaling.welcome(fourViewers));
 
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
     await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
@@ -2163,7 +2164,7 @@ describe('P2P-first screen sharing in the room', () => {
     act(() => document.querySelector('.screen-stage video')?.dispatchEvent(new Event('playing')));
     await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('Direct P2P', { selector: '.webrtc-transport-badge' })).toBeVisible();
     await waitFor(() => expect(screen.getByText('Receiver')).toBeInTheDocument());
     expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
@@ -2273,7 +2274,7 @@ describe('P2P-first screen sharing in the room', () => {
 
     act(() => share.triggerStates([['viewer-1', 'turn']]));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
   });
   it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {

@@ -531,53 +531,76 @@ function renderRoom(controller = new FakeMeetingRoomController(), leaveMeeting =
 }
 
 describe('meeting room UI', () => {
-  it('opens the participant drawer and returns focus when Escape closes it', async () => {
+  it('keeps a complete participant sidebar visible without a modal or inert background', async () => {
     renderRoom();
-    const trigger = await screen.findByRole('button', { name: 'Participants' });
-
-    await userEvent.click(trigger);
-    const drawer = screen.getByRole('dialog', { name: 'Participants' });
-    expect(drawer).toBeVisible();
-    expect(drawer).toHaveAttribute('aria-modal', 'true');
-    expect(document.querySelector('.meeting-workspace')).toHaveAttribute('inert');
-    expect(within(drawer).getByRole('button', { name: 'Close panel' })).toHaveFocus();
-    await userEvent.keyboard('{Escape}');
-
+    const sidebar = await screen.findByRole('complementary', { name: 'Participants' });
+    expect(within(sidebar).getAllByRole('listitem')).toHaveLength(5);
     expect(screen.queryByRole('dialog', { name: 'Participants' })).not.toBeInTheDocument();
-    expect(trigger).toHaveFocus();
-    expect(drawer).toHaveAttribute('data-state', 'exiting');
-    expect(drawer).toHaveAttribute('inert');
     expect(document.querySelector('.meeting-workspace')).not.toHaveAttribute('inert');
-    await waitFor(() => expect(drawer).not.toBeInTheDocument());
   });
 
-  it('replaces a closing panel immediately without stale cleanup or disconnecting the room', async () => {
+  it('opens settings inside the stage while members and primary controls remain interactive', async () => {
     const { controller } = renderRoom();
-    const participantsTrigger = await screen.findByRole('button', { name: 'Participants' });
-    fireEvent.click(participantsTrigger);
-    const oldDrawer = screen.getByRole('dialog', { name: 'Participants' });
-    fireEvent.click(document.querySelector('.meeting-drawer-backdrop')!);
-    expect(oldDrawer).toHaveAttribute('aria-hidden', 'true');
-    expect(oldDrawer).toHaveAttribute('inert');
-    fireEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    const settings = screen.getByRole('dialog', { name: 'Audio and sharing settings' });
-    expect(settings).toHaveAttribute('data-state', 'open');
-    expect(settings).not.toHaveAttribute('inert');
-    expect(oldDrawer).not.toBeInTheDocument();
-    await act(() => new Promise(resolve => setTimeout(resolve, 230)));
-    expect(settings).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: 'Settings' });
+    await userEvent.click(trigger);
+    const settings = screen.getByRole('dialog', { name: 'Meeting settings' });
+    expect(settings.closest('.meeting-stage-shell')).not.toBeNull();
+    expect(settings).not.toHaveAttribute('aria-modal');
+    expect(document.querySelector('.meeting-workspace')).not.toHaveAttribute('inert');
+    expect(within(screen.getByRole('complementary', { name: 'Participants' })).getAllByRole('listitem')).toHaveLength(5);
+    await userEvent.click(screen.getByRole('button', { name: 'Unmute microphone' }));
+    expect(controller.microphoneChanges).toContainEqual({ enabled: true });
     expect(controller.disconnectCount).toBe(0);
+    await userEvent.keyboard('{Escape}');
+    expect(trigger).toHaveFocus();
+    await waitFor(() => expect(settings).not.toBeInTheDocument());
   });
 
-  it('keeps focus inside a drawer when live meeting state rerenders the page', async () => {
+  it('preserves settings focus through live meeting updates and does not trap Tab', async () => {
     const { controller } = renderRoom();
     await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
-    const slider = screen.getByRole('slider', { name: 'Call audio volume' });
-    slider.focus();
-
+    const language = screen.getByRole('combobox', { name: 'Language' });
+    language.focus();
     await act(() => controller.setMicrophoneEnabled(true));
+    expect(language).toHaveFocus();
+    const toolbarButton = screen.getByRole('button', { name: 'Mute microphone' });
+    toolbarButton.focus();
+    expect(toolbarButton).toHaveFocus();
+  });
 
-    expect(slider).toHaveFocus();
+  it.each([false, true])('moves focus from More to audio settings with reduced motion=%s', async (reducedMotion) => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: reducedMotion, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    renderRoom();
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    const menu = screen.getByRole('dialog', { name: 'More' });
+    const menuAudio = within(menu).getByRole('button', { name: 'Audio and devices' });
+    menuAudio.focus();
+    await userEvent.keyboard('{Enter}');
+    const trigger = within(screen.getByRole('toolbar')).getByRole('button', { name: 'Audio and devices' });
+    expect(trigger).toHaveFocus();
+    expect(screen.getByLabelText('Microphone device')).toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    expect(trigger).toHaveFocus();
+  });
+
+  it('moves focus into the member sidebar from More with reduced motion', async () => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    renderRoom();
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    const item = within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Participants' });
+    item.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(document.querySelector('.meeting-members-sidebar')).toHaveFocus();
+    expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
+  });
+
+  it('returns diagnostics opened from general settings to the Settings button', async () => {
+    renderRoom();
+    const settings = screen.getByRole('button', { name: 'Settings' });
+    await userEvent.click(settings);
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Meeting settings' })).getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.keyboard('{Escape}');
+    expect(settings).toHaveFocus();
   });
 
   it('keeps primary actions in a toolbar and opens low-frequency controls from More', async () => {
@@ -591,14 +614,15 @@ describe('meeting room UI', () => {
 
     await userEvent.click(within(toolbar).getByRole('button', { name: 'More' }));
     expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
+    expect(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
-    expect(screen.getByRole('dialog', { name: 'Audio and sharing settings' })).toBeVisible();
-    await userEvent.click(screen.getByRole('button', { name: 'Back to More' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Screen sharing settings' }));
+    expect(screen.getByRole('group', { name: 'Screen sharing settings' })).toBeVisible();
+    expect(screen.queryByLabelText('Microphone device')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
     expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
 
-    await userEvent.click(screen.getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByRole('dialog', { name: 'WebRTC data' })).toBeVisible();
     expect(screen.getByText('No active screen-share data.')).toBeVisible();
   });
@@ -623,7 +647,7 @@ describe('meeting room UI', () => {
       listDevices={async () => devices}
     />);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
     await screen.findByRole('option', { name: 'USB microphone' });
 
     expect(controllerFactory).toHaveBeenCalledOnce();
@@ -654,7 +678,7 @@ describe('meeting room UI', () => {
   it('switches microphone and speaker devices without changing the microphone state', async () => {
     const { controller } = renderRoom();
 
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
     await userEvent.selectOptions(await screen.findByLabelText('Microphone device'), 'microphone-2');
     await userEvent.selectOptions(screen.getByLabelText('Speaker device'), 'speaker-2');
 
@@ -664,7 +688,7 @@ describe('meeting room UI', () => {
 
   it('routes the call-audio slider to the aggregate remote microphone volume', async () => {
     const { controller } = renderRoom();
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
     const slider = await screen.findByRole('slider', { name: 'Call audio volume' });
 
     fireEvent.change(slider, { target: { value: '35' } });
@@ -688,7 +712,7 @@ describe('meeting room UI', () => {
     };
     renderRoom(controller);
 
-    await userEvent.click(screen.getByRole('button', { name: 'Settings' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Audio and devices' }));
     const slider = await screen.findByRole('slider', { name: 'Shared audio volume' });
     fireEvent.change(slider, { target: { value: '40' } });
 
