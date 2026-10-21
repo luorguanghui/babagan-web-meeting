@@ -330,7 +330,7 @@ function RoomScene({ scene }: { scene: Scene }) {
     // Open via the real navigation event, not by altering component state.
     const timer = window.setTimeout(() => {
       const buttons = [...document.querySelectorAll<HTMLButtonElement>('.meeting-topbar-actions button')];
-      buttons[scene === 'host' ? 0 : 1]?.click();
+      buttons[scene === 'host' ? 0 : 2]?.click();
       if (scene === 'host') window.setTimeout(() => {
         const management = document.querySelector<HTMLDetailsElement>('.meeting-management');
         if (management) management.open = true;

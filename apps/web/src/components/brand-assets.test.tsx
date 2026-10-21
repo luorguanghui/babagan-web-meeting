@@ -11,7 +11,7 @@ describe('selected brand icon delivery', () => {
     expect(html.querySelector('link[rel="icon"][type="image/svg+xml"]')?.getAttribute('href')).toBe('/brand/babagan-icon.svg');
     const icon = new DOMParser().parseFromString(read('public/brand/babagan-icon.svg'), 'image/svg+xml');
     expect(icon.documentElement.getAttribute('viewBox')).toBe('0 0 192 160');
-    expect(read('src/components/meeting-top-bar.tsx')).toContain('width="44" height="37"');
+    expect(read('src/components/meeting-top-bar.tsx')).toContain('src="/brand/babagan-wordmark.svg"');
   });
 
   it('shows the selected favicon in isolated preview tabs too', () => {

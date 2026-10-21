@@ -11,6 +11,7 @@ export function MeetingDrawer({
   onClose,
   returnFocusRef,
   exiting = false,
+  modal = true,
   children
 }: {
   title: string;
@@ -20,6 +21,8 @@ export function MeetingDrawer({
   onClose: () => void;
   returnFocusRef?: RefObject<HTMLButtonElement | null>;
   exiting?: boolean;
+  /** Stage panels do not make participants or meeting controls inert. */
+  modal?: boolean;
   children: ReactNode;
 }) {
   const headingId = useId();
@@ -38,7 +41,7 @@ export function MeetingDrawer({
     if (exiting) return;
     const drawer = drawerRef.current;
     const room = drawer?.closest('.meeting-room');
-    const background = room
+    const background = modal && room
       ? Array.from(room.children).filter((element) => element !== drawer && !element.classList.contains('meeting-drawer-backdrop'))
       : [];
     const priorAccessibility = background.map((element) => ({
@@ -52,7 +55,7 @@ export function MeetingDrawer({
         close();
         return;
       }
-      if (event.key !== 'Tab' || !drawer) return;
+      if (!modal || event.key !== 'Tab' || !drawer) return;
       const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
         'button:not([disabled]), input:not([disabled]), select:not([disabled]), summary, [href], [tabindex]:not([tabindex="-1"])'
       )).filter((element) => {
@@ -85,9 +88,9 @@ export function MeetingDrawer({
         else element.setAttribute('aria-hidden', ariaHidden);
       });
     };
-  }, [close, exiting]);
-  return <><div className="meeting-drawer-backdrop" data-state={exiting ? 'exiting' : 'open'} aria-hidden="true" onClick={exiting ? undefined : close} />
-  <aside ref={drawerRef} className="meeting-drawer" data-state={exiting ? 'exiting' : 'open'} inert={exiting || undefined} aria-hidden={exiting || undefined} role="dialog" aria-modal={exiting ? undefined : true} aria-labelledby={headingId}>
+  }, [close, exiting, modal]);
+  return <><div className={`meeting-drawer-backdrop${modal ? '' : ' meeting-stage-panel-backdrop'}`} data-state={exiting ? 'exiting' : 'open'} aria-hidden="true" onClick={exiting ? undefined : close} />
+  <aside ref={drawerRef} className={`meeting-drawer${modal ? '' : ' meeting-stage-panel'}`} data-state={exiting ? 'exiting' : 'open'} inert={exiting || undefined} aria-hidden={exiting || undefined} role="dialog" aria-modal={!modal || exiting ? undefined : true} aria-labelledby={headingId}>
     <header className="meeting-drawer-header">
       {onBack && <button type="button" className="meeting-drawer-back" aria-label={backLabel} onClick={onBack}>
         <ArrowLeft aria-hidden="true" size={20} />

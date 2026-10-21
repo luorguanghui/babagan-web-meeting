@@ -1,0 +1,158 @@
+.meeting-controls .meeting-split-control {
+  display: inline-flex;
+  flex: 0 0 auto;
+  min-width: 0;
+  position: relative;
+}
+
+.meeting-controls .meeting-split-control > button {
+  align-items: center;
+  display: inline-flex;
+  font-size: .85rem;
+  gap: .55rem;
+  justify-content: center;
+  min-height: 48px;
+  padding: .7rem .9rem;
+}
+
+.meeting-controls .meeting-split-control > button:first-child {
+  border-bottom-right-radius: 0;
+  border-right: 0;
+  border-top-right-radius: 0;
+}
+
+.meeting-controls .meeting-split-control > .meeting-action-chevron {
+  border-bottom-left-radius: 0;
+  border-top-left-radius: 0;
+  flex: 0 0 38px;
+  min-width: 38px;
+  padding: .6rem;
+}
+
+.meeting-controls .meeting-split-share > .meeting-action-chevron {
+  border-left-color: #ffffff35;
+}
+
+.meeting-controls .meeting-action-chevron[aria-expanded='true']:not(.meeting-action-share) {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.meeting-controls .meeting-quick-popover {
+  bottom: calc(100% + 13px);
+  left: calc(100% - 19px);
+  max-height: min(36rem, calc(100dvh - 150px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 1.2rem;
+  scrollbar-width: thin;
+  width: min(21rem, calc(100vw - 2rem));
+}
+
+.meeting-quick-popover .meeting-settings-grid {
+  padding: 0;
+}
+
+.meeting-quick-popover .meeting-settings-section {
+  padding: 0;
+}
+
+.meeting-quick-popover .meeting-settings-section-heading {
+  font-size: .94rem;
+  margin-bottom: 1rem;
+}
+
+.meeting-quick-popover .meeting-settings-section-grid {
+  gap: .85rem;
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.meeting-quick-popover .meeting-settings-section-grid select {
+  font-size: .8rem;
+  min-height: 38px;
+  padding: .5rem .6rem;
+}
+
+.meeting-quick-popover .meeting-settings-advanced {
+  border-top: 1px solid var(--border);
+  margin-top: .9rem;
+  padding: .45rem 0 0;
+}
+
+.meeting-quick-popover .meeting-settings-advanced > summary {
+  font-size: .8rem;
+  min-height: 36px;
+}
+
+.meeting-quick-popover .meeting-settings-advanced[open] > summary {
+  margin-bottom: .45rem;
+}
+
+.meeting-quick-popover .meeting-settings-advanced .meeting-settings-section-heading {
+  font-size: .8rem;
+  margin: .85rem 0;
+}
+
+.meeting-settings-section-grid .meeting-device-control > span {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  font-size: .8rem;
+  gap: .5rem;
+}
+
+.meeting-settings-diagnostics {
+  align-items: center;
+  display: inline-flex;
+  gap: .6rem;
+  justify-content: flex-start;
+  margin-top: 1rem;
+}
+
+@media (max-width: 44.999rem) {
+  .meeting-controls .meeting-primary-actions {
+    display: flex;
+    gap: .4rem;
+    position: relative;
+  }
+
+  .meeting-controls .meeting-split-control {
+    flex: 1 1 0;
+    position: static;
+  }
+
+  .meeting-controls .meeting-split-control > button:first-child {
+    flex: 1;
+    flex-direction: column;
+    font-size: .65rem;
+    gap: .35rem;
+    min-height: 52px;
+    min-width: 0;
+    padding: .45rem .15rem;
+  }
+
+  .meeting-controls .meeting-split-control > .meeting-action-chevron {
+    flex-basis: 30px;
+    min-width: 30px;
+    padding: .35rem;
+  }
+
+  .meeting-controls .meeting-split-control > button:first-child span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+  }
+
+  .meeting-controls .meeting-primary-actions > .meeting-leave-action {
+    display: inline-flex !important;
+    flex: 0 0 auto;
+    padding-inline: .45rem;
+  }
+
+  .meeting-controls .meeting-quick-popover {
+    left: 50%;
+    max-height: calc(100dvh - 140px);
+    width: min(21rem, calc(100vw - 2rem));
+  }
+}

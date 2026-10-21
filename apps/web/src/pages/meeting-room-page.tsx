@@ -8,9 +8,12 @@ import {
   type ScreenShareQuality
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { MonitorUp } from 'lucide-react';
+import { X } from 'lucide-react';
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
+import { resolveActiveSharer } from '../meeting/active-share.js';
+import { LanguageSelector } from '../components/language-selector.js';
+import './meeting-room-layout.css';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
@@ -217,6 +220,8 @@ export function MeetingRoomPage({
   const [callAudioVolume, setCallAudioVolume] = useState(100);
   const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
   const [meetingPanel, setMeetingPanel] = useState<MeetingPanel>(null);
+  const [membersExpanded, setMembersExpanded] = useState(false);
+  const [quickPanel, setQuickPanel] = useState<'audio' | 'share' | null>(null);
   const [meetingPanelParent, setMeetingPanelParent] = useState<'more' | null>(null);
   const panelPresence = useExitPresence(useMemo(() => meetingPanel === null ? null : {
     panel: meetingPanel, parent: meetingPanelParent
@@ -227,6 +232,17 @@ export function MeetingRoomPage({
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const statsButtonRef = useRef<HTMLButtonElement>(null);
+  const statsOpenerRef = useRef(statsButtonRef);
+  const audioSettingsButtonRef = useRef<HTMLButtonElement>(null);
+  const shareSettingsButtonRef = useRef<HTMLButtonElement>(null);
+  const membersSidebarRef = useRef<HTMLElement>(null);
+  const focusMembersOnOpen = useRef(false);
+  useEffect(() => {
+    if (membersExpanded && focusMembersOnOpen.current) {
+      focusMembersOnOpen.current = false;
+      membersSidebarRef.current?.focus();
+    }
+  }, [membersExpanded]);
   const [notice, setNotice] = useState<string>();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [leaving, setLeaving] = useState(false);
@@ -895,13 +911,6 @@ export function MeetingRoomPage({
     saveScreenShareTurnProviderPreference(window.localStorage, preference);
   }, []);
 
-  const hostParticipants: Array<ParticipantSummary & { isLocal: boolean; microphoneEnabled: boolean }> = state.participants.map((participant) => ({
-    identity: participant.identity,
-    name: participant.name,
-    isSharing: participant.isSharing,
-    isLocal: participant.isLocal,
-    microphoneEnabled: participant.microphoneEnabled
-  }));
   // SFU is shown only after explicit selection. Peer renegotiation may retain
   // the last peer frame, but never substitutes a LiveKit backup behind it.
   const livekitViewerTrack = !cf.publication && viewerTransportPreference === 'sfu' ? state.remoteScreenShare?.track : undefined;
@@ -928,9 +937,21 @@ export function MeetingRoomPage({
     : hasActiveScreenShare
       ? t(transportModeKeys[screenTransportMode])
       : t('connection.connected');
-  const sharerName = screenState.stream
-    ? join.participantName
-    : cf.publication?.sharerName ?? state.remoteScreenShare?.sharerName;
+  const activeSharer = resolveActiveSharer({
+    localIdentity: join.participantIdentity, localName: join.participantName,
+    localSharing: Boolean(screenState.stream), cloudflare: cf.publication,
+    peerViewing: Boolean(p2pViewerStream),
+    peerIdentity: viewerP2pRef.current?.getSharerIdentity() ?? viewerSharerIdentityRef.current,
+    livekit: stageTrack ? state.remoteScreenShare : undefined,
+    participants: state.participants, peers: viewerRosterRef.current
+  });
+  const sharerName = activeSharer.name;
+  const displayParticipants = state.participants.map(participant => ({
+    ...participant,
+    isSharing: hasActiveScreenShare && activeSharer.identity
+      ? participant.identity === activeSharer.identity : participant.isSharing
+  }));
+  const hostParticipants: Array<ParticipantSummary & { isLocal: boolean; microphoneEnabled: boolean }> = displayParticipants;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
     if (cf.publication && cf.stream) { setCfReadyStream(cf.stream); return; }
@@ -1058,15 +1079,23 @@ export function MeetingRoomPage({
   };
 
   const handleMeetingMenuAction = (action: MeetingMenuAction) => {
-    if (action === 'participants') { setMeetingPanelParent('more'); setMeetingPanel('participants'); }
-    else if (action === 'audio-devices' || action === 'screen-settings') { setMeetingPanelParent('more'); setMeetingPanel('settings'); }
+    if (action === 'participants') {
+      if (membersExpanded) membersSidebarRef.current?.focus();
+      else focusMembersOnOpen.current = true;
+      setMeetingPanel(null); setMeetingPanelParent(null); setMembersExpanded(true);
+    } else if (action === 'audio-devices' || action === 'screen-settings') {
+      // Hand off before the menu unmounts, including reduced-motion mode.
+      (action === 'audio-devices' ? audioSettingsButtonRef : shareSettingsButtonRef).current?.focus();
+      setMeetingPanel(null); setMeetingPanelParent(null); setQuickPanel(action === 'audio-devices' ? 'audio' : 'share');
+    }
     else if (action === 'webrtc-stats') { setMeetingPanelParent('more'); setMeetingPanel('stats'); }
     else void leave();
   };
   const closeMeetingPanel = () => { setMeetingPanel(null); setMeetingPanelParent(null); };
+  const openMeetingPanel = (panel: MeetingPanel) => { setQuickPanel(null); setMeetingPanelParent(null); setMeetingPanel(panel); };
   const backToMore = () => { setMeetingPanelParent(null); setMeetingPanel('more'); };
 
-  return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`} data-panel={meetingPanel ?? undefined} data-displayed-panel={displayedPanel}>
+  return <main className={`meeting-room${hasActiveScreenShare ? ' meeting-room-sharing' : ''}`} data-panel={meetingPanel ?? undefined} data-displayed-panel={displayedPanel} data-members-expanded={membersExpanded || undefined}>
     <MeetingTopBar
       title={meetingName || t('room.heading', { name: join.participantName })}
       connection={<ConnectionBanner state={reconnectState} connection={state.connection} online={online} rateLimited={reconnectRateLimited} />}
@@ -1075,14 +1104,14 @@ export function MeetingRoomPage({
       navigationLabel={t('controls.navigation')}
       participantLabel={t('participants.label')}
       settingsLabel={t('controls.settingsShort')}
-      onParticipants={() => { setMeetingPanelParent(null); setMeetingPanel('participants'); }}
-      onSettings={() => { setMeetingPanelParent(null); setMeetingPanel('settings'); }}
+      onParticipants={() => setMembersExpanded(current => !current)}
+      onSettings={() => openMeetingPanel('settings')}
       participantButtonRef={participantButtonRef}
       settingsButtonRef={settingsButtonRef}
       statsButtonRef={statsButtonRef}
       statsLabel={t('controls.webrtcData')}
-      onStats={() => { setMeetingPanelParent(null); setMeetingPanel('stats'); }}
-      activePanel={meetingPanel}
+      onStats={() => { statsOpenerRef.current = statsButtonRef; openMeetingPanel('stats'); }}
+      activePanel={meetingPanel ?? (membersExpanded ? 'participants' : null)}
       participants={state.participants}
       showTransport={hasActiveScreenShare}
     />
@@ -1112,68 +1141,21 @@ export function MeetingRoomPage({
     <div className="meeting-workspace">
       <div className="meeting-stage-column">
         <section className="meeting-stage-shell">
-          {hasActiveScreenShare && (!cf.publication || screenState.stream || cfReadyStream === cf.stream) && <p className="meeting-sharing-label">
-            <MonitorUp aria-hidden="true" size={18} />
-            <span>{t('room.sharingBy', { name: sharerName ?? t('screen.participant') })}</span>
-          </p>}
           <ScreenStage
             stream={stageStream}
             track={stageTrack}
             audioTrack={stageAudioTrack}
             muted={stageMuted}
             sharerName={sharerName}
+            shareIdentity={activeSharer.identity}
+            pipAllowed={!screenState.stream && hasActiveScreenShare}
+            sourcePending={Boolean(cf.publication && !screenState.stream && cfReadyStream !== cf.stream)}
             onSourceReady={handleStageSourceReady}
             sharedAudioVolume={sharedAudioVolume / 100}
           >
           </ScreenStage>
-        </section>
-        <MeetingControls
-          {...meetingControlsProps}
-          className="meeting-control-dock"
-          includeSettings={false}
-          onMore={() => { setMeetingPanelParent(null); setMeetingPanel('more'); }}
-          moreButtonRef={moreButtonRef}
-        />
-      </div>
-    </div>
-    {displayedPanel === 'participants' && <MeetingDrawer
-      exiting={panelPresence.exiting}
-      title={t('participants.label')}
-      closeLabel={t('controls.closePanel')}
-      backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
-      onBack={displayedPanelParent === 'more' ? backToMore : undefined}
-      onClose={closeMeetingPanel}
-      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : participantButtonRef}
-    >
-      {hostAuthorized ? <>
-        <p className="meeting-management-heading">{t('room.management')}</p>
-        <HostMenu
-          unified
-          participants={hostParticipants}
-          authorizeHost={authorizeHost}
-          authorized={hostAuthorized}
-          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
-          onRevokeShare={() => meetingApi.revokeShare(slug)}
-          onKick={(identity) => meetingApi.kick(slug, identity)}
-          onEndMeeting={() => meetingApi.end(slug)}
-          onEnded={() => onTerminal?.('ended')}
-        />
-      </> : <>
-        <ParticipantList participants={state.participants} />
-        <details className="meeting-management">
-          <summary>{t('room.management')}</summary>
-        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
-          <h2>{t('adminEnd.heading')}</h2>
-          <AdminEndMeetingForm
-            compact
-            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
-            onEnded={() => onTerminal?.('ended')}
-          />
-        </section>}
-        </details>
-      </>}
-    </MeetingDrawer>}
     {displayedPanel === 'settings' && <MeetingDrawer
+      modal={false}
       exiting={panelPresence.exiting}
       title={t('controls.settings')}
       closeLabel={t('controls.closePanel')}
@@ -1181,8 +1163,12 @@ export function MeetingRoomPage({
       onBack={displayedPanelParent === 'more' ? backToMore : undefined}
       onClose={closeMeetingPanel}
       returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
-    ><MeetingSettings {...meetingControlsProps} /></MeetingDrawer>}
+    ><p className="meeting-settings-description">{t('room.settingsDescription')}</p>
+      <div className="meeting-general-language"><LanguageSelector /></div>
+      <MeetingSettings {...meetingControlsProps} section="general" onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
+      <p className="meeting-settings-callout">{t('room.settingsHint')}</p></MeetingDrawer>}
     {displayedPanel === 'more' && <MeetingDrawer
+      modal={false}
       exiting={panelPresence.exiting}
       title={t('controls.more')}
       closeLabel={t('controls.closePanel')}
@@ -1196,13 +1182,14 @@ export function MeetingRoomPage({
       { action: 'leave', label: t('controls.leave') }
     ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
     {displayedPanel === 'stats' && <MeetingDrawer
+      modal={false}
       exiting={panelPresence.exiting}
       title={t('controls.webrtcData')}
       closeLabel={t('controls.closePanel')}
       backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
       onBack={displayedPanelParent === 'more' ? backToMore : undefined}
       onClose={closeMeetingPanel}
-      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : statsButtonRef}
+      returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : statsOpenerRef.current}
     ><WebRtcStatsPanel
       embedded
       active={hasActiveScreenShare}
@@ -1214,6 +1201,49 @@ export function MeetingRoomPage({
       mode={screenTransportMode}
       turnProvider={screenTurnProvider}
     /></MeetingDrawer>}
+        </section>
+      </div>
+      <aside ref={membersSidebarRef} tabIndex={-1} className="meeting-members-sidebar" aria-label={t('participants.label')}>
+        <button type="button" className="meeting-members-close" aria-label={t('controls.closePanel')} onClick={() => { setMembersExpanded(false); participantButtonRef.current?.focus(); }}><X size={20} aria-hidden="true" /></button>
+        <ParticipantList participants={displayParticipants} />
+        <details className="meeting-management">
+          <summary>{t('room.management')}</summary>
+          {hostAuthorized ? <>
+        <HostMenu
+          participants={hostParticipants}
+          authorizeHost={authorizeHost}
+          authorized={hostAuthorized}
+          onGrantShare={(identity) => meetingApi.grantShare(slug, identity)}
+          onRevokeShare={() => meetingApi.revokeShare(slug)}
+          onKick={(identity) => meetingApi.kick(slug, identity)}
+          onEndMeeting={() => meetingApi.end(slug)}
+          onEnded={() => onTerminal?.('ended')}
+        />
+          </> : <>
+        {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
+          <h2>{t('adminEnd.heading')}</h2>
+          <AdminEndMeetingForm
+            compact
+            onEnd={(password) => meetingApi.adminEnd!(slug, password)}
+            onEnded={() => onTerminal?.('ended')}
+          />
+        </section>}
+
+          </>}
+        </details>
+      </aside>
+        <MeetingControls
+          {...meetingControlsProps}
+          className="meeting-control-dock"
+          includeSettings={false}
+          audioSettingsButtonRef={audioSettingsButtonRef}
+          shareSettingsButtonRef={shareSettingsButtonRef}
+          quickPanel={quickPanel}
+          onQuickPanelChange={(panel) => { setQuickPanel(panel); if (panel) closeMeetingPanel(); }}
+          onMore={() => openMeetingPanel('more')}
+          moreButtonRef={moreButtonRef}
+        />
+    </div>
   </main>;
 }
 
