@@ -139,6 +139,25 @@ describe('meeting dock audio controls', () => {
     expect(screen.getByLabelText('Meeting controls')).toHaveAttribute('data-mobile-wrapped', 'true');
   });
 
+  it('keeps connection retry outside the compact primary action row', async () => {
+    const retry = vi.fn();
+    render(<MeetingControls {...baseProps} includeSettings={false} p2pRetryVisible onP2pRetry={retry} onMore={() => undefined} />);
+    const primary = screen.getByRole('group', { name: 'Primary meeting actions' });
+    const retryButton = screen.getByRole('button', { name: 'Retry direct connection' });
+    expect(primary).not.toContainElement(retryButton);
+    expect(screen.getByRole('toolbar', { name: 'Primary meeting controls' })).toContainElement(retryButton);
+    await userEvent.click(retryButton);
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('provides complete accessible names and compact Chinese microphone/share labels', () => {
+    render(<LanguageProvider initialLocale="zh-CN"><MeetingControls {...baseProps} includeSettings={false} screenShareAuthorized /></LanguageProvider>);
+    const mic = screen.getByRole('button', { name: '开启麦克风' });
+    const share = screen.getByRole('button', { name: '共享屏幕' });
+    expect(mic.querySelector('.meeting-label-compact')).toHaveTextContent('开麦');
+    expect(share.querySelector('.meeting-label-compact')).toHaveTextContent('共享');
+  });
+
   it('labels the single volume trigger in Chinese even without a remote share', async () => {
     render(<LanguageProvider initialLocale="zh-CN"><MeetingControls {...baseProps} includeSettings={false} /></LanguageProvider>);
 

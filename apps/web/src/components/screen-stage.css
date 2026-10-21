@@ -15,8 +15,6 @@
 .screen-stage-pip-placeholder { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: center; color: #d0d8ca; font-size: 14px; }
 .screen-stage-display-message { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 32px); margin: 0; padding: 10px 14px; border-radius: 8px; background: #f1f5e9; color: #263321; font-size: 13px; z-index: 5; box-shadow: 0 3px 20px #0003; }
 .screen-stage.screen-stage-empty { justify-content: center; }
-.screen-stage:fullscreen .screen-stage-header .screen-stage-fullscreen, .screen-stage:-webkit-full-screen .screen-stage-header .screen-stage-fullscreen { display: inline-flex; }
-.screen-stage:fullscreen { width: 100vw; height: 100dvh; aspect-ratio: auto; max-width: none; max-height: none; }
 @media (max-width: 700px) {
   .screen-stage-header { min-height: 54px; padding: 10px 12px; gap: 8px; }
   .screen-stage-actions { gap: 5px; }
@@ -25,3 +23,43 @@
   .screen-stage-resolution { display: none; }
   .screen-stage-media-home { padding: 0 12px 12px; }
 }
+
+/* Fullscreen is the media viewport, not the normal padded workspace card.
+   Keep contain sizing: only source/display aspect-ratio bars may remain. */
+.screen-stage .screen-stage-header[hidden] { display: none; }
+.screen-stage.screen-stage:is(:fullscreen, :-webkit-full-screen, [data-fullscreen]) {
+  width: 100vw;
+  height: 100dvh;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+  flex: none;
+  padding: 0;
+  margin: 0;
+  border-radius: 0;
+}
+.screen-stage:is(:fullscreen, :-webkit-full-screen, [data-fullscreen]) .screen-stage-media-home {
+  width: 100%;
+  height: 100%;
+  padding: 0;
+}
+.screen-stage .screen-stage-fullscreen-exit {
+  position: absolute;
+  top: max(10px, env(safe-area-inset-top));
+  right: max(10px, env(safe-area-inset-right));
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid #ffffff55;
+  border-radius: 10px;
+  color: #fff;
+  background: #171b19b8;
+  box-shadow: 0 2px 8px #0003;
+}
+.screen-stage .screen-stage-fullscreen-exit:hover { background: #363e3cee; }
+.screen-stage .screen-stage-fullscreen-exit:focus-visible { outline: 3px solid #aac992; outline-offset: 2px; }

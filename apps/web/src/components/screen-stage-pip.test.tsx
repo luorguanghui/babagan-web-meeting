@@ -178,6 +178,52 @@ describe('screen stage header and native display modes', () => {
     expect(native.request).not.toHaveBeenCalled();
   });
 
+  it('shows only an icon exit control in fullscreen and restores the header afterward', async () => {
+    const { container } = render(<ScreenStage stream={stream()} sharerName="Lin Yue" pipAllowed />);
+    const stage = screen.getByRole('region', { name: 'Shared screen stage' });
+    const video = container.querySelector('video')!;
+    Object.defineProperty(video, 'videoWidth', { configurable: true, value: 1920 });
+    Object.defineProperty(video, 'videoHeight', { configurable: true, value: 1080 });
+    fireEvent.loadedMetadata(video);
+    expect(screen.getByText('Now sharing: Lin Yue')).toBeVisible();
+    const header = container.querySelector('.screen-stage-header')!;
+    expect(document.body).toHaveFocus();
+    Object.defineProperty(stage, 'requestFullscreen', { configurable: true, value: async () => {
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: stage });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    } });
+    Object.defineProperty(document, 'exitFullscreen', { configurable: true, value: async () => {
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: null });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    } });
+    fireEvent.click(screen.getByRole('button', { name: 'View shared screen fullscreen' }));
+    await waitFor(() => expect(header).not.toBeVisible());
+    expect(stage).toHaveAttribute('data-fullscreen');
+    expect(screen.queryByRole('button', { name: 'Picture in picture' })).not.toBeInTheDocument();
+    const exit = screen.getByRole('button', { name: 'Exit full screen' });
+    expect(exit).toHaveTextContent('');
+    expect(exit.querySelector('svg')).not.toBeNull();
+    expect(screen.getAllByRole('button')).toEqual([exit]);
+    expect(exit).toHaveFocus();
+    expect(container.querySelector('video')).toBe(video);
+    expect(video.style.objectFit).toBe('contain');
+    fireEvent.click(exit);
+    await waitFor(() => expect(header).toBeVisible());
+    expect(stage).not.toHaveAttribute('data-fullscreen');
+    expect(screen.getByRole('button', { name: 'Picture in picture' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'View shared screen fullscreen' })).toBeVisible();
+    expect(screen.getByRole('button', { name: 'View shared screen fullscreen' })).toHaveFocus();
+    expect(container.querySelector('video')).toBe(video);
+    // Native Escape/browser-exit events follow the same focus-return path.
+    fireEvent.click(screen.getByRole('button', { name: 'View shared screen fullscreen' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Exit full screen' })).toHaveFocus());
+    act(() => {
+      Object.defineProperty(document, 'fullscreenElement', { configurable: true, value: null });
+      document.dispatchEvent(new Event('fullscreenchange'));
+    });
+    expect(screen.getByRole('button', { name: 'View shared screen fullscreen' })).toHaveFocus();
+  });
+
   it('toggles native full screen without replacing the media element', async () => {
     const { container } = render(<ScreenStage stream={stream()} />);
     const stage = screen.getByRole('region', { name: 'Shared screen stage' });

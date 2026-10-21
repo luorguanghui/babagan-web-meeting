@@ -83,6 +83,9 @@ export function ScreenStage({
 }) {
   const { t } = useI18n();
   const stageRef = useRef<HTMLElement>(null);
+  const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
+  const fullscreenExitRef = useRef<HTMLButtonElement>(null);
+  const previousFullscreenRef = useRef(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const committedRef = useRef<StageSource>(null);
@@ -198,6 +201,14 @@ export function ScreenStage({
     document.addEventListener('fullscreenchange', changed);
     return () => document.removeEventListener('fullscreenchange', changed);
   }, []);
+  useLayoutEffect(() => {
+    // The normal trigger is hidden in fullscreen and the floating exit unmounts
+    // afterward. Transfer focus only across those transitions, never on mount.
+    const wasFullscreen = previousFullscreenRef.current;
+    previousFullscreenRef.current = isFullscreen;
+    if (isFullscreen) fullscreenExitRef.current?.focus({ preventScroll: true });
+    else if (wasFullscreen) fullscreenButtonRef.current?.focus({ preventScroll: true });
+  }, [isFullscreen]);
   const toggleFullscreen = async () => {
     setDisplayMessage(null);
     try {
@@ -397,9 +408,10 @@ export function ScreenStage({
     aria-label={t('screen.stage')}
     data-orientation={sourceAspectRatio >= 1 ? 'landscape' : 'portrait'}
     data-pip={pipKind ?? undefined}
+    data-fullscreen={isFullscreen || undefined}
     style={stageStyle}
   >
-    {hasSource && <header className="screen-stage-header">
+    {hasSource && <header className="screen-stage-header" hidden={isFullscreen}>
       <div className="screen-stage-sharer">
         <span className="screen-stage-avatar" aria-hidden="true">{[...name][0]}</span>
         <span>{labels.sharing}</span>
@@ -409,11 +421,19 @@ export function ScreenStage({
         {pipAllowed && <button type="button" className="screen-stage-pip" aria-label={pipKind ? t('screen.pipReturn') : t('screen.pip')} title={pipKind ? t('screen.pipReturn') : t('screen.pip')} aria-pressed={Boolean(pipKind)} disabled={pipBusy || (sourcePending && !pipKind)} onClick={() => { void togglePip(); }}>
           <PictureInPicture2 size={16} aria-hidden="true" /><span>{pipKind ? t('screen.pipReturn') : t('screen.pip')}</span>
         </button>}
-        <button type="button" className="screen-stage-fullscreen" aria-label={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} title={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
+        <button ref={fullscreenButtonRef} type="button" className="screen-stage-fullscreen" aria-label={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} title={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
           {isFullscreen ? <Minimize size={16} aria-hidden="true" /> : <Maximize size={16} aria-hidden="true" />}<span>{isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreenAction')}</span>
         </button>
       </div>
     </header>}
+    {hasSource && isFullscreen && <button
+      type="button"
+      ref={fullscreenExitRef}
+      className="screen-stage-fullscreen-exit"
+      aria-label={t('screen.exitFullscreen')}
+      title={t('screen.exitFullscreen')}
+      onClick={() => { void toggleFullscreen(); }}
+    ><Minimize size={20} aria-hidden="true" /></button>}
     {!hasSource && <div className="screen-empty-content">
       <span className="screen-empty-icon"><MonitorUp aria-hidden="true" size={28} /></span>
       <h2>{t('screen.emptyTitle')}</h2>

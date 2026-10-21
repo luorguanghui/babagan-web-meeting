@@ -155,9 +155,10 @@ export function MeetingControls(props: MeetingControlsProps) {
     <div className="meeting-primary-toolbar" role="toolbar" aria-label={t('controls.primaryToolbar')}>
       <div className="meeting-primary-actions" role="group" aria-label={t('controls.primaryActions')}>
         <div ref={audioActionsRef} className="meeting-split-control meeting-split-microphone">
-          <button type="button" className="meeting-action meeting-action-microphone" onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
+          <button type="button" className="meeting-action meeting-action-microphone" aria-label={props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')} onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
             <MicrophoneIcon aria-hidden="true" size={19} />
-            <span>{props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}</span>
+            <span className="meeting-label-full">{props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}</span>
+            <span className="meeting-label-compact" aria-hidden="true">{props.microphoneEnabled ? t('controls.muteCompact') : t('controls.unmuteCompact')}</span>
           </button>
           <button
             ref={audioTriggerRef}
@@ -180,7 +181,7 @@ export function MeetingControls(props: MeetingControlsProps) {
             title={props.screenShareAuthorized ? undefined : t('controls.shareGrantRequired')}
             disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
             onClick={() => { setQuickPanel(null); props.onScreenShareToggle?.(); }}
-          ><MonitorUp aria-hidden="true" size={19} /><span>{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span></button>
+          ><MonitorUp aria-hidden="true" size={19} /><span className="meeting-label-full">{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span><span className="meeting-label-compact" aria-hidden="true">{props.screenShareStopping ? t('controls.stoppingShareCompact') : props.screenShareActive ? t('controls.stopShareCompact') : t('controls.shareCompact')}</span></button>
           <button
             ref={shareTriggerRef}
             type="button"
@@ -194,12 +195,12 @@ export function MeetingControls(props: MeetingControlsProps) {
           >{quickPanel === 'share' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>
           {renderQuickPanel('share')}
         </div>
-        {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}
-        {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" onClick={() => { setQuickPanel(null); props.onMore?.(); }}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
+        {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" aria-label={t('controls.more')} onClick={() => { setQuickPanel(null); props.onMore?.(); }}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
         <button type="button" className="danger meeting-leave-action" aria-label={props.leaving ? t('controls.leaving') : t('controls.leave')} onClick={props.onLeave} disabled={props.leaving}>
           <LogOut aria-hidden="true" size={19} /><span>{props.leaving ? t('controls.leaving') : t('controls.leave')}</span>
         </button>
       </div>
+      {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary meeting-connection-retry" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}
     </div>
     {(props.includeSettings ?? true) && <details className="meeting-settings">
       <summary>{t('controls.settings')}</summary>
