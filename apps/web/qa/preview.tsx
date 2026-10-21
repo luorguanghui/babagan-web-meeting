@@ -27,6 +27,27 @@ type Scene = 'receiver' | 'settings' | 'host' | 'idle' | 'create' | 'lobby';
 const scenes: Scene[] = ['receiver', 'settings', 'host', 'idle', 'create', 'lobby'];
 const requestedScene = new URLSearchParams(location.search).get('scene');
 const initialScene = scenes.includes(requestedScene as Scene) ? requestedScene as Scene : 'receiver';
+// Opt-in emulated fullscreen keeps a constrained QA iframe viewport. Native
+// fullscreen is still exercised separately without this query parameter.
+if (new URLSearchParams(location.search).get('fullscreen') === 'emulated') {
+  let fullscreenElement: Element | null = null;
+  let fullscreenHome: Node | null = null;
+  let fullscreenNext: ChildNode | null = null;
+  Object.defineProperty(document, 'fullscreenElement', { configurable: true, get: () => fullscreenElement });
+  HTMLElement.prototype.requestFullscreen = async function () {
+    // The fixture tracks the element passed to the real browser-shaped API.
+    // eslint-disable-next-line @typescript-eslint/no-this-alias
+    fullscreenElement = this;
+    fullscreenHome = this.parentNode; fullscreenNext = this.nextSibling; document.getElementById('root')!.append(this);
+    this.style.position = 'fixed'; this.style.inset = '0'; this.style.zIndex = '1000';
+    document.dispatchEvent(new Event('fullscreenchange'));
+  };
+  document.exitFullscreen = async () => {
+    if (fullscreenElement instanceof HTMLElement) { fullscreenHome?.insertBefore(fullscreenElement, fullscreenNext); fullscreenElement.style.position = ''; fullscreenElement.style.inset = ''; fullscreenElement.style.zIndex = ''; }
+    fullscreenElement = null;
+    document.dispatchEvent(new Event('fullscreenchange'));
+  };
+}
 const slug = 'illustrative-workshop-qa-only';
 const meetingName = 'Design workshop · demo';
 const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
@@ -217,13 +238,36 @@ const posterTrack: LiveKitTrackAdapter = {
   kind: 'video',
   attach(element = document.createElement('video')) {
     document.documentElement.dataset.qaStageAttaches = String(Number(document.documentElement.dataset.qaStageAttaches ?? 0) + 1);
-    if (element instanceof HTMLVideoElement) element.poster = poster;
+    if (element instanceof HTMLVideoElement) {
+      const canvas = document.createElement('canvas');
+      const portrait = new URLSearchParams(location.search).get('source') === 'portrait';
+      canvas.width = portrait ? 1080 : 1920;
+      canvas.height = portrait ? 1920 : 1080;
+      const context = canvas.getContext('2d')!;
+      context.fillStyle = '#e9ecdf'; context.fillRect(0, 0, canvas.width, canvas.height);
+      context.strokeStyle = '#557544'; context.lineWidth = 12;
+      context.strokeRect(6, 6, canvas.width - 12, canvas.height - 12);
+      context.fillStyle = '#33482d'; context.font = '48px sans-serif';
+      context.fillText(`${canvas.width} × ${canvas.height} · complete frame`, 40, 90);
+      context.fillStyle = '#cad9bf'; context.fillRect(40, 150, canvas.width - 80, canvas.height - 250);
+      context.fillStyle = '#33482d'; context.font = 'bold 72px sans-serif';
+      context.fillText('Shared workspace', 80, 280);
+      context.font = '40px sans-serif'; context.fillText('All four edges remain visible', 80, 360);
+      const artwork = new Image();
+      artwork.onload = () => {
+        if (!portrait) context.drawImage(artwork, 12, 12, canvas.width - 24, canvas.height - 24);
+      };
+      artwork.src = poster;
+      element.srcObject = canvas.captureStream(5);
+      element.muted = true;
+      void element.play().catch(() => {});
+    }
     queueMicrotask(() => element.dispatchEvent(new Event('loadedmetadata')));
     return element;
   },
   detach(element = document.createElement('video')) {
     document.documentElement.dataset.qaStageDetaches = String(Number(document.documentElement.dataset.qaStageDetaches ?? 0) + 1);
-    if (element instanceof HTMLVideoElement) element.removeAttribute('poster');
+    if (element instanceof HTMLVideoElement) { (element.srcObject as MediaStream | null)?.getTracks().forEach(track => track.stop()); element.srcObject = null; }
     return element;
   }
 };

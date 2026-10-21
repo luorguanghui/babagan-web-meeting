@@ -156,3 +156,21 @@
     width: min(21rem, calc(100vw - 2rem));
   }
 }
+
+/* Connection recovery is secondary: it must never squeeze the primary controls. */
+.meeting-controls .meeting-label-compact { display: none; }
+.meeting-controls .meeting-primary-toolbar { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px; }
+.meeting-controls .meeting-connection-retry { min-height: 44px; padding: 8px 12px; font-size: .8rem; }
+@media (max-width: 44.999rem) {
+  .meeting-controls .meeting-primary-toolbar { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; width: 100%; }
+  .meeting-room .meeting-controls .meeting-primary-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px 44px; gap: 6px; width: 100%; }
+  .meeting-controls .meeting-split-control { width: 100%; }
+  .meeting-controls .meeting-split-control > button:first-child { min-height: 52px; padding: 5px 2px; }
+  .meeting-controls .meeting-split-control > .meeting-action-chevron { flex: 0 0 44px; min-width: 44px; padding: 8px; }
+  .meeting-controls .meeting-split-control .meeting-label-full { display: none; }
+  .meeting-controls .meeting-split-control .meeting-label-compact { display: block; overflow: visible; text-overflow: clip; font-size: .65rem; }
+  .meeting-room .meeting-controls .meeting-primary-actions > .meeting-action-more,
+  .meeting-room .meeting-controls .meeting-primary-actions > .meeting-leave-action { width: 44px; min-width: 44px; min-height: 52px; padding: 8px; }
+  .meeting-controls .meeting-action-more > span, .meeting-controls .meeting-leave-action > span { display: none; }
+  .meeting-controls .meeting-connection-retry { justify-self: stretch; width: 100%; }
+}
