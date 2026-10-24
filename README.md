@@ -48,7 +48,7 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 - Node.js + Fastify 提供会议、权限、Token API 与 P2P 信令（WebSocket）。
 - SQLite 保存短期会议元数据，不保存媒体。
 - 麦克风语音经 LiveKit 单节点 SFU 转发；屏幕共享默认P2P直连，无法直连时经服务器coturn中继；观看者仍可显式选择LiveKit SFU。
-- Cloudflare SFU由共享者在共享前选择，最多四名观看者订阅同一份视频与电脑声音，发布端不再逐观看者编码。失败明确显示，不自动建立P2P／LiveKit屏幕副本。
+- Cloudflare SFU由共享者在共享前选择，最多四名观看者订阅同一份视频与电脑声音。正常时只发送一份媒体；持续断联后自动重连，并按观看者需求临时使用服务器 coturn 中转，待 Cloudflare 新画面显示后释放中转，不修改观看者保存的传输偏好。
 - TURN 中继固定使用服务器 coturn，无需选择提供方。停止共享期间显示“正在停止共享”，旧发布和共享权限释放完成后才能再次开始；不同观看者的 SFU 协商独立进行。
 - 项目移除Cloudflare TURN凭据生成、选择器与探测控制。API保留coturn（3478/UDP+TCP、5349/TLS、49160–49200/UDP中继端口池）；旧Cloudflare TURN偏好回退自动/coturn。
 - Cloudflare SFU可成对配置`CLOUDFLARE_SFU_APP_ID`和`CLOUDFLARE_SFU_APP_SECRET`使用服务器直连；也可仅配置`CLOUDFLARE_SFU_GATEWAY_URL=https://p2p.babagan.cloud/api/sfu`，使用现有Worker内的应用凭证，无需服务器保存SFU密钥。两种模式均不把密钥发送给浏览器；未配置时入口说明不可用。

@@ -33,10 +33,39 @@ function setup(configure: (pc: Pc) => void = () => {}) {
     subscribe: vi.fn(async () => ({ sessionId: 'viewer', shareId: 'share', sessionDescription: { type: 'offer' as const, sdp: 'offer' }, tracks: [{ kind: 'video' as const, mid: '7', trackName: 'screen' }, { kind: 'audio' as const, mid: '8', trackName: 'audio' }] })),
     answer: vi.fn(async () => {}), close: vi.fn(async () => {})
   };
-  const create = (onStream = vi.fn()) => new CloudflareScreenSession({ api, fetchIceServers: async () => [], createPeerConnection: () => { const pc = new Pc(); configure(pc); pcs.push(pc); return pc as unknown as RTCPeerConnection; }, createMediaStream: () => new Stream() as unknown as MediaStream, onStream });
+  const create = (onStream = vi.fn(), onError = vi.fn()) => new CloudflareScreenSession({ api, fetchIceServers: async () => [], createPeerConnection: () => { const pc = new Pc(); configure(pc); pcs.push(pc); return pc as unknown as RTCPeerConnection; }, createMediaStream: () => new Stream() as unknown as MediaStream, onStream, onError });
   return { pcs, api, create };
 }
 describe('Cloudflare native screen session', () => {
+  it('allows transient disconnects to recover and reports persistent loss once', async () => {
+    vi.useFakeTimers();
+    try {
+      const { create, pcs } = setup(); const error = vi.fn();
+      const session = create(vi.fn(), error); await session.subscribe(publication);
+      const change = (state: string) => { pcs[0].connectionState = state; pcs[0].dispatchEvent(new Event('connectionstatechange')); };
+      change('disconnected'); await vi.advanceTimersByTimeAsync(1500);
+      expect(error).not.toHaveBeenCalled();
+      change('connected'); await vi.advanceTimersByTimeAsync(2000);
+      expect(error).not.toHaveBeenCalled();
+      change('disconnected'); await vi.advanceTimersByTimeAsync(2000);
+      expect(error).toHaveBeenCalledOnce();
+      change('failed'); expect(error).toHaveBeenCalledOnce();
+      await session.close();
+    } finally { vi.useRealTimers(); }
+  });
+  it('reports failed immediately and cancels a pending disconnect on close', async () => {
+    vi.useFakeTimers();
+    try {
+      const { create, pcs } = setup(); const error = vi.fn();
+      const session = create(vi.fn(), error); await session.subscribe(publication);
+      pcs[0].connectionState = 'failed'; pcs[0].dispatchEvent(new Event('connectionstatechange'));
+      expect(error).toHaveBeenCalledOnce();
+      const second = create(vi.fn(), error); await second.subscribe(publication);
+      pcs[1].connectionState = 'disconnected'; pcs[1].dispatchEvent(new Event('connectionstatechange'));
+      await second.close(); await vi.advanceTimersByTimeAsync(3000);
+      expect(error).toHaveBeenCalledOnce(); await session.close();
+    } finally { vi.useRealTimers(); }
+  });
   it('accepts a slow successful allocation instead of aborting before the backend budget', async () => {
     vi.useFakeTimers();
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(ms => {

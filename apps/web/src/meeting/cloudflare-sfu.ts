@@ -17,6 +17,8 @@ export class CloudflareScreenSession {
   private readonly clones: MediaStreamTrack[] = [];
   private readonly remoteTracks = new Set<MediaStreamTrack>();
   private shown = false;
+  private disconnectTimer?: ReturnType<typeof setTimeout>;
+  private lossReported = false;
   constructor(private readonly deps: {
     api: CloudflareScreenApi;
     fetchIceServers(): Promise<RTCIceServer[]>;
@@ -126,6 +128,7 @@ export class CloudflareScreenSession {
   async getStatsReport(): Promise<RTCStatsReport | undefined> { return this.pc?.getStats(); }
   async close(): Promise<void> {
     this.epoch++;
+    clearTimeout(this.disconnectTimer);
     this.abort.abort();
     this.pc?.close();
     this.pc = undefined;
@@ -146,8 +149,21 @@ export class CloudflareScreenSession {
       return;
     const pc = this.deps.createPeerConnection?.(ice) ?? new RTCPeerConnection({ iceServers: ice });
     this.pc = pc;
-    pc.addEventListener('connectionstatechange', () => { if (this.current(epoch) && (pc.connectionState === 'failed' || pc.connectionState === 'disconnected'))
-      this.deps.onError?.(new Error('Cloudflare SFU media connection was lost. Select retry to reconnect.')); });
+    const reportLoss = () => {
+      if (!this.current(epoch) || this.lossReported) return;
+      this.lossReported = true;
+      this.deps.onError?.(new Error(`Cloudflare SFU media connection ${pc.connectionState}. Reconnecting automatically.`));
+    };
+    pc.addEventListener('connectionstatechange', () => {
+      if (!this.current(epoch)) return;
+      if (pc.connectionState === 'disconnected') {
+        this.disconnectTimer ??= setTimeout(reportLoss, 2000);
+      } else {
+        clearTimeout(this.disconnectTimer);
+        this.disconnectTimer = undefined;
+        if (pc.connectionState === 'failed') reportLoss();
+      }
+    });
     return pc;
   }
   private negotiate(operation: (epoch: number) => Promise<void>): Promise<void> {

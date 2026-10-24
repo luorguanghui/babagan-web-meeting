@@ -1713,7 +1713,43 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(2));
     expect(requests.some(p => p.endsWith('/sessions/late-first'))).toBe(true);
   });
-  it('publishes Cloudflare once before viewers arrive and never creates peer or LiveKit backups', async () => {
+  it.each([false, true])('uses relay-only coturn on the real publisher and cancels pending relay setup when stopped: %s', async stopBeforeIce => {
+    CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc);
+    const iceGate = deferred<Response>(); let relayIceRequested = false; let relayRequested = false;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (path.includes('/ice-servers')) {
+        if (relayRequested && path.includes('turnProvider=coturn')) { relayIceRequested = true; return iceGate.promise; }
+        return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      }
+      if (path.endsWith('/publish')) return Response.json({ sessionId: 'source', shareId: 'share', sessionDescription: { type: 'answer', sdp: 'answer' }, tracks: [{ kind: 'video', mid: '0', trackName: 'screen' }] });
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient(); const { stream } = displayStream({ audio: false });
+    renderP2pRoom({ getDisplayMedia: async () => stream, createSignalingClient: signaling.factory });
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
+    await userEvent.selectOptions(screen.getByLabelText('Screen-share transport'), 'cloudflare-sfu');
+    await userEvent.keyboard('{Escape}');
+    await userEvent.click(screen.getByRole('button', { name: 'Share screen' }));
+    await screen.findByRole('button', { name: 'Stop sharing screen' });
+    relayRequested = true;
+    act(() => signaling.transport('viewer-1', 'peer'));
+    await waitFor(() => expect(relayIceRequested).toBe(true));
+    if (stopBeforeIce) await userEvent.click(screen.getByRole('button', { name: 'Stop sharing screen' }));
+    await act(async () => iceGate.resolve(Response.json({ iceServers: [{ urls: ['turn:relay.example:3478'], username: 'u', credential: 'p' }], turnProvider: 'coturn' })));
+    if (stopBeforeIce) {
+      await screen.findByRole('button', { name: 'Share screen' });
+      expect(CfPagePc.instances).toHaveLength(1);
+      expect(signaling.client.sendOffer).not.toHaveBeenCalled();
+    } else {
+      await waitFor(() => expect(signaling.client.sendOffer).toHaveBeenCalled());
+      expect(CfPagePc.instances[1].config).toMatchObject({ iceTransportPolicy: 'relay', iceServers: [{ urls: ['turn:relay.example:3478'] }] });
+      await userEvent.click(screen.getByRole('button', { name: 'Stop sharing screen' }));
+    }
+  });
+  it('publishes Cloudflare once, automatically recovers and relays only requesting viewers', async () => {
     CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc);
     const requests: Array<{ path: string; body?: string }> = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -1736,14 +1772,18 @@ describe('P2P-first screen sharing in the room', () => {
     expect(CfPagePc.instances[0].senders).toHaveLength(1); expect(share.start).not.toHaveBeenCalled(); expect(controller.publishScreenShare).not.toHaveBeenCalled();
     act(() => { CfPagePc.instances[0].connectionState = 'failed'; CfPagePc.instances[0].dispatchEvent(new Event('connectionstatechange')); });
     expect(screen.getByRole('alert')).toHaveTextContent('Cloudflare SFU');
-    await userEvent.click(screen.getByRole('button', { name: 'Retry Cloudflare SFU' }));
-    await waitFor(() => expect(requests.filter(r => r.path.endsWith('/publish/ready'))).toHaveLength(2));
-    expect(CfPagePc.instances[0].close).toHaveBeenCalled(); expect(share.start).not.toHaveBeenCalled(); expect(controller.publishScreenShare).not.toHaveBeenCalled();
+    act(() => signaling.transport('viewer-1', 'peer'));
+    await waitFor(() => expect(share.start).toHaveBeenCalledOnce());
+    expect(share.start).toHaveBeenCalledWith(stream, expect.objectContaining({ encodingEngine: 'browser' }), [{ identity: 'viewer-1', nickname: 'viewer-1' }]);
+    await waitFor(() => expect(requests.filter(r => r.path.endsWith('/publish/ready'))).toHaveLength(2), { timeout: 2000 });
+    expect(CfPagePc.instances[0].close).toHaveBeenCalled(); expect(controller.publishScreenShare).not.toHaveBeenCalled();
+    act(() => signaling.transport('viewer-1', 'sfu'));
+    expect(share.handleViewerLeft).toHaveBeenCalledWith('viewer-1');
     expect(stream.getVideoTracks()[0].stop).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'Stop sharing screen' }));
     await waitFor(() => expect(requests.some(r => r.path.endsWith('/sessions/source'))).toBe(true));
   });
-  it('subscribes from a late-join snapshot once, waits for real video and restores future viewer preference on withdrawal', async () => {
+  it('subscribes once, requests relay on SFU withdrawal and restores viewer preference only when sharing ends', async () => {
     CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc); vi.stubGlobal('MediaStream', CfPageStream);
     window.localStorage.setItem('babagan.viewer-transport', 'sfu'); const requests: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
@@ -1767,9 +1807,75 @@ describe('P2P-first screen sharing in the room', () => {
     expect(screen.queryByText('Now sharing: Ben')).not.toBeInTheDocument();
     const video = await screen.findByLabelText("Ben's shared screen"); act(() => video.dispatchEvent(new Event('playing')));
     expect(screen.getByText('Now sharing: Ben')).toBeVisible();
+    act(() => signaling.peerLeft('Ben'));
+    act(() => signaling.peerJoined({ identity: 'Ben', nickname: 'Ben' }));
+    expect(CfPagePc.instances[0].close).not.toHaveBeenCalled();
+    expect(screen.getByText('Now sharing: Ben')).toBeVisible();
     act(() => signaling.screenSfu(null));
+    await waitFor(() => expect(signaling.client.sendScreenTransport).toHaveBeenLastCalledWith('peer'));
+    expect(controller.setRemoteScreenShareSubscribed).toHaveBeenLastCalledWith(false);
+    act(() => signaling.shareGone());
     await waitFor(() => expect(controller.setRemoteScreenShareSubscribed).toHaveBeenLastCalledWith(true));
     expect(requests.filter(p => p.endsWith('/subscribe'))).toHaveLength(1);
+  });
+  it('keeps first-video readiness armed when the callback changes during recovery', () => {
+    const stream = new CfPageStream() as unknown as MediaStream;
+    const first = vi.fn(); const latest = vi.fn();
+    const rendered = render(<ScreenStage stream={stream} sharerName="Ben" waitForVideoFrame onSourceReady={first} />);
+    rendered.rerender(<ScreenStage stream={stream} sharerName="Ben" waitForVideoFrame onSourceReady={latest} />);
+    fireEvent.loadedData(screen.getByLabelText("Ben's shared screen"));
+    expect(latest).toHaveBeenCalledOnce(); expect(first).not.toHaveBeenCalled();
+  });
+  it('uses coturn during a viewer-only SFU failure and keeps it until replacement video renders', async () => {
+    CfPagePc.instances = []; vi.stubGlobal('RTCPeerConnection', CfPagePc); vi.stubGlobal('MediaStream', CfPageStream);
+    window.localStorage.setItem('babagan.viewer-transport', 'sfu');
+    const cleanupGate = deferred<Response>(); let allocations = 0;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (path.includes('/ice-servers')) return Response.json({ iceServers: [{ urls: ['turn:relay.example:3478'], username: 'user', credential: 'pass' }], turnProvider: 'coturn' });
+      if (path.endsWith('/subscribe')) return Response.json({ sessionId: `receiver-${++allocations}`, shareId: 'share', sessionDescription: { type: 'offer', sdp: 'offer' }, tracks: [{ kind: 'video', mid: '7', trackName: 'screen' }] });
+      if (init?.method === 'DELETE' && path.endsWith('/receiver-1')) return cleanupGate.promise;
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient(); const controller = meetingController();
+    renderP2pRoom({ controller, createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    act(() => signaling.screenSfu({ shareId: 'share', sessionId: 'publisher', sharerIdentity: 'Ben', sharerName: 'Ben', tracks: [{ kind: 'video', trackName: 'screen' }] }));
+    await waitFor(() => expect(CfPagePc.instances).toHaveLength(1));
+    const track = Object.assign(eventTrack('video'), { muted: false, readyState: 'live' });
+    act(() => CfPagePc.instances[0].ontrack?.({ track, transceiver: { mid: '7' } } as unknown as RTCTrackEvent));
+    const video = await screen.findByLabelText("Ben's shared screen"); fireEvent.playing(video);
+    act(() => { CfPagePc.instances[0].connectionState = 'failed'; CfPagePc.instances[0].dispatchEvent(new Event('connectionstatechange')); });
+    await waitFor(() => expect(signaling.client.sendScreenTransport).toHaveBeenLastCalledWith('peer'));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    act(() => signaling.offer('Ben', 'relay-offer', 'relay-generation', 'coturn'));
+    await waitFor(() => expect(signaling.client.sendAnswer).toHaveBeenCalled());
+    const relay = PageFakePc.instances.at(-1)!;
+    expect(relay.config.iceTransportPolicy).toBe('relay');
+    expect(relay.config.iceServers?.[0].urls).toEqual(['turn:relay.example:3478']);
+    const report = await relay.getStats(); Object.assign(report.get('local'), { candidateType: 'relay' });
+    relay.getStats = async () => report;
+    await act(async () => {
+      relay.iceConnectionState = 'connected'; relay.oniceconnectionstatechange?.();
+      relay.ontrack?.({ track: Object.assign(eventTrack('video'), { muted: false, readyState: 'live' }), streams: [] } as unknown as RTCTrackEvent);
+    });
+    await waitFor(() => expect(document.querySelector('[data-stage-probe]')).not.toBeNull());
+    fireEvent.playing(document.querySelector('[data-stage-probe]')!);
+    expect(relay.closed).toBe(false);
+    vi.stubGlobal('RTCPeerConnection', CfPagePc);
+    await act(async () => cleanupGate.resolve(new Response(null, { status: 204 })));
+    await waitFor(() => expect(CfPagePc.instances).toHaveLength(2), { timeout: 2500 });
+    expect(relay.closed).toBe(false);
+    act(() => CfPagePc.instances[1].ontrack?.({ track: Object.assign(eventTrack('video'), { muted: false, readyState: 'live' }), transceiver: { mid: '7' } } as unknown as RTCTrackEvent));
+    await waitFor(() => expect(document.querySelector('[data-stage-probe]')).not.toBeNull());
+    expect(relay.closed).toBe(false);
+    fireEvent.loadedMetadata(document.querySelector('[data-stage-probe]')!);
+    expect(relay.closed).toBe(false);
+    fireEvent.playing(document.querySelector('[data-stage-probe]')!);
+    await waitFor(() => expect(relay.closed).toBe(true));
+    expect(signaling.client.sendScreenTransport).toHaveBeenLastCalledWith('sfu');
+    expect(window.localStorage.getItem('babagan.viewer-transport')).toBe('sfu');
+    expect(controller.publishScreenShare).not.toHaveBeenCalled();
   });
   it('reasserts an explicit SFU choice while waiting for a share without needing a peer offer', async () => {
     vi.useFakeTimers();
@@ -2603,7 +2709,7 @@ class CfPagePc extends EventTarget {
   connectionState = 'connected'; iceGatheringState = 'complete';
   localDescription?: RTCSessionDescriptionInit; ontrack?: (event: RTCTrackEvent) => void;
   senders: MediaStreamTrack[] = [];
-  constructor() { super(); CfPagePc.instances.push(this); }
+  constructor(readonly config: RTCConfiguration = {}) { super(); CfPagePc.instances.push(this); }
   addTransceiver(track: MediaStreamTrack) { this.senders.push(track); return { mid: String(this.senders.length - 1), setCodecPreferences: vi.fn(), sender: { getParameters: () => ({ encodings: [{}] }), setParameters: async () => {} } }; }
   createOffer = async () => ({ type: 'offer', sdp: 'offer' });
   createAnswer = async () => ({ type: 'answer', sdp: 'answer' });
@@ -2734,7 +2840,7 @@ function renderP2pRoom(props: {
   meetingApi?: MeetingRoomApi;
   getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
   createSignalingClient: (slug: string, identity: string, events: P2pSignalingEvents) => P2pSignalingClient;
-  shareControllerFactory: (deps: {
+  shareControllerFactory?: (deps: {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
   }) => P2pShareController;

@@ -32,6 +32,7 @@ const en = {
   'controls.cloudflareSfuUnavailable': 'Cloudflare SFU is not configured on this server.',
   'controls.cloudflareSfuEncodingHint': 'Cloudflare SFU sends one browser encoding to every viewer.',
   'controls.cloudflareSfuRetry': 'Retry Cloudflare SFU',
+  'controls.cloudflareSfuRecovering': 'Reconnecting Cloudflare automatically. A temporary server TURN connection is being requested.',
   'controls.detail60': 'Detail (1080p60, resolution first)',
   'screenTransport.cloudflareSfu': 'Cloudflare SFU',
 
@@ -350,6 +351,7 @@ const zhCN: Record<MessageKey, Message> = {
   'controls.cloudflareSfuUnavailable': '此服务器尚未配置 Cloudflare SFU。',
   'controls.cloudflareSfuEncodingHint': 'Cloudflare SFU 使用一份浏览器编码供所有观看者接收。',
   'controls.cloudflareSfuRetry': '重试 Cloudflare SFU',
+  'controls.cloudflareSfuRecovering': '正在自动恢复 Cloudflare 连接，同时尝试服务器 TURN 临时中转。',
   'controls.detail60': '细节（1080p60，分辨率优先）',
   'screenTransport.cloudflareSfu': 'Cloudflare SFU',
   'language.label': '语言', 'language.en': 'English', 'language.zh-CN': '简体中文',

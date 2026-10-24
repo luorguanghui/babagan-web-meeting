@@ -52,14 +52,14 @@ import {
   recommendP2pBitrate,
   screenShareDefaultBitrate,
   screenShareDefaultQuality,
-  screenShareQualityPresets,
   type ScreenShareBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
 import { useCloudflareScreen } from '../meeting/use-cloudflare-screen.js';
-import type { CloudflareScreenSession } from '../meeting/cloudflare-sfu.js';
+import type { CloudflareScreenRecovery } from '../meeting/cloudflare-recovery.js';
+import { CloudflareTurnFallback } from '../meeting/cloudflare-turn-fallback.js';
 import {
   canRetryViewerScreenTransport,
   deriveSharerScreenTransportMode,
@@ -252,7 +252,9 @@ export function MeetingRoomPage({
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
   const [screenSourceTransport, setScreenSourceTransport] = useState<'p2p' | 'cloudflare-sfu'>('p2p');
   const screenSourceTransportRef = useRef<'p2p' | 'cloudflare-sfu'>('p2p');
-  const cfPublisherRef = useRef<CloudflareScreenSession | undefined>(undefined);
+  const cfPublisherRef = useRef<CloudflareScreenRecovery | undefined>(undefined);
+  const cfRelayRef = useRef<CloudflareTurnFallback | undefined>(undefined);
+  const cfRelayRequestedRef = useRef(false);
   const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('browser');
   const [projectMediaError, setProjectMediaError] = useState<string>();
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
@@ -306,7 +308,6 @@ export function MeetingRoomPage({
   const fetchCfIce = useCallback(async () => (await requestMeetingIceServers('coturn')).iceServers, [requestMeetingIceServers]);
   const cf = useCloudflareScreen(slug, join.participantIdentity, fetchCfIce);
   const [cfReadyStream, setCfReadyStream] = useState<MediaStream>();
-  const [cfRetrying, setCfRetrying] = useState(false);
   const cfRef = useRef(cf); cfRef.current = cf;
   const authorizationChanged = useCallback((authorized: boolean) => {
     hostAuthorizedRef.current = authorized;
@@ -335,7 +336,8 @@ export function MeetingRoomPage({
   const createShareController = useCallback((deps: {
     onViewerFallback: (identity: string) => void;
     onAllViewersClosed: () => void;
-  }): P2pShareController => {
+  }, relayOnly = false): P2pShareController => {
+    const relayOwner = cfRelayRef.current;
     let share: P2pShareController;
     if (shareControllerFactory) {
       share = shareControllerFactory({
@@ -348,7 +350,12 @@ export function MeetingRoomPage({
         onProjectMediaError: setProjectMediaError,
         slug,
         signaling,
-        fetchIceServers: () => requestMeetingIceServers(screenTurnProviderPreferenceRef.current),
+        fetchIceServers: async () => {
+          const configuration = await requestMeetingIceServers(relayOnly ? 'coturn' : screenTurnProviderPreferenceRef.current);
+          if (relayOnly && cfRelayRef.current !== relayOwner) throw new Error('Temporary screen relay stopped.');
+          return configuration;
+        },
+        ...(relayOnly ? { createPeerConnection: (iceServers: RTCIceServer[]) => new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' }) } : {}),
         ...deps
       });
     }
@@ -371,6 +378,13 @@ export function MeetingRoomPage({
     publisher: {
       publish: async (stream, options) => {
         if (screenSourceTransportRef.current === 'cloudflare-sfu') {
+          cfRelayRef.current = new CloudflareTurnFallback({ stream, options,
+            createController: () => {
+              const share = createShareController({ onViewerFallback: () => {}, onAllViewersClosed: () => {} }, true);
+              p2pShareRef.current = share;
+              return share;
+            }
+          });
           const session = cfRef.current.createSession(); cfPublisherRef.current = session;
           await session.publish(stream, { ...options, encodingEngine: 'browser' });
           return;
@@ -409,7 +423,9 @@ export function MeetingRoomPage({
       },
       release: async (stream) => {
         const cfSession = cfPublisherRef.current; cfPublisherRef.current = undefined;
-        if (cfSession) await cfSession.close();
+        const relay = cfRelayRef.current; cfRelayRef.current = undefined;
+        cfRef.current.reset();
+        await Promise.all([cfSession?.close(), relay?.close()]);
         const hybrid = hybridShareRef.current;
         hybridShareRef.current = undefined;
         p2pShareUnsubscribeRef.current?.();
@@ -532,14 +548,14 @@ export function MeetingRoomPage({
       }, delay);
     };
     const ensureController = (): P2pViewerController | undefined => {
-      if (cfRef.current.publicationRef.current || iceConfiguration === undefined) return undefined;
+      if (iceConfiguration === undefined) return undefined;
       if (viewerP2pRef.current === undefined) {
         const viewerController = new P2pViewerController(signaling, iceConfiguration.iceServers, {
           onProjectMediaError: setProjectMediaError,
-          iceTransportPolicy: viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
+          iceTransportPolicy: cfRef.current.sourceIdentityRef.current ? 'relay' : viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
           turnProvider: iceConfiguration.turnProvider,
           onFallbackRequested: (complete) => {
-            if (cfRef.current.publicationRef.current) return;
+            if (cfRef.current.sourceIdentityRef.current) return;
             pendingFallbackCompletionRef.current = complete;
             setFallbackP2pStream(viewerP2pRef.current?.getStream() ?? undefined);
             // Keep the P2P PC alive until ScreenStage confirms that the
@@ -559,16 +575,16 @@ export function MeetingRoomPage({
       return viewerP2pRef.current;
     };
     const dispatchViewerSignal = (signal: ViewerSignal): void => {
-      if (cfRef.current.publicationRef.current || cancelled || terminalIceError) return;
+      if ((cfRef.current.sourceIdentityRef.current && !cfRelayRequestedRef.current) || cancelled || terminalIceError) return;
       viewerSignalTail = viewerSignalTail.then(async () => {
-        if (cfRef.current.publicationRef.current || cancelled || terminalIceError) return;
+        if ((cfRef.current.sourceIdentityRef.current && (!cfRelayRequestedRef.current || signal.from !== cfRef.current.sourceIdentityRef.current)) || cancelled || terminalIceError) return;
         if (blockedViewerSignalProvider !== undefined && signal.type === 'ice') {
           pendingViewerSignals.push(signal);
           return;
         }
         if (signal.type === 'offer') {
           viewerSharerIdentityRef.current = signal.from;
-          if (viewerTransportPreferenceRef.current === 'sfu') {
+          if (!cfRef.current.sourceIdentityRef.current && viewerTransportPreferenceRef.current === 'sfu') {
             signaling.sendScreenTransport('sfu');
             return;
           }
@@ -651,7 +667,6 @@ export function MeetingRoomPage({
     fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
       onOffer: (from, sdp, generation, turnProvider) => {
-        if (cfRef.current.publicationRef.current) return;
         dispatchViewerSignal({ type: 'offer', from, sdp, generation, turnProvider });
       },
       // While we are the sharer, answers/ice/bye belong to the share session.
@@ -668,7 +683,11 @@ export function MeetingRoomPage({
         p2pShareRef.current?.handleMediaReady(from, generation);
       },
       onScreenTransport: (from, transport) => {
-        if (screenSourceTransportRef.current === 'cloudflare-sfu') return;
+        if (screenSourceTransportRef.current === 'cloudflare-sfu') {
+          if (transport === 'peer') void cfRelayRef.current?.request(from);
+          else cfRelayRef.current?.release(from);
+          return;
+        }
         void hybridShareRef.current?.setViewerScreenTransport(from, transport).catch(() => setNotice(t('room.shareFailed')));
       },
       onRetry: (from) => {
@@ -680,6 +699,7 @@ export function MeetingRoomPage({
       onBye: (from, reason) => {
         const share = p2pShareRef.current;
         if (share) {
+          cfRelayRef.current?.release(from);
           hybridShareRef.current?.handleViewerBye(from, reason);
           return;
         }
@@ -691,20 +711,25 @@ export function MeetingRoomPage({
         void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
       },
       onScreenSfu: (publication) => {
+        const previousSharer = cfRef.current.sourceIdentityRef.current;
         cfRef.current.announce(publication);
         if (publication) {
           pendingViewerSignals.length = 0;
           blockedViewerSignalProvider = undefined;
           pendingFallbackCompletionRef.current = undefined;
-          viewerSharerIdentityRef.current = undefined;
-          viewerP2pRef.current?.close(); viewerP2pRef.current = undefined;
-          setViewerTurnProvider(undefined);
-          setViewerP2pState('idle'); setFallbackP2pStream(undefined);
+          if (previousSharer !== publication.sharerIdentity) {
+            cfRelayRequestedRef.current = false;
+            viewerSharerIdentityRef.current = undefined;
+            viewerP2pRef.current?.close(); viewerP2pRef.current = undefined;
+            setViewerTurnProvider(undefined);
+            setViewerP2pState('idle'); setFallbackP2pStream(undefined);
+          }
           void controller.setRemoteScreenShareSubscribed(false).catch(() => undefined);
         }
       },
       onShareGone: () => {
-        cfRef.current.announce(null);
+        cfRelayRequestedRef.current = false;
+        cfRef.current.reset();
         viewerSharerIdentityRef.current = undefined;
         viewerP2pRef.current?.close();
         viewerP2pRef.current = undefined;
@@ -718,7 +743,8 @@ export function MeetingRoomPage({
         }
       },
       onWelcome: (peers) => {
-        if (!cfRef.current.publicationRef.current && viewerTransportPreferenceRef.current === 'sfu') signaling.sendScreenTransport('sfu');
+        if (cfRelayRequestedRef.current) signaling.sendScreenTransport('peer');
+        else if (!cfRef.current.sourceIdentityRef.current && viewerTransportPreferenceRef.current === 'sfu') signaling.sendScreenTransport('sfu');
         const previous = viewerRosterRef.current;
         viewerRosterRef.current = peers;
         setViewerCount(peers.length);
@@ -729,6 +755,7 @@ export function MeetingRoomPage({
         // viewers that are gone.
         for (const gone of previous) {
           if (!peers.some((peer) => peer.identity === gone.identity)) {
+            cfRelayRef.current?.release(gone.identity);
             hybridShareRef.current?.viewerLeft(gone.identity);
             if (viewerP2pRef.current?.getSharerIdentity() === gone.identity) {
               viewerSharerIdentityRef.current = undefined;
@@ -752,6 +779,7 @@ export function MeetingRoomPage({
         hybridShareRef.current?.viewerRosterChanged();
       },
       onPeerLeft: ({ identity }) => {
+        cfRelayRef.current?.release(identity);
         viewerRosterRef.current = viewerRosterRef.current.filter((peer) => peer.identity !== identity);
         setViewerCount(viewerRosterRef.current.length);
         hybridShareRef.current?.viewerLeft(identity);
@@ -793,16 +821,28 @@ export function MeetingRoomPage({
   }, [controller, createSignalingClient, join.participantIdentity, p2pStats, requestMeetingIceServers, slug]);
 
   useEffect(() => {
-    void controller.setRemoteScreenShareSubscribed(!cf.publication && viewerTransportPreference === 'sfu').catch(() => undefined);
-  }, [controller, cf.publication, viewerTransportPreference, state.connection]);
+    void controller.setRemoteScreenShareSubscribed(!cf.sourceIdentity && viewerTransportPreference === 'sfu').catch(() => undefined);
+  }, [controller, cf.sourceIdentity, viewerTransportPreference, state.connection]);
 
   useEffect(() => {
-    if (cf.publication || viewerTransportPreference !== 'sfu' || screenState.status !== 'idle' || state.remoteScreenShare?.track) return;
+    if (cf.sourceIdentity || viewerTransportPreference !== 'sfu' || screenState.status !== 'idle' || state.remoteScreenShare?.track) return;
     // Explicit demand may arrive before capture exists. Reassert it while
     // waiting, independently of P2P offers or ICE credential availability.
     const timer = window.setInterval(() => signalingRef.current?.sendScreenTransport('sfu'), 5_000);
     return () => window.clearInterval(timer);
-  }, [cf.publication, viewerTransportPreference, screenState.status, state.remoteScreenShare?.track]);
+  }, [cf.sourceIdentity, viewerTransportPreference, screenState.status, state.remoteScreenShare?.track]);
+
+  useEffect(() => {
+    if (!cf.recovering || !cf.sourceIdentity || cf.sourceIdentity === join.participantIdentity) return;
+    const request = () => {
+      cfRelayRequestedRef.current = true;
+      signalingRef.current?.sendScreenTransport('peer');
+    };
+    request();
+    // Reassert after a signaling outage; the publisher deduplicates requests.
+    const timer = window.setInterval(request, 5000);
+    return () => window.clearInterval(timer);
+  }, [cf.recovering, cf.sourceIdentity, join.participantIdentity]);
 
   useEffect(() => { void listDevices().then(setDevices).catch(() => setNotice(t('room.devicesFailed'))); }, [listDevices, t]);
   useEffect(() => {
@@ -863,19 +903,7 @@ export function MeetingRoomPage({
   }
 
   async function retryCloudflareSource() {
-    const stream = screenState.stream;
-    if (!stream || cfRetrying) return;
-    setCfRetrying(true); cf.clearError();
-    try {
-      await cfPublisherRef.current?.close();
-      if (screenShare.getState().stream !== stream || screenShare.getState().status !== 'sharing') return;
-      const session = cf.createSession(); cfPublisherRef.current = session;
-      await session.publish(stream, {
-        ...screenShareQualityPresets[screenQuality],
-        codec: screenCodec, maxBitrate: screenBitrate, encodingEngine: 'browser'
-      });
-    } catch (error) { cf.reportError(error); }
-    finally { setCfRetrying(false); }
+    cfPublisherRef.current?.retry();
   }
 
   const handleViewerTransportPreferenceChange = useCallback((preference: ViewerTransportPreference) => {
@@ -887,7 +915,7 @@ export function MeetingRoomPage({
       // Keep the in-session selection when browser storage is unavailable.
     }
 
-    if (cfRef.current.publicationRef.current) return;
+    if (cfRef.current.sourceIdentityRef.current) return;
     const viewerController = viewerP2pRef.current;
     signalingRef.current?.retryConnection();
     signalingRef.current?.sendScreenTransport(preference === 'sfu' ? 'sfu' : 'peer');
@@ -913,19 +941,20 @@ export function MeetingRoomPage({
 
   // SFU is shown only after explicit selection. Peer renegotiation may retain
   // the last peer frame, but never substitutes a LiveKit backup behind it.
-  const livekitViewerTrack = !cf.publication && viewerTransportPreference === 'sfu' ? state.remoteScreenShare?.track : undefined;
+  const livekitViewerTrack = !cf.sourceIdentity && viewerTransportPreference === 'sfu' ? state.remoteScreenShare?.track : undefined;
   const p2pViewerStream = viewerP2pState === 'p2p' || viewerP2pState === 'turn'
-    || (viewerTransportPreference !== 'sfu' && viewerP2pState === 'negotiating')
+    || ((cf.sourceIdentity || viewerTransportPreference !== 'sfu') && viewerP2pState === 'negotiating')
     ? viewerP2pRef.current?.getStream() ?? undefined
     : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
       ? fallbackP2pStream
       : undefined;
-  const stageStream = screenState.stream ?? (cf.publication ? cf.stream : p2pViewerStream);
+  const stageStream = screenState.stream ?? (cf.sourceIdentity
+    ? (cf.recovering ? p2pViewerStream ?? cf.stream : cf.stream ?? p2pViewerStream) : p2pViewerStream);
   const stageTrack = stageStream ? undefined : livekitViewerTrack;
   const stageAudioTrack = stageStream || viewerTransportPreference !== 'sfu' ? undefined : state.remoteScreenShare?.audioTrack;
   const stageMuted = Boolean(screenState.stream) || (!cf.stream && p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
-  const screenTransportMode: ScreenTransportMode = (screenState.stream && screenSourceTransport === 'cloudflare-sfu') || cf.publication
+  const screenTransportMode: ScreenTransportMode = (screenState.stream && screenSourceTransport === 'cloudflare-sfu') || (cf.sourceIdentity && stageStream !== p2pViewerStream)
     ? 'cloudflare-sfu' : screenState.stream
     ? deriveSharerScreenTransportMode(shareViewerStates)
     : deriveViewerScreenTransportMode(viewerP2pState);
@@ -954,7 +983,16 @@ export function MeetingRoomPage({
   const hostParticipants: Array<ParticipantSummary & { isLocal: boolean; microphoneEnabled: boolean }> = displayParticipants;
   const handleStageSourceReady = useCallback(() => {
     if (screenState.stream) return;
-    if (cf.publication && cf.stream) { setCfReadyStream(cf.stream); return; }
+    if (cf.publication && cf.stream && !cf.recovering) {
+      setCfReadyStream(cf.stream);
+      if (cfRelayRequestedRef.current) {
+        cfRelayRequestedRef.current = false;
+        signalingRef.current?.sendScreenTransport('sfu');
+        viewerP2pRef.current?.close(); viewerP2pRef.current = undefined;
+        setViewerP2pState('idle'); setViewerTurnProvider(undefined);
+      }
+      return;
+    }
     if ((viewerP2pState === 'p2p' || viewerP2pState === 'turn') && p2pViewerStream) {
       void controller.setRemoteScreenShareSubscribed(false).catch(() => undefined);
       return;
@@ -965,7 +1003,7 @@ export function MeetingRoomPage({
       setFallbackP2pStream(undefined);
       complete?.();
     }
-  }, [cf.publication, cf.stream, controller, livekitViewerTrack, p2pViewerStream, screenState.stream, viewerP2pState]);
+  }, [cf.publication, cf.stream, cf.recovering, controller, livekitViewerTrack, p2pViewerStream, screenState.stream, viewerP2pState]);
 
   useEffect(() => {
     if (!hasActiveScreenShare) {
@@ -1061,7 +1099,7 @@ export function MeetingRoomPage({
     onScreenQualityChange: setScreenQuality,
     screenShareTurnProviderVisible: hostAuthorized || Boolean(state.screenShareAuthorized),
     onScreenShareTurnProviderChange: handleScreenShareTurnProviderChange,
-    viewerTransportPreferenceVisible: Boolean(!cf.publication && !screenState.stream && hasActiveScreenShare),
+    viewerTransportPreferenceVisible: Boolean(!cf.sourceIdentity && !screenState.stream && hasActiveScreenShare),
     viewerTransportPreference,
     onViewerTransportPreferenceChange: handleViewerTransportPreferenceChange,
     screenViewerCount: viewerCount,
@@ -1117,7 +1155,8 @@ export function MeetingRoomPage({
     />
     <section className="meeting-notices" aria-live="polite">
       {cf.error && <p role="alert">{cf.error}</p>}
-      {cf.error && screenState.stream && screenSourceTransport === 'cloudflare-sfu' && <button type="button" disabled={cfRetrying} onClick={() => void retryCloudflareSource()}>{t('controls.cloudflareSfuRetry')}</button>}
+      {(cf.recovering || cf.publisherRecovering) && <p role="status">{t('controls.cloudflareSfuRecovering')}</p>}
+      {cf.error && screenState.stream && screenSourceTransport === 'cloudflare-sfu' && <button type="button" disabled={cf.publisherRecovering} onClick={() => void retryCloudflareSource()}>{t('controls.cloudflareSfuRetry')}</button>}
       {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
       {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
@@ -1149,7 +1188,8 @@ export function MeetingRoomPage({
             sharerName={sharerName}
             shareIdentity={activeSharer.identity}
             pipAllowed={!screenState.stream && hasActiveScreenShare}
-            sourcePending={Boolean(cf.publication && !screenState.stream && cfReadyStream !== cf.stream)}
+            sourcePending={Boolean(cf.publication && !screenState.stream && stageStream === cf.stream && cfReadyStream !== cf.stream)}
+            waitForVideoFrame={Boolean(cf.sourceIdentity)}
             onSourceReady={handleStageSourceReady}
             sharedAudioVolume={sharedAudioVolume / 100}
           >
