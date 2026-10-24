@@ -59,6 +59,7 @@ export function ScreenStage({
   pipAllowed = false,
   shareIdentity,
   sourcePending = false,
+  waitForVideoFrame = false,
   onSourceReady,
   sharedAudioVolume = 1,
   children
@@ -75,6 +76,8 @@ export function ScreenStage({
   shareIdentity?: string;
   /** The transport is connected but its first frame has not been confirmed. */
   sourcePending?: boolean;
+  /** Recovery must keep the relay alive until video, not just metadata, arrives. */
+  waitForVideoFrame?: boolean;
   /** Called after the selected source renders its first media event or a bounded LiveKit handover is forced. */
   onSourceReady?: () => void;
   /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (original level). */
@@ -82,6 +85,8 @@ export function ScreenStage({
   children?: ReactNode;
 }) {
   const { t } = useI18n();
+  const sourceReadyRef = useRef(onSourceReady);
+  sourceReadyRef.current = onSourceReady;
   const stageRef = useRef<HTMLElement>(null);
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const fullscreenExitRef = useRef<HTMLButtonElement>(null);
@@ -273,12 +278,13 @@ export function ScreenStage({
       const ready = () => {
         if (notified) return;
         notified = true;
-        onSourceReady?.();
+        sourceReadyRef.current?.();
       };
-      element.addEventListener('loadedmetadata', ready);
+      const mediaEvent = waitForVideoFrame ? 'loadeddata' : 'loadedmetadata';
+      element.addEventListener(mediaEvent, ready);
       element.addEventListener('playing', ready);
       return () => {
-        element.removeEventListener('loadedmetadata', ready);
+        element.removeEventListener(mediaEvent, ready);
         element.removeEventListener('playing', ready);
       };
     }
@@ -316,7 +322,7 @@ export function ScreenStage({
         releaseSource(element, previous);
       }
       syncPipVisibility();
-      onSourceReady?.();
+      sourceReadyRef.current?.();
     };
 
     pendingSourceRef.current = desired;
@@ -352,7 +358,8 @@ export function ScreenStage({
     if (desired.kind === 'track') desired.track.attach(probe);
     else applySource(probe, desired);
     const firstFrame = () => commit();
-    probe.addEventListener('loadedmetadata', firstFrame, { once: true });
+    const mediaEvent = waitForVideoFrame ? 'loadeddata' : 'loadedmetadata';
+    probe.addEventListener(mediaEvent, firstFrame, { once: true });
     probe.addEventListener('playing', firstFrame, { once: true });
     if (desired.kind === 'track') {
       // A missing media event must not retain a dead TURN/P2P frame forever.
@@ -364,13 +371,13 @@ export function ScreenStage({
 
     return () => {
       if (handoverTimer !== undefined) clearTimeout(handoverTimer);
-      probe?.removeEventListener('loadedmetadata', firstFrame);
+      probe?.removeEventListener(mediaEvent, firstFrame);
       probe?.removeEventListener('playing', firstFrame);
       releaseProbe();
       pendingSourceRef.current = null;
       syncPipVisibility();
     };
-  }, [audioTrack, onSourceReady, stream, track, syncPipVisibility]);
+  }, [audioTrack, stream, track, syncPipVisibility, waitForVideoFrame]);
 
   useEffect(() => {
     // Unmount: release whatever the stage is showing. Empty deps mean this
