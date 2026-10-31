@@ -250,6 +250,15 @@ EOF
 sudo chmod 600 /root/babagan-protected/network.txt /root/babagan-protected/cloudflare.txt
 ~~~
 
+如果实际策略是公网 SSH，将 `network.txt` 的两行分别改为：
+
+~~~text
+Alibaba inbound: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH public by operator decision
+Host firewall: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH public by operator decision; default deny inbound
+~~~
+
+证据应对应实际规则，两行的 SSH 策略必须一致。
+
 deploy.sh 仍要求非空的 mode-600 smoke-token-file，主要兼容 rollback；正常 deployment smoke 会现场创建临时会议并签发新 Token，验证服务器coturn。配置了Cloudflare SFU时还会直连验证其App Secret及项目SFU能力接口。准备一个24小时Token：
 
 ~~~bash
