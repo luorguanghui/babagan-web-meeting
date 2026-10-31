@@ -75,7 +75,7 @@ sudo ufw --force enable
 sudo ufw status verbose
 ~~~
 
-Cloudflare DNS 必须是：meet、rtc、turn 均为 DNS only，三者解析到目标源站，浏览器经 Caddy 的有效证书直连 HTTPS/WSS。如果选择公开 SSH，部署命令必须显式加入 --allow-public-ssh，并使用脚本接受的 public SSH 证据字符串。
+Cloudflare DNS 必须是：meet、rtc、turn 均为 DNS only，三者解析到目标源站，浏览器经 Caddy 的有效证书直连 HTTPS/WSS。部署脚本根据云防火墙和主机防火墙的匹配证据记录 SSH 策略；公开 SSH 时使用对应的 public SSH 证据字符串。
 
 ### 2.2 仓库同步（完整部署）
 
@@ -409,7 +409,7 @@ sudo bash scripts/deploy.sh \
   --cloudflare-evidence /root/babagan-protected/cloudflare.txt
 ~~~
 
-若使用公网 SSH 证据，追加 --allow-public-ssh；非默认 env 文件追加 --env-file /受保护路径/infra.env.production。
+非默认 env 文件追加 --env-file /受保护路径/infra.env.production。旧的 --allow-public-ssh 参数仍可接受，但不再需要。
 
 deploy.sh 顺序固定为：只读预检 → SQLite在线备份和checksum → mode-600 pending → 固定镜像拉取/构建 → 一次性迁移 → 版本化镜像tag → 启动并等待五服务healthy → deployment-smoke。smoke创建临时会议并现场签发LiveKit Token，检查健康端点、coturn认证ICE、Cache-Control:no-store、P2P跨站403、RTC WebSocket和公网3000/7880阻断。配置了SFU App ID/Secret时，运行API容器内的直连SFU鉴权CLI以及已认证SFU能力请求；成功后写release record并保存completed pending。SFU诊断不输出App Secret、原始SDP或完整上游错误。
 

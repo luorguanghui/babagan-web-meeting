@@ -16,3 +16,15 @@ verify_firewall_attestation() {
   grep -Fqx 'Alibaba inbound: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH restricted' "$evidence_file" || return 1
   grep -Fqx 'Host firewall: TCP 80,443,3478,5349,7881; UDP 443,3478,49160-49200,50000-60000; SSH restricted; default deny inbound' "$evidence_file" || return 1
 }
+
+# Derive the recorded policy from matching cloud and host evidence.
+resolve_firewall_attestation() {
+  local evidence_file=$1
+  if verify_firewall_attestation "$evidence_file" 0; then
+    printf 'restricted\n'
+  elif verify_firewall_attestation "$evidence_file" 1; then
+    printf 'public-operator-waiver\n'
+  else
+    return 1
+  fi
+}

@@ -126,7 +126,11 @@ export class CloudflareSfuService {
     if ([...this.sessions.values()].some((s) => s.slug === slug && s.owner.identity === owner.identity && s.role === role)) throw new SfuCleanupPendingError();
     // Reserve capacity synchronously before awaiting session creation, whose
     // returned ID is not yet available for the normal resource registry.
-    if ([...this.sessions.values(), ...this.creating.values()].filter((s) => s.slug === slug).length >= 5) throw domainError('MEETING_FULL');
+    // A withdrawn session can remain in the cleanup queue while Cloudflare is
+    // unreachable. It no longer occupies a participant's active slot.
+    if ([...this.sessions.values()].filter((s) => s.slug === slug && s.state !== 'closing').length + [...this.creating.values()].filter((s) => s.slug === slug).length >= 5) throw domainError('MEETING_FULL');
+    // Bound unconfirmed upstream resources even if cleanup repeatedly fails.
+    if ([...this.sessions.values()].filter((s) => s.slug === slug && s.state === 'closing').length >= 20) throw new SfuCleanupPendingError();
     const key = this.ownerKey(slug, owner.identity);
     this.creating.set(key, { slug, identity: owner.identity, role, shareId });
     let id: string;

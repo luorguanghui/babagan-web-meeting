@@ -13,11 +13,11 @@ usage() { echo "Usage: $0 --confirm-deploy SHA --target-ip IPV4 --smoke-token-fi
 fail() { echo "DEPLOY PREFLIGHT FAILED: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "missing command: $1"; }
 need_file() { [[ -s "$1" ]] || fail "missing non-empty file: $1"; }
-sha='' target_ip='' token_file='' network_file='' cloudflare_file='' env_file='' bootstrap_empty=0 allow_public_ssh=0
+sha='' target_ip='' token_file='' network_file='' cloudflare_file='' env_file='' bootstrap_empty=0
 while (($#)); do case "$1" in
   --confirm-deploy) sha="${2:-}"; shift 2 ;; --target-ip) target_ip="${2:-}"; shift 2 ;;
   --smoke-token-file) token_file="${2:-}"; shift 2 ;; --network-evidence) network_file="${2:-}"; shift 2 ;;
-  --cloudflare-evidence) cloudflare_file="${2:-}"; shift 2 ;; --allow-public-ssh) allow_public_ssh=1; shift ;;
+  --cloudflare-evidence) cloudflare_file="${2:-}"; shift 2 ;; --allow-public-ssh) shift ;; # Backwards-compatible no-op.
   --bootstrap-empty) bootstrap_empty=1; shift ;; --env-file) env_file="${2:-}"; shift 2 ;; *) usage ;; esac; done
 [[ -n "$sha" && -n "$target_ip" && -n "$token_file" && -n "$network_file" && -n "$cloudflare_file" ]] || usage
 [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || fail 'confirmation must be a full 40-character Git SHA'
@@ -92,7 +92,7 @@ mem_kib="$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)"; disk_kib="$(df -Pk 
 for host in meet.babagan.cloud rtc.babagan.cloud turn.babagan.cloud; do getent ahostsv4 "$host" | awk '{print $1}' | grep -Fxq "$target_ip" || fail "$host must resolve to target IP"; done
 # All three production names are DNS-only and connect directly to Caddy.
 need_file "$network_file"; need_file "$cloudflare_file"
-verify_firewall_attestation "$network_file" "$allow_public_ssh" || fail 'firewall attestation does not match the selected SSH policy'
+ssh_policy="$(resolve_firewall_attestation "$network_file")" || fail 'firewall attestation is incomplete or inconsistent'
 verify_dns_attestation "$cloudflare_file" || fail 'missing DNS-only Cloudflare attestation'
 need_file "$token_file"; [[ "$(stat -c '%a' "$token_file")" == 600 ]] || fail 'smoke token file must have mode 600'
 compose config -q || fail 'invalid Docker Compose configuration'
@@ -125,7 +125,6 @@ fi
 # later failure it is the sole guarded recovery source, even though current-release still names the predecessor.
 pending="$state_dir/pending-release.env"
 pending_tmp="$pending.$$.tmp"
-ssh_policy=restricted; (( allow_public_ssh )) && ssh_policy=public-operator-waiver
 {
   if (( bootstrap_empty )); then printf 'RECORD_STATE=bootstrap-pending\nBOOTSTRAP_EMPTY=1\n'; else printf 'RECORD_STATE=pending\n'; fi
   printf 'CANDIDATE_SHA=%s\n' "$sha"

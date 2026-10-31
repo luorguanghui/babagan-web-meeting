@@ -22,6 +22,16 @@ EOF
 
 verify_firewall_attestation "$restricted" 0
 
+# Deployment automatically records the policy supported by both evidence lines.
+[[ "$(resolve_firewall_attestation "$restricted")" == restricted ]]
+[[ "$(resolve_firewall_attestation "$public" 2>/dev/null)" == public-operator-waiver ]]
+mixed="$temp_dir/mixed.txt"
+{ head -n 1 "$restricted"; tail -n 1 "$public"; } >"$mixed"
+if resolve_firewall_attestation "$mixed"; then
+  echo 'inconsistent firewall evidence was accepted' >&2
+  exit 1
+fi
+
 if verify_firewall_attestation "$public" 0; then
   echo 'public SSH evidence was accepted without an explicit waiver' >&2
   exit 1

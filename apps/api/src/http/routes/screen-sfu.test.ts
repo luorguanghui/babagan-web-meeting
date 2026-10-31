@@ -389,6 +389,35 @@ describe('Cloudflare SFU broker routes', () => {
     expect(requests.filter((r) => r.url.endsWith('/tracks/new') && r.body.sessionDescription)).toHaveLength(1);
     expect(requests.filter((r) => r.url.endsWith('/tracks/new') && !r.body.sessionDescription)).toHaveLength(4);
   });
+  it('allows a replacement viewer while the departed viewer cleanup is retried', async () => {
+    const f = await setup();
+    const viewers = [f.viewer];
+    for (const name of ['Carol', 'Dave', 'Eve']) viewers.push(cookiePair((await fixture.join(f.slug, name)).headers['set-cookie']));
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    for (const viewer of viewers) {
+      const response = await call(f.slug, viewer, '/subscribe', 'POST', { shareId: p.shareId });
+      expect(response.statusCode).toBe(200);
+      await call(f.slug, viewer, `/sessions/${response.json().sessionId}/answer`, 'PUT', { sessionDescription: { type: 'answer', sdp: 'viewer-answer' } });
+    }
+    const original = globalThis.fetch;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).endsWith('/tracks/close')) return new Response('', { status: 503 });
+      return original(url, init);
+    }));
+    expect((await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/leave`, headers: { origin: config.publicBaseUrl.origin, cookie: f.viewer } })).statusCode).toBe(204);
+    for (const [index, name] of ['Frank', 'Grace', 'Heidi'].entries()) {
+      const replacement = await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/join`, headers: { origin: config.publicBaseUrl.origin, 'x-forwarded-for': `198.51.100.${42 + index}` }, payload: { nickname: name, meetingPassword: 'join-secret' } });
+      expect(replacement.statusCode).toBe(200);
+      const cookie = cookiePair(replacement.headers['set-cookie']);
+      const response = await call(f.slug, cookie, '/subscribe', 'POST', { shareId: p.shareId });
+      expect(response.statusCode, response.body).toBe(200);
+      expect((await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/leave`, headers: { origin: config.publicBaseUrl.origin, cookie } })).statusCode).toBe(204);
+    }
+    vi.stubGlobal('fetch', original);
+    await fixture.screenSfu.sweep();
+    expect(requests.some(r => r.url.includes('/sessions/cf-2/tracks/close'))).toBe(true);
+  });
   it('continues background cleanup after a sweep of an empty registry', async () => {
     await fixture.screenSfu.sweep();
     const f = await setup();
