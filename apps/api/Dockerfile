@@ -6,6 +6,9 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 
 WORKDIR /workspace
 
+# Use the headers shipped with the pinned Node image for native modules.
+ENV npm_config_nodedir=/usr/local
+
 RUN sed -i "s#https://dl-cdn.alpinelinux.org/alpine#${ALPINE_MIRROR}#g" /etc/apk/repositories \
   && apk add --no-cache python3 make g++ \
   && corepack enable \
