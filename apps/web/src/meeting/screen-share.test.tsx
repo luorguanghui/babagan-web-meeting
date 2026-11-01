@@ -734,6 +734,8 @@ describe('controlled browser screen sharing', () => {
     expect(screen.getByRole('option', { name: '5 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '8 Mbps' })).toBeVisible();
     expect(screen.getByRole('option', { name: '10 Mbps' })).toBeVisible();
+    expect(screen.getByRole('option', { name: '15 Mbps' })).toBeVisible();
+    expect(screen.getByRole('option', { name: '20 Mbps' })).toBeVisible();
     expect(screen.getByText('Suggested P2P bitrate cap per viewer: 8 Mbps for 2 online viewers.')).toBeVisible();
 
     await userEvent.selectOptions(selector, '10000000');

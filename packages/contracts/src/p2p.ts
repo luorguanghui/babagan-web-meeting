@@ -12,12 +12,12 @@ export const P2P_ICE_NEGOTIATION_MAX_MS = 30_000;
 export const P2P_ICE_DISCONNECT_TIMEOUT_MS = 5000;
 export const P2P_RTP_STALL_TIMEOUT_MS = 5000;
 export const P2P_MESSAGE_MAX_BYTES = 64 * 1024;
-export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000] as const;
+export const P2P_SCREEN_BITRATES = [5_000_000, 8_000_000, 10_000_000, 15_000_000, 20_000_000] as const;
 /**
  * Sharer uplink safety cap for the whole P2P screen share: the selected tier
  * applies per viewer, but the sum of all live session caps never exceeds this
- * budget. 40 Mbps keeps a 4-viewer meeting at 10 Mbps each on the maximum
- * tier while leaving headroom below a measured 100 Mbps uplink.
+ * budget. The 15/20 Mbps tiers give motion more room for one or two viewers;
+ * four viewers remain capped at 10 Mbps each.
  */
 export const P2P_TOTAL_UPLINK_BUDGET_BPS = 40_000_000;
 

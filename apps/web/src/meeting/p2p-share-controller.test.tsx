@@ -638,6 +638,48 @@ describe('p2p share controller', () => {
     expect(videoTransceiver.setCodecPreferences).not.toHaveBeenCalled();
   });
 
+  it('prefers advertised H264 High packetization-mode 1 while retaining all fallbacks', async () => {
+    const { controller } = makeHarness();
+    const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };
+    const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
+    const constrainedHigh = { mimeType: 'video/h264', sdpFmtpLine: 'packetization-mode=1; profile-level-id=640C1F' };
+    const highMode0 = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=0' };
+    const vp8 = { mimeType: 'video/VP8' };
+    const rtx = { mimeType: 'video/rtx' };
+    const codecs = [vp8, baseline, rtx, highMode0, high, constrainedHigh];
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: vi.fn(() => ({ codecs })) });
+    await controller.start(makeStream(), { ...shareOptions, frameRate: 60 }, [viewers[0]]);
+    expect(FakeRTCPeerConnection.instances[0].transceivers[0].setCodecPreferences)
+      .toHaveBeenCalledWith([high, constrainedHigh, baseline, highMode0, vp8, rtx]);
+    expect(codecs).toEqual([vp8, baseline, rtx, highMode0, high, constrainedHigh]);
+  });
+
+  it('retains H264 and browser fallback order when High is not advertised', async () => {
+    const { controller } = makeHarness();
+    const codecs = [
+      { mimeType: 'video/VP8' },
+      { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' },
+      { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=4d001f;packetization-mode=1' },
+      { mimeType: 'video/rtx' }
+    ];
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: vi.fn(() => ({ codecs })) });
+    await controller.start(makeStream(), { ...shareOptions, frameRate: 60 }, [viewers[0]]);
+    expect(FakeRTCPeerConnection.instances[0].transceivers[0].setCodecPreferences)
+      .toHaveBeenCalledWith([codecs[1], codecs[2], codecs[0], codecs[3]]);
+  });
+
+  it('shares the total uplink budget across viewers at the 20 Mbps tier', async () => {
+    const { controller } = makeHarness();
+    const stream = makeStream();
+    const options: P2pShareOptions = { ...shareOptions, maxBitrate: 20_000_000 };
+    await controller.start(stream, options, viewers);
+    expect(FakeRTCPeerConnection.instances.map(senderMaxBitrate)).toEqual([
+      10_000_000, 10_000_000, 10_000_000, 10_000_000
+    ]);
+    for (const viewer of viewers.slice(1)) controller.handleViewerLeft(viewer.identity);
+    await vi.waitFor(() => expect(senderMaxBitrate(FakeRTCPeerConnection.instances[0])).toBe(20_000_000));
+  });
+
   it('adds only the video track when the stream has no audio', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(true, false), shareOptions, [viewers[0]]);

@@ -55,7 +55,7 @@ describe('project media boundary', () => {
     expect(receiver.pendingBytes).toBe(0);
   });
   it('reserves audio and wire overhead and keeps four independent budgets below 40Mbps', () => {
-    for (const selected of [5000000, 8000000, 10000000]) {
+    for (const selected of [5000000, 8000000, 10000000, 15000000, 20000000]) {
       const budget = softwareBudget(selected, 4);
       expect((budget.videoBps + 128000) * 1.12).toBeLessThanOrEqual(budget.wireBps);
       expect(budget.wireBps * 4).toBeLessThanOrEqual(40000000);

@@ -1143,8 +1143,19 @@ function applyCodecPreference(transceiver: RTCRtpTransceiver, codec: ScreenShare
   const wanted = codec === 'h264' ? 'video/h264' : 'video/vp8';
   const preferred = capabilities
     .filter((codecCapability) => codecCapability.mimeType.toLowerCase() === wanted)
+    // Chromium advertises Baseline before High. High can improve motion coding at
+    // the same bitrate without lowering resolution. Only reorder capabilities
+    // the browser actually exposes; keep Baseline and other codecs for peers
+    // that cannot negotiate High. Stable sorting retains every fallback order.
+    .sort((a, b) => codec === 'h264' ? Number(isH264HighProfile(b)) - Number(isH264HighProfile(a)) : 0)
     .concat(capabilities.filter((codecCapability) => codecCapability.mimeType.toLowerCase() !== wanted));
   if (preferred.length > 0) transceiver.setCodecPreferences(preferred);
+}
+
+function isH264HighProfile(codec: RTCRtpCodec): boolean {
+  const fmtp = codec.sdpFmtpLine ?? '';
+  return /(?:^|;)\s*profile-level-id\s*=\s*64(?:00|0c)[0-9a-f]{2}\s*(?:;|$)/i.test(fmtp)
+    && /(?:^|;)\s*packetization-mode\s*=\s*1\s*(?:;|$)/i.test(fmtp);
 }
 
 /**

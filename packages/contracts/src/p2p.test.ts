@@ -53,14 +53,14 @@ describe('P2P signaling contract types', () => {
   });
 
   it('exports the exact screen-bitrate union', () => {
-    expectTypeOf<P2pScreenBitrate>().toEqualTypeOf<5_000_000 | 8_000_000 | 10_000_000>();
+    expectTypeOf<P2pScreenBitrate>().toEqualTypeOf<5_000_000 | 8_000_000 | 10_000_000 | 15_000_000 | 20_000_000>();
   });
 
   it('exports the signaling constants with the specified values', () => {
     expect(P2P_ICE_NEGOTIATION_TIMEOUT_MS).toBe(8000);
     expect(P2P_ICE_DISCONNECT_TIMEOUT_MS).toBe(5000);
     expect(P2P_MESSAGE_MAX_BYTES).toBe(64 * 1024);
-    expect(P2P_SCREEN_BITRATES).toEqual([5_000_000, 8_000_000, 10_000_000]);
+    expect(P2P_SCREEN_BITRATES).toEqual([5_000_000, 8_000_000, 10_000_000, 15_000_000, 20_000_000]);
     expect(P2P_TOTAL_UPLINK_BUDGET_BPS).toBe(40_000_000);
   });
 });
