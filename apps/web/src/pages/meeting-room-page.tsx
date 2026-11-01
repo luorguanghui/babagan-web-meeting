@@ -1,5 +1,6 @@
 import {
   RefreshParticipantTokenResponseSchema,
+  P2P_ICE_NEGOTIATION_MAX_MS,
   type P2pTurnProvider,
   type JoinMeetingResponse,
   type ParticipantSummary,
@@ -463,6 +464,36 @@ export function MeetingRoomPage({
     let iceConfiguration: P2pIceServerConfiguration | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let iceRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let missingSharerTimer: ReturnType<typeof setTimeout> | undefined;
+    let missingSharerIdentity: string | undefined;
+    const cancelMissingSharer = () => {
+      if (missingSharerTimer !== undefined) clearTimeout(missingSharerTimer);
+      missingSharerTimer = undefined;
+      missingSharerIdentity = undefined;
+    };
+    const closeMissingSharer = (identity: string) => {
+      cancelMissingSharer();
+      if (viewerP2pRef.current?.getSharerIdentity() !== identity) return;
+      viewerSharerIdentityRef.current = undefined;
+      viewerP2pRef.current.close();
+      viewerP2pRef.current = undefined;
+      setViewerTurnProvider(undefined);
+      pendingFallbackCompletionRef.current = undefined;
+      setFallbackP2pStream(undefined);
+      void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
+    };
+    const observeMissingSharer = (identity: string) => {
+      const viewer = viewerP2pRef.current;
+      if (viewer?.getSharerIdentity() !== identity) return;
+      // peer-left is WebSocket presence, not a release of the screen-share lock.
+      // Keep existing media through a bounded signaling reconnect window.
+      if (!viewer.getStream()) { closeMissingSharer(identity); return; }
+      if (missingSharerIdentity === identity) return;
+      cancelMissingSharer();
+      missingSharerIdentity = identity;
+      missingSharerTimer = setTimeout(() => closeMissingSharer(identity), P2P_ICE_NEGOTIATION_MAX_MS);
+    };
+
     // A revoked/expired session cannot recover by polling. Keep this scoped
     // to the join effect so a fresh join can fetch credentials again.
     let terminalIceError: ApiRequestError | undefined;
@@ -667,6 +698,7 @@ export function MeetingRoomPage({
     fetchIceServersWithRetry();
     const signaling = (createSignalingClient ?? createP2pSignalingClient)(slug, join.participantIdentity, {
       onOffer: (from, sdp, generation, turnProvider) => {
+        if (missingSharerIdentity === from) cancelMissingSharer();
         dispatchViewerSignal({ type: 'offer', from, sdp, generation, turnProvider });
       },
       // While we are the sharer, answers/ice/bye belong to the share session.
@@ -697,6 +729,7 @@ export function MeetingRoomPage({
         p2pShareRef.current?.handleRetry(from);
       },
       onBye: (from, reason) => {
+        if (missingSharerIdentity === from) cancelMissingSharer();
         const share = p2pShareRef.current;
         if (share) {
           cfRelayRef.current?.release(from);
@@ -714,6 +747,7 @@ export function MeetingRoomPage({
         const previousSharer = cfRef.current.sourceIdentityRef.current;
         cfRef.current.announce(publication);
         if (publication) {
+          cancelMissingSharer();
           pendingViewerSignals.length = 0;
           blockedViewerSignalProvider = undefined;
           pendingFallbackCompletionRef.current = undefined;
@@ -728,6 +762,7 @@ export function MeetingRoomPage({
         }
       },
       onShareGone: () => {
+        cancelMissingSharer();
         cfRelayRequestedRef.current = false;
         cfRef.current.reset();
         viewerSharerIdentityRef.current = undefined;
@@ -743,6 +778,7 @@ export function MeetingRoomPage({
         }
       },
       onWelcome: (peers) => {
+        if (peers.some(peer => peer.identity === missingSharerIdentity)) cancelMissingSharer();
         if (cfRelayRequestedRef.current) signaling.sendScreenTransport('peer');
         else if (!cfRef.current.sourceIdentityRef.current && viewerTransportPreferenceRef.current === 'sfu') signaling.sendScreenTransport('sfu');
         const previous = viewerRosterRef.current;
@@ -757,20 +793,13 @@ export function MeetingRoomPage({
           if (!peers.some((peer) => peer.identity === gone.identity)) {
             cfRelayRef.current?.release(gone.identity);
             hybridShareRef.current?.viewerLeft(gone.identity);
-            if (viewerP2pRef.current?.getSharerIdentity() === gone.identity) {
-              viewerSharerIdentityRef.current = undefined;
-              viewerP2pRef.current?.close();
-              viewerP2pRef.current = undefined;
-              setViewerTurnProvider(undefined);
-              pendingFallbackCompletionRef.current = undefined;
-              setFallbackP2pStream(undefined);
-              void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
-            }
+            observeMissingSharer(gone.identity);
           }
         }
         hybridShareRef.current?.viewerRosterChanged(true);
       },
       onPeerJoined: (peer) => {
+        if (peer.identity === missingSharerIdentity) cancelMissingSharer();
         const roster = viewerRosterRef.current;
         if (!roster.some((existing) => existing.identity === peer.identity)) {
           viewerRosterRef.current = [...roster, peer];
@@ -783,17 +812,7 @@ export function MeetingRoomPage({
         viewerRosterRef.current = viewerRosterRef.current.filter((peer) => peer.identity !== identity);
         setViewerCount(viewerRosterRef.current.length);
         hybridShareRef.current?.viewerLeft(identity);
-        // The P2P sharer left: the session is dead — tear it down so the
-        // LiveKit screen track takes over instead of freezing on a dead stream.
-        if (viewerP2pRef.current?.getSharerIdentity() === identity) {
-          viewerSharerIdentityRef.current = undefined;
-          viewerP2pRef.current?.close();
-          viewerP2pRef.current = undefined;
-          setViewerTurnProvider(undefined);
-          pendingFallbackCompletionRef.current = undefined;
-          setFallbackP2pStream(undefined);
-          void controller.setRemoteScreenShareSubscribed(viewerTransportPreferenceRef.current === 'sfu').catch(() => undefined);
-        }
+        observeMissingSharer(identity);
       },
       onError: () => undefined
     });
@@ -804,6 +823,7 @@ export function MeetingRoomPage({
     void signaling.connect().catch(() => undefined);
     return () => {
       cancelled = true;
+      cancelMissingSharer();
       pendingViewerSignals.length = 0;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
       if (iceRefreshTimer !== undefined) clearTimeout(iceRefreshTimer);

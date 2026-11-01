@@ -2320,6 +2320,52 @@ describe('P2P-first screen sharing in the room', () => {
     expect(pc.closed).toBe(true);
   });
 
+  it.each(['peer-left', 'welcome'] as const)('retains a received screen across transient signaling %s', async loss => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes('/ice-servers') ? { iceServers: [] } : { available: false, publication: null }
+    ), { status: 200 })));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    const rendered = renderP2pRoom({ createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { signaling.welcome([{ identity: 'sharer', nickname: 'Ben' }]); signaling.offer('sharer', 'offer'); });
+      const pc = PageFakePc.instances[0];
+      const { stream, video } = displayStream({ audio: false }); Object.assign(video, { muted: false });
+      await act(async () => { pc.ontrack?.({ track: video, streams: [stream] } as unknown as RTCTrackEvent); });
+      expect(document.querySelector<HTMLVideoElement>('.screen-stage video')?.srcObject).toBe(stream);
+      await act(async () => { if (loss === 'peer-left') signaling.peerLeft('sharer'); else signaling.welcome([]); await vi.advanceTimersByTimeAsync(1000); });
+      expect(pc.closed).toBe(false);
+      expect(document.querySelector<HTMLVideoElement>('.screen-stage video')?.srcObject).toBe(stream);
+      await act(async () => { signaling.peerJoined({ identity: 'sharer', nickname: 'Ben' }); await vi.advanceTimersByTimeAsync(31_000); });
+      expect(pc.closed).toBe(false);
+      // A real release remains authoritative even during the grace period.
+      await act(async () => { signaling.peerLeft('sharer'); signaling.shareGone(); });
+      expect(pc.closed).toBe(true);
+    } finally { rendered.unmount(); vi.useRealTimers(); }
+  });
+
+  it('expires the signaling grace period when a sharer never returns', async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+      String(input).includes('/ice-servers') ? { iceServers: [] } : { available: false, publication: null }
+    ), { status: 200 })));
+    vi.stubGlobal('RTCPeerConnection', PageFakePc);
+    const signaling = fakeSignalingClient();
+    const rendered = renderP2pRoom({ createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    try {
+      await act(async () => { await vi.advanceTimersByTimeAsync(0); signaling.offer('sharer', 'offer'); });
+      const pc = PageFakePc.instances[0];
+      const { stream, video } = displayStream({ audio: false }); Object.assign(video, { muted: false });
+      await act(async () => { pc.ontrack?.({ track: video, streams: [stream] } as unknown as RTCTrackEvent); });
+      await act(async () => { signaling.peerLeft('sharer'); await vi.advanceTimersByTimeAsync(29_999); });
+      expect(pc.closed).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(pc.closed).toBe(true);
+    } finally { rendered.unmount(); vi.useRealTimers(); }
+  });
+
   it('prunes sharer-side sessions for viewers missing from a fresh welcome roster', async () => {
     const { stream } = displayStream({ audio: true });
     const signaling = fakeSignalingClient();

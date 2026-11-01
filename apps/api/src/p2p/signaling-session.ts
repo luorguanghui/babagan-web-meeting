@@ -13,8 +13,10 @@ import type { P2pRoomRegistry, P2pSocket } from './room-registry.js';
  * candidate exchange, forcing viewers onto the TURN relay path.
  */
 export const P2P_HEARTBEAT_TIMEOUT_MS = 120_000;
-/** Per-connection fixed window, aligned with the general API rate limit (120 msg / 60 s). */
+/** Control messages per connection; authorized ICE candidates per online peer. */
 export const P2P_MESSAGE_RATE_LIMIT = { max: 120, windowMs: 60_000 };
+/** The room has at most five participants; churn must not create unbounded buckets. */
+const P2P_ICE_PEERS_PER_WINDOW = 4;
 /** Application close code for a silent (dead) connection. */
 export const P2P_CLOSE_HEARTBEAT_TIMEOUT = 4001;
 /** Standard close code for policy violations (rate limit, invalid frames). */
@@ -57,6 +59,7 @@ export class P2pSignalingSession {
   private heartbeatTimer: NodeJS.Timeout | undefined;
   private rateWindowStartedAt: number;
   private rateWindowCount = 0;
+  private readonly iceRateWindowCounts = new Map<string, number>();
   private closed = false;
 
   constructor(dependencies: {
@@ -103,17 +106,16 @@ export class P2pSignalingSession {
     if (this.closed) return;
     this.resetHeartbeat();
 
-    if (!this.consumeRateLimit()) {
-      this.sendError('RATE_LIMITED', 'Too many P2P messages; slow down');
-      this.close(P2P_CLOSE_POLICY_VIOLATION);
-      return;
-    }
-
     let message: P2pClientMessage;
     try {
       message = parseP2pClientMessage(JSON.parse(raw));
     } catch {
       this.sendError('INVALID_MESSAGE', 'Invalid P2P message');
+      this.close(P2P_CLOSE_POLICY_VIOLATION);
+      return;
+    }
+    if (!this.consumeRateLimit(message)) {
+      this.sendError('RATE_LIMITED', 'Too many P2P messages; slow down');
       this.close(P2P_CLOSE_POLICY_VIOLATION);
       return;
     }
@@ -217,11 +219,24 @@ export class P2pSignalingSession {
     }
   }
 
-  private consumeRateLimit(): boolean {
+  private consumeRateLimit(message: P2pClientMessage): boolean {
     const now = this.clock.now();
     if (now - this.rateWindowStartedAt >= this.messageRateLimit.windowMs) {
       this.rateWindowStartedAt = now;
       this.rateWindowCount = 0;
+      this.iceRateWindowCounts.clear();
+    }
+    // One WebSocket carries candidates from several independent sender PCs.
+    // Charging all of them to the control budget disconnects a healthy sharer
+    // mid-gathering and broadcasts peer-left to every viewer. Only legitimate,
+    // online destinations get a separate bucket; arbitrary identities and
+    // unauthorized traffic cannot grow this map or bypass the control limit.
+    if (message.type === 'ice' && message.to !== this.identity && this.mayTalkTo(message.to)
+      && this.registry.listPeers(this.slug).some(peer => peer.identity === message.to)
+      && (this.iceRateWindowCounts.has(message.to) || this.iceRateWindowCounts.size < P2P_ICE_PEERS_PER_WINDOW)) {
+      const count = (this.iceRateWindowCounts.get(message.to) ?? 0) + 1;
+      this.iceRateWindowCounts.set(message.to, count);
+      return count <= this.messageRateLimit.max;
     }
     this.rateWindowCount += 1;
     return this.rateWindowCount <= this.messageRateLimit.max;

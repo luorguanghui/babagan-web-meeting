@@ -452,6 +452,55 @@ describe('P2pSignalingSession', () => {
     expect(socket.messages().filter((message) => message.type === 'pong')).toHaveLength(4);
   });
 
+  it('bounds ICE per peer across generations without consuming the control allowance', () => {
+    const h = createHarness(); h.shareIdentity = 'sharer';
+    const { session, socket } = createSession(h, 'sharer', 'Sharer', { messageRateLimit: { max: 2, windowMs: 60_000 } });
+    createSession(h, 'one', 'One'); createSession(h, 'two', 'Two');
+    for (const to of ['one', 'two']) for (const generation of ['first', 'retry']) {
+      session.handleMessage(JSON.stringify({ type: 'ice', to, generation, candidate: null }));
+    }
+    session.handleMessage(ping); session.handleMessage(ping);
+    expect(socket.closed).toBe(false);
+    session.handleMessage(JSON.stringify({ type: 'ice', to: 'one', generation: 'another-retry', candidate: null }));
+    expect(socket.closeCode).toBe(P2P_CLOSE_POLICY_VIOLATION);
+    expect(socket.messages().at(-1)).toEqual(errorMessage('RATE_LIMITED'));
+  });
+
+  it('resets ICE allowances when the fixed window elapses', () => {
+    const h = createHarness(); h.shareIdentity = 'sharer';
+    const { session, socket } = createSession(h, 'sharer', 'Sharer', { messageRateLimit: { max: 1, windowMs: 60_000 } });
+    createSession(h, 'viewer', 'Viewer');
+    const ice = JSON.stringify({ type: 'ice', to: 'viewer', candidate: null });
+    session.handleMessage(ice); h.now += 60_000; session.handleMessage(ice);
+    expect(socket.closed).toBe(false);
+    session.handleMessage(ice);
+    expect(socket.closed).toBe(true);
+  });
+
+  it.each(['offline', 'unauthorized'])('does not create ICE allowances for %s targets', kind => {
+    const h = createHarness(); h.shareIdentity = kind === 'offline' ? 'sender' : 'other-sharer';
+    const { session, socket } = createSession(h, 'sender', 'Sender', { messageRateLimit: { max: 2, windowMs: 60_000 } });
+    for (let i = 0; i < 3; i++) {
+      const to = `peer-${i}`;
+      if (kind === 'unauthorized') createSession(h, to, to);
+      session.handleMessage(JSON.stringify({ type: 'ice', to, candidate: null }));
+    }
+    expect(socket.closeCode).toBe(P2P_CLOSE_POLICY_VIOLATION);
+    expect(socket.messages().at(-1)).toEqual(errorMessage('RATE_LIMITED'));
+  });
+
+  it('bounds ICE allowance allocation even when online destinations churn', () => {
+    const h = createHarness(); h.shareIdentity = 'sharer';
+    const { session, socket } = createSession(h, 'sharer', 'Sharer', { messageRateLimit: { max: 1, windowMs: 60_000 } });
+    for (let i = 0; i < 6; i++) {
+      const { session: viewer } = createSession(h, `viewer-${i}`, 'Viewer');
+      session.handleMessage(JSON.stringify({ type: 'ice', to: `viewer-${i}`, candidate: null }));
+      viewer.close();
+    }
+    // Four peer buckets plus one ordinary control allowance, never six buckets.
+    expect(socket.closeCode).toBe(P2P_CLOSE_POLICY_VIOLATION);
+  });
+
   it('does nothing after the connection is closed', () => {
     const harness = createHarness();
     const { session, socket } = createSession(harness, 'ada', 'Ada');

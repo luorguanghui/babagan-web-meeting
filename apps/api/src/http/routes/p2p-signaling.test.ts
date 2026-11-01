@@ -32,6 +32,46 @@ describe('P2P signaling websocket endpoint', () => {
   beforeEach(async () => { fixture = await createFixture(); });
   afterEach(async () => { await fixture.close(); });
 
+  it('keeps a mixed three-viewer share online through late trickle ICE after media-ready', async () => {
+    const created = await fixture.createMeeting();
+    const sharer = await fixture.join(created.slug, 'Sharer');
+    await fixture.grantShare(created.slug, created.hostCookie, sharer.identity);
+    const ws = await fixture.connect(created.slug, sharer.cookie);
+    const inbox = collect(ws);
+    const viewers: Array<{ identity: string; ws: WebSocket; inbox: Inbox }> = [];
+    try {
+      for (let i = 0; i < 3; i++) {
+        const viewer = await fixture.join(created.slug, `Viewer ${i}`);
+        const peer = await fixture.connect(created.slug, viewer.cookie);
+        viewers.push({ identity: viewer.identity, ws: peer, inbox: collect(peer) });
+      }
+      for (const viewer of viewers) {
+        ws.send(JSON.stringify({ type: 'offer', to: viewer.identity, sdp: 'offer', generation: 'first' }));
+        await viewer.inbox.waitFor(m => m.type === 'offer');
+        viewer.ws.send(JSON.stringify({ type: 'media-ready', to: sharer.identity, generation: 'first' }));
+      }
+      await inbox.waitFor(m => m.type === 'media-ready' && m.from === viewers[2].identity);
+      // Each independent PC continues trickling after its first decoded frame.
+      // Direct and TURN paths share one sender WebSocket, not one ICE gatherer.
+      for (let candidate = 0; candidate < 42; candidate++) {
+        for (const [i, viewer] of viewers.entries()) {
+          ws.send(JSON.stringify({ type: 'ice', to: viewer.identity, generation: 'first',
+            candidate: `candidate:${candidate} 1 udp 123 192.0.2.${i + 1} 5000 typ ${i % 2 ? 'relay' : 'host'}` }));
+        }
+      }
+      ws.send(JSON.stringify({ type: 'ping' }));
+      expect(await inbox.waitFor(m => m.type === 'pong' || m.type === 'error')).toEqual({ type: 'pong' });
+      for (const viewer of viewers) {
+        await viewer.inbox.waitFor(m => m.type === 'ice' && String(m.candidate).startsWith('candidate:41 '));
+        expect(viewer.inbox.messages).not.toContainEqual({ type: 'peer-left', peer: { identity: sharer.identity } });
+      }
+      expect(ws.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      ws.close();
+      for (const viewer of viewers) viewer.ws.close();
+    }
+  });
+
   it('rejects the handshake with 401 without a participant cookie', async () => {
     const created = await fixture.createMeeting();
     await expect(
