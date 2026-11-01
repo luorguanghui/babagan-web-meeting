@@ -1,6 +1,7 @@
 import { CloudflareSfuSessionResponseSchema, type CloudflareSfuPublication, type CloudflareSfuSessionResponse } from '@meeting/contracts';
 import { apiNoContent, apiRequest } from '../api/client.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
+import { applyScreenVideoCodecPreference } from './video-codec-preference.js';
 export interface CloudflareScreenApi {
   publish(body: unknown): Promise<CloudflareSfuSessionResponse>;
   ready(sessionId: string): Promise<void>;
@@ -40,12 +41,7 @@ export class CloudflareScreenSession {
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
         const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
-        if (track.kind === 'video' && options.codec !== 'auto') {
-          const codecs = globalThis.RTCRtpSender?.getCapabilities?.('video')?.codecs;
-          const preferred = codecs?.filter(c => c.mimeType.toLowerCase() === `video/${options.codec}`);
-          if (preferred?.length && transceiver.setCodecPreferences)
-            transceiver.setCodecPreferences([...preferred, ...codecs!.filter(c => !preferred.includes(c))]);
-        }
+        if (track.kind === 'video') applyScreenVideoCodecPreference(transceiver, options.codec);
         return { track, transceiver };
       });
       await pc.setLocalDescription(await pc.createOffer());

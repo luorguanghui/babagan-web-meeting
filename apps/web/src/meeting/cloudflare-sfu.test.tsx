@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CloudflareScreenSession, createCloudflareScreenApi, type CloudflareScreenApi } from './cloudflare-sfu.js';
 
 class Track extends EventTarget {
@@ -16,7 +16,7 @@ class Stream {
 class Pc extends EventTarget {
   connectionState = 'connected'; iceGatheringState = 'complete'; localDescription = { type: 'offer', sdp: 'local' };
   remoteDescription: unknown; ontrack?: (e: unknown) => void; close = vi.fn(); senders: Track[] = [];
-  transceivers: Array<{ mid: string; sender: unknown }> = [];
+  transceivers: Array<{ mid: string; sender: { getParameters(): { encodings: RTCRtpEncodingParameters[] }; setParameters: ReturnType<typeof vi.fn> }; setCodecPreferences: ReturnType<typeof vi.fn> }> = [];
   addTransceiver(t: Track) { this.senders.push(t); const tx = { mid: String(this.senders.length - 1), sender: { getParameters: () => ({ encodings: [] }), setParameters: vi.fn(async () => {}) }, setCodecPreferences: vi.fn() }; this.transceivers.push(tx); return tx; }
   createOffer = async () => ({ type: 'offer', sdp: 'local' });
   createAnswer = async () => ({ type: 'answer', sdp: 'answer' });
@@ -36,7 +36,33 @@ function setup(configure: (pc: Pc) => void = () => {}) {
   const create = (onStream = vi.fn(), onError = vi.fn()) => new CloudflareScreenSession({ api, fetchIceServers: async () => [], createPeerConnection: () => { const pc = new Pc(); configure(pc); pcs.push(pc); return pc as unknown as RTCPeerConnection; }, createMediaStream: () => new Stream() as unknown as MediaStream, onStream, onError });
   return { pcs, api, create };
 }
+afterEach(() => vi.unstubAllGlobals());
+
 describe('Cloudflare native screen session', () => {
+  it('prefers H264 High before the SFU offer and keeps capture hints, limits and audio intact', async () => {
+    const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };
+    const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
+    const vp8 = { mimeType: 'video/VP8' };
+    const rtx = { mimeType: 'video/rtx' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [vp8, baseline, rtx, high] }) });
+    const { create, pcs } = setup(pc => {
+      pc.createOffer = async () => {
+        expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith([high, baseline, vp8, rtx]);
+        expect(pc.transceivers[1].setCodecPreferences).not.toHaveBeenCalled();
+        return { type: 'offer', sdp: 'local' };
+      };
+    });
+    const video = new Track('video'); video.contentHint = 'motion';
+    const audio = new Track('audio'); audio.contentHint = 'music';
+    const session = create();
+    await session.publish(new Stream([video, audio]) as unknown as MediaStream,
+      { codec: 'h264', maxBitrate: 20_000_000, frameRate: 60, degradationPreference: 'maintain-framerate' });
+    expect(pcs[0].senders.map(t => t.contentHint)).toEqual(['motion', 'music']);
+    expect(pcs[0].transceivers[0].sender.setParameters).toHaveBeenCalledWith({
+      encodings: [{ maxBitrate: 20_000_000, maxFramerate: 60 }], degradationPreference: 'maintain-framerate'
+    });
+    await session.close();
+  });
   it('allows transient disconnects to recover and reports persistent loss once', async () => {
     vi.useFakeTimers();
     try {

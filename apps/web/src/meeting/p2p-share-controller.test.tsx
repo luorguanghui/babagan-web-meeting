@@ -1660,6 +1660,26 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).not.toHaveBeenCalled();
     await controller.stop();
   });
+  it('keeps High preference when a TURN session is rebuilt after an ICE failure', async () => {
+    const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };
+    const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [baseline, high] }) });
+    const { controller } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(), { ...shareOptions, frameRate: 60 }, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay';
+    pc.setIceConnectionState('connected');
+    controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith([high, baseline]);
+    pc.setIceConnectionState('failed');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(2);
+    expect(FakeRTCPeerConnection.instances[1].transceivers[0].setCodecPreferences)
+      .toHaveBeenCalledWith([high, baseline]);
+    await controller.stop();
+  });
   it.each(['leave', 'stop'] as const)('does not revive TURN recovery after %s', async (action) => {
     const { controller, signaling, fetchIceServers } = makeHarness({ turnProvider: 'coturn' });
     await controller.start(makeStream(), shareOptions, [viewers[0]]);
