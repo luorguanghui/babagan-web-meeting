@@ -144,7 +144,7 @@ describe('host screen-share and meeting controls', () => {
     });
   });
 
-  it('lets only the matching sharer release after browser or participant disconnect', async () => {
+  it('keeps the matching participant authorized after stopping until the host revokes it', async () => {
     const { meeting } = await createMeetingWithParticipants('Ada', 'Lin');
     await hosts.grantShare(activeHost(meeting.id), meeting.slug, 'participant-1');
     const release = (hosts as unknown as {
@@ -156,6 +156,10 @@ describe('host screen-share and meeting controls', () => {
     expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBe('participant-1');
 
     await release.call(hosts, meeting.slug, 'participant-1');
+    expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBe('participant-1');
+    expect(media.sourceUpdates.at(-1)?.sources).toContain('screen_share');
+    await hosts.grantShare(activeHost(meeting.id), meeting.slug, 'participant-1');
+    await hosts.revokeShare(activeHost(meeting.id), meeting.slug);
     expect(repository.findBySlug(meeting.slug)?.shareIdentity).toBeNull();
     expect(media.sourceUpdates.at(-1)).toEqual({ identity: 'participant-1', sources: ['microphone'] });
   });

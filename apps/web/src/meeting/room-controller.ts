@@ -22,6 +22,7 @@ export interface MeetingParticipant {
   isLocal: boolean;
   microphoneEnabled: boolean;
   isSharing: boolean;
+  canShareScreen?: boolean;
 }
 
 export interface RemoteScreenShare {
@@ -490,7 +491,8 @@ class RoomController implements MeetingRoomController {
       name: participant.name?.trim() || participant.identity,
       isLocal,
       microphoneEnabled: participant.isMicrophoneEnabled,
-      isSharing: participant.isScreenShareEnabled
+      isSharing: participant.isScreenShareEnabled,
+      canShareScreen: participant.permissions?.canPublishSources?.includes(3) ?? false
     };
   }
 

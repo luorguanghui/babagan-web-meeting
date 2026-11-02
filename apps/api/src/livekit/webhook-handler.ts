@@ -18,6 +18,7 @@ export interface WebhookShareGoneNotice {
 
 export interface WebhookHandleResult {
   shareGone?: WebhookShareGoneNotice;
+  participantLeft?: { slug: string; identity: string };
 }
 
 export interface WebhookHandler {
@@ -27,6 +28,7 @@ export interface WebhookHandler {
 interface WebhookApplyResult {
   mediaAction?: PostCommitMediaAction;
   shareGone?: WebhookShareGoneNotice;
+  participantLeft?: { slug: string; identity: string };
 }
 
 export class InvalidLiveKitWebhookError extends Error {
@@ -52,6 +54,11 @@ export class LiveKitWebhookHandler implements WebhookHandler {
   async handle(rawBody: Uint8Array, authorization?: string): Promise<WebhookHandleResult> {
     const event = await this.receive(rawBody, authorization);
     validateEvent(event);
+    // A full LiveKit reconnect keeps the application identity. Delivery of the
+    // old connection's leave event must not clear the new connection's grant
+    // or independently established Cloudflare media. Failures remain retryable.
+    const staleLeave = (event.event === 'participant_left' || event.event === 'participant_connection_aborted')
+      && (await this.dependencies.media.listParticipantIdentities(requireRoomName(event))).has(requireParticipantIdentity(event));
 
     const applied = this.dependencies.database.transaction(() => {
       const marked = this.dependencies.database.prepare(`
@@ -61,7 +68,7 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       `).run(event.id, this.dependencies.clock.now());
       if (marked.changes === 0) return undefined;
 
-      return this.applyEvent(event);
+      return staleLeave ? {} : this.applyEvent(event);
     })();
 
     if (!applied) return {};
@@ -78,7 +85,10 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       }
     }
 
-    return applied.shareGone ? { shareGone: applied.shareGone } : {};
+    return {
+      ...(applied.shareGone ? { shareGone: applied.shareGone } : {}),
+      ...(applied.participantLeft ? { participantLeft: applied.participantLeft } : {})
+    };
   }
 
   private async runMediaAction(action: PostCommitMediaAction): Promise<void> {
@@ -152,6 +162,9 @@ export class LiveKitWebhookHandler implements WebhookHandler {
     const roomName = requireRoomName(event);
     const identity = requireParticipantIdentity(event);
     const now = this.dependencies.clock.now();
+    // LiveKit room names are database IDs; signaling and SFU use public slugs.
+    const meeting = this.dependencies.database.prepare('SELECT slug FROM meetings WHERE id = ?').get(roomName) as { slug: string } | undefined;
+    const participantLeft = meeting ? { slug: meeting.slug, identity } : undefined;
 
     this.dependencies.database.prepare(`
       DELETE FROM join_reservations
@@ -169,7 +182,7 @@ export class LiveKitWebhookHandler implements WebhookHandler {
         SET status = 'grace', empty_since = COALESCE(empty_since, ?), version = version + 1
         WHERE id = ? AND status IN ('created', 'active', 'grace')
       `).run(now, roomName);
-      return cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {};
+      return { participantLeft, ...(cleared && meeting ? { shareGone: { slug: meeting.slug, reason: 'share released' } } : {}) };
     }
 
     this.dependencies.database.prepare(`
@@ -178,7 +191,7 @@ export class LiveKitWebhookHandler implements WebhookHandler {
       WHERE id = ? AND status = 'grace'
     `).run(roomName);
 
-    return cleared ? { shareGone: { slug: roomName, reason: 'share released' } } : {};
+    return { participantLeft, ...(cleared && meeting ? { shareGone: { slug: meeting.slug, reason: 'share released' } } : {}) };
   }
 
   private trackUnpublished(event: WebhookEvent): WebhookApplyResult {

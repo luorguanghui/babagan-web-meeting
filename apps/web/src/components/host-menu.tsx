@@ -5,7 +5,7 @@ import { ApiRequestError } from '../api/client.js';
 import { useI18n } from '../i18n/i18n.js';
 
 interface HostMenuProps {
-  participants: Array<ParticipantSummary & { isLocal?: boolean; microphoneEnabled?: boolean }>;
+  participants: Array<ParticipantSummary & { isLocal?: boolean; microphoneEnabled?: boolean; canShareScreen?: boolean }>;
   unified?: boolean;
   authorizeHost: () => Promise<void>;
   authorized?: boolean;
@@ -36,7 +36,7 @@ export function HostMenu({
   const [error, setError] = useState<string>();
   const [ending, setEnding] = useState(false);
   const [sharingIdentity, setSharingIdentity] = useState<string | undefined>(
-    () => participants.find((participant) => participant.isSharing)?.identity
+    () => participants.find((participant) => participant.canShareScreen ?? participant.isSharing)?.identity
   );
 
   useEffect(() => {
@@ -50,7 +50,7 @@ export function HostMenu({
     return () => { active = false; };
   }, [authorizeHost, controlledAuthorized, onAuthorizationChange]);
 
-  const externalSharingIdentity = participants.find((participant) => participant.isSharing)?.identity;
+  const externalSharingIdentity = participants.find((participant) => participant.canShareScreen ?? participant.isSharing)?.identity;
   useEffect(() => { setSharingIdentity(externalSharingIdentity); }, [externalSharingIdentity]);
   if (!(controlledAuthorized ?? locallyAuthorized)) return null;
 

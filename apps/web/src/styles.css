@@ -321,7 +321,7 @@ meter { height: 1rem; width: 100%; }
   .meeting-drawer { border: 1px solid var(--border); border-radius: 18px 18px 0 0; bottom: calc(82px + var(--mobile-status-height) + env(safe-area-inset-bottom)); left: 0; max-height: min(72dvh, calc(100dvh - 98px - var(--mobile-status-height) - env(safe-area-inset-bottom))); right: 0; top: auto; width: 100%; }
   .meeting-drawer[data-state='exiting'] { translate: 0 12px; }
   @starting-style { .meeting-drawer[data-state='open'] { opacity: 0; translate: 0 12px; } }
-  .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) .meeting-drawer { bottom: calc(140px + var(--mobile-status-height) + env(safe-area-inset-bottom)); max-height: calc(100dvh - 165px - var(--mobile-status-height) - env(safe-area-inset-bottom)); }
+  .meeting-room:has(.meeting-controls[data-mobile-wrapped='true']) .meeting-drawer:not(.meeting-stage-panel) { bottom: calc(140px + var(--mobile-status-height) + env(safe-area-inset-bottom)); max-height: calc(100dvh - 165px - var(--mobile-status-height) - env(safe-area-inset-bottom)); }
   .meeting-drawer-header { min-height: 64px; padding: 12px 16px; }
   .meeting-drawer-header h2 { font-size: 1.05rem; }
   .meeting-settings-grid, .participant-list, .host-menu, .webrtc-stats-panel { padding-inline: 20px; }

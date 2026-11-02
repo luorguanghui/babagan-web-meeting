@@ -298,7 +298,8 @@ describe('LiveKit webhook handler', () => {
     });
 
     await expect(handler.handle(delivery.rawBody, delivery.authorization)).resolves.toEqual({
-      shareGone: { slug: 'meeting-1', reason: 'share released' }
+      shareGone: { slug: 'meeting-one', reason: 'share released' },
+      participantLeft: { slug: 'meeting-one', identity: 'participant-1' }
     });
 
     expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
@@ -357,7 +358,8 @@ describe('LiveKit webhook handler', () => {
       participant: { identity: 'participant-1' }
     });
     await expect(handler.handle(left.rawBody, left.authorization)).resolves.toEqual({
-      shareGone: { slug: 'meeting-1', reason: 'share released' }
+      shareGone: { slug: 'meeting-one', reason: 'share released' },
+      participantLeft: { slug: 'meeting-one', identity: 'participant-1' }
     });
     expect(repo.findBySlug('meeting-one')?.shareIdentity).toBeNull();
   });

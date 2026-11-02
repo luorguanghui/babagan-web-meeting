@@ -242,7 +242,7 @@ describe('meeting HTTP API', () => {
     expect(participantOnly.statusCode).toBe(401);
   });
 
-  it('allows the authorized sharer, but no other participant, to release the share lock', async () => {
+  it('stops the publication without downgrading the persistent host grant', async () => {
     const created = await fixture.createMeeting();
     const ada = await fixture.join(created.slug, 'Ada');
     const lin = await fixture.join(created.slug, 'Lin');
@@ -255,8 +255,7 @@ describe('meeting HTTP API', () => {
     expect((await fixture.modify('DELETE', `${created.slug}/share`, linCookie)).statusCode).toBe(204);
     expect((await fixture.modify('DELETE', `${created.slug}/share`, adaCookie)).statusCode).toBe(204);
     expect(fixture.media.sourceUpdates).toEqual([
-      { identity: participantIdentity, sources: ['microphone', 'screen_share', 'screen_share_audio'] },
-      { identity: participantIdentity, sources: ['microphone'] }
+      { identity: participantIdentity, sources: ['microphone', 'screen_share', 'screen_share_audio'] }
     ]);
   });
 

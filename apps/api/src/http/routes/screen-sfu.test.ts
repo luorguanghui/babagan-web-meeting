@@ -1,4 +1,6 @@
 import { mkdtempSync, rmSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { AccessToken } from 'livekit-server-sdk';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -13,7 +15,7 @@ import type {
   IssueTokenInput,
   MediaService
 } from '../../livekit/media-service.js';
-import type { WebhookHandleResult, WebhookHandler } from '../../livekit/webhook-handler.js';
+import { LiveKitWebhookHandler } from '../../livekit/webhook-handler.js';
 import { SqliteMeetingRepository } from '../../repositories/sqlite-meeting-repository.js';
 import { KeyedMutex } from '../../services/keyed-mutex.js';
 import { HostApplicationService } from '../../services/host-application-service.js';
@@ -54,6 +56,30 @@ describe('Cloudflare SFU broker routes', () => {
     return fixture.app.inject({ method, url: `/api/v1/meetings/${slug}/screen-sfu${suffix}`, headers: { cookie, origin: config.publicBaseUrl.origin }, ...(payload === undefined ? {} : { payload }) });
   }
   const offer = { sessionDescription: { type: 'offer', sdp: 'endpoint-sdp' }, tracks: [{ kind: 'video', mid: '0' }, { kind: 'audio', mid: '1' }] };
+  it('reclaims viewers who close their tab without the leave API, before repeated rejoins fill SFU slots', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    let cookie = f.viewer;
+    let identity = 'participant-2';
+    for (let i = 0; i < 7; i++) {
+      const allocated = await call(f.slug, cookie, '/subscribe', 'POST', { shareId: p.shareId });
+      expect(allocated.statusCode, allocated.body).toBe(200);
+      const id = allocated.json().sessionId;
+      await call(f.slug, cookie, `/sessions/${id}/answer`, 'PUT', { sessionDescription: { type: 'answer', sdp: 'answer' } });
+      const payload = JSON.stringify({ id: `left-${i}`, event: 'participant_left', createdAt: '1', room: { name: 'meeting-id', numParticipants: 1 }, participant: { identity } });
+      const signer = new AccessToken(config.livekitApiKey, config.livekitApiSecret);
+      signer.sha256 = createHash('sha256').update(payload).digest('base64');
+      const left = await fixture.app.inject({ method: 'POST', url: '/internal/livekit/webhook', headers: { 'content-type': 'application/webhook+json', authorization: await signer.toJwt() }, payload });
+      expect(left.statusCode).toBe(204);
+      const replacement = await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/join`, headers: { origin: config.publicBaseUrl.origin, 'x-forwarded-for': `198.51.100.${50 + i}` }, payload: { nickname: 'Returning viewer', meetingPassword: 'join-secret' } });
+      expect(replacement.statusCode, replacement.body).toBe(200);
+      cookie = cookiePair(replacement.headers['set-cookie']);
+      identity = replacement.json().participantIdentity;
+    }
+    expect(requests.filter(r => r.url.endsWith('/tracks/close'))).toHaveLength(7);
+    expect((await call(f.slug, f.publisher)).json().publication.shareId).toBe(p.shareId);
+  });
   it('enables the app-created SFU service with gateway-only configuration', async () => {
     await fixture.close();
     fixture = await createFixture({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu' }, true);
@@ -64,6 +90,40 @@ describe('Cloudflare SFU broker routes', () => {
       'https://p2p.babagan.cloud/api/sfu/sessions/new',
       'https://p2p.babagan.cloud/api/sfu/sessions/cf-1/tracks/new'
     ]);
+  });
+  it('ignores delayed departure from an older LiveKit connection when the same identity has reconnected', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    const v = (await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: p.shareId })).json();
+    await call(f.slug, f.viewer, `/sessions/${v.sessionId}/answer`, 'PUT', { sessionDescription: { type: 'answer', sdp: 'answer' } });
+    fixture.media.connected.add('participant-2');
+    const payload = JSON.stringify({ id: 'old-left', event: 'participant_left', createdAt: '1', room: { name: 'meeting-id', numParticipants: 1 }, participant: { identity: 'participant-2' } });
+    const signer = new AccessToken(config.livekitApiKey, config.livekitApiSecret);
+    signer.sha256 = createHash('sha256').update(payload).digest('base64');
+    const authorization = await signer.toJwt();
+    const deliver = () => fixture.app.inject({ method: 'POST', url: '/internal/livekit/webhook', headers: { 'content-type': 'application/webhook+json', authorization }, payload });
+    expect((await deliver()).statusCode).toBe(204);
+    fixture.media.connected.clear();
+    expect((await deliver()).statusCode).toBe(204);
+    expect(requests.filter(r => r.url.endsWith('/tracks/close'))).toHaveLength(0);
+    expect((await call(f.slug, f.viewer, `/sessions/${v.sessionId}`, 'DELETE')).statusCode).toBe(204);
+  });
+  it('stops SFU tracks but allows repeated publication until the host explicitly revokes the grant', async () => {
+    const f = await setup();
+    for (let i = 0; i < 3; i++) {
+      const response = await call(f.slug, f.publisher, '/publish', 'POST', offer);
+      expect(response.statusCode).toBe(200);
+      const p = response.json();
+      await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+      await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: p.shareId });
+      expect((await fixture.app.inject({ method: 'DELETE', url: `/api/v1/meetings/${f.slug}/share`, headers: { origin: config.publicBaseUrl.origin, cookie: f.publisher } })).statusCode).toBe(204);
+      expect((await call(f.slug, f.viewer)).json().publication).toBeNull();
+      const token = await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/token`, headers: { origin: config.publicBaseUrl.origin, cookie: f.publisher } });
+      expect(token.json().permissions.canShareScreen).toBe(true);
+    }
+    await fixture.app.inject({ method: 'DELETE', url: `/api/v1/meetings/${f.slug}/share-grant`, headers: { origin: config.publicBaseUrl.origin, cookie: fixture.hostCookie } });
+    expect((await call(f.slug, f.publisher, '/publish', 'POST', offer)).statusCode).toBe(403);
   });
   it('authenticates status and publish and enforces publisher lock', async () => {
     const f = await setup();
@@ -196,6 +256,7 @@ describe('Cloudflare SFU broker routes', () => {
     }));
     await call(f.slug, f.publisher, `/sessions/${a.sessionId}`, 'DELETE');
     await fixture.app.inject({ method: 'DELETE', url: `/api/v1/meetings/${f.slug}/share`, headers: { cookie: f.publisher, origin: config.publicBaseUrl.origin } });
+    await fixture.app.inject({ method: 'DELETE', url: `/api/v1/meetings/${f.slug}/share-grant`, headers: { cookie: fixture.hostCookie, origin: config.publicBaseUrl.origin } });
     // Fixture session identities are stable; grant the second participant directly
     // through the same host authority route used by the product.
     const identities = fixture.db.prepare('SELECT identity FROM participant_sessions WHERE nickname=?').all('Bob') as Array<{ identity: string }>;
@@ -508,7 +569,8 @@ async function createFixture(overrides: Partial<TestConfig> = {}, useAppCreatedS
     api: fixtureConfig.cloudflareSfuAppId && fixtureConfig.cloudflareSfuAppSecret ? new CloudflareSfuClient({ appId: fixtureConfig.cloudflareSfuAppId, appSecret: fixtureConfig.cloudflareSfuAppSecret }) : undefined
   });
   const app = await buildApp({
-    config: fixtureConfig, meetings, hosts, participants, media, p2p, ...(useAppCreatedSfu ? {} : { screenSfu }), webhooks: new StubWebhookHandler()
+    config: fixtureConfig, meetings, hosts, participants, media, p2p, ...(useAppCreatedSfu ? {} : { screenSfu }),
+    webhooks: new LiveKitWebhookHandler({ database: db, media, apiKey: config.livekitApiKey, apiSecret: config.livekitApiSecret, clock })
   });
 
   return {
@@ -548,11 +610,12 @@ const config: AppConfig = {
 };
 
 class RouteMediaFake implements MediaService {
+  connected = new Set<string>();
   iceServers: Array<{ urls: string[] }> = [];
   iceServersError?: Error;
   fetchCalls = 0;
 
-  async listParticipantIdentities(): Promise<Set<string>> { return new Set(); }
+  async listParticipantIdentities(): Promise<Set<string>> { return new Set(this.connected); }
   async issueToken(input: IssueTokenInput): Promise<string> { return `livekit-token:${input.identity}`; }
   async updateParticipantSources(): Promise<void> {}
   async removeParticipant(): Promise<void> {}
@@ -563,10 +626,6 @@ class RouteMediaFake implements MediaService {
     if (this.iceServersError) throw this.iceServersError;
     return this.iceServers;
   }
-}
-
-class StubWebhookHandler implements WebhookHandler {
-  async handle(): Promise<WebhookHandleResult> { return {}; }
 }
 
 class LiteralPasswordHasher implements PasswordHasher {

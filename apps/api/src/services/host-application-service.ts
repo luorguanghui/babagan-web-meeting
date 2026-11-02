@@ -196,19 +196,9 @@ export class HostApplicationService {
     await this.mutex.runExclusive(meeting.id, async () => {
       const current = this.requireUsableMeeting(slug);
       if (current.shareIdentity !== identity) return;
-      try {
-        await this.dependencies.media.updateParticipantSources(
-          current.id,
-          identity,
-          [...NORMAL_PUBLISH_SOURCES]
-        );
-      } catch {
-        throw domainError('MEDIA_SERVICE_UNAVAILABLE');
-      }
-      this.dependencies.repository.transaction(() => {
-        this.clearMatchingShare(current.slug, identity);
-        this.insertAudit('screen_share_released', current.id, identity);
-      });
+      // Stopping capture ends this publication, not the host's permission.
+      // Only explicit host revoke, leaving/kicking, or meeting end clears it.
+      this.insertAudit('screen_share_stopped', current.id, identity);
     });
   }
 

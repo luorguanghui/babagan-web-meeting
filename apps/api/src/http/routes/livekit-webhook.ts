@@ -17,6 +17,9 @@ export function registerLiveKitWebhookRoute(
     const body = request.body;
     if (!(body instanceof Uint8Array)) throw new Error('Expected raw webhook body');
     const result = await webhooks.handle(body, request.headers.authorization);
+    if (result.participantLeft) {
+      await screenSfu?.closeParticipant(result.participantLeft.slug, result.participantLeft.identity);
+    }
     if (result.shareGone) {
       await screenSfu?.reconcile(result.shareGone.slug);
       p2p.broadcastShareGone(result.shareGone.slug, result.shareGone.reason);
