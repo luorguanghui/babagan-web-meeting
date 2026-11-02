@@ -19,3 +19,13 @@
 `apps/web/qa/panels.html` 是只供本地 Vite 使用的隔离布局复现，不包含真实网络或媒体，不进入生产入口。实际测试了 390×600、390×844、844×390 视口；短屏的“更多”和“设置”均可操作。这里验证的是浏览器布局与服务生命周期，不声称已在实体手机完成真实跨网络 TURN 媒体验收。
 
 发布证据、产物摘要与回滚位置保存在 `output/meeting-fixes-deploy-20261103/` 及服务器对应 release 目录，完成部署后追加实际结果。
+
+## 实际发布结果
+
+2026-11-03 01:40:51（香港时间）部署完成，版本 `dc07f5516b97f4bac665ecae55fbd8bddad6339b`，本地发布分支 `codex/meeting-lifecycle-fixes-20261103`，未推送 GitHub。最终全量 **75 个文件、983 项测试通过**，服务器候选镜像中的真实编译代码也通过了停止/再开始/撤销、七次观看者进出及重连旧通知的离线回归。
+
+API、web、Caddy、LiveKit、coturn 五服务健康，公网存活及就绪接口返回 200，公网 JS 与发布包摘要一致，Cloudflare SFU API 冒烟通过。生产配置保持一致，更新前完成数据库备份，发布事务无遗留 pending 标记。
+
+服务器发布与回滚记录：`/opt/babagan-web-meeting/var/releases/update-20261102T174012Z-meeting-fixes-prebuilt/`；回滚入口 `rollback.sh`。本地证据见 `output/meeting-fixes-deploy-20261103/deployment-record.json`、`final-tests.log`、`mobile-settings-verified.jpg` 和 `deployment-success.jpg`。
+
+手机和电脑端应刷新页面再入会，以加载新前端。首次解包遇到服务器 Python 不支持 `tarfile` 的 `filter` 参数，尚未执行部署；改为逐项校验路径和成员类型后完成解包，未绕过摘要检查。

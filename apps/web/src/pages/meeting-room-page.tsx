@@ -71,6 +71,8 @@ import {
   type ScreenTurnProvider
 } from '../meeting/screen-transport-mode.js';
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
+import { useMeetingExitGuard } from '../meeting/use-meeting-exit-guard.js';
+import { useMeetingMediaSession } from '../meeting/use-meeting-media-session.js';
 import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 import type { ProjectStats } from '../meeting/software-media/encoder.js';
 import {
@@ -211,12 +213,15 @@ export function MeetingRoomPage({
   const { t } = useI18n();
   const [controller] = useState(() => providedController ?? controllerFactory());
   const [p2pStats] = useState(() => (createStatsCollector ?? (() => createP2pStatsCollector({ slug })))());
-  const refresh = useCallback(() => apiRequest<RefreshParticipantTokenResponse>(
+  const refresh = useCallback((signal?: AbortSignal) => apiRequest<RefreshParticipantTokenResponse>(
     `/meetings/${encodeURIComponent(slug)}/token`,
     RefreshParticipantTokenResponseSchema,
-    { method: 'POST' }
+    { method: 'POST', signal }
   ), [slug]);
-  const { state, error: connectionError, reconnectState, reconnectRateLimited } = useMeetingRoom(join, controller, refresh);
+  const { state, error: connectionError, reconnectState, reconnectRateLimited, stopRecovery } = useMeetingRoom(join, controller, refresh);
+  const [sessionActive, setSessionActive] = useState(true);
+  useMeetingExitGuard(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required');
+  useMeetingMediaSession(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required', meetingName || 'Babagan', () => { void leave(); });
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [callAudioVolume, setCallAudioVolume] = useState(100);
   const [sharedAudioVolume, setSharedAudioVolume] = useState(100);
@@ -892,6 +897,8 @@ export function MeetingRoomPage({
   }, [onTerminal, reconnectState]);
 
   async function leave() {
+    setSessionActive(false);
+    stopRecovery();
     setLeaving(true);
     try {
       await leaveMeeting(slug);
@@ -1105,7 +1112,7 @@ export function MeetingRoomPage({
     onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
     onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
     onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
-    onResumeAudio: () => { void controller.resumeAudioPlayback(); void viewerP2pRef.current?.resumeProjectAudio(); },
+    onResumeAudio: () => { window.dispatchEvent(new Event('babagan-resume-media')); void viewerP2pRef.current?.resumeProjectAudio(); },
     onCallAudioVolumeChange: (volume) => {
       setCallAudioVolume(volume);
       controller.setCallAudioVolume(volume / 100);
@@ -1212,6 +1219,7 @@ export function MeetingRoomPage({
             waitForVideoFrame={Boolean(cf.sourceIdentity)}
             onSourceReady={handleStageSourceReady}
             sharedAudioVolume={sharedAudioVolume / 100}
+            independentAudio
           >
           </ScreenStage>
     {displayedPanel === 'settings' && <MeetingDrawer
@@ -1277,7 +1285,7 @@ export function MeetingRoomPage({
           onRevokeShare={() => meetingApi.revokeShare(slug)}
           onKick={(identity) => meetingApi.kick(slug, identity)}
           onEndMeeting={() => meetingApi.end(slug)}
-          onEnded={() => onTerminal?.('ended')}
+          onEnded={() => { setSessionActive(false); stopRecovery(); onTerminal?.('ended'); }}
         />
           </> : <>
         {hostAuthorization === 'unauthorized' && meetingApi.adminEnd && <section className="participant-admin-end">
@@ -1285,7 +1293,7 @@ export function MeetingRoomPage({
           <AdminEndMeetingForm
             compact
             onEnd={(password) => meetingApi.adminEnd!(slug, password)}
-            onEnded={() => onTerminal?.('ended')}
+            onEnded={() => { setSessionActive(false); stopRecovery(); onTerminal?.('ended'); }}
           />
         </section>}
 

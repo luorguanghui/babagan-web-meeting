@@ -42,7 +42,7 @@ export interface MeetingRoomState {
 }
 
 export interface MeetingRoomController {
-  connect(join: JoinMeetingResponse): Promise<void>;
+  connect(join: JoinMeetingResponse, signal?: AbortSignal): Promise<void>;
   setMicrophoneEnabled(enabled: boolean, deviceId?: string): Promise<void>;
   switchAudioOutput(deviceId: string): Promise<'changed' | 'unsupported'>;
   setCallAudioVolume(volume: number): void;
@@ -154,8 +154,10 @@ class RoomController implements MeetingRoomController {
     });
   }
 
-  async connect(join: JoinMeetingResponse): Promise<void> {
+  async connect(join: JoinMeetingResponse, signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
     if (this.room) await this.disconnect();
+    signal?.throwIfAborted();
     const generation = ++this.roomGeneration;
     const room = this.createRoom({
       adaptiveStream: { pixelDensity: 'screen' },
@@ -165,6 +167,12 @@ class RoomController implements MeetingRoomController {
     this.room = room;
     this.bindRoomEvents(room);
     this.update({ connection: 'connecting' });
+    const cancel = () => {
+      if (!this.ownsRoom(room, generation)) return;
+      this.releaseRoom(room);
+      void room.disconnect().catch(() => undefined);
+    };
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
       await room.connect(join.livekitUrl, join.token, { autoSubscribe: false });
       if (!this.ownsRoom(room, generation)) return;
@@ -177,6 +185,8 @@ class RoomController implements MeetingRoomController {
       this.releaseRoom(room);
       await room.disconnect().catch(() => undefined);
       throw reason;
+    } finally {
+      signal?.removeEventListener('abort', cancel);
     }
   }
 
@@ -345,6 +355,7 @@ class RoomController implements MeetingRoomController {
     this.listen(room, RoomEvent.LocalTrackUnpublished, refresh);
     this.listen(room, RoomEvent.ParticipantPermissionsChanged, refresh);
     this.listen(room, RoomEvent.Reconnecting, () => this.update({ connection: 'reconnecting' }));
+    this.listen(room, RoomEvent.SignalReconnecting, () => this.update({ connection: 'reconnecting' }));
     this.listen(room, RoomEvent.Reconnected, () => {
       this.reconcileRemoteSubscriptions(room);
       this.refreshParticipants();

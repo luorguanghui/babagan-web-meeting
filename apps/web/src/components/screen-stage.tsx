@@ -4,6 +4,7 @@ import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 import { keepTrackVisibleInPictureInPicture, openScreenPictureInPicture, ScreenPictureInPictureError, type ScreenPictureInPictureSession } from './screen-picture-in-picture.js';
 import './screen-stage.css';
+import { ScreenAudio } from './screen-audio.js';
 
 type StageTrack = Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
 
@@ -21,17 +22,22 @@ function sameSource(a: StageSource, b: StageSource): boolean {
   return a.kind === 'track' && b.kind === 'track' && a.track === b.track;
 }
 
-function applySource(element: HTMLMediaElement, source: StageSource): void {
+function applySource(element: HTMLMediaElement, source: StageSource, withAudio = true): void {
   if (source === null) {
     element.srcObject = null;
     return;
   }
   if (source.kind === 'stream') {
     element.srcObject = source.stream;
+    if (!withAudio) element.muted = true;
     return;
   }
+  // LiveKit reuses srcObject and toggles muted while attaching a track. Never
+  // let it retain an old P2P audio track or unmute the independent video player.
+  if (!withAudio) element.srcObject = null;
   source.track.attach(element);
-  source.audioTrack?.attach(element);
+  if (withAudio) source.audioTrack?.attach(element);
+  else element.muted = true;
 }
 
 /**
@@ -40,10 +46,10 @@ function applySource(element: HTMLMediaElement, source: StageSource): void {
  * after a swap is safe); streams are only cleared when the element still shows
  * them — an incoming source has already replaced them.
  */
-function releaseSource(element: HTMLMediaElement, source: StageSource): void {
+function releaseSource(element: HTMLMediaElement, source: StageSource, withAudio = true): void {
   if (source === null) return;
   if (source.kind === 'track') {
-    source.audioTrack?.detach(element);
+    if (withAudio) source.audioTrack?.detach(element);
     source.track.detach(element);
   } else if (element.srcObject === source.stream) {
     element.srcObject = null;
@@ -62,6 +68,7 @@ export function ScreenStage({
   waitForVideoFrame = false,
   onSourceReady,
   sharedAudioVolume = 1,
+  independentAudio = false,
   children
 }: {
   stream?: MediaStream;
@@ -82,6 +89,8 @@ export function ScreenStage({
   onSourceReady?: () => void;
   /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (original level). */
   sharedAudioVolume?: number;
+  /** Receivers use an audio-only player so background video suspension cannot pause sound. */
+  independentAudio?: boolean;
   children?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -249,8 +258,10 @@ export function ScreenStage({
     if (sameSource(committed, desired)) {
       if (committed?.kind === 'track' && committed.audioTrack !== audioTrack) {
         if (element !== null) {
-          audioTrack?.attach(element);
-          committed.audioTrack?.detach(element);
+          if (!independentAudio) {
+            audioTrack?.attach(element);
+            committed.audioTrack?.detach(element);
+          }
           committedRef.current = { ...committed, audioTrack };
         }
       }
@@ -264,14 +275,14 @@ export function ScreenStage({
       setDimensions(null);
       setDisplayMessage(null);
       syncPipVisibility();
-      if (element !== null && committed !== null) releaseSource(element, committed);
+      if (element !== null && committed !== null) releaseSource(element, committed, !independentAudio);
       return;
     }
 
     if (committed === null) {
       // First source: apply directly.
       if (element === null) return;
-      applySource(element, desired);
+      applySource(element, desired, !independentAudio);
       committedRef.current = desired;
       syncPipVisibility();
       let notified = false;
@@ -315,11 +326,11 @@ export function ScreenStage({
       releaseProbe();
       pendingSourceRef.current = null;
       setDimensions(null);
-      applySource(element, desired);
+      applySource(element, desired, !independentAudio);
       const previous = committedRef.current;
       committedRef.current = desired;
       if (previous !== null && !sameSource(previous, desired) && previous.kind === 'track') {
-        releaseSource(element, previous);
+        releaseSource(element, previous, !independentAudio);
       }
       syncPipVisibility();
       sourceReadyRef.current?.();
@@ -377,7 +388,7 @@ export function ScreenStage({
       pendingSourceRef.current = null;
       syncPipVisibility();
     };
-  }, [audioTrack, stream, track, syncPipVisibility, waitForVideoFrame]);
+  }, [audioTrack, stream, track, syncPipVisibility, waitForVideoFrame, independentAudio]);
 
   useEffect(() => {
     // Unmount: release whatever the stage is showing. Empty deps mean this
@@ -387,9 +398,9 @@ export function ScreenStage({
       const committed = committedRef.current;
       committedRef.current = null;
       const element = videoElementRef.current;
-      if (element !== null && committed !== null) releaseSource(element, committed);
+      if (element !== null && committed !== null) releaseSource(element, committed, !independentAudio);
     };
-  }, []);
+  }, [independentAudio]);
 
   useEffect(() => {
     const element = videoRef.current;
@@ -453,9 +464,14 @@ export function ScreenStage({
           ref={videoRef}
           aria-label={t('screen.videoLabel', { name })}
           autoPlay
-          muted={muted ?? (Boolean(stream) || !audioTrack)}
+          muted={independentAudio || (muted ?? (Boolean(stream) || !audioTrack))}
           playsInline
           style={{ objectFit: 'contain' }}
+        />}
+        {independentAudio && <ScreenAudio
+          stream={track ? undefined : stream}
+          track={track ? audioTrack : undefined}
+          muted={muted ?? (Boolean(stream) || !audioTrack)} volume={sharedAudioVolume}
         />}
       </div>
       {pipKind === 'document' && <div className="screen-stage-pip-placeholder">

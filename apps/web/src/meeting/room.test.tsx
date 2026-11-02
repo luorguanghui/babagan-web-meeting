@@ -531,6 +531,17 @@ function renderRoom(controller = new FakeMeetingRoomController(), leaveMeeting =
 }
 
 describe('meeting room UI', () => {
+  it('warns before closing the meeting tab, but stops warning after explicit leave', async () => {
+    renderRoom();
+    await act(async () => {});
+    const close = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(close);
+    expect(close.defaultPrevented).toBe(true);
+    await userEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
+    const afterLeave = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(afterLeave);
+    expect(afterLeave.defaultPrevented).toBe(false);
+  });
   it('keeps a complete participant sidebar visible without a modal or inert background', async () => {
     renderRoom();
     const sidebar = await screen.findByRole('complementary', { name: 'Participants' });

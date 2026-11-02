@@ -10,7 +10,7 @@ const join = {
 } satisfies JoinMeetingResponse;
 
 describe('reconnect controller', () => {
-  it('refreshes and reconnects inside the 30-second identity grace window', async () => {
+  it('refreshes the authenticated session and reconnects', async () => {
     const refresh = vi.fn(async () => join);
     const reconnect = vi.fn(async () => undefined);
     const controller = createReconnectController({ refresh, reconnect, now: () => 10_000 });
@@ -18,7 +18,7 @@ describe('reconnect controller', () => {
     await controller.reconnect();
 
     expect(refresh).toHaveBeenCalledOnce();
-    expect(reconnect).toHaveBeenCalledWith(join);
+    expect(reconnect).toHaveBeenCalledWith(join, expect.any(AbortSignal));
     expect(controller.getState()).toEqual({ kind: 'connected' });
   });
 
@@ -67,7 +67,7 @@ describe('reconnect controller', () => {
     expect(states).toEqual(['connected', 'refreshing-token']);
   });
 
-  it('does not reconnect when a slow refresh passes the thirty-second deadline', async () => {
+  it('accepts a token after a background timer delay without discarding the identity', async () => {
     let now = 0;
     let resolve!: (value: typeof join) => void;
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
@@ -85,12 +85,13 @@ describe('reconnect controller', () => {
     await vi.waitFor(() => expect(refresh).toHaveBeenCalledTimes(2));
     now = 30_001;
     resolve(join);
-    await vi.waitFor(() => expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' }));
+    await vi.waitFor(() => expect(controller.getState()).toEqual({ kind: 'connected' }));
 
-    expect(reconnect).not.toHaveBeenCalled();
+    expect(reconnect).toHaveBeenCalledOnce();
+    controller.dispose();
   });
 
-  it.each(['refresh', 'reconnect'] as const)('forces rejoin at the hard deadline while %s never settles', async (pendingStep) => {
+  it.each(['refresh', 'reconnect'] as const)('aborts a stuck %s attempt and keeps the session retryable', async (pendingStep) => {
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     const controller = createReconnectController({
       refresh: pendingStep === 'refresh'
@@ -107,10 +108,11 @@ describe('reconnect controller', () => {
     await vi.waitFor(() => expect(scheduled.some((entry) => entry.delay === 30_000)).toBe(true));
     scheduled.find((entry) => entry.delay === 30_000)?.callback();
 
-    expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' });
+    await vi.waitFor(() => expect(controller.getState().kind).toBe('reconnecting'));
+    controller.dispose();
   });
 
-  it('rejects a retry timer that fires after the hard deadline', async () => {
+  it('runs delayed retry timers after background suspension', async () => {
     let now = 0;
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     const refresh = vi.fn(async () => { throw new Error('offline'); });
@@ -122,11 +124,12 @@ describe('reconnect controller', () => {
     now = 30_001;
     scheduled.find((entry) => entry.delay === 1_000)?.callback();
 
-    expect(refresh).toHaveBeenCalledOnce();
-    expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await vi.waitFor(() => expect(controller.getState().kind).toBe('reconnecting'));
+    controller.dispose();
   });
 
-  it('does not accept a reconnect that completes after the grace deadline', async () => {
+  it('accepts a connection after a background time jump', async () => {
     let now = 0;
     let resolveReconnect!: () => void;
     const controller = createReconnectController({
@@ -140,10 +143,11 @@ describe('reconnect controller', () => {
     resolveReconnect();
     await pending;
 
-    expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' });
+    expect(controller.getState()).toEqual({ kind: 'connected' });
+    controller.dispose();
   });
 
-  it('requires a new join after thirty seconds of failed recovery', async () => {
+  it('retains the participant after thirty seconds of failed recovery', async () => {
     let now = 10_000;
     const scheduled: Array<{ callback: () => void; delay: number }> = [];
     const controller = createReconnectController({
@@ -157,7 +161,8 @@ describe('reconnect controller', () => {
     await controller.reconnect();
     now = 40_001;
     scheduled.find((entry) => entry.delay === 1_000)?.callback();
-    await vi.waitFor(() => expect(controller.getState()).toEqual({ kind: 'rejoin-required', reason: 'grace-expired' }));
+    await vi.waitFor(() => expect(controller.getState().kind).toBe('reconnecting'));
+    controller.dispose();
   });
 
   it('stops retrying and requires rejoin when the participant session is revoked', async () => {

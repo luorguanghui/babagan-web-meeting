@@ -13,6 +13,7 @@ type JoinToken = JoinMeetingResponse | RefreshParticipantTokenResponse;
 
 export interface ReconnectController {
   reconnect(): Promise<void>;
+  connected(): void;
   getState(): ReconnectState;
   isRateLimited(): boolean;
   subscribe(listener: (state: ReconnectState) => void): () => void;
@@ -20,149 +21,114 @@ export interface ReconnectController {
 }
 
 interface Dependencies {
-  refresh(): Promise<JoinToken>;
-  reconnect(join: JoinToken): Promise<void>;
+  refresh(signal?: AbortSignal): Promise<JoinToken>;
+  reconnect(join: JoinToken, signal?: AbortSignal): Promise<void>;
   now?: () => number;
   schedule?: (callback: () => void, delayMs: number) => unknown;
   cancel?: (timer: unknown) => void;
 }
 
-const graceMs = 30_000;
-
+/** Keep the authenticated session during suspension; bound each attempt, not the entire meeting. */
 class BrowserReconnectController implements ReconnectController {
   private state: ReconnectState = { kind: 'connected' };
   private readonly listeners = new Set<(state: ReconnectState) => void>();
   private since?: number;
   private retries = 0;
-  private refreshInFlight?: Promise<void>;
+  private inFlight?: Promise<void>;
   private timer?: unknown;
-  private deadlineTimer?: unknown;
+  private attemptTimer?: unknown;
+  private abort?: AbortController;
   private rateLimited = false;
   private disposed = false;
   private generation = 0;
 
-  constructor(private readonly dependencies: Required<Pick<Dependencies, 'refresh' | 'reconnect'>> & Omit<Dependencies, 'refresh' | 'reconnect'>) {}
+  constructor(private readonly dependencies: Dependencies) {}
 
   reconnect(): Promise<void> {
-    if (this.disposed || this.isFinished()) return Promise.resolve();
-    if (this.refreshInFlight) return this.refreshInFlight;
-    if (this.since !== undefined && this.graceExpired(this.since)) {
-      this.forceGraceExpiry(this.generation);
-      return Promise.resolve();
-    }
+    if (this.disposed || this.state.kind === 'terminal' || this.state.kind === 'rejoin-required') return Promise.resolve();
+    if (this.inFlight) return this.inFlight;
+    this.cancelTimer(this.timer);
+    this.timer = undefined;
     const since = this.since ?? this.dependencies.now?.() ?? Date.now();
-    const isNewRecovery = this.since === undefined;
     this.since = since;
-    const generation = this.generation;
-    if (isNewRecovery) this.scheduleDeadline(since, generation);
-    const inFlight = this.attempt(since, generation);
-    this.refreshInFlight = inFlight;
-    void inFlight.then(
-      () => this.clearInFlight(generation, inFlight),
-      () => this.clearInFlight(generation, inFlight)
-    );
-    return inFlight;
-  }
-
-  getState(): ReconnectState { return this.state; }
-  isRateLimited(): boolean { return this.rateLimited; }
-
-  subscribe(listener: (state: ReconnectState) => void): () => void {
-    this.listeners.add(listener);
-    listener(this.state);
-    return () => this.listeners.delete(listener);
-  }
-
-  dispose(): void {
-    this.disposed = true;
-    this.generation++;
-    this.clearTimers();
-    this.listeners.clear();
-  }
-
-  private async attempt(since: number, generation: number): Promise<void> {
-    if (!this.isCurrent(generation)) return;
+    const generation = ++this.generation;
+    const abort = new AbortController();
+    this.abort = abort;
     this.setState({ kind: 'refreshing-token', since });
-    try {
-      const join = await this.dependencies.refresh();
-      if (!this.isCurrent(generation)) return;
-      if (this.graceExpired(since)) {
-        this.clearTimers();
-        this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
-        return;
-      }
-      await this.dependencies.reconnect(join);
-      if (!this.isCurrent(generation)) return;
-      if (this.graceExpired(since)) {
-        this.clearTimers();
-        this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
-        return;
-      }
+    const timeout = new Promise<never>((_, reject) => {
+      this.attemptTimer = (this.dependencies.schedule ?? setTimeout)(() => {
+        abort.abort();
+        reject(new Error('Meeting recovery attempt timed out'));
+      }, 30_000);
+    });
+    const work = (async () => {
+      const join = await this.dependencies.refresh(abort.signal);
+      if (!this.current(generation) || abort.signal.aborted) return;
+      await this.dependencies.reconnect(join, abort.signal);
+    })();
+    this.inFlight = Promise.race([work, timeout]).then(() => {
+      if (!this.current(generation)) return;
       this.since = undefined;
       this.retries = 0;
       this.rateLimited = false;
-      this.clearTimers();
       this.setState({ kind: 'connected' });
-    } catch (error) {
-      if (!this.isCurrent(generation)) return;
+    }, error => {
+      if (!this.current(generation)) return;
+      abort.abort();
       const terminal = terminalState(error);
-      if (terminal) {
-        this.clearTimers();
-        this.setState(terminal);
-        return;
-      }
-      if (this.graceExpired(since)) {
-        this.clearTimers();
-        this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
-        return;
-      }
+      if (terminal) { this.setState(terminal); return; }
       this.rateLimited = error instanceof ApiRequestError && error.status === 429;
       this.setState({ kind: 'reconnecting', since });
-      const delay = Math.min(1_000 * (2 ** this.retries++), 5_000);
+      const delay = Math.min(1_000 * 2 ** Math.min(this.retries++, 4), 10_000);
       this.timer = (this.dependencies.schedule ?? setTimeout)(() => {
-        if (!this.isCurrent(generation)) return;
         this.timer = undefined;
-        void this.reconnect();
+        if (this.current(generation)) void this.reconnect();
       }, delay);
-    }
+    }).finally(() => {
+      if (!this.current(generation)) return;
+      this.cancelTimer(this.attemptTimer);
+      this.attemptTimer = undefined;
+      this.inFlight = undefined;
+      this.abort = undefined;
+    });
+    return this.inFlight;
   }
 
-  private isFinished(): boolean {
-    return this.state.kind === 'terminal' || this.state.kind === 'rejoin-required';
+  getState(): ReconnectState { return this.state; }
+  connected(): void {
+    if (this.disposed || this.state.kind === 'terminal' || this.state.kind === 'rejoin-required') return;
+    if (this.state.kind === 'connected' && !this.inFlight) return;
+    this.generation++;
+    this.abort?.abort();
+    this.cancelTimer(this.timer);
+    this.cancelTimer(this.attemptTimer);
+    this.timer = undefined;
+    this.attemptTimer = undefined;
+    this.inFlight = undefined;
+    this.abort = undefined;
+    this.since = undefined;
+    this.retries = 0;
+    this.rateLimited = false;
+    this.setState({ kind: 'connected' });
   }
-
-  private isCurrent(generation: number): boolean { return !this.disposed && generation === this.generation; }
-  private graceExpired(since: number): boolean { return (this.dependencies.now?.() ?? Date.now()) - since >= graceMs; }
-  private clearInFlight(generation: number, inFlight: Promise<void>): void {
-    if (this.isCurrent(generation) && this.refreshInFlight === inFlight) this.refreshInFlight = undefined;
+  isRateLimited(): boolean { return this.rateLimited; }
+  subscribe(listener: (state: ReconnectState) => void): () => void {
+    this.listeners.add(listener); listener(this.state);
+    return () => this.listeners.delete(listener);
   }
-
+  dispose(): void {
+    this.disposed = true;
+    this.generation++;
+    this.abort?.abort();
+    this.cancelTimer(this.timer);
+    this.cancelTimer(this.attemptTimer);
+    this.listeners.clear();
+  }
+  private current(generation: number): boolean { return !this.disposed && generation === this.generation; }
   private setState(state: ReconnectState): void {
     this.state = state;
     for (const listener of this.listeners) listener(state);
   }
-
-  private scheduleDeadline(since: number, generation: number): void {
-    const delay = Math.max(0, graceMs - ((this.dependencies.now?.() ?? Date.now()) - since));
-    this.deadlineTimer = (this.dependencies.schedule ?? setTimeout)(() => {
-      this.forceGraceExpiry(generation);
-    }, delay);
-  }
-
-  private forceGraceExpiry(generation: number): void {
-    if (!this.isCurrent(generation)) return;
-    this.generation++;
-    this.clearTimers();
-    this.setState({ kind: 'rejoin-required', reason: 'grace-expired' });
-  }
-
-  private clearTimers(): void {
-    this.cancelTimer(this.timer);
-    this.cancelTimer(this.deadlineTimer);
-    this.timer = undefined;
-    this.deadlineTimer = undefined;
-  }
-
   private cancelTimer(timer: unknown): void {
     if (timer === undefined) return;
     if (this.dependencies.cancel) this.dependencies.cancel(timer);

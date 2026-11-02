@@ -68,6 +68,61 @@ afterEach(() => {
 });
 
 describe('screen stage dual-source rendering', () => {
+  it('keeps receiver audio on its own player when background video is paused', async () => {
+    const play = vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const track = makeTrack();
+    const audioTrack = makeAudioTrack();
+    const { container, unmount } = render(<ScreenStage track={track} audioTrack={audioTrack} independentAudio muted={false} sharedAudioVolume={0.4} />);
+    const video = getVisibleVideo(container);
+    const audio = container.querySelector('audio');
+    expect(audio).not.toBeNull();
+    expect(audioTrack.attach).toHaveBeenCalledWith(audio);
+    expect(audioTrack.attach).not.toHaveBeenCalledWith(video);
+    expect(video.muted).toBe(true);
+    expect(audio!.volume).toBe(0.4);
+    fireEvent(video, new Event('pause'));
+    fireEvent(document, new Event('visibilitychange'));
+    expect(audioTrack.detach).not.toHaveBeenCalled();
+    unmount();
+    expect(audioTrack.detach).toHaveBeenCalledWith(audio);
+    play.mockRestore();
+  });
+  it('removes stale audio and enforces muted video across SDK-mutated transport handovers', () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const first = makeStream(), second = makeStream();
+    const track = makeTrack();
+    track.attach.mockImplementation(element => {
+      if (!element.srcObject) element.srcObject = track.stream as MediaStream;
+      // Mirrors SDK attachment changing the video element outside React.
+      element.muted = false;
+      return element;
+    });
+    const audio=makeAudioTrack();
+    const view=render(<ScreenStage stream={first} muted={false} independentAudio />);
+    const video=getVisibleVideo(view.container);
+    view.rerender(<ScreenStage track={track} audioTrack={audio} muted={false} independentAudio />);
+    fireEvent(getProbe()!,new Event('loadedmetadata'));
+    expect(video.srcObject).toBe(track.stream);
+    expect(video.muted).toBe(true);
+    expect(audio.attach).not.toHaveBeenCalledWith(video);
+    view.rerender(<ScreenStage stream={second} muted={false} independentAudio />);
+    fireEvent(getProbe()!,new Event('loadedmetadata'));
+    expect(video.muted).toBe(true);
+    vi.restoreAllMocks();
+  });
+  it('switches audio to the new transport without waiting for suspended background video', () => {
+    vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+    const first=makeTrack(),second=makeTrack(),audio1=makeAudioTrack(),audio2=makeAudioTrack();
+    const view=render(<ScreenStage track={first} audioTrack={audio1} muted={false} independentAudio />);
+    const video=getVisibleVideo(view.container),audio=view.container.querySelector('audio');
+    view.rerender(<ScreenStage track={second} audioTrack={audio2} muted={false} independentAudio />);
+    expect(video.srcObject).toBe(first.stream);
+    expect(getProbe()).not.toBeNull();
+    expect(audio1.detach).toHaveBeenCalledWith(audio);
+    expect(audio2.attach).toHaveBeenCalledWith(audio);
+    expect(audio2.attach).not.toHaveBeenCalledWith(video);
+    vi.restoreAllMocks();
+  });
   it('renders a P2P stream directly when no source was shown before', () => {
     const stream = makeStream();
     const { container } = render(<ScreenStage stream={stream} />);
