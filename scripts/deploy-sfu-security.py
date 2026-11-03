@@ -87,6 +87,9 @@ def deploy():
         assert not re.search(r'^CLOUDFLARE_SFU_GATEWAY_TOKEN=.+', original_env, re.M), 'Credential already exists; inspect before overwrite'
         updated_env = re.sub(r'^CLOUDFLARE_SFU_GATEWAY_TOKEN=.*\n?', '', original_env, flags=re.M).rstrip() + '\nCLOUDFLARE_SFU_GATEWAY_TOKEN=' + token + '\n'
         candidate_env.write_text(updated_env); candidate_env.chmod(0o600)
+        # The mounted test contains no credentials and must be readable by the
+        # production container's UID 10001. Keep the env/token files mode 600.
+        (PAYLOAD / 'candidate-smoke.mjs').chmod(0o644)
         with (release / 'candidate-smoke.log').open('w') as log:
             run(['docker', 'run', '--rm', '--network=none', '--env-file', str(candidate_env),
                  '-e', 'NODE_ENV=test', '-e', 'DATABASE_PATH=:memory:', '-v', str(PAYLOAD / 'candidate-smoke.mjs') + ':/app/candidate-smoke.mjs:ro',
