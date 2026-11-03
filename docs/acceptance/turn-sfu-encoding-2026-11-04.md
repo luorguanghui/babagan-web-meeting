@@ -8,4 +8,12 @@ Statistics now render negotiated profiles as localized names and levels, for exa
 
 Validation: 699 tests in 56 web suites; TypeScript checking, production build, full web-source ESLint and diff whitespace checks passed. Regression cases cover sustained TURN bandwidth pressure at 30/60 fps, direct/relay migration, hardware and compatibility selection through ICE rebuild, cancellation during a pending capability probe, and English/Chinese sender/receiver profile rendering. Independent review reported no blocking findings.
 
-Deployment baseline: web `d390abe63b2f185ffb3f9179dc78e6ec54848146`, API `1567742db5d44eeb25ddd311871af12f956efaa4`. Use the reviewed static-only release workflow with exact artifact hashes, unchanged API/media/container identities and configuration, read-only health checks, and immutable-image rollback. Deployment results are recorded separately after server verification.
+Deployment baseline: web `d390abe63b2f185ffb3f9179dc78e6ec54848146`, API `1567742db5d44eeb25ddd311871af12f956efaa4`. The reviewed static-only release workflow checks exact artifact hashes, unchanged API/media/container identities and configuration, read-only health checks, and immutable-image rollback.
+
+## Production verification
+
+At 2026-11-04 02:18 HKT, web commit `fcbfcade1f9aae60acd18fe21d09ad5f4c2a032d` was deployed and verified. The API remained on the baseline commit. API, Caddy, LiveKit and coturn retained their exact container and image IDs and remained healthy. No paid service or quota configuration changed.
+
+Public entry `/assets/index-B36QEf01.js` matched the local artifact SHA-256 `c3938a31ba1f1369a648b5b223aa59f19ca9fa4b190abe51cf9a37ced1e3a56f`. Both health endpoints returned healthy states. Server verification also checked codec/WASM resources and isolation headers. The release and rollback are retained under `/opt/babagan-web-meeting/var/releases/update-20261103T181752Z-turn-sfu-encoding-prebuilt/`.
+
+Code was pushed to `codex/turn-sfu-encoding-20261104`. Existing tabs use the old loaded JavaScript until refreshed; refresh between shares. Validation here consists of automated behavior/UI tests and deployment checks, not a new live multi-device TURN quality measurement.
