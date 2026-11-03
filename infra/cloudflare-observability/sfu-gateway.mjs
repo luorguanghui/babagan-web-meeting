@@ -50,10 +50,14 @@ export async function handleSfu(request, env, { fetcher = fetch } = {}) {
   }
   try {
     const response = await fetcher(`https://rtc.live.cloudflare.com/v1/apps/${env.CALLS_APP_ID}${route.suffix}`, {
-      method: request.method, redirect: 'error', signal: AbortSignal.timeout(15000),
+      method: request.method, redirect: 'manual', signal: AbortSignal.timeout(15000),
       headers: { authorization: `Bearer ${env.CALLS_APP_TOKEN}`, ...(bytes.length ? { 'content-type': 'application/json' } : {}) },
       ...(bytes.length ? { body: bytes } : {})
     });
+    if (response.status >= 300 && response.status < 400) {
+      void response.body?.cancel().catch(() => {});
+      return reply('gateway_upstream_redirect', 502);
+    }
     const body = await readBytes(response.body, 262144);
     return new Response(body.length ? body : null, { status: response.status, headers: {
       'content-type': 'application/json', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff'

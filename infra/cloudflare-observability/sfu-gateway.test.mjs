@@ -31,7 +31,7 @@ test('gateway replaces auth, strips caller headers, rejects redirects and preser
       assert.equal(url,'https://rtc.live.cloudflare.com/v1/apps/test-app/sessions/session/tracks/close');
       assert.deepEqual(new Headers(init.headers).get('authorization'),'Bearer upstream-private');
       assert.equal(new Headers(init.headers).has('cookie'),false);
-      assert.equal(init.redirect,'error');
+      assert.equal(init.redirect,'manual');
       assert.deepEqual(JSON.parse(new TextDecoder().decode(init.body)),input);
       return Response.json({errorCode:'invalid_session_description'},{status:406});
     }
@@ -47,6 +47,17 @@ test('empty session allocation remains bodyless and resource sizes are bounded',
   assert.equal((await handleSfu(req('/sessions/new'),env,{fetcher})).status,201);
   assert.equal((await handleSfu(req('/sessions/new',{headers:{'content-type':'application/json'},body:'x'.repeat(131073)}),env,{fetcher})).status,413);
   assert.equal(calls,1);
+});
+
+test('upstream redirects fail closed without forwarding credentials to another origin',async()=>{
+  let calls=0;
+  const result=await handleSfu(req('/sessions/new'),env,{fetcher:async(_,init)=>{
+    calls++;assert.equal(init.redirect,'manual');
+    return new Response(null,{status:302,headers:{location:'https://untrusted.example/'}});
+  }});
+  assert.equal(result.status,502);assert.equal(calls,1);
+  assert.deepEqual(await result.json(),{errorCode:'gateway_upstream_redirect'});
+  assert.equal(result.headers.has('location'),false);
 });
 
 test('unrelated health/room requests keep their exact original response',async()=>{
