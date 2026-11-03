@@ -1,7 +1,8 @@
 import { CloudflareSfuSessionResponseSchema, type CloudflareSfuPublication, type CloudflareSfuSessionResponse } from '@meeting/contracts';
 import { apiNoContent, apiRequest } from '../api/client.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
-import { applyScreenVideoCodecPreference } from './video-codec-preference.js';
+import { applyCloudflareVideoCodecPreference, type CloudflareEncodingPreference } from './cloudflare-video-encoding.js';
+import { computeResolutionScale } from './screen-resolution.js';
 export interface CloudflareScreenApi {
   publish(body: unknown): Promise<CloudflareSfuSessionResponse>;
   ready(sessionId: string): Promise<void>;
@@ -28,7 +29,7 @@ export class CloudflareScreenSession {
     onStream?(stream: MediaStream): void;
     onError?(error: Error): void;
   }) { }
-  publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void> {
+  publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: CloudflareEncodingPreference = 'hardware'): Promise<void> {
     return this.negotiate(async (epoch) => {
       const pc = await this.create(epoch);
       if (!pc)
@@ -36,14 +37,15 @@ export class CloudflareScreenSession {
       const tracks = [stream.getVideoTracks()[0], stream.getAudioTracks()[0]].filter((t): t is MediaStreamTrack => Boolean(t));
       if (tracks.filter(t => t.kind === 'video').length !== 1)
         throw new Error('Cloudflare SFU requires one screen video track.');
-      const transceivers = tracks.map(track => {
+      const transceivers = await Promise.all(tracks.map(async track => {
         const clone = track.clone();
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
         const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
-        if (track.kind === 'video') applyScreenVideoCodecPreference(transceiver, options.codec);
+        if (track.kind === 'video') await applyCloudflareVideoCodecPreference(transceiver, options, preference, track.getSettings?.() ?? {});
         return { track, transceiver };
-      });
+      }));
+      if (!this.current(epoch)) return;
       await pc.setLocalDescription(await pc.createOffer());
       await waitForGatheredIce(pc, this.abort.signal);
       if (!this.current(epoch))
@@ -63,8 +65,9 @@ export class CloudflareScreenSession {
         if (track.kind !== 'video')
           continue;
         const parameters = transceiver.sender.getParameters();
-        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate }];
-        parameters.degradationPreference = options.degradationPreference;
+        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate,
+          scaleResolutionDownBy: computeResolutionScale(track.getSettings?.() ?? {}) ?? 1 }];
+        parameters.degradationPreference = 'maintain-resolution';
         await transceiver.sender.setParameters(parameters);
       }
       await waitForPc(pc, 'connectionstatechange', () => pc.connectionState === 'connected', this.abort.signal, 20000);

@@ -44,6 +44,8 @@ export interface MeetingControlsProps {
   screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
   onScreenSourceTransportChange?: (transport: 'p2p' | 'cloudflare-sfu') => void;
   cloudflareSfuAvailable?: boolean;
+  cloudflareEncodingPreference?: 'hardware' | 'compatible';
+  onCloudflareEncodingPreferenceChange?: (value: 'hardware' | 'compatible') => void;
   onScreenEncodingEngineChange?: (value: 'project' | 'browser') => void;
   screenBitrate?: ScreenShareBitrate;
   screenQuality?: ScreenShareQuality;
@@ -271,7 +273,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
       <div className="meeting-settings-section-grid">
         <label className="meeting-settings-field-wide">{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} aria-describedby={qualityDescriptionId} value={quality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
           <option value="flow">{t('controls.flowShort')}</option><option value="standard">{t('controls.standardShort')}</option><option value="motion">{t('controls.motionShort')}</option><option value="detail60">{t('controls.detail60Short')}</option>
-        </select><span id={qualityDescriptionId}>{t(`controls.${quality}`)}</span></label>
+        </select><span id={qualityDescriptionId}>{props.screenSourceTransport === 'cloudflare-sfu' ? t('controls.cloudflareQualityHint') : t(`controls.${quality}`)}</span></label>
       </div>
       {screenShareProviderDisabled && <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>}
     </section>
@@ -291,6 +293,9 @@ export function MeetingSettings(props: MeetingSettingsProps) {
         <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenSourceTransport === 'cloudflare-sfu' ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={props.screenSourceTransport === 'cloudflare-sfu' || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
           <option value="browser">{t('controls.browserEncoding')}</option><option value="project">{t('controls.projectEncoding')}</option>
         </select></label>
+        {props.screenSourceTransport === 'cloudflare-sfu' && (props.screenCodec ?? 'h264') === 'h264' && <label>{t('controls.cloudflareEncodingPreference')}<select aria-label={t('controls.cloudflareEncodingPreference')} value={props.cloudflareEncodingPreference ?? 'hardware'} disabled={props.screenShareActive || props.screenShareBusy} onChange={event => props.onCloudflareEncodingPreferenceChange?.(event.target.value as 'hardware' | 'compatible')}>
+          <option value="hardware">{t('controls.cloudflareHardware')}</option><option value="compatible">{t('controls.cloudflareCompatible')}</option>
+        </select><span>{t('controls.cloudflareHardwareHint')}</span></label>}
         <label className="meeting-settings-field-wide">{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>
           {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}
         </select><span className="meeting-controls-hint">{t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0) / 1_000_000 })}</span></label>

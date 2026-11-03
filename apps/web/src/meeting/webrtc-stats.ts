@@ -16,6 +16,7 @@ interface VideoFrameCounters {
 
 export interface WebRtcMediaStats {
   codec?: string;
+  codecProfile?: string;
   width?: number;
   height?: number;
   framesPerSecond?: number;
@@ -114,6 +115,7 @@ export function summarizeWebRtcStats(
       : entries.find((value) => value.type === 'media-source' && mediaKind(value) === 'video');
     sender = compact({
       codec: codecName(byId.get(stringValue(outbound.codecId) ?? '')),
+      codecProfile: h264Profile(byId.get(stringValue(outbound.codecId) ?? '')),
       width: numberValue(outbound.frameWidth),
       height: numberValue(outbound.frameHeight),
       framesPerSecond: numberValue(outbound.framesPerSecond),
@@ -155,6 +157,7 @@ export function summarizeWebRtcStats(
     counters.inboundFrames = frames;
     receiver = compact({
       codec: codecName(byId.get(stringValue(inbound.codecId) ?? '')),
+      codecProfile: h264Profile(byId.get(stringValue(inbound.codecId) ?? '')),
       width: numberValue(inbound.frameWidth),
       height: numberValue(inbound.frameHeight),
       framesPerSecond: numberValue(inbound.framesPerSecond),
@@ -232,6 +235,11 @@ function intervalMilliseconds(current: VideoFrameCounters, previous: VideoFrameC
 function codecName(value?: StatsRecord): string | undefined {
   const mimeType = stringValue(value?.mimeType);
   return mimeType?.split('/').at(-1)?.toUpperCase();
+}
+
+function h264Profile(value?: StatsRecord): string | undefined {
+  if (codecName(value) !== 'H264') return undefined;
+  return stringValue(value?.sdpFmtpLine)?.match(/(?:^|;)\s*profile-level-id\s*=\s*([0-9a-f]{6})(?:;|$)/i)?.[1].toLowerCase();
 }
 
 function numberValue(value: unknown): number | undefined {

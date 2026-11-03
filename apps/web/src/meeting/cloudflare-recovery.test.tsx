@@ -20,11 +20,12 @@ afterEach(() => vi.useRealTimers());
 describe('Cloudflare automatic recovery', () => {
   it('backs off repeated transient publish failures to a ten-second ceiling', async () => {
     vi.useFakeTimers(); const f = setup(new ApiRequestError('unavailable', 503));
-    await f.recovery.publish({} as MediaStream, { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-resolution' });
+    await f.recovery.publish({} as MediaStream, { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-resolution' }, 'compatible');
     let count = 1;
     for (const delay of [500, 1000, 2000, 4000, 8000, 10000, 10000]) {
       await vi.advanceTimersByTimeAsync(delay - 1); expect(f.sessions).toHaveLength(count);
       await vi.advanceTimersByTimeAsync(1); expect(f.sessions).toHaveLength(++count);
+      expect(f.sessions.at(-1)!.publish).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'compatible');
     }
     await f.recovery.close();
   });

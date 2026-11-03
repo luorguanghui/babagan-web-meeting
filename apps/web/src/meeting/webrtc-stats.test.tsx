@@ -116,7 +116,7 @@ describe('WebRTC screen-share statistics', () => {
       counters: { outbound: { bytes: 1_000_000, timestamp: 1_000 } }
     };
     const current = summarizeWebRtcStats([report({
-      codec: { id: 'codec', type: 'codec', mimeType: 'video/H264' },
+      codec: { id: 'codec', type: 'codec', mimeType: 'video/H264', sdpFmtpLine: 'packetization-mode=1;profile-level-id=64001f;level-asymmetry-allowed=1' },
       outbound: {
         id: 'outbound', type: 'outbound-rtp', kind: 'video', codecId: 'codec', timestamp: 2_000,
         bytesSent: 2_250_000, frameWidth: 1920, frameHeight: 1080, framesPerSecond: 60,
@@ -136,7 +136,7 @@ describe('WebRTC screen-share statistics', () => {
     })], previous, 2_000);
 
     expect(current.sender).toMatchObject({
-      codec: 'H264', width: 1920, height: 1080, framesPerSecond: 60,
+      codec: 'H264', codecProfile: '64001f', width: 1920, height: 1080, framesPerSecond: 60,
       bitrateMbps: 10, framesEncoded: 120, framesSent: 118, averageEncodeTimeMs: 10,
       qualityLimitationReason: 'bandwidth', packetsLost: 6, roundTripTimeMs: 80,
       // The RTC estimate and the encoder's own target stay distinct fields.

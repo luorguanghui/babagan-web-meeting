@@ -39,6 +39,22 @@ function setup(configure: (pc: Pc) => void = () => {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Cloudflare native screen session', () => {
+  it('stops cloned capture immediately and never offers after close during a capability probe', async () => {
+    const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [high] }) });
+    let resolve!: (result: { supported: boolean; powerEfficient: boolean }) => void;
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: () => new Promise(r => { resolve = r; }) } });
+    const offer = vi.fn(async () => ({ type: 'offer', sdp: 'local' }));
+    const { create, pcs, api } = setup(pc => { pc.createOffer = offer; });
+    const session = create(); const raw = new Track('video');
+    const starting = session.publish(new Stream([raw]) as unknown as MediaStream,
+      { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-framerate' });
+    await vi.waitFor(() => expect(resolve).toBeTypeOf('function'));
+    const stopping = session.close();
+    expect(pcs[0].senders[0].stop).toHaveBeenCalledOnce(); expect(raw.stop).not.toHaveBeenCalled();
+    resolve({ supported: true, powerEfficient: true }); await Promise.all([starting, stopping]);
+    expect(offer).not.toHaveBeenCalled(); expect(api.publish).not.toHaveBeenCalled(); expect(api.ready).not.toHaveBeenCalled();
+  });
   it('prefers H264 High before the SFU offer and keeps capture hints, limits and audio intact', async () => {
     const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };
     const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
@@ -59,8 +75,27 @@ describe('Cloudflare native screen session', () => {
       { codec: 'h264', maxBitrate: 20_000_000, frameRate: 60, degradationPreference: 'maintain-framerate' });
     expect(pcs[0].senders.map(t => t.contentHint)).toEqual(['motion', 'music']);
     expect(pcs[0].transceivers[0].sender.setParameters).toHaveBeenCalledWith({
-      encodings: [{ maxBitrate: 20_000_000, maxFramerate: 60 }], degradationPreference: 'maintain-framerate'
+      encodings: [{ maxBitrate: 20_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 }], degradationPreference: 'maintain-resolution'
     });
+    await session.close();
+  });
+  it('waits for hardware capability selection before the offer and preserves a 1080p short side', async () => {
+    const high = { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'packetization-mode=1;profile-level-id=640032' };
+    const baseline = { ...high, sdpFmtpLine: 'packetization-mode=1;profile-level-id=42e01f' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [baseline, high] }) });
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: async (c: MediaEncodingConfiguration) => ({ supported: true, powerEfficient: c.video!.contentType.includes('640032') }) } });
+    const { create, pcs } = setup(pc => { pc.createOffer = async () => {
+      expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith([high]);
+      return { type: 'offer', sdp: 'local' };
+    }; });
+    const video = new Track('video');
+    Object.assign(video, { getSettings: () => ({ width: 5120, height: 2160 }) });
+    const session = create();
+    await session.publish(new Stream([video]) as unknown as MediaStream,
+      { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-framerate' });
+    expect(pcs[0].transceivers[0].sender.setParameters).toHaveBeenCalledWith(expect.objectContaining({
+      degradationPreference: 'maintain-resolution', encodings: [expect.objectContaining({ scaleResolutionDownBy: 2 })]
+    }));
     await session.close();
   });
   it('allows transient disconnects to recover and reports persistent loss once', async () => {

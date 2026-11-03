@@ -10,6 +10,8 @@ import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
 import { applyScreenVideoCodecPreference } from './video-codec-preference.js';
+import { computeResolutionScale } from './screen-resolution.js';
+export { computeResolutionScale } from './screen-resolution.js';
 import {
   iceConfigurationExpiresSoon,
   normalizeP2pIceServerConfiguration,
@@ -1166,18 +1168,4 @@ function defaultFetchIceServers(slug: string): () => Promise<P2pIceServerConfigu
 
 export function createP2pShareController(dependencies: P2pShareControllerDependencies): P2pShareController {
   return new P2pShareControllerImpl(dependencies);
-}
-
-/**
- * Computes an aspect-preserving `scaleResolutionDownBy` for a captured track.
- * Preserve a 1080px short side, including ultrawide and portrait captures.
- * Smaller sources remain native; the helper never upscales.
- */
-export function computeResolutionScale(settings: { width?: number; height?: number }): number | undefined {
-  const width = settings.width;
-  const height = settings.height;
-  if (width === undefined || height === undefined || width <= 0 || height <= 0) return undefined;
-
-  const scale = Math.min(width, height) / 1080;
-  return scale > 1.0 ? scale : undefined;
 }

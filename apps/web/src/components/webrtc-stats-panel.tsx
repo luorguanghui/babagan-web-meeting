@@ -77,6 +77,7 @@ function StatsSection({ title, stats, sender = false }: { title: string; stats: 
   const { t } = useI18n();
   const rows: Array<[string, string | undefined]> = [
     [t('stats.codec'), stats.codec],
+    [t('stats.codecProfile'), stats.codecProfile],
     [t('stats.resolution'), stats.width && stats.height ? `${stats.width}×${stats.height}` : undefined],
     [t('stats.captureFps'), sender ? format(stats.sourceFramesPerSecond) : undefined],
     [t(sender ? 'stats.encodedFps' : 'stats.decodedFps'), format(stats.framesPerSecond)],

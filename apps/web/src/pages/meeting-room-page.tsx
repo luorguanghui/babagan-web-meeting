@@ -262,6 +262,8 @@ export function MeetingRoomPage({
   const cfRelayRef = useRef<CloudflareTurnFallback | undefined>(undefined);
   const cfRelayRequestedRef = useRef(false);
   const [screenEncodingEngine, setScreenEncodingEngine] = useState<'project' | 'browser'>('browser');
+  const [cloudflareEncodingPreference, setCloudflareEncodingPreference] = useState<'hardware' | 'compatible'>('hardware');
+  const cloudflareEncodingPreferenceRef = useRef<'hardware' | 'compatible'>('hardware');
   const [projectMediaError, setProjectMediaError] = useState<string>();
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
   const screenBitrateTouchedRef = useRef(false);
@@ -392,7 +394,7 @@ export function MeetingRoomPage({
             }
           });
           const session = cfRef.current.createSession(); cfPublisherRef.current = session;
-          await session.publish(stream, { ...options, encodingEngine: 'browser' });
+          await session.publish(stream, { ...options, encodingEngine: 'browser' }, cloudflareEncodingPreferenceRef.current);
           return;
         }
         const hybrid = new HybridScreenSharePublisher({
@@ -1103,6 +1105,10 @@ export function MeetingRoomPage({
     screenSourceTransport,
     onScreenSourceTransportChange: (transport) => { screenSourceTransportRef.current = transport; setScreenSourceTransport(transport); if (transport === 'cloudflare-sfu') setScreenEncodingEngine('browser'); },
     cloudflareSfuAvailable: cf.available,
+    cloudflareEncodingPreference,
+    onCloudflareEncodingPreferenceChange: (value: 'hardware' | 'compatible') => {
+      cloudflareEncodingPreferenceRef.current = value; setCloudflareEncodingPreference(value);
+    },
     screenEncodingEngine,
     onScreenEncodingEngineChange: setScreenEncodingEngine,
     screenBitrate,
