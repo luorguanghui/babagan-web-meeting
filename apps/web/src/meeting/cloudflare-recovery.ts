@@ -2,7 +2,7 @@ import type { CloudflareSfuPublication } from '@meeting/contracts';
 import { ApiRequestError } from '../api/client.js';
 import type { CloudflareScreenSession } from './cloudflare-sfu.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
-import type { CloudflareEncodingPreference } from './cloudflare-video-encoding.js';
+import type { BrowserEncodingPreference } from './browser-video-encoding.js';
 
 type Session = Pick<CloudflareScreenSession, 'publish' | 'subscribe' | 'close' | 'getStatsReport'>;
 export function isTerminalCloudflareError(error: unknown): boolean {
@@ -29,7 +29,7 @@ export class CloudflareScreenRecovery {
     onRecovering?(recovering: boolean): void;
   }) {}
 
-  publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: CloudflareEncodingPreference = 'hardware'): Promise<void> {
+  publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: BrowserEncodingPreference = 'hardware'): Promise<void> {
     this.publisher = true;
     return this.start(s => s.publish(stream, options, preference));
   }

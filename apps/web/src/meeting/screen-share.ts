@@ -65,13 +65,7 @@ export interface ScreenShareState {
 }
 
 export interface ScreenSharePublisher {
-  publish(stream: MediaStream, options: {
-    maxBitrate: number;
-    frameRate: number;
-    degradationPreference: RTCDegradationPreference;
-    codec: ScreenShareCodec;
-    encodingEngine?: 'project' | 'browser';
-  }): Promise<void>;
+  publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void>;
   release(stream: MediaStream): Promise<void>;
 }
 
@@ -379,6 +373,7 @@ export interface HybridScreenSharePublisherDependencies {
 }
 
 export interface ScreenSharePublishOptions {
+  encodingPreference?: 'hardware' | 'compatible';
   encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
   frameRate: number;

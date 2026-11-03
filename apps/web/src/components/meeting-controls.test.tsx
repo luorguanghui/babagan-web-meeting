@@ -171,10 +171,22 @@ describe('meeting dock audio controls', () => {
 });
 
 describe('grouped meeting settings', () => {
+  it.each(['p2p', 'cloudflare-sfu'] as const)('exposes the same hardware and compatibility preference for %s', transport => {
+    const change = vi.fn();
+    const view = render(<MeetingSettings {...baseProps} screenSourceTransport={transport}
+      browserEncodingPreference="hardware" onBrowserEncodingPreferenceChange={change} />);
+    fireEvent.click(screen.getByText('Advanced settings'));
+    const preference = screen.getByRole('combobox', { name: 'H.264 encoding preference' });
+    expect(preference).toHaveValue('hardware');
+    fireEvent.change(preference, { target: { value: 'compatible' } });
+    expect(change).toHaveBeenCalledWith('compatible');
+    view.rerender(<MeetingSettings {...baseProps} screenSourceTransport={transport} screenShareActive />);
+    expect(preference).toBeDisabled();
+  });
   it('keeps advanced controls collapsed while quality stays visible with complete selected details', async () => {
     render(<MeetingSettings {...baseProps} onScreenSourceTransportChange={() => undefined} />);
     const quality = screen.getByRole('combobox', { name: 'Screen quality' });
-    expect(quality).toHaveAccessibleDescription('Standard (1080p30, frame rate first)');
+    expect(quality).toHaveAccessibleDescription('Standard · 1080p30 · Keep screen detail first; frame rate may fall when bandwidth is limited.');
     expect(quality.closest('label')).toHaveClass('meeting-settings-field-wide');
     const advanced = screen.getByText('Advanced settings').closest('details');
     expect(advanced).not.toHaveAttribute('open');

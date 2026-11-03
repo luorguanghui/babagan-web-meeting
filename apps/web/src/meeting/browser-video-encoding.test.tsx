@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applyCloudflareVideoCodecPreference } from './cloudflare-video-encoding.js';
+import { applyBrowserVideoCodecPreference } from './browser-video-encoding.js';
 
 afterEach(() => vi.unstubAllGlobals());
 const cb = { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'packetization-mode=1;profile-level-id=42e01f' };
@@ -16,7 +16,7 @@ describe('Cloudflare hardware-first codec offer', () => {
       supported: true, powerEfficient: !config.video!.contentType.includes('42e01f')
     })) } });
     const setCodecPreferences = vi.fn();
-    await applyCloudflareVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', { width: 5120, height: 2160 });
+    await applyBrowserVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', { width: 5120, height: 2160 });
     expect(navigator.mediaCapabilities.encodingInfo).toHaveBeenCalledWith(expect.objectContaining({ video: expect.objectContaining({ width: 2560, height: 1080 }) }));
     const offered = setCodecPreferences.mock.calls[0][0] as RTCRtpCodec[];
     expect(offered).toEqual([high, baseline, rtx]);
@@ -28,7 +28,7 @@ describe('Cloudflare hardware-first codec offer', () => {
     vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [vp8, cb, high, rtx] }) });
     const encodingInfo = vi.fn(); vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo } });
     const setCodecPreferences = vi.fn();
-    await applyCloudflareVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'compatible', {});
+    await applyBrowserVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'compatible', {});
     expect(setCodecPreferences).toHaveBeenCalledWith([high, cb, vp8, rtx]);
     expect(encodingInfo).not.toHaveBeenCalled();
   });
@@ -39,7 +39,7 @@ describe('Cloudflare hardware-first codec offer', () => {
       return { supported: true, powerEfficient: false };
     } } });
     const setCodecPreferences = vi.fn();
-    await applyCloudflareVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', {});
+    await applyBrowserVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', {});
     expect(setCodecPreferences).toHaveBeenCalledWith([high, cb, vp8, rtx]);
   });
   it('bounds an unresponsive capability probe and retains compatibility', async () => {
@@ -48,7 +48,7 @@ describe('Cloudflare hardware-first codec offer', () => {
       vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [cb, high, rtx] }) });
       vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: () => new Promise(() => {}) } });
       const setCodecPreferences = vi.fn();
-      const pending = applyCloudflareVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', {});
+      const pending = applyBrowserVideoCodecPreference({ setCodecPreferences } as unknown as RTCRtpTransceiver, options, 'hardware', {});
       await vi.advanceTimersByTimeAsync(1000); await pending;
       expect(setCodecPreferences).toHaveBeenCalledWith([high, cb, rtx]);
     } finally { vi.useRealTimers(); }

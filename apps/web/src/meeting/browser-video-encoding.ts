@@ -2,11 +2,11 @@ import type { ScreenSharePublishOptions } from './screen-share.js';
 import { applyScreenVideoCodecPreference } from './video-codec-preference.js';
 import { computeResolutionScale } from './screen-resolution.js';
 
-export type CloudflareEncodingPreference = 'hardware' | 'compatible';
+export type BrowserEncodingPreference = 'hardware' | 'compatible';
 
-export async function applyCloudflareVideoCodecPreference(
+export async function applyBrowserVideoCodecPreference(
   transceiver: RTCRtpTransceiver, options: ScreenSharePublishOptions,
-  preference: CloudflareEncodingPreference, settings: MediaTrackSettings
+  preference: BrowserEncodingPreference, settings: MediaTrackSettings
 ): Promise<void> {
   const capabilities = typeof RTCRtpSender !== 'undefined' ? RTCRtpSender.getCapabilities?.('video')?.codecs : undefined;
   const mediaCapabilities = typeof navigator !== 'undefined' ? navigator.mediaCapabilities : undefined;

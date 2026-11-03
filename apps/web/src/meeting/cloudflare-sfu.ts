@@ -1,7 +1,7 @@
 import { CloudflareSfuSessionResponseSchema, type CloudflareSfuPublication, type CloudflareSfuSessionResponse } from '@meeting/contracts';
 import { apiNoContent, apiRequest } from '../api/client.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
-import { applyCloudflareVideoCodecPreference, type CloudflareEncodingPreference } from './cloudflare-video-encoding.js';
+import { applyBrowserVideoCodecPreference, type BrowserEncodingPreference } from './browser-video-encoding.js';
 import { computeResolutionScale } from './screen-resolution.js';
 export interface CloudflareScreenApi {
   publish(body: unknown): Promise<CloudflareSfuSessionResponse>;
@@ -29,7 +29,7 @@ export class CloudflareScreenSession {
     onStream?(stream: MediaStream): void;
     onError?(error: Error): void;
   }) { }
-  publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: CloudflareEncodingPreference = 'hardware'): Promise<void> {
+  publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: BrowserEncodingPreference = 'hardware'): Promise<void> {
     return this.negotiate(async (epoch) => {
       const pc = await this.create(epoch);
       if (!pc)
@@ -42,7 +42,7 @@ export class CloudflareScreenSession {
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
         const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
-        if (track.kind === 'video') await applyCloudflareVideoCodecPreference(transceiver, options, preference, track.getSettings?.() ?? {});
+        if (track.kind === 'video') await applyBrowserVideoCodecPreference(transceiver, options, preference, track.getSettings?.() ?? {});
         return { track, transceiver };
       }));
       if (!this.current(epoch)) return;

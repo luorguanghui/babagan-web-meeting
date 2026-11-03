@@ -331,6 +331,37 @@ afterEach(() => {
 });
 
 describe('p2p share controller', () => {
+  it.each([30, 60])('keeps TURN at the SFU resolution-first policy through %i fps bandwidth pressure and path migration', async frameRate => {
+    const { controller, runTransportChecks } = makeHarness({ turnProvider: 'coturn' });
+    await controller.start(makeStream(true, true, { width: 1920, height: 1080 }), { ...shareOptions, frameRate }, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    pc.statsCandidateType = 'relay'; pc.setIceConnectionState('connected'); controller.handleMediaReady('viewer-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
+    pc.senderStats = { qualityLimitationReason: 'bandwidth', framesPerSecond: 10,
+      frameWidth: 1280, frameHeight: 720, availableOutgoingBitrateBps: 1_000_000 };
+    for (let i = 0; i < 12; i++) await runTransportChecks();
+    expect(videoSender(pc).getParameters()).toMatchObject({ degradationPreference: 'maintain-resolution',
+      encodings: [{ maxBitrate: bitrate, maxFramerate: frameRate, scaleResolutionDownBy: 1 }] });
+    pc.statsCandidateType = 'srflx'; await runTransportChecks();
+    pc.statsCandidateType = 'relay'; await runTransportChecks();
+    expect(videoSender(pc).getParameters().degradationPreference).toBe('maintain-resolution');
+    expect(videoSender(pc).getParameters().encodings[0].scaleResolutionDownBy).toBe(1);
+    expect(FakeRTCPeerConnection.instances).toHaveLength(1);
+    await controller.stop();
+  });
+  it('does not send a stale offer after stopping during hardware capability detection', async () => {
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [{ mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' }] }) });
+    let release!: (result: { supported: boolean; powerEfficient: boolean }) => void;
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: () => new Promise(resolve => { release = resolve; }) } });
+    const { controller, signaling, onViewerFallback } = makeHarness();
+    const starting = controller.start(makeStream(), shareOptions, [viewers[0]]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(release).toBeTypeOf('function');
+    await controller.stop(); release({ supported: true, powerEfficient: true }); await starting;
+    expect(FakeRTCPeerConnection.instances[0].createOffer).not.toHaveBeenCalled();
+    expect(signaling.sendOffer).not.toHaveBeenCalled(); expect(onViewerFallback).not.toHaveBeenCalled();
+  });
   it('preserves resolution from the first offer before the direct path is classified', async () => {
     const { controller } = makeHarness();
     await controller.start(makeStream(true, false, { width: 1728, height: 1080 }), shareOptions, [viewers[0]]);
@@ -1660,24 +1691,28 @@ describe('p2p share controller', () => {
     expect(onViewerFallback).not.toHaveBeenCalled();
     await controller.stop();
   });
-  it('keeps High preference when a TURN session is rebuilt after an ICE failure', async () => {
+  it.each(['hardware', 'compatible'] as const)('keeps %s preference when a TURN session is rebuilt after an ICE failure', async encodingPreference => {
     const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };
     const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
     vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [baseline, high] }) });
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: async (config: MediaEncodingConfiguration) => ({
+      supported: true, powerEfficient: config.video!.contentType.includes('64001f')
+    }) } });
+    const expected = encodingPreference === 'hardware' ? [high] : [high, baseline];
     const { controller } = makeHarness({ turnProvider: 'coturn' });
-    await controller.start(makeStream(), { ...shareOptions, frameRate: 60 }, [viewers[0]]);
+    await controller.start(makeStream(), { ...shareOptions, frameRate: 60, encodingPreference }, [viewers[0]]);
     const pc = FakeRTCPeerConnection.instances[0];
     pc.statsCandidateType = 'relay';
     pc.setIceConnectionState('connected');
     controller.handleMediaReady('viewer-1');
     await vi.advanceTimersByTimeAsync(0);
     expect(controller.getViewerStates().get('viewer-1')).toBe('turn');
-    expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith([high, baseline]);
+    expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith(expected);
     pc.setIceConnectionState('failed');
     await vi.advanceTimersByTimeAsync(0);
     expect(FakeRTCPeerConnection.instances).toHaveLength(2);
     expect(FakeRTCPeerConnection.instances[1].transceivers[0].setCodecPreferences)
-      .toHaveBeenCalledWith([high, baseline]);
+      .toHaveBeenCalledWith(expected);
     await controller.stop();
   });
   it.each(['leave', 'stop'] as const)('does not revive TURN recovery after %s', async (action) => {

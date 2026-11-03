@@ -9,7 +9,7 @@ import {
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
-import { applyScreenVideoCodecPreference } from './video-codec-preference.js';
+import { applyBrowserVideoCodecPreference } from './browser-video-encoding.js';
 import { computeResolutionScale } from './screen-resolution.js';
 export { computeResolutionScale } from './screen-resolution.js';
 import {
@@ -22,12 +22,6 @@ import {
   inspectSenderVideoStats,
   type SenderVideoStats
 } from './p2p-media-health.js';
-import {
-  computeP2pMaximumScale,
-  createP2pAdaptiveResolutionState,
-  updateP2pAdaptiveResolution,
-  type P2pAdaptiveResolutionState
-} from './p2p-adaptive-resolution.js';
 import type { Peer } from './p2p-signaling.js';
 import { ProjectPeerSender } from './software-media/peer-sender.js';
 import type { ProjectStats } from './software-media/encoder.js';
@@ -38,10 +32,6 @@ export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallb
 export const P2P_VIEWER_BITRATE_FLOOR = 1_000_000;
 
 
-export const P2P_SENDER_PRESSURE_SAMPLE_LIMIT = 3;
-export const P2P_SENDER_RECOVER_SAMPLE_LIMIT = 5;
-/** Frame-rate collapse ratio that counts as "motion is starving" under a bandwidth limit. */
-export const P2P_SENDER_FPS_PRESSURE_RATIO = 0.7;
 /** Allow an in-place write to settle before one bounded encoder re-drive. */
 const P2P_RESOLUTION_RECOVERY_SAMPLES = 5;
 const P2P_RESOLUTION_RECOVERY_RETRY_MS = 30_000;
@@ -52,6 +42,7 @@ const P2P_RESOLUTION_RECOVERY_RETRY_MS = 30_000;
  * path encode the share the same way (codec, frame rate, degradation).
  */
 export interface P2pShareOptions {
+  encodingPreference?: 'hardware' | 'compatible';
   encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
   frameRate: number;
@@ -171,6 +162,7 @@ interface ViewerSession {
   pc: RTCPeerConnection;
   turnProvider: P2pTurnProvider;
   videoSender?: RTCRtpSender;
+  videoTransceiver?: RTCRtpTransceiver;
   options: P2pShareOptions;
   state: ViewerSessionState;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
@@ -194,11 +186,6 @@ interface ViewerSession {
   negotiationStartedAt: number;
   /** One bounded automatic re-drive with fresh ICE credentials before falling back. */
   autoRetried: boolean;
-  /** Sender is in pressure mode: encoding uses `balanced` instead of the user's preference. */
-  degradationRelaxed: boolean;
-  bandwidthLimitedSamples: number;
-  recoveredSamples: number;
-
   resolutionProtected: boolean;
   directLowResolutionSamples: number;
   directHealthyResolutionSamples: number;
@@ -206,11 +193,6 @@ interface ViewerSession {
   directEncoderRecoveryPending: boolean;
   directEncoderRecoveryRetryAt?: number;
 
-  /** Smoothed per-connection P2P / direct encoding state for dynamic resolution scaling. */
-  p2pEncodingState?: P2pAdaptiveResolutionState;
-  /** Previous outbound sample used to derive the actual video bitrate. */
-  lastSenderBytesSent?: number;
-  lastSenderStatsTimestamp?: number;
 }
 
 class P2pShareControllerImpl implements P2pShareController {
@@ -523,9 +505,6 @@ class P2pShareControllerImpl implements P2pShareController {
       transportSampleTail: Promise.resolve(),
       negotiationStartedAt: 0,
       autoRetried: false,
-      degradationRelaxed: false,
-      bandwidthLimitedSamples: 0,
-      recoveredSamples: 0,
       resolutionProtected: false,
       directLowResolutionSamples: 0,
       directHealthyResolutionSamples: 0,
@@ -544,7 +523,7 @@ class P2pShareControllerImpl implements P2pShareController {
       // the offer is created; the bitrate/frame-rate cap is applied later via
       // `setParameters` so a failure there stays best-effort.
       const transceiver = pc.addTransceiver(track, { direction: 'sendonly', streams: [stream] });
-      applyScreenVideoCodecPreference(transceiver, options.codec);
+      session.videoTransceiver = transceiver;
       session.videoSender = transceiver.sender;
     }
     for (const track of options.encodingEngine === 'project' ? [] : stream.getAudioTracks().slice(0, 1)) {
@@ -561,9 +540,15 @@ class P2pShareControllerImpl implements P2pShareController {
     session.pendingOffer = true;
     this.clearNegotiationTimer(session);
     try {
+      if (session.videoTransceiver) {
+        await applyBrowserVideoCodecPreference(session.videoTransceiver, session.options,
+          session.options.encodingPreference ?? 'hardware', session.videoSender?.track?.getSettings?.() ?? {});
+      }
+      if (session.pcClosed || this.sessions.get(session.identity) !== session) return;
       if (session.videoSender) {
         await this.applySenderParameters(session);
       }
+      if (session.pcClosed || this.sessions.get(session.identity) !== session) return;
       const offer = await session.pc.createOffer();
       const sdp = offer.sdp !== undefined ? configureOpusSdp(offer.sdp) : undefined;
       const offerWithSdp = sdp !== undefined ? { ...offer, sdp } : offer;
@@ -728,24 +713,13 @@ class P2pShareControllerImpl implements P2pShareController {
 
   }
 
-  /**
-   * Direct sessions enforce their spatial layer; coturn sessions watch the
-   * encoder limitation and switch between the user's preference and `balanced`:
-   * - sustained `bandwidth` limitation with a collapsed frame rate (the exact
-   *   "stable 1080p but ~10 fps under motion" failure) relaxes to `balanced`,
-   *   which sheds resolution before quantization blows up into blocks/blur;
-   * - a longer run of unconstrained samples restores the user's preference.
-   */
+  /** Keep browser encoders on the SFU resolution-first policy on either ICE path. */
   private async adaptEncodingPressure(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
     if (this.sessions.get(session.identity) !== session || session.pcClosed) return;
     if (session.state !== 'p2p' && session.state !== 'turn') return;
     if (session.state === 'p2p') {
       // Repair the requested direct layer regardless of bitrate, frame rate
       // or limitation label, before considering a bounded encoder re-drive.
-      session.degradationRelaxed = false;
-      session.bandwidthLimitedSamples = 0;
-      session.recoveredSamples = 0;
-      session.p2pEncodingState = undefined;
       const parameters = session.videoSender?.getParameters();
       const encoding = parameters?.encodings[0];
       const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
@@ -776,94 +750,14 @@ class P2pShareControllerImpl implements P2pShareController {
       return;
     }
 
-    const isCollapsed = this.hasCollapsedResolution(session, sender);
-    if (isCollapsed) {
-      if (!session.resolutionProtected) {
-        session.resolutionProtected = true;
-        await this.applySenderParameters(session);
-      }
-      return;
-    } else if (session.resolutionProtected) {
-      session.resolutionProtected = false;
-      await this.applySenderParameters(session);
-    }
-
-    const bandwidthLimited = sender.qualityLimitationReason === 'bandwidth';
-    const fpsCollapsed = sender.framesPerSecond !== undefined
-      && session.options.frameRate > 0
-      && sender.framesPerSecond < session.options.frameRate * P2P_SENDER_FPS_PRESSURE_RATIO;
-    if (session.degradationRelaxed) {
-      if (bandwidthLimited) {
-        session.recoveredSamples = 0;
-      } else {
-        session.recoveredSamples += 1;
-        if (session.recoveredSamples >= P2P_SENDER_RECOVER_SAMPLE_LIMIT) {
-          session.degradationRelaxed = false;
-          await this.applySenderParameters(session);
-        }
-      }
-    } else if (bandwidthLimited && (fpsCollapsed || sender.framesPerSecond === undefined)) {
-      session.bandwidthLimitedSamples += 1;
-      if (session.bandwidthLimitedSamples >= P2P_SENDER_PRESSURE_SAMPLE_LIMIT) {
-        session.degradationRelaxed = true;
-        await this.applySenderParameters(session);
-      }
-    } else {
-      session.bandwidthLimitedSamples = 0;
-    }
-
-    // Dynamically adjust sampling rate for P2P / coturn sessions to maintain frame rate
-    await this.adaptP2pEncoding(session, sender);
-  }
-
-  /**
-   * Coturn sessions dynamically adjust resolution sampling scale
-   * (scaleResolutionDownBy) to preserve target frame rate when bandwidth pressure
-   * occurs, without artificially lowering the maxBitrate cap or causing low-bitrate lock-in.
-   */
-  private async adaptP2pEncoding(session: ViewerSession, sender: SenderVideoStats): Promise<void> {
-    // The flow profile promises spatial-resolution priority. Explicit sampling
-    // adaptation is reserved for the 1080p frame-rate-priority profiles.
-    if (session.options.degradationPreference !== 'maintain-framerate') return;
-    const actualOutgoingBitrateBps = this.sampleActualOutgoingBitrate(session, sender);
-    const sourceSettings = session.videoSender?.track?.getSettings?.() ?? {};
-    const minimumScaleResolutionDownBy = computeResolutionScale(sourceSettings) ?? 1;
-    const maximumScaleResolutionDownBy = computeP2pMaximumScale(sourceSettings);
-    const referenceBitrateBps = session.options.maxBitrate;
-    const previous = session.p2pEncodingState
-      ?? createP2pAdaptiveResolutionState(minimumScaleResolutionDownBy);
-    const next = updateP2pAdaptiveResolution({
-      previous,
-      measurement: {
-        availableOutgoingBitrateBps: sender.availableOutgoingBitrateBps,
-        actualOutgoingBitrateBps,
-        qualityLimitationReason: sender.qualityLimitationReason,
-        framesPerSecond: sender.framesPerSecond,
-        targetFrameRate: session.options.frameRate
-      },
-      minimumScaleResolutionDownBy,
-      maximumScaleResolutionDownBy,
-      referenceBitrateBps
-    });
-    if (next === previous) return;
-    const encodingChanged = next.scaleResolutionDownBy !== previous.scaleResolutionDownBy;
-    session.p2pEncodingState = next;
-    if (encodingChanged) await this.applySenderParameters(session);
-  }
-
-
-  private sampleActualOutgoingBitrate(session: ViewerSession, sender: SenderVideoStats): number | undefined {
-    const bytesSent = sender.bytesSent;
-    const timestamp = sender.timestamp;
-    const previousBytes = session.lastSenderBytesSent;
-    const previousTimestamp = session.lastSenderStatsTimestamp;
-    session.lastSenderBytesSent = bytesSent;
-    session.lastSenderStatsTimestamp = timestamp;
-    if (bytesSent === undefined || timestamp === undefined
-      || previousBytes === undefined || previousTimestamp === undefined
-      || timestamp <= previousTimestamp || bytesSent < previousBytes) return undefined;
-    const elapsedSeconds = (timestamp - previousTimestamp) / 1_000;
-    return elapsedSeconds > 0 ? (bytesSent - previousBytes) * 8 / elapsedSeconds : undefined;
+    // TURN uses the same scale and degradation policy as Cloudflare SFU.
+    // Repair rejected or externally changed parameters without creating another connection.
+    const parameters = session.videoSender?.getParameters();
+    const encoding = parameters?.encodings[0];
+    const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
+    if (session.senderParametersPending || parameters?.degradationPreference !== 'maintain-resolution'
+      || encoding?.scaleResolutionDownBy !== sourceScale || encoding?.maxBitrate !== session.options.maxBitrate
+      || encoding?.maxFramerate !== session.options.frameRate) await this.applySenderParameters(session);
   }
 
   private hasCollapsedResolution(session: ViewerSession, sender: SenderVideoStats): boolean {
@@ -934,15 +828,7 @@ class P2pShareControllerImpl implements P2pShareController {
       try {
         const { options } = session;
         const currentParameters = session.videoSender.getParameters();
-        const p2pAdaptive = session.state === 'turn' && session.p2pEncodingState !== undefined;
-        const baseScale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {});
-        const resolutionFirst = session.state === 'negotiating' || session.state === 'p2p';
-        const scale = resolutionFirst
-          ? baseScale ?? 1
-          : p2pAdaptive
-            ? session.p2pEncodingState!.scaleResolutionDownBy
-            : baseScale;
-        const isActivelyDownscaled = scale !== undefined && (baseScale === undefined ? scale > 1.05 : scale > baseScale * 1.05);
+        const scale = computeResolutionScale(session.videoSender.track?.getSettings?.() ?? {}) ?? 1;
         await session.videoSender.setParameters({
           ...currentParameters,
           encodings: [{
@@ -951,17 +837,9 @@ class P2pShareControllerImpl implements P2pShareController {
             ...currentParameters.encodings[0],
             maxBitrate: options.maxBitrate,
             maxFramerate: options.frameRate,
-            ...(scale === undefined ? {} : { scaleResolutionDownBy: scale })
+            scaleResolutionDownBy: scale
           }],
-          degradationPreference: resolutionFirst
-            ? 'maintain-resolution'
-            : session.resolutionProtected
-              ? 'maintain-resolution'
-              : (p2pAdaptive && isActivelyDownscaled)
-                ? 'maintain-framerate'
-                : session.degradationRelaxed
-                  ? pressureDegradationPreference(options.degradationPreference)
-                  : options.degradationPreference
+          degradationPreference: 'maintain-resolution'
         });
         session.senderParametersPending = false;
       } catch {
@@ -1125,11 +1003,6 @@ class P2pShareControllerImpl implements P2pShareController {
   }
 }
 
-function pressureDegradationPreference(
-  preference: RTCDegradationPreference
-): RTCDegradationPreference {
-  return preference === 'maintain-framerate' ? 'maintain-framerate' : 'balanced';
-}
 
 /**
  * Configures Opus codec in the SDP for high-fidelity stereo audio and higher bitrate.

@@ -6,6 +6,7 @@ import type { ScreenTransportMode, ScreenTurnProvider } from '../meeting/screen-
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 import { ProjectMediaSection } from '../meeting/software-media/project-stats.js';
 import type { ProjectStats } from '../meeting/software-media/encoder.js';
+import { describeH264Profile } from '../meeting/h264-profile.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   'cloudflare-sfu': 'screenTransport.cloudflareSfu',
@@ -75,9 +76,12 @@ export function WebRtcStatsPanel({
 
 function StatsSection({ title, stats, sender = false }: { title: string; stats: WebRtcMediaStats; sender?: boolean }) {
   const { t } = useI18n();
+  const profile = stats.codecProfile ? describeH264Profile(stats.codecProfile) : undefined;
+  const profileText = profile ? `${t(`stats.h264.${profile.profile}`)} · ${t('stats.h264.level', { level: profile.level })}`
+    : stats.codecProfile ? t('stats.h264.other') : undefined;
   const rows: Array<[string, string | undefined]> = [
     [t('stats.codec'), stats.codec],
-    [t('stats.codecProfile'), stats.codecProfile],
+    [t('stats.codecProfile'), profileText],
     [t('stats.resolution'), stats.width && stats.height ? `${stats.width}×${stats.height}` : undefined],
     [t('stats.captureFps'), sender ? format(stats.sourceFramesPerSecond) : undefined],
     [t(sender ? 'stats.encodedFps' : 'stats.decodedFps'), format(stats.framesPerSecond)],
