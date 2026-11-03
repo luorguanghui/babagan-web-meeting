@@ -70,8 +70,20 @@ API 切换后至网关收紧前，仍观察到约每五秒一次的匿名关闭�
 
 用户确认旧服务器 `121.199.0.146` 仍保留会议服务但已不再使用。指定该 IP、保持正确 TLS 主机名的
 HTTPS 请求确认旧 `/health/live` 仍返回 `ok`。当前登录的阿里云账号没有该旧实例：轻量其他地域均为 0，
-ECS 概览无实例。已请求打开旧服务器所属账号的远程终端，待核对后停止旧会议服务并保留数据。
-这一步尚未执行，也没有删除服务器、数据库或卷。
+ECS 概览无实例。用户随后切换到旧实例所属账号并打开远程终端，确认实例 `i-bp12bqhlxygnar6ocw63` / 主机 `iZbp12bqhlxygnar6ocw63Z` 对应旧 IP。
+在线房间数、参与者数和非终态会议数均为 0；旧 API 配置了网关地址，但没有新网关 Token。
+
+23:33:49 完成旧会议栈停用：api、web、caddy、livekit、coturn 五个容器均停止，Docker 重启策略改为 `no`。
+另停用并禁止 `babagan-coturn-tls.timer`，关联 service 验证为 inactive。服务器、镜像、原数据库和数据卷保留，没有删除任何服务器或卷。
+
+旧机备份与恢复目录：`/root/babagan-retirement-20261103T153343Z/`，包含原容器身份/重启策略、SQLite 一致性备份、Compose/环境配置备份、`restore.sh` 和结果记录。
+数据库备份 SHA-256：`d7f96f722be87e39d0e61b5647968d01a660fee957d164db94ca93a3c1b5a5bc`。恢复旧程序前必须先升级网关鉴权配置。
+
+Cloudflare 对 23:34–23:36 的 `gateway_request sfu-tracks-close` 查询为 0；同一窗口有三条 `health_check ... ok` 及 `health_summary ok`。
+这将旧服务停用与旧重试终止对应起来。新生产 `/health/ready` 仍为 ready，网关 `/health` 为 200；旧 IP 的 HTTPS 健康入口已不再提供服务。
 
 上游 SFU App Secret 本轮迁入 Secrets 但未轮换；历史版本和受保护备份中的旧值尚未撤销。
 新生成的网关凭据与上游 Secret 独立。此限制已明确保留，后续轮换需结合旧部署停用及会话迁移安排。
+
+旧停用截图：`output/sfu-security-20261103/legacy-retired.jpg`；重试停止截图：`output/sfu-security-20261103/retired-retries-stopped.jpg`。
+代码位于隔离分支 `codex/sfu-gateway-security-20261103`；未推送 GitHub，也未覆盖原工作树的既有改动。
