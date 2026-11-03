@@ -19,6 +19,7 @@ export interface AppConfig {
   cloudflareSfuAppId?: string;
   cloudflareSfuAppSecret?: string;
   cloudflareSfuGatewayUrl?: string;
+  cloudflareSfuGatewayToken?: string;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -95,7 +96,10 @@ function parseCloudflareSfu(env: Environment) {
   if (!!cloudflareSfuAppId !== !!cloudflareSfuAppSecret) throw new Error('CLOUDFLARE_SFU_APP_ID and CLOUDFLARE_SFU_APP_SECRET must both be set or both be empty');
   if (cloudflareSfuAppId && !/^[A-Za-z0-9_-]+$/.test(cloudflareSfuAppId)) throw new Error('CLOUDFLARE_SFU_APP_ID must be an identifier');
   const cloudflareSfuGatewayUrl = validateCloudflareSfuGateway(env.CLOUDFLARE_SFU_GATEWAY_URL);
-  return { cloudflareSfuAppId, cloudflareSfuAppSecret, cloudflareSfuGatewayUrl };
+  const cloudflareSfuGatewayToken = env.CLOUDFLARE_SFU_GATEWAY_TOKEN?.trim() || undefined;
+  if (cloudflareSfuGatewayUrl && !/^[A-Za-z0-9_-]{43,128}$/.test(cloudflareSfuGatewayToken ?? '')) throw new Error('CLOUDFLARE_SFU_GATEWAY_TOKEN is required and must be a strong token');
+  if (cloudflareSfuGatewayToken && !cloudflareSfuGatewayUrl) throw new Error('CLOUDFLARE_SFU_GATEWAY_TOKEN requires CLOUDFLARE_SFU_GATEWAY_URL');
+  return { cloudflareSfuAppId, cloudflareSfuAppSecret, cloudflareSfuGatewayUrl, cloudflareSfuGatewayToken };
 }
 export function loadConfig(env: Environment): AppConfig {
   const nodeEnv = env.NODE_ENV ?? 'development';

@@ -13,17 +13,20 @@ export interface CloudflareSfuApi {
 }
 /** Explicit 410/session_error on an owned cleanup operation proves session expiry. */
 export class CloudflareSfuSessionGoneError extends Error {}
+export const isValidSfuMid = (mid: unknown): mid is string => typeof mid === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(mid);
 
 /** Fixed-origin SFU control API, optionally via the trusted Worker. Never retry allocations or log upstream bodies/SDP. */
 export class CloudflareSfuClient implements CloudflareSfuApi {
   private readonly base: string;
   private readonly timeoutMs: number;
   private readonly authorization?: string;
-  constructor(options: { appId?: string; appSecret?: string; gatewayUrl?: string; timeoutMs?: number }) {
+  constructor(options: { appId?: string; appSecret?: string; gatewayUrl?: string; gatewayToken?: string; timeoutMs?: number }) {
     const gatewayUrl = validateCloudflareSfuGateway(options.gatewayUrl);
     if (gatewayUrl) {
-      // The existing Worker selects its application and supplies its own token.
+      // The Worker uses a separate upstream credential that never reaches this server.
+      if (!/^[A-Za-z0-9_-]{43,128}$/.test(options.gatewayToken ?? '')) throw new Error('A valid SFU gateway token is required');
       this.base = gatewayUrl;
+      this.authorization = `Bearer ${options.gatewayToken}`;
     } else {
       if (!options.appId || !options.appSecret) throw new Error('Direct SFU credentials must both be configured');
       if (!/^[A-Za-z0-9_-]+$/.test(options.appId)) throw new Error('Invalid SFU application identifier');
@@ -44,14 +47,16 @@ export class CloudflareSfuClient implements CloudflareSfuApi {
     await this.request(`/sessions/${encodeURIComponent(sessionId)}/renegotiate`, 'PUT', { sessionDescription: description });
   }
   async closeTracks(sessionId: string, mids: string[]): Promise<string[]> {
-    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}/tracks/close`, 'PUT', { force: true, tracks: mids.map((mid) => ({ mid })) }, true, true);
+    const validMids = [...new Set(mids.filter(isValidSfuMid))];
+    if (validMids.length === 0) return [];
+    const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}/tracks/close`, 'PUT', { force: true, tracks: validMids.map((mid) => ({ mid })) }, true, true);
     // A 200 can carry failures. Missing/unreported mids must remain queued.
-    return mids.filter((mid) => !result.tracks?.some((t) => t.mid === mid && (!t.errorCode || t.errorCode === 'close_track_error')));
+    return validMids.filter((mid) => !result.tracks?.some((t) => t.mid === mid && (!t.errorCode || t.errorCode === 'close_track_error')));
   }
   async getSessionMids(sessionId: string): Promise<string[]> {
     const result = await this.request(`/sessions/${encodeURIComponent(sessionId)}`, 'GET', undefined, false, true);
     if (!Array.isArray(result.tracks)) throw domainError('MEDIA_SERVICE_UNAVAILABLE');
-    return result.tracks.flatMap((track) => typeof track.mid === 'string' && /^[A-Za-z0-9_-]{1,32}$/.test(track.mid) ? [track.mid] : []);
+    return result.tracks.flatMap((track) => isValidSfuMid(track.mid) ? [track.mid] : []);
   }
   async close(): Promise<void> {}
   private async request(path: string, method: string, body?: unknown, allowTrackErrors = false, cleanup = false): Promise<SfuResult> {

@@ -3,7 +3,7 @@ import type { CloudflareSfuPublication, CloudflareSfuPublishRequest, CloudflareS
 import { DomainError, SfuCleanupPendingError, domainError } from '../domain/errors.js';
 import type { P2pRoomRegistry } from '../p2p/room-registry.js';
 import type { CloudflareSfuApi, SfuResult, SfuTrack } from './cloudflare-sfu-client.js';
-import { CloudflareSfuSessionGoneError } from './cloudflare-sfu-client.js';
+import { CloudflareSfuSessionGoneError, isValidSfuMid } from './cloudflare-sfu-client.js';
 import { KeyedMutex } from './keyed-mutex.js';
 import type { ActiveParticipantSession, ParticipantApplicationService } from './participant-application-service.js';
 
@@ -144,8 +144,10 @@ export class CloudflareSfuService {
       // inspecting this session for late mids before allowing owner replacement.
       session.uncertainUntil = this.now() + 60_000;
       const result = await api.newTracks(id, { tracks, ...(description ? { sessionDescription: description } : {}) });
-      session.mids = [...new Set([...session.mids, ...(Array.isArray(result.tracks) ? result.tracks : []).flatMap((t) => typeof t.mid === 'string' ? [t.mid] : [])])];
-      if (Array.isArray(result.tracks) && tracks.every((track) => result.tracks!.some((returned) => returned.trackName === track.trackName && typeof returned.mid === 'string'))) session.uncertainUntil = undefined;
+      session.mids = [...new Set([...session.mids, ...(Array.isArray(result.tracks) ? result.tracks : []).flatMap((t) => isValidSfuMid(t.mid) ? [t.mid] : [])])];
+      // An empty MID on an errored item identifies no closable resource. Keep
+      // inspecting the uncertain session for late valid allocations instead.
+      if (Array.isArray(result.tracks) && tracks.every((track) => result.tracks!.some((returned) => returned.trackName === track.trackName && isValidSfuMid(returned.mid)))) session.uncertainUntil = undefined;
       this.validateTracks(result, tracks, role);
       session.uncertainUntil = undefined;
       session.tracks = tracks.map((track) => {

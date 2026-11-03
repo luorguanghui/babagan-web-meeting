@@ -82,7 +82,7 @@ describe('Cloudflare SFU broker routes', () => {
   });
   it('enables the app-created SFU service with gateway-only configuration', async () => {
     await fixture.close();
-    fixture = await createFixture({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu' }, true);
+    fixture = await createFixture({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu', cloudflareSfuGatewayToken: 'a'.repeat(64) }, true);
     const f = await setup();
     expect((await call(f.slug, f.viewer)).json().available).toBe(true);
     expect((await call(f.slug, f.publisher, '/publish', 'POST', offer)).statusCode).toBe(200);
@@ -178,6 +178,36 @@ describe('Cloudflare SFU broker routes', () => {
     expect(requests.filter((r) => r.url.endsWith('/tracks/new'))).toHaveLength(1);
     expect(requests.find((r) => r.url.endsWith('/tracks/close'))?.body).toEqual({ force: true, tracks: [{ mid: '0' }, { mid: '1' }] });
     expect((await call(f.slug, f.viewer)).json().publication).toBeNull();
+  });
+  it('never queues empty mids from failed allocations and still cleans valid late resources', async () => {
+    const f = await setup();
+    const p = (await call(f.slug, f.publisher, '/publish', 'POST', offer)).json();
+    await call(f.slug, f.publisher, '/publish/ready', 'POST', { sessionId: p.sessionId });
+    const original = globalThis.fetch;
+    let inspections = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      if (String(url).includes('cf-2') && String(url).endsWith('/tracks/new')) {
+        const body = JSON.parse(String(init?.body));
+        return Response.json({ tracks: body.tracks.map((t: SfuTrack, i: number) => ({ ...t,
+          mid: i === 0 ? '' : '7', ...(i === 0 ? { errorCode: 'empty_track_error' } : {}) })) });
+      }
+      if (String(url).endsWith('/sessions/cf-2') && init?.method === 'GET') {
+        return Response.json({ tracks: ++inspections === 1 ? [] : [{ mid: '9', status: 'active' }] });
+      }
+      if (String(url).includes('cf-2') && String(url).endsWith('/tracks/close')) {
+        const body = JSON.parse(String(init?.body)); requests.push({ url: String(url), body });
+        if (body.tracks.some((t: SfuTrack) => !t.mid)) return Response.json({ errorCode: 'invalid_params' }, { status: 406 });
+        return Response.json({ tracks: body.tracks });
+      }
+      return original(url, init);
+    }));
+    expect((await call(f.slug, f.viewer, '/subscribe', 'POST', { shareId: p.shareId })).statusCode).toBe(503);
+    await fixture.screenSfu.sweep();
+    const closes = requests.filter(r => r.url.includes('cf-2') && r.url.endsWith('/tracks/close'));
+    expect(closes.flatMap(r => r.body.tracks.map(t => t.mid))).not.toContain('');
+    expect(closes.some(r => r.body.tracks.some(t => t.mid === '7'))).toBe(true);
+    expect(closes.some(r => r.body.tracks.some(t => t.mid === '9'))).toBe(true);
+    expect(inspections).toBeGreaterThanOrEqual(2);
   });
   it('allows the browser readiness budget after a slow successful track allocation', async () => {
     const f = await setup();

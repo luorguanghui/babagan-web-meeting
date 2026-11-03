@@ -87,7 +87,7 @@ export async function startManagedServer(dependencies: {
   return { shutdown };
 }
 
-export async function startServer(): Promise<{ app: FastifyInstance; shutdown(): Promise<void> }> {
+export async function startServer(options: { port?: number } = {}): Promise<{ app: FastifyInstance; shutdown(): Promise<void> }> {
   const config = loadConfig(process.env);
   const database = createDatabase(config.databasePath);
   try {
@@ -125,10 +125,11 @@ export async function startServer(): Promise<{ app: FastifyInstance; shutdown():
     });
     const screenSfu = new CloudflareSfuService({ participants, registry: p2p,
       api: config.cloudflareSfuGatewayUrl || (config.cloudflareSfuAppId && config.cloudflareSfuAppSecret)
-        ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret, gatewayUrl: config.cloudflareSfuGatewayUrl }) : undefined
+        ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret, gatewayUrl: config.cloudflareSfuGatewayUrl, gatewayToken: config.cloudflareSfuGatewayToken }) : undefined
     });
     const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu });
     const managed = await startManagedServer({
+      port: options.port,
       app,
       database,
       meetings,

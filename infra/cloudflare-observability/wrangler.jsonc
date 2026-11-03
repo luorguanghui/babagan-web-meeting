@@ -1,0 +1,15 @@
+{
+  "name": "babagan-observability",
+  "account_id": "fbf8d7528f538596b8bb23b672f3a373",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-11-03",
+  "workers_dev": false,
+  "preview_urls": false,
+  "triggers": { "crons": ["*/5 * * * *"] },
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "invocation_logs": false, "head_sampling_rate": 1 },
+    "traces": { "enabled": false },
+    "issues": { "enabled": false }
+  }
+}

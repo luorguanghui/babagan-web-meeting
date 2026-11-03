@@ -91,12 +91,18 @@ describe('loadConfig', () => {
     'https://p2p.babagan.cloud/api/sfu',
     'https://babagan-p2p.1312479965.workers.dev/api/sfu'
   ])('loads the explicitly configured trusted SFU gateway %s', (gatewayUrl) => {
-    expect(loadConfig(validEnv({ CLOUDFLARE_SFU_GATEWAY_URL: gatewayUrl })))
+    expect(loadConfig(validEnv({ CLOUDFLARE_SFU_GATEWAY_URL: gatewayUrl, CLOUDFLARE_SFU_GATEWAY_TOKEN: 'a'.repeat(64) })))
       .toMatchObject({ cloudflareSfuGatewayUrl: gatewayUrl });
   });
   it('keeps direct SFU access as the default and still rejects partial credentials in gateway mode', () => {
     expect(loadConfig(validEnv()).cloudflareSfuGatewayUrl).toBeUndefined();
     expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_APP_ID: 'app', CLOUDFLARE_SFU_GATEWAY_URL: 'https://p2p.babagan.cloud/api/sfu' }))).toThrow(/both/);
+  });
+  it('fails closed for missing, weak or orphaned gateway credentials', () => {
+    for (const token of ['', 'short', 'a'.repeat(42), 'a'.repeat(64) + '\nheader: value']) {
+      expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_GATEWAY_URL: 'https://p2p.babagan.cloud/api/sfu', CLOUDFLARE_SFU_GATEWAY_TOKEN: token }))).toThrow(/CLOUDFLARE_SFU_GATEWAY_TOKEN/);
+    }
+    expect(() => loadConfig(validEnv({ CLOUDFLARE_SFU_GATEWAY_TOKEN: 'a'.repeat(64) }))).toThrow(/CLOUDFLARE_SFU_GATEWAY_URL/);
   });
   it.each([
     'http://p2p.babagan.cloud/api/sfu',

@@ -19,9 +19,9 @@ describe('deployment SFU authentication probe', () => {
   it('uses the configured gateway for the single deployment probe allocation', async () => {
     const fetcher = vi.fn(async () => Response.json({ sessionId: 'private-session-id' }));
     vi.stubGlobal('fetch', fetcher);
-    expect(await verifyCloudflareSfu({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu' })).toBe('CLOUDFLARE_SFU_AUTH_OK');
+    expect(await verifyCloudflareSfu({ cloudflareSfuGatewayUrl: 'https://p2p.babagan.cloud/api/sfu', cloudflareSfuGatewayToken: 'a'.repeat(64) })).toBe('CLOUDFLARE_SFU_AUTH_OK');
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0][0]).toBe('https://p2p.babagan.cloud/api/sfu/sessions/new');
-    expect(new Headers(fetcher.mock.calls[0][1]?.headers).has('Authorization')).toBe(false);
+    expect(new Headers(fetcher.mock.calls[0][1]?.headers).get('Authorization')).toBe('Bearer ' + 'a'.repeat(64));
   });
 });

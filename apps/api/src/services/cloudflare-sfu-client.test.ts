@@ -3,6 +3,18 @@ import { CloudflareSfuClient, CloudflareSfuSessionGoneError } from './cloudflare
 
 afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
 describe('Cloudflare fixed-origin SFU client', () => {
+  it('requires a distinct gateway credential and sends it only to the trusted gateway', async () => {
+    const gatewayUrl = 'https://p2p.babagan.cloud/api/sfu';
+    expect(() => new CloudflareSfuClient({ gatewayUrl })).toThrow(/gateway token/i);
+    const fetcher = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe(gatewayUrl + '/sessions/new');
+      expect(init.method).toBe('POST');
+      return Response.json({ sessionId: 'session' });
+    });
+    vi.stubGlobal('fetch', fetcher);
+    await new CloudflareSfuClient({ gatewayUrl, gatewayToken: 'a'.repeat(64), appId: 'app', appSecret: 'upstream-private' }).createSession();
+    expect(new Headers(fetcher.mock.calls[0][1].headers).get('Authorization')).toBe('Bearer ' + 'a'.repeat(64));
+  });
   it('recognizes an explicit gone session only for owned resource cleanup', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ errorCode: 'session_error' }, { status: 410 })));
     const client = new CloudflareSfuClient({ appId: 'app', appSecret: 'private' });
@@ -20,6 +32,15 @@ describe('Cloudflare fixed-origin SFU client', () => {
   it('checks individual forced close results and retains unreported or failed mids', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ tracks: [{ mid: '0' }, { mid: '1', errorCode: 'close_track_error' }, { mid: '2', errorCode: 'internal_error' }] })));
     expect(await new CloudflareSfuClient({ appId: 'app', appSecret: 'private' }).closeTracks('session', ['0', '1', '2', '3'])).toEqual(['2', '3']);
+  });
+  it('does not send empty or malformed mids and deduplicates valid cleanup ids', async () => {
+    const fetcher = vi.fn(async (_url: string, init: RequestInit) => Response.json({ tracks: JSON.parse(String(init.body)).tracks }));
+    vi.stubGlobal('fetch', fetcher);
+    const client = new CloudflareSfuClient({ appId: 'app', appSecret: 'private' });
+    expect(await client.closeTracks('session', ['', 'bad mid', '0', '0'])).toEqual([]);
+    expect(JSON.parse(String(fetcher.mock.calls[0][1].body))).toEqual({ force: true, tracks: [{ mid: '0' }] });
+    expect(await client.closeTracks('session', ['', 'bad mid'])).toEqual([]);
+    expect(fetcher).toHaveBeenCalledOnce();
   });
   it('uses fixed verified HTTPS, an empty new-session body, and rejects redirects or invalid ids', async () => {
     const fetcher = vi.fn(async () => Response.json({ sessionId: 'session' }));
@@ -46,7 +67,7 @@ describe('Cloudflare fixed-origin SFU client', () => {
       requests.push({ url, init });
       return Response.json({ sessionId: 'session', tracks: [{ mid: '0' }] });
     });
-    const client = new CloudflareSfuClient({ appId: 'own-app', appSecret: 'private', gatewayUrl });
+    const client = new CloudflareSfuClient({ appId: 'own-app', appSecret: 'private', gatewayUrl, gatewayToken: 'a'.repeat(64) });
     expect(await client.createSession()).toBe('session');
     await client.newTracks('session', { tracks: [{ location: 'local', mid: '0', trackName: 'video' }] });
     await client.answer('session', { type: 'answer', sdp: 'private-sdp' });
@@ -62,16 +83,16 @@ describe('Cloudflare fixed-origin SFU client', () => {
     expect(requests[0].init).not.toHaveProperty('body');
     for (const { init } of requests) {
       expect(init.redirect).toBe('error');
-      expect(new Headers(init.headers).has('Authorization')).toBe(false);
+      expect(new Headers(init.headers).get('Authorization')).toBe('Bearer ' + 'a'.repeat(64));
     }
   });
   it('allocates through the gateway with no server SFU credentials configured', async () => {
     const requests: { url: string; init: RequestInit }[] = [];
     vi.stubGlobal('fetch', async (url: string, init: RequestInit) => { requests.push({ url, init }); return Response.json({ sessionId: 'session' }); });
-    expect(await new CloudflareSfuClient({ gatewayUrl: 'https://p2p.babagan.cloud/api/sfu' }).createSession()).toBe('session');
+    expect(await new CloudflareSfuClient({ gatewayUrl: 'https://p2p.babagan.cloud/api/sfu', gatewayToken: 'a'.repeat(64) }).createSession()).toBe('session');
     expect(requests).toHaveLength(1);
     expect(requests[0].url).toBe('https://p2p.babagan.cloud/api/sfu/sessions/new');
-    expect(new Headers(requests[0].init.headers).has('Authorization')).toBe(false);
+    expect(new Headers(requests[0].init.headers).get('Authorization')).toBe('Bearer ' + 'a'.repeat(64));
   });
   it.each([{}, { appId: 'app' }, { appSecret: 'private' }])('requires both credentials for direct SFU access (%j)', (options) => {
     expect(() => new CloudflareSfuClient(options)).toThrow(/SFU credentials/);
@@ -82,12 +103,12 @@ describe('Cloudflare fixed-origin SFU client', () => {
     'https://p2p.babagan.cloud/api/sfu/v1/apps/other',
     'https://p2p.babagan.cloud/api/sfu?upstream=other'
   ])('rejects unsafe gateway client configuration %s before sending credentials', (gatewayUrl) => {
-    expect(() => new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl })).toThrow(/CLOUDFLARE_SFU_GATEWAY_URL/);
+    expect(() => new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl, gatewayToken: 'a'.repeat(64) })).toThrow(/CLOUDFLARE_SFU_GATEWAY_URL/);
   });
   it('does not fall back to direct SFU after the gateway fails', async () => {
     const fetcher = vi.fn(async () => Response.json({ error: 'private-secret private-sdp' }, { status: 502 }));
     vi.stubGlobal('fetch', fetcher);
-    await expect(new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl: 'https://p2p.babagan.cloud/api/sfu' }).createSession()).rejects.toThrow('MEDIA_SERVICE_UNAVAILABLE');
+    await expect(new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl: 'https://p2p.babagan.cloud/api/sfu', gatewayToken: 'a'.repeat(64) }).createSession()).rejects.toThrow('MEDIA_SERVICE_UNAVAILABLE');
     expect(fetcher).toHaveBeenCalledOnce();
   });
   it.each([
@@ -100,7 +121,7 @@ describe('Cloudflare fixed-origin SFU client', () => {
       signal = init.signal!;
       signal.addEventListener('abort', () => reject(new Error('private-secret')));
     }));
-    const request = new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl }).createSession();
+    const request = new CloudflareSfuClient({ appId: 'app', appSecret: 'private', gatewayUrl, gatewayToken: 'a'.repeat(64) }).createSession();
     const settled = request.catch((error: Error) => error);
     await vi.advanceTimersByTimeAsync(budget - 1);
     expect(signal?.aborted).toBe(false);
