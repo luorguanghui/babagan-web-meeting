@@ -15,15 +15,17 @@ namespace Babagan {
     static bool ownsFreshRoot;
     static int Main(string[] args) {
       Console.OutputEncoding = new UTF8Encoding(false);
-      if (args.Length != 4) { Console.Error.WriteLine("Usage: UpdateIntegration.exe <fresh-output-root> <installed-baseline-payload> <target-version> <target-sequence>"); return 2; }
+      if (args.Length != 4 && args.Length != 5) { Console.Error.WriteLine("Usage: UpdateIntegration.exe <fresh-output-root> <installed-baseline-payload> <target-version> <target-sequence> [baseline-sequence]"); return 2; }
       string root = null;
       try {
         root = OwnedPath(args[0]); var baseline = OwnedPath(args[1]);
         if (root.StartsWith(baseline.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)
           || baseline.StartsWith(root.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Test and baseline directories must not contain each other.");
         if (Directory.Exists(root)) throw new InvalidDataException("Use a fresh test root; existing installations are never overwritten.");
-        long sequence; if (!Int64.TryParse(args[3], out sequence) || sequence <= 1 || System.Version.Parse(args[2]) <= System.Version.Parse(Package.Version)) throw new InvalidDataException("Expected target must be newer than the baseline.");
-        Task.Run(() => Run(root, baseline, args[2], sequence)).GetAwaiter().GetResult(); return 0;
+        long baselineSequence = 1;
+        if (args.Length == 5 && (!Int64.TryParse(args[4], out baselineSequence) || baselineSequence < 1)) throw new InvalidDataException("Invalid baseline sequence.");
+        long sequence; if (!Int64.TryParse(args[3], out sequence) || sequence <= baselineSequence || System.Version.Parse(args[2]) <= System.Version.Parse(Package.Version)) throw new InvalidDataException("Expected target must be newer than the baseline.");
+        Task.Run(() => Run(root, baseline, args[2], sequence, baselineSequence)).GetAwaiter().GetResult(); return 0;
       } catch (Exception error) {
         // Never write an error artifact into an existing/unvalidated user directory.
         if (ownsFreshRoot && root != null && Directory.Exists(root)) {
@@ -50,16 +52,16 @@ namespace Babagan {
       var directory = Package.Child(root, "downloads"); return Directory.Exists(directory) ? Directory.GetFiles(directory, "*", SearchOption.AllDirectories).Length : 0;
     }
     static void Require(bool condition, string message) { if (!condition) throw new InvalidOperationException(message); }
-    static async Task Run(string root, string baseline, string targetVersion, long targetSequence) {
-      ClientUpdater.ValidatePayload(baseline); ClientUpdater.ValidateReceipt(baseline, Package.Version, 1);
+    static async Task Run(string root, string baseline, string targetVersion, long targetSequence, long baselineSequence) {
+      ClientUpdater.ValidatePayload(baseline); ClientUpdater.ValidateReceipt(baseline, Package.Version, baselineSequence);
       // The runtime paths must come from a genuinely installed baseline, not a build directory.
       RuntimeDependencies.Load(baseline);
       Directory.CreateDirectory(root); ownsFreshRoot = true;
-      Package.AtomicJson(Path.Combine(root, "diagnostic-owned.json"), new { kind = "automatic-update-integration", baselineVersion = Package.Version, baselineSequence = 1 });
+      Package.AtomicJson(Path.Combine(root, "diagnostic-owned.json"), new { kind = "automatic-update-integration", baselineVersion = Package.Version, baselineSequence = baselineSequence });
       var previous = "versions/" + Package.Version + "-" + Guid.NewGuid().ToString("N").Substring(0, 8);
       var installed = Package.Child(root, previous); CopyPayload(baseline, installed);
       File.Copy(Package.Child(installed, "Babagan.exe"), Package.Child(root, "Babagan.exe"));
-      VersionStore.Activate(root, previous, Package.Version, 1, false, false); VersionStore.Healthy(root, VersionStore.Read(root));
+      VersionStore.Activate(root, previous, Package.Version, baselineSequence, false, false); VersionStore.Healthy(root, VersionStore.Read(root));
       using (var token = new CancellationTokenSource(TimeSpan.FromMinutes(3))) {
         await ClientUpdater.Smoke(installed, Package.Version, token.Token);
         UpdateKey key;
@@ -76,7 +78,7 @@ namespace Babagan {
         await updater.Check(token.Token);
         var held = VersionStore.Read(root);
         Require(last == "available" && !busyDownloaded && DownloadFiles(root) == 0, "Busy check started a payload download or failed to defer it.");
-        Require(held.current == previous && held.version == Package.Version && held.sequence == 1, "Busy check changed the active version.");
+        Require(held.current == previous && held.version == Package.Version && held.sequence == baselineSequence, "Busy check changed the active version.");
         Require(Directory.GetDirectories(Package.Child(root, "versions")).Length == 1 && !File.Exists(Package.Child(root, "pending.json")), "Busy check staged an update.");
         var busyPassedAt = DateTime.UtcNow.ToString("o");
         phase = "idle"; busy = false; await updater.Check(token.Token);
@@ -89,7 +91,7 @@ namespace Babagan {
         Require(!File.Exists(Package.Child(root, "pending.json")) && Directory.GetDirectories(root, "stage-*").Length == 0, "Update left uncommitted staging state.");
         Package.AtomicJson(Path.Combine(root, "result.json"), new {
           passed = true, completedAt = DateTime.UtcNow.ToString("o"), feed = Package.FeedUrl, publicKeyId = key.keyId,
-          baselineVersion = Package.Version, baselineSequence = 1, targetVersion = targetVersion, targetSequence = targetSequence,
+          baselineVersion = Package.Version, baselineSequence = baselineSequence, targetVersion = targetVersion, targetSequence = targetSequence,
           busyCheck = new { passed = true, completedAt = busyPassedAt, downloadedPayloadFiles = 0, activeVersionUnchanged = true },
           idleCheck = new { downloadedFrom = release.artifact.url, sha256 = release.artifact.sha256, bytes = release.artifact.bytes, signatureVerified = true, receiptVerified = true, actualExecutableVersionVerified = true, helperSmokePassed = true, pointerActivated = true, previousRetained = true },
           fullUiHealthPending = after.pendingHealth, desktopCaptured = false, defaultInstallationChanged = false, current = after, states = states

@@ -34,6 +34,18 @@ it('makes Android capture limits explicit without offering the Windows/browser c
   expect(screen.queryByRole('link', { name: 'High-quality sharing' })).not.toBeInTheDocument();
 });
 
+it('offers both 30 and 60 fps profiles only when Android advertises 60 fps, preserving bitrate', async () => {
+  const onScreenQualityChange = vi.fn(), onScreenBitrateChange = vi.fn();
+  render(<MeetingSettings {...baseProps} section="share" nativeCaptureAvailable nativeCaptureEnabled nativeCapturePlatform="android"
+    nativeCaptureMaxFrameRate={60} screenBitrate={10_000_000} onScreenQualityChange={onScreenQualityChange} onScreenBitrateChange={onScreenBitrateChange} />);
+  const quality = screen.getByRole('combobox', { name: 'Screen quality' }) as HTMLSelectElement;
+  for (const value of ['flow', 'standard', 'motion', 'detail60']) expect(quality.querySelector(`option[value="${value}"]`)).toBeEnabled();
+  expect(screen.queryByText(/currently limited to 30 fps/)).not.toBeInTheDocument();
+  await userEvent.selectOptions(quality, 'motion');
+  expect(onScreenQualityChange).toHaveBeenCalledWith('motion');
+  expect(onScreenBitrateChange).not.toHaveBeenCalled();
+});
+
 describe('meeting dock audio controls', () => {
   it('opens call volume from one room-dock entry with the unchanged default', async () => {
     render(<MeetingControls {...baseProps} includeSettings={false} />);

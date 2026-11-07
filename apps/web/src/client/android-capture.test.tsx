@@ -23,18 +23,19 @@ class Peer {
   setLocalDescription = vi.fn(async (description: RTCSessionDescriptionInit) => { this.localDescription = description; });
   close = vi.fn(() => { this.connectionState = 'closed'; });
 }
-function harness() {
+function harness(options: { maxFrameRate?: 30 | 60; requestedRate?: 30 | 60; returnedRate?: 30 | 60 } = {}) {
   const peer = new Peer(); const start = deferred<unknown>(); const events = new Set<(event: ClientHostEvent) => void>();
   const request = vi.fn(async (method: string) => method === 'capture.start' ? start.promise : {});
   const host = { platform: 'android', request, subscribe: (listener: (event: ClientHostEvent) => void) => { events.add(listener); return () => { events.delete(listener); }; } } as unknown as ClientHost;
   const lifecycle = new EventTarget(); const abort = new AbortController(); const track = new Track(); const originalStop = track.stop;
   const stream = { getTracks: () => [track], getVideoTracks: () => [track], getAudioTracks: () => [] } as unknown as MediaStream;
-  const promise = captureAndroidScreen(host, { video: { frameRate: { ideal: 60 } }, audio: true }, {
+  const promise = captureAndroidScreen(host, { video: { frameRate: { ideal: options.requestedRate ?? 60 } }, audio: true }, {
     sessionId: 'session-a', signal: abort.signal, createPeer: () => peer as unknown as RTCPeerConnection,
     createStream: () => stream, lifecycle: lifecycle as unknown as Window, negotiationTimeoutMs: 1000,
+    maxFrameRate: options.maxFrameRate,
   });
   const emit = (event: ClientHostEvent) => { for (const listener of events) listener(event); };
-  const offer = { sessionId: 'session-a', offer: { type: 'offer', sdp: 'offer-sdp' }, width: 864, height: 1920, frameRate: 30 };
+  const offer = { sessionId: 'session-a', offer: { type: 'offer', sdp: 'offer-sdp' }, width: 864, height: 1920, frameRate: options.returnedRate ?? 30 };
   return { peer, start, events, request, lifecycle, abort, track, originalStop, stream, promise, emit, offer };
 }
 afterEach(() => { vi.useRealTimers(); });
@@ -49,7 +50,7 @@ it('queues scoped ICE until the offer is ready and returns the actual native vid
   await vi.waitFor(() => expect(h.peer.setLocalDescription).toHaveBeenCalled());
   h.peer.ontrack!({ track: h.track as unknown as MediaStreamTrack });
   expect(await h.promise).toBe(h.stream);
-  expect(h.request).toHaveBeenCalledWith('capture.start', { sessionId: 'session-a', width: 1920, height: 1080, frameRate: 60, audio: false }, expect.anything());
+  expect(h.request).toHaveBeenCalledWith('capture.start', { sessionId: 'session-a', width: 1920, height: 1080, frameRate: 30, audio: false }, expect.anything());
   expect(h.peer.addIceCandidate.mock.calls).toEqual([[{ candidate: 'early', sdpMid: '0' }], [undefined]]);
   expect(h.track.getSettings()).toMatchObject({ width: 864, height: 1920, frameRate: 30, displaySurface: 'monitor' });
   expect(isNativeCaptureTrack(h.track as unknown as MediaStreamTrack)).toBe(true);
@@ -58,6 +59,38 @@ it('queues scoped ICE until the offer is ready and returns the actual native vid
   h.peer.onicecandidate!({ candidate: { toJSON: () => ({ candidate: 'local', sdpMid: '0' }) } });
   expect(h.request).toHaveBeenCalledWith('capture.signal', { sessionId: 'session-a', candidate: { candidate: 'local', sdpMid: '0' } }, expect.anything());
   h.track.stop(); expect(h.originalStop).toHaveBeenCalledOnce(); expect(h.peer.close).toHaveBeenCalledOnce(); expect(h.events.size).toBe(0);
+});
+
+it('publishes a selected native 1080p60 profile without raising the user-selected 10 Mbps cap', async () => {
+  const h = harness({ maxFrameRate: 60, returnedRate: 60 });
+  const publish = vi.fn(async () => {});
+  const controller = createScreenShareController({ requestGrant: async () => {}, releaseGrant: async () => {}, getDisplayMedia: () => h.promise, publisher: { publish, release: async () => {} } });
+  const sharing = controller.start('auto', 10_000_000, 'motion', 'browser');
+  h.start.resolve({ ...h.offer, width: 1920, height: 1080 });
+  await vi.waitFor(() => expect(h.peer.setLocalDescription).toHaveBeenCalled());
+  h.peer.ontrack!({ track: h.track as unknown as MediaStreamTrack }); await sharing;
+  expect(h.request).toHaveBeenCalledWith('capture.start', { sessionId: 'session-a', width: 1920, height: 1080, frameRate: 60, audio: false }, expect.anything());
+  expect(h.track.getSettings()).toMatchObject({ width: 1920, height: 1080, frameRate: 60 });
+  expect(publish).toHaveBeenCalledWith(h.stream, expect.objectContaining({ frameRate: 60, maxBitrate: 10_000_000, nativeCapture: true, degradationPreference: 'maintain-resolution' }));
+  h.emit({ v: 1, event: 'capture.resized', sessionId: 'session-a', width: 1080, height: 1920, frameRate: 60 });
+  expect(h.track.getSettings()).toMatchObject({ width: 1080, height: 1920, frameRate: 60 });
+  await controller.stop();
+});
+
+it('retains the selected 30 fps profile on a 60 fps capable host', async () => {
+  const h = harness({ maxFrameRate: 60, requestedRate: 30, returnedRate: 30 });
+  h.start.resolve(h.offer); await vi.waitFor(() => expect(h.peer.setLocalDescription).toHaveBeenCalled());
+  h.peer.ontrack!({ track: h.track as unknown as MediaStreamTrack }); await h.promise;
+  expect(h.request).toHaveBeenCalledWith('capture.start', expect.objectContaining({ width: 1920, height: 1080, frameRate: 30 }), expect.anything());
+  expect(h.track.getSettings()).toMatchObject({ frameRate: 30 }); h.track.stop();
+});
+
+it('rejects a configured frame rate different from the selected supported profile', async () => {
+  const h = harness({ maxFrameRate: 60, requestedRate: 60, returnedRate: 30 });
+  const rejected = expect(h.promise).rejects.toMatchObject({ code: 'protocol' });
+  h.start.resolve(h.offer); await rejected;
+  expect(h.peer.setRemoteDescription).not.toHaveBeenCalled();
+  expect(h.request).toHaveBeenCalledWith('capture.stop', { sessionId: 'session-a' }, expect.anything());
 });
 
 it('stops the host immediately during consent and discards a late permission result', async () => {

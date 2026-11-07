@@ -11,6 +11,8 @@ interface AndroidCaptureDependencies {
   sessionId?: string;
   lifecycle?: Pick<Window, 'addEventListener' | 'removeEventListener'>;
   negotiationTimeoutMs?: number;
+  /** Use 30 for a client that did not advertise the v0.1.2 capture capability. */
+  maxFrameRate?: 30 | 60;
 }
 function format(value: unknown): CaptureFormat | undefined {
   if (!value || typeof value !== 'object') return;
@@ -29,7 +31,7 @@ function candidate(value: unknown): value is RTCIceCandidateInit | null {
 }
 function requestedRate(constraints: DisplayMediaStreamOptions): 30 | 60 {
   const rate = typeof constraints.video === 'object' ? constraints.video.frameRate : undefined;
-  const value = typeof rate === 'number' ? rate : rate?.ideal ?? rate?.max ?? 30;
+  const value = typeof rate === 'number' ? rate : rate?.exact ?? Math.min(rate?.ideal ?? rate?.max ?? 30, rate?.max ?? 60);
   return value >= 60 ? 60 : 30;
 }
 
@@ -38,6 +40,7 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
   if (host.platform !== 'android') return Promise.reject(new ClientHostError('unsupported', 'Android capture requires the Android client.'));
   if (deps.signal?.aborted) return Promise.reject(captureAborted());
   const sessionId = deps.sessionId ?? crypto.randomUUID();
+  const frameRate = Math.min(requestedRate(constraints), deps.maxFrameRate ?? 30) as 30 | 60;
   const lifecycle = deps.lifecycle ?? window;
   return new Promise<MediaStream>((resolve, reject) => {
     let peer: RTCPeerConnection | undefined;
@@ -96,8 +99,8 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
         if (closed || event.sessionId !== sessionId) return;
         if (event.event === 'capture.ended') cleanup(new ClientHostError('capture-ended', typeof event.reason === 'string' ? event.reason : 'Screen capture ended.'));
         else if (event.event === 'capture.resized' && activeFormat) {
-          const resized = format({ width: event.width, height: event.height, frameRate: activeFormat.frameRate });
-          if (resized) activeFormat = resized;
+          const resized = format({ width: event.width, height: event.height, frameRate: event.frameRate ?? activeFormat.frameRate });
+          if (resized && resized.frameRate === frameRate) activeFormat = resized;
         } else if (event.event === 'capture.signal' && candidate(event.candidate)) {
           if (remoteReady) addCandidate(event.candidate);
           else if (queuedCandidates.length < 128) queuedCandidates.push(event.candidate);
@@ -107,11 +110,12 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
       deps.signal?.addEventListener('abort', abort, { once: true }); lifecycle.addEventListener('pagehide', abort);
       if (deps.signal?.aborted) { abort(); return; }
       started = true;
-      void host.request<StartResult>('capture.start', { sessionId, width: 1920, height: 1080, frameRate: requestedRate(constraints), audio: false }, { timeoutMs: 120_000, signal: requestAbort.signal })
+      void host.request<StartResult>('capture.start', { sessionId, width: 1920, height: 1080, frameRate, audio: false }, { timeoutMs: 120_000, signal: requestAbort.signal })
         .then(async result => {
           if (closed) { stopHost(); return; }
           const receivedFormat = format(result);
           if (!receivedFormat || result.sessionId !== sessionId || result.offer?.type !== 'offer' || typeof result.offer.sdp !== 'string' || result.offer.sdp.length > 200_000) throw new ClientHostError('protocol', 'Invalid screen capture offer.');
+          if (receivedFormat.frameRate !== frameRate) throw new ClientHostError('protocol', 'Native capture did not configure the selected frame rate.');
           activeFormat = receivedFormat;
           timer = setTimeout(() => cleanup(new ClientHostError('timeout', 'The screen capture connection timed out.')), deps.negotiationTimeoutMs ?? 20_000);
           await peer!.setRemoteDescription(result.offer);

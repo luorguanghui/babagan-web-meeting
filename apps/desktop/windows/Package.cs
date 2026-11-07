@@ -8,7 +8,7 @@ using System.Web.Script.Serialization;
 
 namespace Babagan {
   internal static class Package {
-    internal const string Version = "0.1.1";
+    internal const string Version = "0.1.2";
     internal const int MinimumWebViewMajor = 156;
     internal static bool SupportedWebView(string value) {
       System.Version version;
@@ -62,6 +62,12 @@ namespace Babagan {
       if (Directory.Exists(stage)) Directory.Delete(stage, true);
     }
     internal static bool TrustedUrl(string value) { Uri uri; return Uri.TryCreate(value, UriKind.Absolute, out uri) && uri.Scheme == "https" && uri.Host == "meet.babagan.cloud" && uri.Port == 443 && uri.UserInfo.Length == 0; }
+    internal static string ClientStartUrl(string nativeLaunchUrl) {
+      if (!TrustedUrl(nativeLaunchUrl)) throw new InvalidDataException("无效客户端启动地址。");
+      var url = new UriBuilder(nativeLaunchUrl) { Path = "/client", Query = "clientVersion=" + Version };
+      if (String.IsNullOrEmpty(url.Fragment)) throw new InvalidDataException("本机采集连接信息缺失。");
+      return url.Uri.AbsoluteUri;
+    }
     internal static void AtomicJson(string path, object value) {
       Directory.CreateDirectory(Path.GetDirectoryName(path)); var part = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
       try { File.WriteAllText(part, Json().Serialize(value), new UTF8Encoding(false)); if (File.Exists(path)) File.Replace(part, path, null); else File.Move(part, path); }

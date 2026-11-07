@@ -2,6 +2,7 @@
 param(
   [string] $Destination = 'output/windows-update-diagnostic',
   [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')] [string] $BaselineVersion = '0.1.0',
+  [ValidateRange(1, 9007199254740991)] [long] $BaselineSequence = 1,
   [switch] $Run,
   [string] $BaselinePayload,
   [string] $TestRoot,
@@ -35,6 +36,6 @@ Write-Output "Prepared real-feed diagnostic: $exe (baseline $BaselineVersion). N
 if ($Run) {
   if (-not $BaselinePayload) { throw '-BaselinePayload must be an installed version directory containing runtime.json.' }
   if (-not $TestRoot) { $TestRoot = Join-Path $output ('windows-update-acceptance-' + [guid]::NewGuid().ToString('N')) }
-  & $exe ([IO.Path]::GetFullPath($TestRoot)) ([IO.Path]::GetFullPath($BaselinePayload)) $TargetVersion $TargetSequence
+  & $exe ([IO.Path]::GetFullPath($TestRoot)) ([IO.Path]::GetFullPath($BaselinePayload)) $TargetVersion $TargetSequence $BaselineSequence
   if ($LASTEXITCODE -ne 0) { throw 'Real-feed automatic update acceptance failed.' }
 }

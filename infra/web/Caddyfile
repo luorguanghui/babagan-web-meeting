@@ -3,6 +3,8 @@
   header Cross-Origin-Embedder-Policy require-corp
   root * /srv
   encode zstd gzip
+  @application_document path / /index.html /client /create /native /m/* /meetings/*
+  header @application_document Cache-Control "no-cache"
   @release_metadata path /downloads/native-release.json /downloads/clients/catalog.json /downloads/clients/*/stable.json
   header @release_metadata Cache-Control "no-store, max-age=0"
   handle /downloads/* {

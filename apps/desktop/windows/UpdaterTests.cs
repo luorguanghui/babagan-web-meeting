@@ -32,6 +32,12 @@ namespace Babagan {
       Check(!Package.TrustedUrl("https://user@meet.babagan.cloud/"), "Credentials accepted");
       Check(!Package.TrustedUrl("https://meet.babagan.cloud:8443/"), "Alternative port accepted");
       Check(!Package.TrustedUrl("http://meet.babagan.cloud/"), "Plain HTTP accepted");
+      var startFragment = "#nativeCapture=1.12345." + new string('a', 43);
+      var start = new Uri(Package.ClientStartUrl(Package.Origin + "/" + startFragment));
+      Check(start.AbsolutePath == "/client" && start.Query == "?clientVersion=" + Package.Version, "Client opened marketing page or stale document URL");
+      Check(start.Fragment == startFragment, "Client startup lost native capture capability");
+      Reject(() => Package.ClientStartUrl("https://example.com/" + startFragment), "Untrusted client startup origin accepted");
+      Reject(() => Package.ClientStartUrl(Package.Origin + "/"), "Missing native launch capability accepted");
       Check(!Package.SupportedWebView("119.0.0.0"), "Old runtime accepted");
       Check(Package.SupportedWebView("156.0.4314.58"), "Validated runtime refused");
       Check(!Package.SupportedWebView("not-a-version"), "Invalid runtime accepted");

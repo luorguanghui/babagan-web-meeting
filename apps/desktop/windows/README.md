@@ -26,10 +26,12 @@ Only a small manifest check is allowed during a meeting. Large downloads and ver
 
 `DesktopHelper` reads capability-bearing JSONL stdout privately and never persists it. Only `client.info`, `meeting.state`, and `update.check` are exposed to the trusted top-level meeting origin. External HTTPS navigation is opened in the system browser. Camera and microphone requests use an explicit native permission prompt.
 
-Build runs 33 signature, origin, traversal, activity, sequence, executable-version, and rollback assertions. For an installation smoke test without shortcuts, browser UI, or desktop capture:
+Version 0.1.2 opens the dedicated `/client` meeting workspace, with the app version in the document URL to avoid reusing an old marketing-page cache entry. The private native capture fragment is preserved for the existing connection initialization and is never written to a diagnostic log. Ordinary browser visitors still see the public homepage; native navigation does not show installer promotions.
+
+Build runs 37 signature, origin, traversal, activity, sequence, executable-version, startup URL, and rollback assertions. For an installation smoke test without shortcuts, browser UI, or desktop capture:
 
 ```powershell
-./output/desktop-client/BabaganClientSetup-0.1.1.exe --verify-package <isolated-test-root> <download-cache>
+./output/desktop-client/BabaganClientSetup-0.1.2.exe --verify-package <isolated-test-root> <download-cache>
 ```
 
 This checks dependency reuse and starts/stops the actual helper without requesting frames. Performance acceptance must additionally run the existing synthetic 1080p60 pipeline in WebView2, including background/minimized windows and DXGI recovery; a successful build or smoke test does not establish a framerate claim.

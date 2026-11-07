@@ -63,4 +63,7 @@ it('validates host capabilities against the detected platform and protocol', () 
   expect(validClientInfo(info, 'windows')).toBe(false);
   expect(validClientInfo({ ...info, protocol: 2 }, 'android')).toBe(false);
   expect(validClientInfo({ ...info, screenCapture: 'yes' }, 'android')).toBe(false);
+  expect(validClientInfo({ ...info, maxScreenFrameRate: 30 }, 'android')).toBe(true);
+  expect(validClientInfo({ ...info, appVersion: '0.1.2', maxScreenFrameRate: 60 }, 'android')).toBe(true);
+  for (const maxScreenFrameRate of [0, 15, 90, '60', null]) expect(validClientInfo({ ...info, maxScreenFrameRate }, 'android')).toBe(false);
 });

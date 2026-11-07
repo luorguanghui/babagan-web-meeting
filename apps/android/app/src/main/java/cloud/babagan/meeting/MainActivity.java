@@ -102,7 +102,7 @@ public final class MainActivity extends Activity implements ScreenCaptureService
         updater.check(null);
         String target=getIntent().getDataString();
         if(BuildConfig.DEBUG&&getIntent().getBooleanExtra("bridge-test",false))target=ORIGIN+"/__android_bridge_test__?mode="+(getIntent().getBooleanExtra("projection-test",false)?"projection":"synthetic");
-        web.loadUrl(trusted(target)?target:ORIGIN+"/");
+        web.loadUrl(entryUrl(target));
         if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED)requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},31);
     }
 
@@ -110,6 +110,7 @@ public final class MainActivity extends Activity implements ScreenCaptureService
         if(value==null)return false;
         try{java.net.URI uri=java.net.URI.create(value);return "https".equals(uri.getScheme())&&"meet.babagan.cloud".equals(uri.getHost())&&uri.getRawUserInfo()==null&&(uri.getPort()==-1||uri.getPort()==443);}catch(IllegalArgumentException e){return false;}
     }
+    static String entryUrl(String target){return trusted(target)?target:ORIGIN+"/client?clientVersion="+BuildConfig.VERSION_NAME;}
     private boolean meetingBusy(){return ClientActivityPolicy.busy(joined,gate.current()!=null,ScreenCaptureService.hasActiveCapture())||MicrophoneService.isActive();}
     private void updateBusyState(){if(updater!=null)updater.busyChanged();}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);handleIncoming(intent);}
@@ -136,7 +137,7 @@ public final class MainActivity extends Activity implements ScreenCaptureService
             if(message.getInt("v")!=1||id.isEmpty()||id.length()>128)throw new IllegalArgumentException("Unsupported bridge request");
             JSONObject params=message.optJSONObject("params");if(params==null)params=new JSONObject();
             switch(message.getString("method")){
-                case "client.info":success(id,Json.object("platform","android","appVersion",BuildConfig.VERSION_NAME,"protocol",1,"screenCapture",true,"systemAudio",false));break;
+                case "client.info":success(id,Json.object("platform","android","appVersion",BuildConfig.VERSION_NAME,"protocol",1,"screenCapture",true,"systemAudio",false,"maxScreenFrameRate",60));break;
                 case "meeting.state":joined=params.getBoolean("joined");if(!joined){microphoneState(false);cancelCapture("meeting-left");}updateBusyState();success(id,Json.object("joined",joined));break;
                 case "microphone.state":boolean enabled=params.getBoolean("enabled");microphoneState(enabled);success(id,Json.object("enabled",enabled));break;
                 case "update.check":final String requestId=id;updater.check(result->success(requestId,result));break;

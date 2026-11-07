@@ -32,6 +32,7 @@ public final class ScreenCaptureService extends Service {
     private PeerConnection peer;
     private VideoSource source;
     private VideoTrack track;
+    private RtpSender screenSender;
     private ScreenCapturerAndroid capturer;
     private SurfaceTextureHelper texture;
     private ScheduledExecutorService synthetic;
@@ -85,7 +86,7 @@ public final class ScreenCaptureService extends Service {
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
             source = factory.createVideoSource(true);
-            frameRate = Math.min(rate, 30); // Initial mobile profile; source cadence is never fabricated.
+            frameRate = test ? 15 : ScreenCaptureProfile.frameRate(rate);
             int[] size = test ? new int[]{640,360} : displaySize(maxWidth, maxHeight);
             captureWidth = size[0]; captureHeight = size[1];
             source.adaptOutputFormat(captureWidth, captureHeight, frameRate);
@@ -95,10 +96,8 @@ public final class ScreenCaptureService extends Service {
             config.continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY;
             peer = factory.createPeerConnection(config, new Observer(id));
             if (peer == null) throw new IllegalStateException("Could not create the local media connection");
-            RtpSender sender = peer.addTrack(track, Collections.singletonList("babagan-screen"));
-            RtpParameters parameters = sender.getParameters();
-            for (RtpParameters.Encoding encoding : parameters.encodings) { encoding.maxBitrateBps = 12_000_000; encoding.maxFramerate = frameRate; }
-            sender.setParameters(parameters);
+            screenSender = peer.addTrack(track, Collections.singletonList("babagan-screen"));
+            configureSender(false);
             if (test) startSynthetic(id);
             else {
                 if (permission == null) throw new SecurityException("Screen sharing permission is missing");
@@ -116,17 +115,35 @@ public final class ScreenCaptureService extends Service {
             current.createOffer(new SimpleSdpObserver() {
                 @Override public void onCreateSuccess(SessionDescription offer) {
                     if (!owns(id)) return;
+                    SessionDescription configuredOffer = new SessionDescription(offer.type, ScreenCaptureProfile.withFrameRate(offer.description,frameRate));
                     current.setLocalDescription(new SimpleSdpObserver() {
                         @Override public void onSetSuccess() {
                             if (!owns(id)) return;
-                            main.post(() -> { Listener sink = listeners.get(); if (sink != null && owns(id)) sink.started(id, Json.object("sessionId",id,"offer",Json.object("type","offer","sdp",offer.description),"width",captureWidth,"height",captureHeight,"frameRate",frameRate,"systemAudio",false)); });
+                            main.post(() -> { Listener sink = listeners.get(); if (sink != null && owns(id)) sink.started(id, Json.object("sessionId",id,"offer",Json.object("type","offer","sdp",configuredOffer.description),"width",captureWidth,"height",captureHeight,"frameRate",frameRate,"systemAudio",false)); });
                         }
                         @Override public void onSetFailure(String error) { fail(id, error); }
-                    }, offer);
+                    }, configuredOffer);
                 }
                 @Override public void onCreateFailure(String error) { fail(id,error); }
             }, new MediaConstraints());
         } catch (Exception error) { fail(id, error.getMessage() == null ? "Screen capture failed" : error.getMessage()); }
+    }
+
+    private void configureSender(boolean negotiated) {
+        ScreenCaptureProfile.applySenderConfiguration(negotiated, () -> {
+        RtpParameters parameters = screenSender.getParameters();
+        if (parameters.encodings.isEmpty()) throw new IllegalStateException("Native video sender has no negotiated encoding");
+        parameters.degradationPreference = RtpParameters.DegradationPreference.MAINTAIN_RESOLUTION;
+        // Existing local-only bridge budget; the web publisher separately retains the user's cap.
+        for (RtpParameters.Encoding encoding : parameters.encodings) { encoding.maxBitrateBps = 12_000_000; encoding.maxFramerate = frameRate; encoding.scaleResolutionDownBy = 1.0; }
+        if (!screenSender.setParameters(parameters)) throw new IllegalStateException("Native video sender rejected the selected frame rate");
+        if (!negotiated) return;
+        RtpParameters applied = screenSender.getParameters();
+        if (applied.encodings.isEmpty()) throw new IllegalStateException("Native video sender lost its negotiated encoding");
+        for (RtpParameters.Encoding encoding : applied.encodings) {
+            if (!Integer.valueOf(frameRate).equals(encoding.maxFramerate)) throw new IllegalStateException("Native video sender did not retain the selected frame rate");
+        }
+        });
     }
 
     private void resize(String id, int width, int height) {
@@ -136,7 +153,7 @@ public final class ScreenCaptureService extends Service {
         captureWidth=size[0]; captureHeight=size[1];
         capturer.changeCaptureFormat(captureWidth,captureHeight,frameRate);
         source.adaptOutputFormat(captureWidth,captureHeight,frameRate);
-        emit(Json.object("v",1,"event","capture.resized","sessionId",id,"width",captureWidth,"height",captureHeight));
+        emit(Json.object("v",1,"event","capture.resized","sessionId",id,"width",captureWidth,"height",captureHeight,"frameRate",frameRate));
     }
 
     private int[] displaySize(int maxWidth, int maxHeight) {
@@ -159,7 +176,7 @@ public final class ScreenCaptureService extends Service {
                     JSONObject description=params.getJSONObject("description");
                     if (!"answer".equals(description.getString("type"))) throw new IllegalArgumentException("Expected an answer");
                     peer.setRemoteDescription(new SimpleSdpObserver() {
-                        @Override public void onSetSuccess() { rtc.execute(() -> { if(!owns(id)||peer==null)return; descriptionSet=true; for(IceCandidate ice:earlyIce)peer.addIceCandidate(ice); earlyIce.clear(); }); }
+                        @Override public void onSetSuccess() { rtc.execute(() -> { if(!owns(id)||peer==null)return; try{configureSender(true);descriptionSet=true;for(IceCandidate ice:earlyIce)peer.addIceCandidate(ice);earlyIce.clear();}catch(Exception error){fail(id,error.getMessage());} }); }
                         @Override public void onSetFailure(String error) { fail(id,error); }
                     },new SessionDescription(SessionDescription.Type.ANSWER,description.getString("sdp")));
                 } else if (!params.isNull("candidate")) {
@@ -189,6 +206,7 @@ public final class ScreenCaptureService extends Service {
         if(synthetic!=null){synthetic.shutdownNow();synthetic=null;}
         if(capturer!=null){try{capturer.stopCapture();}catch(Exception ignored){}capturer.dispose();capturer=null;}
         if(peer!=null){peer.close();peer.dispose();peer=null;}
+        screenSender=null;
         if(track!=null){track.dispose();track=null;}
         if(source!=null){source.dispose();source=null;}
         if(texture!=null){texture.dispose();texture=null;}
