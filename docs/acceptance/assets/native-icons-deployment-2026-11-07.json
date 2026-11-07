@@ -1,0 +1,36 @@
+{
+  "checkedAtUtc": "2026-11-07T06:47:43.3778069Z",
+  "coop": "same-origin",
+  "health": {
+    "live": {
+      "status": "ok"
+    },
+    "ready": {
+      "status": "ready"
+    }
+  },
+  "installer": {
+    "version": "0.2.1",
+    "url": "/downloads/BabaganSetup-0.2.1.exe",
+    "sha256": "fd45a28709450c9c3810a8a8f6ee0602509374beec40144b516e95eee4ff778e",
+    "bytes": 349184
+  },
+  "entrySha256": "d691b7c7dc2792d28d60183f3bac1fdee612a55138ed45de34a1652260f2ed59",
+  "runtimeHeaders": [
+    {
+      "status": 200,
+      "file": "node-v24.15.0-win-x64.zip",
+      "sha256": "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62",
+      "bytes": 36465163
+    },
+    {
+      "status": 200,
+      "file": "ffmpeg-9.0.2-essentials_build.zip",
+      "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+      "bytes": 114768076
+    }
+  ],
+  "coep": "require-corp",
+  "commit": "babbf34a9e37906055c70a2ba44013441f55b82f",
+  "entry": "/assets/index-3YCzduBT.js"
+}

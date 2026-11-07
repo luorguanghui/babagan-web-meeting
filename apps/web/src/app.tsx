@@ -5,6 +5,7 @@ import { JoinLobbyPage } from './pages/join-lobby-page.js';
 import { MeetingErrorBoundary } from './components/error-boundary.js';
 import { AppShell } from './components/app-shell.js';
 import { LanguageProvider } from './i18n/i18n.js';
+import { NativeDownloadPage } from './pages/native-download-page.js';
 
 function MeetingLobbyRoute() {
   const { slug } = useParams();
@@ -12,5 +13,5 @@ function MeetingLobbyRoute() {
 }
 
 export function App() {
-  return <LanguageProvider><AppShell><MeetingErrorBoundary><Routes><Route path="/create" element={<CreateMeetingPage />} /><Route path="/m/:slug" element={<MeetingLobbyRoute />} /><Route path="/meetings/:slug" element={<MeetingLobbyRoute />} /><Route path="*" element={<Navigate to="/create" replace />} /></Routes></MeetingErrorBoundary></AppShell></LanguageProvider>;
+  return <LanguageProvider><AppShell><MeetingErrorBoundary><Routes><Route path="/native" element={<NativeDownloadPage />} /><Route path="/create" element={<CreateMeetingPage />} /><Route path="/m/:slug" element={<MeetingLobbyRoute />} /><Route path="/meetings/:slug" element={<MeetingLobbyRoute />} /><Route path="*" element={<Navigate to="/create" replace />} /></Routes></MeetingErrorBoundary></AppShell></LanguageProvider>;
 }

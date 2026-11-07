@@ -10,6 +10,7 @@ import {
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { readScreenBitrate, saveScreenBitrate } from '../meeting/screen-bitrate-preference.js';
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { resolveActiveSharer } from '../meeting/active-share.js';
@@ -50,14 +51,13 @@ import {
 import {
   createScreenShareController,
   HybridScreenSharePublisher,
-  recommendP2pBitrate,
-  screenShareDefaultBitrate,
   screenShareDefaultQuality,
   type ScreenShareBitrate,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
+import { captureNativeScreen, NativeCaptureError, readNativeCaptureConnection } from '../meeting/native-capture.js';
 import { useCloudflareScreen } from '../meeting/use-cloudflare-screen.js';
 import type { CloudflareScreenRecovery } from '../meeting/cloudflare-recovery.js';
 import { CloudflareTurnFallback } from '../meeting/cloudflare-turn-fallback.js';
@@ -91,7 +91,7 @@ export interface MeetingRoomPageProps {
   leaveMeeting?: (slug: string) => Promise<void>;
   listDevices?: () => Promise<MediaDeviceInfo[]>;
   meetingApi?: MeetingRoomApi;
-  getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
+  getDisplayMedia?: (constraints: DisplayMediaStreamOptions, signal?: AbortSignal) => Promise<MediaStream>;
   supportsOwnAudioRestriction?: () => boolean;
   /** Test seam: signaling client factory, defaults to `createP2pSignalingClient`. */
   createSignalingClient?: (slug: string, identity: string, events: P2pSignalingEvents) => P2pSignalingClient;
@@ -255,7 +255,10 @@ export function MeetingRoomPage({
   const [hostAuthorized, setHostAuthorized] = useState(false);
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
-  const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>('h264');
+  const [nativeCaptureConnection] = useState(() => readNativeCaptureConnection());
+  const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection ? 'auto' : 'h264');
+  const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection));
+  const nativeCaptureEnabledRef = useRef(nativeCaptureEnabled);
   const [screenSourceTransport, setScreenSourceTransport] = useState<'p2p' | 'cloudflare-sfu'>('p2p');
   const screenSourceTransportRef = useRef<'p2p' | 'cloudflare-sfu'>('p2p');
   const cfPublisherRef = useRef<CloudflareScreenRecovery | undefined>(undefined);
@@ -265,9 +268,8 @@ export function MeetingRoomPage({
   const [browserEncodingPreference, setBrowserEncodingPreference] = useState<'hardware' | 'compatible'>('hardware');
   const browserEncodingPreferenceRef = useRef<'hardware' | 'compatible'>('hardware');
   const [projectMediaError, setProjectMediaError] = useState<string>();
-  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(screenShareDefaultBitrate);
-  const screenBitrateTouchedRef = useRef(false);
-  const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(screenShareDefaultQuality);
+  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(() => readScreenBitrate());
+  const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(nativeCaptureConnection ? 'motion' : screenShareDefaultQuality);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
   const [viewerCount, setViewerCount] = useState(0);
@@ -380,9 +382,12 @@ export function MeetingRoomPage({
       ? meetingApi.grantShare(slug, join.participantIdentity)
       : meetingApi.verifyParticipantShare(slug),
     releaseGrant: () => meetingApi.releaseOwnShare(slug),
-    ...(getDisplayMedia ? { getDisplayMedia } : {}),
+    getDisplayMedia: getDisplayMedia ?? ((constraints, signal) => nativeCaptureEnabledRef.current && nativeCaptureConnection
+      ? captureNativeScreen(nativeCaptureConnection, constraints, { signal })
+      : navigator.mediaDevices.getDisplayMedia(constraints)),
     ...(supportsOwnAudioRestriction ? { supportsOwnAudioRestriction } : {}),
     chooseUnrestrictedSystemAudio,
+    cancelPendingCapture: () => resolveSystemAudioDecision('cancel'),
     publisher: {
       publish: async (stream, options) => {
         options = { ...options, encodingPreference: browserEncodingPreferenceRef.current };
@@ -446,20 +451,10 @@ export function MeetingRoomPage({
         if (hybrid) await hybrid.release(stream);
       }
     }
-  }), [chooseUnrestrictedSystemAudio, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction]);
+  }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection]);
 
   useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
-  // Bitrate guidance: while idle and the user has not chosen manually, the
-  // P2P bitrate follows the current online viewer count (1–3 → 8 Mbps, 4+ → 5).
-  useEffect(() => {
-    if (screenBitrateTouchedRef.current) return;
-    if (screenState.status !== 'idle') return;
-    setScreenBitrate(recommendP2pBitrate(viewerCount));
-  }, [screenState.status, viewerCount]);
-  useEffect(() => {
-    // After a share ends the suggestion is re-applied for the next share.
-    if (screenState.status === 'idle') screenBitrateTouchedRef.current = false;
-  }, [screenState.status]);
+  // Quality, roster, network recovery and stop/start never raise the chosen cap.
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
   const [viewerTurnProvider, setViewerTurnProvider] = useState<P2pTurnProvider>();
@@ -903,13 +898,14 @@ export function MeetingRoomPage({
     setSessionActive(false);
     stopRecovery();
     setLeaving(true);
+    const screenShareStopped = screenShare.stop();
     try {
       await leaveMeeting(slug);
     } catch {
       setNotice(t('room.leaveUnconfirmed'));
     } finally {
       await cf.close();
-      await screenShare.stop();
+      await screenShareStopped;
       await controller.disconnect();
       setLeaving(false);
       onLeft?.();
@@ -927,7 +923,8 @@ export function MeetingRoomPage({
       if (screenState.status === 'sharing') await screenShare.stop();
       else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'cloudflare-sfu' ? 'browser' : screenEncodingEngine);
     } catch (error) {
-      if (screenSourceTransportRef.current === 'cloudflare-sfu') cf.reportError(error);
+      if (error instanceof NativeCaptureError) setNotice(t(`native.error.${error.code}`));
+      else if (screenSourceTransportRef.current === 'cloudflare-sfu') cf.reportError(error);
       else setNotice(t('room.shareFailed'));
     }
   }
@@ -1111,6 +1108,9 @@ export function MeetingRoomPage({
       browserEncodingPreferenceRef.current = value; setBrowserEncodingPreference(value);
     },
     screenEncodingEngine,
+    nativeCaptureAvailable: Boolean(nativeCaptureConnection),
+    nativeCaptureEnabled,
+    onNativeCaptureChange: (enabled) => { nativeCaptureEnabledRef.current = enabled; setNativeCaptureEnabled(enabled); },
     onScreenEncodingEngineChange: setScreenEncodingEngine,
     screenBitrate,
     screenQuality,
@@ -1127,7 +1127,7 @@ export function MeetingRoomPage({
     onSharedAudioVolumeChange: setSharedAudioVolume,
     onScreenCodecChange: setScreenCodec,
     onScreenBitrateChange: (bitrate) => {
-      screenBitrateTouchedRef.current = true;
+      saveScreenBitrate(bitrate);
       setScreenBitrate(bitrate);
     },
     onScreenQualityChange: setScreenQuality,

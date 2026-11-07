@@ -1,0 +1,27 @@
+{
+  "status": "deployed-and-publicly-verified",
+  "commit": "eb84d46f04f676681ce95eb7607637a76099a105",
+  "publicAsset": "/assets/index-bBLBsPHG.js",
+  "publicAssetSha256": "663f30bca6d3e676f5ba698b27f440965c85f085a7fdb9775a1706fb733bdaa6",
+  "nativeWorker": "/assets/native-frame-worker-BkNsju2K.js",
+  "nativeWorkerSha256": "9b7e6e5a54f71b5e52b1f0917c1b60428c8cfc7fecf2016fb3c8b94f00ca0b4b",
+  "health": {
+    "ready": {
+      "status": "ready"
+    },
+    "live": {
+      "status": "ok"
+    }
+  },
+  "releaseDirectory": "/opt/babagan-web-meeting/var/releases/update-20261107T042459Z-native-capture-prebuilt",
+  "rollbackScript": "/opt/babagan-web-meeting/var/releases/update-20261107T042459Z-native-capture-prebuilt/rollback.sh",
+  "deploymentScope": "static web only",
+  "unchangedServices": [
+    "api",
+    "caddy",
+    "livekit",
+    "coturn"
+  ],
+  "unchangedServicesEvidence": "server transaction verify_containers checked exact container and image identities before UPDATE SUCCEEDED",
+  "verifiedAtUtc": "2026-11-07T04:27:37.7035765Z"
+}

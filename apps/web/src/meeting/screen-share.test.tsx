@@ -30,6 +30,7 @@ import {
   recommendP2pBitrate
 } from './screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from './p2p-stats.js';
+import * as nativeCapture from './native-capture.js';
 
 afterEach(() => {
   cleanup();
@@ -38,9 +39,21 @@ afterEach(() => {
   PageFakePc.instances = [];
   PageFakePc.remoteDescriptionGate = undefined;
   window.localStorage.removeItem('babagan.viewer-transport');
+  window.localStorage.removeItem('babagan.screen-bitrate-cap');
+  window.sessionStorage.removeItem('babagan.native-capture');
 });
 
 describe('controlled browser screen sharing', () => {
+  it.each([false, true])('marks publication as native only when the captured source is native (%s)', async native => {
+    const { stream, video } = displayStream({ audio: false });
+    vi.spyOn(nativeCapture, 'isNativeCaptureTrack').mockImplementation(track => native && track === video);
+    const publish = vi.fn<(stream: MediaStream, options: import('./screen-share.js').ScreenSharePublishOptions) => Promise<void>>().mockResolvedValue(undefined);
+    const controller = createScreenShareController({ requestGrant: vi.fn(async () => undefined), releaseGrant: vi.fn(async () => undefined),
+      getDisplayMedia: async () => stream, publisher: { publish, release: vi.fn(async () => undefined) } });
+    await controller.start('auto', 20_000_000, 'motion');
+    expect(publish.mock.calls[0][1]).toEqual({ codec: 'auto', maxBitrate: 20_000_000, frameRate: 60, degradationPreference: 'maintain-resolution', ...(native ? { nativeCapture: true } : {}) });
+    await controller.stop();
+  });
   it('does not offer a TURN provider selector when the server is the only provider', () => {
     render(<LanguageProvider><MeetingSettings connection="connected" microphoneEnabled={false} audioPlaybackBlocked={false} devices={[]} leaving={false}
       screenShareTurnProviderVisible onScreenShareTurnProviderChange={vi.fn()} onMicrophoneToggle={vi.fn()} onMicrophoneDeviceChange={vi.fn()} onSpeakerDeviceChange={vi.fn()} onResumeAudio={vi.fn()} onLeave={vi.fn()} /></LanguageProvider>);
@@ -746,7 +759,7 @@ describe('controlled browser screen sharing', () => {
     expect(screen.queryByLabelText('Screen-share quality')).not.toBeInTheDocument();
   });
 
-  it('requests adaptive 1080p60 capture in high-motion mode and prioritizes frame rate', async () => {
+  it('requests 60fps publication with motion encoding and resolution protection', async () => {
     const order: string[] = [];
     const { stream, video } = displayStream({ audio: true });
     const getDisplayMedia = vi.fn(async () => { order.push('capture'); return stream; });
@@ -774,11 +787,11 @@ describe('controlled browser screen sharing', () => {
       systemAudio: 'include',
       windowAudio: 'window',
       selfBrowserSurface: 'exclude'
-    });
+    }, expect.any(AbortSignal));
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate: 8_000_000,
       frameRate: 60,
-      degradationPreference: 'maintain-framerate',
+      degradationPreference: 'maintain-resolution',
       codec: 'h264'
     });
     expect(stream.getVideoTracks()[0]?.contentHint).toBe('motion');
@@ -833,7 +846,7 @@ describe('controlled browser screen sharing', () => {
       systemAudio: 'include',
       windowAudio: 'window',
       selfBrowserSurface: 'exclude'
-    });
+    }, expect.any(AbortSignal));
     expect(publish).toHaveBeenCalledWith(stream, {
       maxBitrate: 8_000_000,
       frameRate: 60,
@@ -882,7 +895,7 @@ describe('controlled browser screen sharing', () => {
       video: {
         frameRate: { ideal: 30 }
       }
-    }));
+    }), expect.any(AbortSignal));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       frameRate: 30,
       degradationPreference: 'maintain-resolution'
@@ -930,7 +943,7 @@ describe('controlled browser screen sharing', () => {
       video: {
         frameRate: { ideal: 30 }
       }
-    }));
+    }), expect.any(AbortSignal));
     expect(publish).toHaveBeenCalledWith(stream, expect.objectContaining({
       frameRate: 30,
       degradationPreference: 'maintain-framerate'
@@ -1222,7 +1235,7 @@ describe('controlled browser screen sharing', () => {
 
     expect(capture).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
-    expect(controller.getState().status).toBe('starting'); // start#2's state untouched
+    await waitFor(() => expect(controller.getState().status).toBe('starting')); // Restart follows old grant cleanup.
 
     grant2.resolve();
     await start2;
@@ -1264,7 +1277,7 @@ describe('controlled browser screen sharing', () => {
 
     expect(video1.stop).toHaveBeenCalledOnce();
     expect(publish).not.toHaveBeenCalled();
-    expect(controller.getState().status).toBe('starting');
+    await waitFor(() => expect(controller.getState().status).toBe('starting'));
 
     grant2.resolve();
     await start2;
@@ -1301,7 +1314,7 @@ describe('controlled browser screen sharing', () => {
     capture1.reject(new Error('picker dismissed'));
     await start1;
 
-    expect(controller.getState().status).toBe('starting'); // start#2 untouched
+    await waitFor(() => expect(controller.getState().status).toBe('starting')); // Restart follows old grant cleanup.
 
     grant2.resolve();
     await start2;
@@ -1637,7 +1650,7 @@ describe('on-demand screen share publisher', () => {
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
     await hybrid.setViewerScreenTransport('viewer-1', 'sfu');
-    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 10_000_000 }));
+    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 8_000_000 }));
     await hybrid.setViewerScreenTransport('viewer-1', 'peer');
     expect(sfuPublisher.release).toHaveBeenCalledOnce();
   });
@@ -1900,7 +1913,7 @@ describe('P2P-first screen sharing in the room', () => {
 
 
 
-  it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
+  it('keeps the chosen default when the online viewer count changes', async () => {
     const signaling = fakeSignalingClient();
     renderP2pRoom({
       meetingApi: authorizedMeetingApi(),
@@ -1913,8 +1926,64 @@ describe('P2P-first screen sharing in the room', () => {
     await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
-    await waitFor(() => expect(selector).toHaveValue('5000000'));
+    await waitFor(() => expect(selector).toHaveValue('10000000'));
     expect(screen.getByText('Suggested P2P bitrate cap per viewer: 5 Mbps for 4 online viewers.')).toBeVisible();
+  });
+
+  it('starts a native-launcher room with motion quality and explicit native/browser choice', async () => {
+    sessionStorage.setItem('babagan.native-capture', JSON.stringify({ port: 25191, token: 'a'.repeat(43) }));
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory });
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    expect(screen.getByRole('combobox', { name: 'Screen capture' })).toHaveValue('native');
+    expect(screen.getByRole('combobox', { name: 'Screen quality' })).toHaveValue('motion');
+    await userEvent.click(screen.getByText('Advanced settings'));
+    expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('10000000');
+    expect(screen.getByLabelText('Screen-share codec')).toHaveValue('auto');
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Screen capture' }), 'browser');
+    expect(screen.getByRole('combobox', { name: 'Screen capture' })).toHaveValue('browser');
+  });
+
+  it('does not raise the cap when changing quality, transport or roster', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
+      if (String(input).includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      return new Response(null, { status: 204 });
+    }));
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory });
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Screen quality' }), 'motion');
+    await userEvent.click(screen.getByText('Advanced settings'));
+    const option = screen.getByRole('option', { name: 'Cloudflare SFU (browser encoding)' });
+    await waitFor(() => expect(option).toBeEnabled());
+    fireEvent.change(option.closest('select')!, { target: { value: 'cloudflare-sfu' } });
+    act(() => signaling.welcome(fourViewers));
+    await waitFor(() => expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('10000000'));
+  });
+
+  it('preserves the manually chosen ceiling across quality and roster changes and a room remount', async () => {
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory });
+    act(() => signaling.welcome([p2pViewers[0]]));
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
+    const quality = screen.getByRole('combobox', { name: 'Screen quality' });
+    const bitrate = screen.getByLabelText('Maximum screen-share bitrate');
+    await userEvent.selectOptions(quality, 'motion');
+    expect(bitrate).toHaveValue('10000000');
+    await userEvent.selectOptions(bitrate, '5000000');
+    await userEvent.selectOptions(quality, 'detail60');
+    act(() => signaling.welcome(fourViewers));
+    expect(bitrate).toHaveValue('5000000');
+    cleanup();
+    renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
+    expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('5000000');
   });
 
   it('publishes a cloned LiveKit screen only on explicit demand and releases it on return to peer', async () => {
@@ -1981,6 +2050,79 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
     expect(share.stop).toHaveBeenCalledOnce();
     expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled();
+  });
+
+  it('closes the audio decision and releases capture when the host revokes startup', async () => {
+    const { stream, video, audio } = displayStream({ audio: true, displaySurface: 'monitor' });
+    const releaseOwnShare = vi.fn(async () => undefined), signaling = fakeSignalingClient(), share = fakeShareController();
+    renderP2pRoom({ meetingApi: { ...authorizedMeetingApi(), releaseOwnShare }, getDisplayMedia: async () => stream,
+      createSignalingClient: signaling.factory, shareControllerFactory: () => share.controller });
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled()); await userEvent.click(shareButton);
+    expect(await screen.findByRole('dialog')).toBeVisible();
+    act(() => signaling.shareGone());
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(video.stop).toHaveBeenCalledOnce(); expect(audio?.stop).toHaveBeenCalledOnce();
+    expect(releaseOwnShare).toHaveBeenCalledOnce(); expect(share.start).not.toHaveBeenCalled();
+  });
+
+  it('aborts pending capture when the room unmounts and disposes its late selection', async () => {
+    const selected = displayStream({ audio: true }), picker = deferred<MediaStream>();
+    const capture = vi.fn<(constraints: DisplayMediaStreamOptions, signal?: AbortSignal) => Promise<MediaStream>>(() => picker.promise);
+    const releaseOwnShare = vi.fn(async () => undefined), signaling = fakeSignalingClient();
+    const view = renderP2pRoom({ meetingApi: { ...authorizedMeetingApi(), releaseOwnShare }, getDisplayMedia: capture,
+      createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled()); await userEvent.click(shareButton);
+    await waitFor(() => expect(capture).toHaveBeenCalledOnce()); view.unmount();
+    await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
+    expect(capture.mock.calls[0][1]?.aborted).toBe(true);
+    await act(async () => { picker.resolve(selected.stream); });
+    expect(selected.video.stop).toHaveBeenCalledOnce(); expect(selected.audio?.stop).toHaveBeenCalledOnce();
+  });
+
+  it('aborts pending capture immediately when Leave waits on the meeting API', async () => {
+    const selected = displayStream({ audio: true }), picker = deferred<MediaStream>(), left = deferred<void>();
+    const capture = vi.fn<(constraints: DisplayMediaStreamOptions, signal?: AbortSignal) => Promise<MediaStream>>(() => picker.promise);
+    const leaveMeeting = vi.fn(() => left.promise), releaseOwnShare = vi.fn(async () => undefined), controller = meetingController();
+    renderP2pRoom({ controller, meetingApi: { ...authorizedMeetingApi(), releaseOwnShare }, getDisplayMedia: capture,
+      leaveMeeting, createSignalingClient: fakeSignalingClient().factory, shareControllerFactory: fakeShareControllerFactory });
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled()); await userEvent.click(shareButton);
+    await waitFor(() => expect(capture).toHaveBeenCalledOnce());
+    fireEvent.click(screen.getByRole('button', { name: 'Leave meeting' }));
+    expect(leaveMeeting).toHaveBeenCalledOnce(); expect(capture.mock.calls[0][1]?.aborted).toBe(true);
+    expect(controller.disconnect).not.toHaveBeenCalled();
+    await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
+    await act(async () => { left.resolve(); picker.resolve(selected.stream); });
+    await waitFor(() => expect(controller.disconnect).toHaveBeenCalledOnce());
+    expect(selected.video.stop).toHaveBeenCalledOnce(); expect(selected.audio?.stop).toHaveBeenCalledOnce();
+  });
+
+  it('preserves cancelled grant cleanup when capture mode changes before restarting', async () => {
+    sessionStorage.setItem('babagan.native-capture', JSON.stringify({ port: 25191, token: 'a'.repeat(43) }));
+    const grant = deferred<void>(), released = deferred<void>(), selected = displayStream({ audio: false, displaySurface: 'browser' });
+    const grantShare = vi.fn().mockImplementationOnce(() => grant.promise).mockResolvedValue(undefined);
+    const releaseOwnShare = vi.fn().mockImplementationOnce(() => released.promise).mockResolvedValue(undefined);
+    const capture = vi.fn(async () => selected.stream), signaling = fakeSignalingClient();
+    vi.stubGlobal('navigator', { onLine: true, mediaDevices: { getDisplayMedia: capture } });
+    renderP2pRoom({ meetingApi: { ...authorizedMeetingApi(), grantShare, releaseOwnShare },
+      createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    const shareButton = await screen.findByRole('button', { name: 'Share screen' });
+    await waitFor(() => expect(shareButton).toBeEnabled()); await userEvent.click(shareButton);
+    expect(grantShare).toHaveBeenCalledOnce(); act(() => signaling.shareGone());
+    await waitFor(() => expect(shareButton).toBeEnabled());
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Screen capture' }), 'browser');
+    await userEvent.click(shareButton);
+    expect(grantShare).toHaveBeenCalledOnce(); expect(capture).not.toHaveBeenCalled();
+    await act(async () => { grant.resolve(); });
+    await waitFor(() => expect(releaseOwnShare).toHaveBeenCalledOnce());
+    expect(grantShare).toHaveBeenCalledOnce(); expect(capture).not.toHaveBeenCalled();
+    await act(async () => { released.resolve(); });
+    await waitFor(() => expect(grantShare).toHaveBeenCalledTimes(2));
+    expect(await screen.findByLabelText("Ada's shared screen")).toBeVisible();
+    expect(capture).toHaveBeenCalledOnce();
   });
 
   it('cancels a start that is revoked by the host while the grant is in flight', async () => {

@@ -7,6 +7,14 @@ export default defineConfig({
     projects: [
       {
         test: {
+          name: 'native-capture',
+          environment: 'node',
+          include: ['apps/native-capture/src/**/*.test.ts'],
+          exclude: ['**/dist/**']
+        }
+      },
+      {
+        test: {
           name: 'contracts',
           environment: 'node',
           include: ['packages/contracts/src/**/*.test.ts'],

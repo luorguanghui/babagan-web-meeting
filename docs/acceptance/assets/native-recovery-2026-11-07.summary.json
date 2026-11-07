@@ -1,0 +1,95 @@
+{
+  "browser": "156.0.4314.58",
+  "steps": true,
+  "errors": [],
+  "all": {
+    "samples": 86,
+    "sourceFps": 59.569,
+    "encodedFps": 59.569,
+    "decodedFps": 59.558,
+    "encodedP05": 58.912,
+    "decodedP05": 38.014,
+    "actualMbps": 6.05,
+    "targetMbps": 8.707,
+    "qp": 116.782,
+    "maxPacketSendDelayMs": 361.459,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "codecs": [
+      "video/AV1"
+    ]
+  },
+  "motion": {
+    "samples": 60,
+    "sourceFps": 59.45,
+    "encodedFps": 59.434,
+    "decodedFps": 59.8,
+    "encodedP05": 58.016,
+    "decodedP05": 35.017,
+    "actualMbps": 5.319,
+    "targetMbps": 8.707,
+    "qp": 107.856,
+    "maxPacketSendDelayMs": 361.459,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "codecs": [
+      "video/AV1"
+    ]
+  },
+  "transitions": {
+    "samples": 9,
+    "sourceFps": 59.907,
+    "encodedFps": 60.13,
+    "decodedFps": 60.13,
+    "encodedP05": 59.021,
+    "decodedP05": 38.014,
+    "actualMbps": 8.972,
+    "targetMbps": 8.424,
+    "qp": 149.228,
+    "maxPacketSendDelayMs": 291.827,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "codecs": [
+      "video/AV1"
+    ]
+  },
+  "otherTabActiveMotion": {
+    "samples": 20,
+    "sourceFps": 59.951,
+    "encodedFps": 59.901,
+    "decodedFps": 59.903,
+    "encodedP05": 58.963,
+    "decodedP05": 34.97,
+    "actualMbps": 5.146,
+    "targetMbps": 8.587,
+    "qp": 107.071,
+    "maxPacketSendDelayMs": 333.196,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "codecs": [
+      "video/AV1"
+    ]
+  },
+  "lastPacing": {
+    "queuedFrames": 3,
+    "submittedFrames": 5373,
+    "droppedFrames": 20,
+    "receivedFrames": 5396,
+    "refreshFrames": 0,
+    "inFlightFrames": 0,
+    "mode": "worker",
+    "scheduler": "atomics"
+  },
+  "decodedFrameChecks": {
+    "frames": 5347,
+    "changes": 666
+  }
+}

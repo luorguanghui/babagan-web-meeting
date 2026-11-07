@@ -1,0 +1,10 @@
+{
+  "implementation": "isolated HTTP/BYOB prototype, synthetic testsrc2 only",
+  "format": { "type": "format", "format": "I420", "width": 1920, "height": 1080, "frameRate": 60 },
+  "frames": 596,
+  "reads": 6677,
+  "seconds": 9.98830000000447,
+  "fps": 59.56969654493094,
+  "stats": { "captured": 600, "sent": 596, "dropped": 4 },
+  "errors": []
+}

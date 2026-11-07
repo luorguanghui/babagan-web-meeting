@@ -669,6 +669,44 @@ describe('p2p share controller', () => {
     expect(videoTransceiver.setCodecPreferences).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])('applies native startup and maximum SDP hints only to native sessions (%s), capped to each viewer budget', async nativeCapture => {
+    const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 AV1/90000\r\n';
+    const { controller, signaling } = makeHarness({ onPcCreated: pc => { pc.createOffer.mockResolvedValue({ type: 'offer', sdp }); } });
+    await controller.start(makeStream(), { ...shareOptions, codec: 'auto', nativeCapture, maxBitrate: 20_000_000 }, viewers);
+    const local = FakeRTCPeerConnection.instances[0].localDescriptions[0].sdp!;
+    if (nativeCapture) { expect(local).toContain('x-google-start-bitrate=10000;x-google-max-bitrate=10000'); }
+    else expect(local).toBe(sdp);
+    expect(local).not.toContain('x-google-min-bitrate');
+    expect(signaling.sendOffer).toHaveBeenCalledWith(viewers[0].identity, local, expect.any(String), 'coturn');
+    await controller.handleAnswer(viewers[0].identity, sdp);
+    const remote = FakeRTCPeerConnection.instances[0].remoteDescriptions[0].sdp!;
+    expect(remote).toBe(local);
+    await controller.stop();
+  });
+
+  it.each(['AV1', 'H264'])('keeps native hardware AV1 preference through recovery while applying L1T1 only after %s is negotiated', async negotiatedCodec => {
+    const av1 = { mimeType: 'video/AV1', clockRate: 90000, sdpFmtpLine: 'profile=0' };
+    const high = { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'packetization-mode=1;profile-level-id=640032' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [high, av1] }) });
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: async () => ({ supported: true, powerEfficient: true }) } });
+    const { controller } = makeHarness({ onPcCreated: pc => {
+      pc.setRemoteDescription.mockImplementation(async description => {
+        pc.remoteDescriptions.push(description);
+        const sender = pc.transceivers[0].sender;
+        sender.seedParameters({ ...sender.getParameters(), codecs: [{ mimeType: `video/${negotiatedCodec}`, clockRate: 90000, payloadType: 96 }] });
+      });
+    } });
+    await controller.start(makeStream(), { ...shareOptions, nativeCapture: true, codec: 'auto', frameRate: 60 }, [viewers[0]]);
+    const pc = FakeRTCPeerConnection.instances[0];
+    expect(pc.transceivers[0].setCodecPreferences).toHaveBeenCalledWith([av1, high]);
+    await controller.handleAnswer(viewers[0].identity, 'answer');
+    expect(pc.transceivers[0].sender.getParameters().encodings[0]).toMatchObject({ maxBitrate: 8_000_000, maxFramerate: 60 });
+    expect((pc.transceivers[0].sender.getParameters().encodings[0] as RTCRtpEncodingParameters & { scalabilityMode?: string }).scalabilityMode).toBe(negotiatedCodec === 'AV1' ? 'L1T1' : undefined);
+    await controller.retryAll([viewers[0]]);
+    expect(FakeRTCPeerConnection.instances[1].transceivers[0].setCodecPreferences).toHaveBeenCalledWith([av1, high]);
+    await controller.stop();
+  });
+
   it('prefers advertised H264 High packetization-mode 1 while retaining all fallbacks', async () => {
     const { controller } = makeHarness();
     const baseline = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=42e01f;packetization-mode=1' };

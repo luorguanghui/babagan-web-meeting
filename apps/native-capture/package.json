@@ -1,0 +1,24 @@
+{
+  "name": "@meeting/native-capture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "pnpm --filter @meeting/contracts build",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/cli.js",
+    "dev:native": "tsx src/cli.ts",
+    "pretest": "pnpm --filter @meeting/contracts build",
+    "test": "vitest run --config vitest.config.ts",
+    "pretypecheck": "pnpm --filter @meeting/contracts build",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@meeting/contracts": "workspace:*",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.23.11"
+  }
+}
