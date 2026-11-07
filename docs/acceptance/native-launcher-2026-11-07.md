@@ -39,4 +39,6 @@
 
 用户要求匹配网页风格的桌面图标。0.2.1 使用现有品牌标记、奶油白圆角底与橄榄绿图形，提供九档 ICO，嵌入安装器/启动器，窗体和托盘使用程序图标。程序产品名和版本信息一并补全。此机桌面与开始菜单只更新 IconLocation，保留现有 TargetPath；运行中的旧版本需要下次使用新版启动器才更新托盘图标。
 
-0.2.1 图标与说明更新正在发布，发布结果另补。
+0.2.1 图标与说明更新已于 2026-11-07 14:47（香港时间）部署并完成公网校验，代码 babbf34。新安装器为 349,184 字节，SHA-256 `fd45a28709450c9c3810a8a8f6ee0602509374beec40144b516e95eee4ff778e`。网页入口 `/assets/index-3YCzduBT.js` 校验一致，健康检查、COOP/COEP、两份依赖的 HTTPS 可达性与原校验值通过。仅更新 web，API/媒体容器保持原身份；回滚路径 `/opt/babagan-web-meeting/var/releases/update-20261107T064606Z-native-icons-prebuilt/rollback.sh`。
+
+新包构建、实际解包和 no-open 启动检查通过，程序属性 ProductName 为 Babagan 高质量共享、ProductVersion 0.2.1，PE 提取图标与设计一致。九档 ICO 的缩略图已查看，网页类型检查、相关 4 项测试与修改源码 lint 通过。图标不改变签名状态，正式下载页面明确显示未签名提醒。
