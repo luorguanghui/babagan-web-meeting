@@ -13,6 +13,8 @@ From the repository root in PowerShell 7:
 
 Tooling is installed under `%LOCALAPPDATA%/BabaganDevelopment`; scripts set process-local environment variables without altering the global PATH. Java 22 works with pinned Gradle 8.13 / Android Gradle Plugin 8.11.1. Dependencies are pinned in `app/build.gradle`. Add `-Emulator` to setup to install an API 35 Google APIs x86_64 image and the emulator. The setup does not modify Windows hypervisor or BIOS settings.
 
+The build script also redirects generated outputs and test reports to `%LOCALAPPDATA%/BabaganDevelopment/android-build/app` to avoid Java test-worker issues with non-ASCII workspace paths. Read current test reports there; an old repository-local `app/build` directory may contain historical output from earlier attempts.
+
 Debug builds include unit tests and Android lint by default. Release build:
 
 ```powershell

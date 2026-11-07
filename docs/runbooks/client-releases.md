@@ -76,7 +76,7 @@ sudo docker compose --env-file infra/.env.production "${compose_files[@]}" \
 4. 在具备既有构建工具和密钥的 Windows 发布机器运行；路径示例需要换成现有私钥/证书路径，密码使用外部文件，不放入命令参数明文或仓库。
 
 ```powershell
-$releaseSequence = 3 # 当前线上序号为 2；后续每次发布继续递增
+$releaseSequence = 4 # 当前线上序号为 3；后续每次发布继续递增
 ./scripts/build-desktop-client.ps1 -Sequence $releaseSequence
 ./scripts/build-android-client.ps1 -Configuration Release `
   -SigningStore 'C:/private/Babagan.p12' `
@@ -92,7 +92,7 @@ node scripts/prepare-client-release.mjs --sequence $releaseSequence `
 
 ## 服务器验证与发布
 
-将完整准备目录上传到服务目录以外的独立 staging，例如 `/opt/babagan-web-meeting/var/client-staging/3`。不要直接解包进生产下载目录。服务器需要 Python 3.10+ 与 `openssl`；脚本只用 Python 标准库，不安装操作系统依赖。
+将完整准备目录上传到服务目录以外的独立 staging，例如 `/opt/babagan-web-meeting/var/client-staging/4`。不要直接解包进生产下载目录。服务器需要 Python 3.10+ 与 `openssl`；脚本只用 Python 标准库，不安装操作系统依赖。
 
 生产主检出不一定等于当前网页发布版本。应使用部署记录指向的受信任源码目录中的发布器与公钥；下面从现有发布记录定位它，不使用待发布包中的代码或公钥。首次下载卷迁移已经完成，后续客户端发布无需重启网页容器。
 
@@ -100,11 +100,11 @@ node scripts/prepare-client-release.mjs --sequence $releaseSequence `
 python3 --version
 openssl version
 release_source="$(sudo python3 -c 'import json,pathlib; r=json.load(open("/opt/babagan-web-meeting/var/releases/current-update.json")); print(pathlib.Path(r["rollbackScript"]).parent / "source")')"
-sudo python3 "$release_source/scripts/publish-client-release.py" /opt/babagan-web-meeting/var/client-staging/3 \
+sudo python3 "$release_source/scripts/publish-client-release.py" /opt/babagan-web-meeting/var/client-staging/4 \
   --public-key "$release_source/scripts/client-update-public-key.json" \
   --downloads-root /opt/babagan-web-meeting/var/downloads --dry-run
 
-sudo python3 "$release_source/scripts/publish-client-release.py" /opt/babagan-web-meeting/var/client-staging/3 \
+sudo python3 "$release_source/scripts/publish-client-release.py" /opt/babagan-web-meeting/var/client-staging/4 \
   --public-key "$release_source/scripts/client-update-public-key.json" \
   --downloads-root /opt/babagan-web-meeting/var/downloads
 ```
