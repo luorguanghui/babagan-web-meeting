@@ -95,11 +95,64 @@ describe('MeetingService', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it('rejects creating a second non-terminal meeting', async () => {
-    await service.createMeeting({ name: 'First' });
+  it('admits exactly three concurrent creates and frees a slot after one ends', async () => {
+    const results = await Promise.allSettled(Array.from({ length: 4 }, (_, index) =>
+      service.createMeeting({ name: `Meeting ${index}`, meetingPassword: 'join-secret' })));
+    expect(results.filter(result => result.status === 'fulfilled')).toHaveLength(3);
+    expect(results.filter(result => result.status === 'rejected')).toMatchObject([{ reason: { code: 'MEETING_LIMIT_REACHED' } }]);
+    const rooms = repo.listNonTerminal();
+    await service.endMeeting(rooms[0]!.slug);
+    await expect(service.createMeeting({ name: 'Replacement' })).resolves.toMatchObject({ name: 'Replacement' });
+    expect(repo.countNonTerminal()).toBe(3);
+  });
 
-    await expect(service.createMeeting({ name: 'Second' }))
-      .rejects.toMatchObject({ code: 'MEETING_ALREADY_ACTIVE' });
+  it('isolates unavailable rooms in the open list and still counts their admission slot', async () => {
+    const rooms = await Promise.all(['A', 'B', 'C'].map(name => service.createMeeting({ name })));
+    media.unavailableMeetings.add(rooms[1]!.id);
+    expect(await service.getOpenMeetingSummaries()).toMatchObject([
+      { name: 'A', isFull: false }, { name: 'B', unavailable: true }, { name: 'C', isFull: false }
+    ]);
+    expect(repo.countNonTerminal()).toBe(3);
+    await expect(service.createMeeting({ name: 'Fourth' })).rejects.toMatchObject({ code: 'MEETING_LIMIT_REACHED' });
+  });
+
+  it('continues cleaning other open rooms after one media query fails', async () => {
+    const rooms = await Promise.all(['A', 'B', 'C'].map(name => service.createMeeting({ name })));
+    for (const room of rooms) repo.updateMeetingLifecycle(room.id, { status: 'grace', emptySince: clock.now(), endedAt: null });
+    clock.set(clock.now() + EMPTY_GRACE_MS);
+    media.unavailableMeetings.add(rooms[0]!.id);
+    let failures = 0;
+    const cleaned = await service.runCleanup(() => { failures++; });
+    expect(failures).toBe(1);
+    expect(cleaned).toEqual(expect.arrayContaining([rooms[1]!.slug, rooms[2]!.slug]));
+    expect(repo.listNonTerminal().map(room => room.id)).toEqual([rooms[0]!.id]);
+    expect(media.closedMeetings).not.toContain(rooms[0]!.id);
+  });
+
+  it('expires every hard-TTL room even when media occupancy is unavailable', async () => {
+    const rooms = await Promise.all(['A', 'B', 'C'].map(name => service.createMeeting({ name })));
+    rooms.forEach(room => media.unavailableMeetings.add(room.id));
+    clock.set(rooms[0]!.expiresAt);
+    await expect(service.runCleanup()).resolves.toEqual(expect.arrayContaining(rooms.map(room => room.slug)));
+    expect(repo.countNonTerminal()).toBe(0);
+  });
+
+  it('reports rooms expired by an open-list request to the next signaling cleanup pass', async () => {
+    const rooms = await Promise.all(['A', 'B', 'C'].map(name => service.createMeeting({ name })));
+    clock.set(rooms[0]!.expiresAt);
+    await expect(service.getOpenMeetingSummaries()).resolves.toEqual([]);
+    expect(repo.findTerminalMeetingsAwaitingMediaCleanup()).toEqual([]);
+    await expect(service.runCleanup()).resolves.toEqual(rooms.map(room => room.slug));
+    await expect(service.runCleanup()).resolves.toEqual([]);
+  });
+
+  it('keeps the legacy current response singular and advances after its first room expires', async () => {
+    const first = await service.createMeeting({ name: 'First' });
+    clock.set(clock.now() + 1_000);
+    const second = await service.createMeeting({ name: 'Second' });
+    await expect(service.getCurrentMeetingSummary()).resolves.toMatchObject({ slug: first.slug });
+    clock.set(first.expiresAt);
+    await expect(service.getCurrentMeetingSummary()).resolves.toEqual({ slug: second.slug, name: 'Second', status: 'created', requiresPassword: false, isFull: false });
   });
 
   it('returns only the synchronized current non-terminal meeting', async () => {
@@ -282,6 +335,7 @@ class FakePasswordHasher implements PasswordHasher {
 
 class FakeMediaService implements MediaService {
   readonly identities = new Map<string, string[]>();
+  readonly unavailableMeetings = new Set<string>();
   readonly closedMeetings: string[] = [];
   readonly issuedTokens: string[] = [];
   closeFailuresRemaining = 0;
@@ -292,6 +346,7 @@ class FakeMediaService implements MediaService {
   private listCalls = 0;
 
   async listParticipantIdentities(meetingId: string): Promise<string[]> {
+    if (this.unavailableMeetings.has(meetingId)) throw new Error('media unavailable');
     const call = ++this.listCalls;
     await Promise.resolve();
     this.onListParticipants?.(call);

@@ -1,3 +1,4 @@
+import { MAX_OPEN_MEETINGS } from '@meeting/contracts';
 import type { AppConfig } from '../config.js';
 import { domainError } from '../domain/errors.js';
 import { nextMeetingStatus } from '../domain/time.js';
@@ -54,6 +55,10 @@ export interface CurrentMeetingSummary extends MeetingSummary {
   status: 'created' | 'active' | 'grace';
 }
 
+export interface OpenMeetingSummary extends CurrentMeetingSummary {
+  unavailable?: true;
+}
+
 export interface JoinMeetingResult {
   participantIdentity: string;
   participantName: string;
@@ -66,6 +71,7 @@ export interface JoinMeetingResult {
 
 export class MeetingService {
   private readonly mutex: KeyedMutex;
+  private readonly pendingTerminalNotifications = new Set<string>();
 
   public constructor(private readonly dependencies: {
     repository: MeetingRepository;
@@ -84,9 +90,6 @@ export class MeetingService {
     afterCreate?: (meeting: MeetingRecord) => void
   ): Promise<MeetingRecord> {
     if (input.meetingPassword === '') throw new Error('Meeting password must not be empty');
-    if (this.dependencies.repository.findNonTerminal()) {
-      throw domainError('MEETING_ALREADY_ACTIVE');
-    }
 
     const now = this.dependencies.clock.now();
     const passwordHash = input.meetingPassword === undefined
@@ -95,6 +98,7 @@ export class MeetingService {
 
     try {
       return this.dependencies.repository.transaction(() => {
+        if (this.dependencies.repository.countNonTerminal() >= MAX_OPEN_MEETINGS) throw domainError('MEETING_LIMIT_REACHED');
         const meeting = this.dependencies.repository.createMeeting({
           id: this.dependencies.ids.uuid(),
           slug: this.dependencies.ids.slug(),
@@ -107,7 +111,7 @@ export class MeetingService {
         return meeting;
       });
     } catch (error) {
-      if (isNonTerminalConflict(error)) throw domainError('MEETING_ALREADY_ACTIVE');
+      if (isOpenMeetingLimitConflict(error)) throw domainError('MEETING_LIMIT_REACHED');
       throw error;
     }
   }
@@ -128,17 +132,30 @@ export class MeetingService {
   }
 
   async getCurrentMeetingSummary(): Promise<CurrentMeetingSummary | null> {
-    const meeting = this.dependencies.repository.findNonTerminal();
-    if (!meeting) return null;
-    const summary = await this.getMeetingSummary(meeting.slug);
-    if (summary.status === 'ended' || summary.status === 'expired') return null;
-    return {
-      slug: meeting.slug,
-      name: summary.name,
-      status: summary.status,
-      requiresPassword: summary.requiresPassword,
-      isFull: summary.isFull
-    };
+    for (const meeting of this.dependencies.repository.listNonTerminal()) {
+      const summary = await this.getMeetingSummary(meeting.slug);
+      if (summary.status === 'ended' || summary.status === 'expired') continue;
+      return { slug: meeting.slug, ...summary, status: summary.status };
+    }
+    return null;
+  }
+
+  async getOpenMeetingSummaries(): Promise<OpenMeetingSummary[]> {
+    const summaries = await Promise.all(this.dependencies.repository.listNonTerminal().map(async (meeting): Promise<OpenMeetingSummary | null> => {
+      try {
+        const summary = await this.getMeetingSummary(meeting.slug);
+        if (summary.status === 'ended' || summary.status === 'expired') return null;
+        return { slug: meeting.slug, ...summary, status: summary.status };
+      } catch {
+        const current = this.dependencies.repository.findBySlug(meeting.slug);
+        if (!current || current.status === 'ended' || current.status === 'expired') return null;
+        // The room still occupies its admission slot. Unknown media occupancy is
+        // not presented as available capacity; the UI must honor unavailable.
+        return { slug: current.slug, name: current.name, status: current.status,
+          requiresPassword: current.passwordHash !== null, isFull: false, unavailable: true };
+      }
+    }));
+    return summaries.filter((value): value is OpenMeetingSummary => value !== null);
   }
 
   async joinMeeting(slug: string, input: JoinMeetingInput): Promise<JoinMeetingResult> {
@@ -227,27 +244,34 @@ export class MeetingService {
     });
   }
 
-  async runCleanup(): Promise<string[]> {
+  async runCleanup(onFailure?: () => void): Promise<string[]> {
     const cleaned: string[] = [];
-    const meeting = this.dependencies.repository.findNonTerminal();
-    if (meeting) {
-      await this.mutex.runExclusive(meeting.id, async () => {
-        const current = this.dependencies.repository.findBySlug(meeting.slug);
-        if (!current || isTerminal(current)) return;
-        const synchronized = await this.synchronize(current);
-        if (isTerminal(synchronized)) cleaned.push(synchronized.slug);
-      });
+    const reportFailure = () => { try { onFailure?.(); } catch { /* A reporter must not block another room's cleanup. */ } };
+    for (const meeting of this.dependencies.repository.listNonTerminal()) {
+      try {
+        await this.mutex.runExclusive(meeting.id, async () => {
+          const current = this.dependencies.repository.findBySlug(meeting.slug);
+          if (!current || isTerminal(current)) return;
+          const synchronized = await this.synchronize(current);
+          if (isTerminal(synchronized)) cleaned.push(synchronized.slug);
+        });
+      } catch { reportFailure(); }
     }
 
     for (const terminal of this.dependencies.repository.findTerminalMeetingsAwaitingMediaCleanup()) {
-      await this.mutex.runExclusive(terminal.id, async () => {
-        const current = this.dependencies.repository.findBySlug(terminal.slug);
-        if (!current || !isTerminal(current) || current.mediaClosedAt !== null) return;
-        if (await this.closeTerminalMedia(current)) cleaned.push(current.slug);
-      });
+      try {
+        await this.mutex.runExclusive(terminal.id, async () => {
+          const current = this.dependencies.repository.findBySlug(terminal.slug);
+          if (!current || !isTerminal(current) || current.mediaClosedAt !== null) return;
+          if (await this.closeTerminalMedia(current)) cleaned.push(current.slug);
+          else reportFailure();
+        });
+      } catch { reportFailure(); }
     }
 
-    return cleaned;
+    const notifications = [...new Set([...this.pendingTerminalNotifications, ...cleaned])];
+    this.pendingTerminalNotifications.clear();
+    return notifications;
   }
 
   private requireMeeting(slug: string): MeetingRecord {
@@ -263,6 +287,8 @@ export class MeetingService {
 
   private async synchronize(meeting: MeetingRecord): Promise<MeetingRecord> {
     if (isTerminal(meeting)) return meeting;
+    // The hard lifetime does not depend on an available media control service.
+    if (this.dependencies.clock.now() >= meeting.expiresAt) return this.applyLifecycle(meeting, 0);
 
     const occupied = await this.occupiedIdentities(meeting);
     return this.applyLifecycle(meeting, occupied.size);
@@ -301,6 +327,9 @@ export class MeetingService {
       this.dependencies.repository.revokeParticipantSessionsForMeeting(meeting.id, now);
       this.dependencies.repository.revokeHostSessionsForMeeting(meeting.id, now);
     });
+    // A public summary can expire a room before the scheduled sweep runs.
+    // Preserve its signaling notification even if media deletion already succeeded.
+    this.pendingTerminalNotifications.add(meeting.slug);
   }
 
   /**
@@ -337,6 +366,7 @@ function isTerminal(meeting: MeetingRecord): boolean {
   return meeting.status === 'ended' || meeting.status === 'expired';
 }
 
-function isNonTerminalConflict(error: unknown): boolean {
-  return error instanceof Error && error.message.includes('UNIQUE constraint failed');
+function isOpenMeetingLimitConflict(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && error.code === 'SQLITE_CONSTRAINT_TRIGGER'
+    && error.message === 'MEETING_LIMIT_REACHED';
 }

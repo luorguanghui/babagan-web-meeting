@@ -158,7 +158,7 @@ stateDiagram-v2
 - Cloudflare relay probe 是共享者浏览器内的短时、独立 DataChannel 测量，窗口上限 50 Mbps、500 ms，并限制总载荷；它用于估计客户端到 Cloudflare relay 的保守路径容量，不代表媒体 PeerConnection 的同一 allocation，也不绕过浏览器自身拥塞控制。
 - Cloudflare relay 的 per-viewer cap 不加入 40 Mbps 的 aggregate P2P uplink budget；生产构造当前启用逐观看者 control。升档需要稳定高容量和健康媒体样本；降档需要至少两个足以覆盖当前 cap 的低验证窗口及三个连续压力样本。
 
-内存预算：LiveKit 900–1200 MiB、Node/Web 200–350 MiB、Caddy 50–100 MiB、系统及页缓存保留 400 MiB 左右。超过 1.8 GiB 或发生交换应告警。P2P 信令在线名单与转发缓冲在内存中，规模恒为单会议 ≤5 人，无额外内存压力。
+内存预算：LiveKit 900–1200 MiB、Node/Web 200–350 MiB、Caddy 50–100 MiB、系统及页缓存保留 400 MiB 左右。超过 1.8 GiB 或发生交换应告警。P2P 信令在线名单与转发缓冲按房间隔离；当前最多3个开放会议、每房≤5人。此预算是原部署基线，三房满员时仍需实测CPU、内存、带宽及TURN端口占用，不能由准入上限推断容量验收已通过。
 
 ## 7. 架构决策记录
 

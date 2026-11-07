@@ -96,7 +96,7 @@ describe('anonymous P2P quality stats endpoint', () => {
     });
   });
 
-  it('returns 404 for an unknown meeting even with a valid participant cookie', async () => {
+  it('does not authenticate another room using a valid room-scoped participant cookie', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
 
@@ -107,8 +107,8 @@ describe('anonymous P2P quality stats endpoint', () => {
       payload: validReport
     });
 
-    expect(response.statusCode, response.body).toBe(404);
-    expect(response.json()).toMatchObject({ error: { code: 'MEETING_NOT_FOUND' } });
+    expect(response.statusCode, response.body).toBe(401);
+    expect(response.json()).toMatchObject({ error: { code: 'ADMIN_AUTH_FAILED' } });
   });
 
   it('accepts a report after the meeting has ended while the join cookie is still signed', async () => {

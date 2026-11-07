@@ -3,6 +3,8 @@ import {
   CreateMeetingRequestSchema,
   CreateMeetingResponseSchema,
   CurrentMeetingResponseSchema,
+  OpenMeetingsResponseSchema,
+  MAX_OPEN_MEETINGS,
   KickParticipantRequestSchema,
   MeetingSummarySchema,
   ShareGrantRequestSchema
@@ -16,7 +18,7 @@ import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { HostApplicationService } from '../../services/host-application-service.js';
 import type { MeetingService } from '../../services/meeting-service.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
-import { hostCookie, readSignedSessionCookie, setHostSessionCookie } from '../../security/session-token.js';
+import { clearMeetingSessionCookie, hostCookie, participantCookie, readMeetingSessionCookie, setHostSessionCookie } from '../../security/session-token.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { adminPasswordRateLimit, generalApiRateLimit } from '../rate-limit.js';
 
@@ -36,7 +38,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   }, async (request, reply) => {
     const body = request.body as { adminPassword: string; name: string; meetingPassword?: string };
     const result = await dependencies.hosts.createMeeting(body);
-    setHostSessionCookie(reply, result.rawHostToken);
+    setHostSessionCookie(reply, result.rawHostToken, result.meeting.slug, result.meeting.expiresAt);
     return reply.status(201).send({
       slug: result.meeting.slug,
       joinUrl: new URL(`/meetings/${result.meeting.slug}`, dependencies.config.publicBaseUrl).toString()
@@ -46,7 +48,8 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.get('/api/v1/meetings/current', {
     schema: { response: { 200: CurrentMeetingResponseSchema } },
     preHandler: app.rateLimit(generalApiRateLimit())
-  }, async () => {
+  }, async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
     const meeting = await dependencies.meetings.getCurrentMeetingSummary();
     return {
       meeting: meeting === null ? null : {
@@ -54,6 +57,17 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
         joinUrl: new URL(`/meetings/${meeting.slug}`, dependencies.config.publicBaseUrl).toString()
       }
     };
+  });
+
+  app.get('/api/v1/meetings/open', {
+    schema: { response: { 200: OpenMeetingsResponseSchema } },
+    preHandler: app.rateLimit(generalApiRateLimit())
+  }, async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const meetings = await dependencies.meetings.getOpenMeetingSummaries();
+    return { maxOpenMeetings: MAX_OPEN_MEETINGS, meetings: meetings.map(meeting => ({
+      ...meeting, joinUrl: new URL(`/meetings/${meeting.slug}`, dependencies.config.publicBaseUrl).toString()
+    })) };
   });
 
   app.get('/api/v1/meetings/:slug', {
@@ -70,8 +84,8 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   app.post('/api/v1/meetings/:slug/end', hostOptions(app), async (request, reply) => {
     const value = slug(request.params);
     await dependencies.hosts.endMeeting(hostSession(request, dependencies.hosts, value), value);
-    await dependencies.screenSfu.closeMeeting(value);
-    dependencies.p2p.closeRoom(value, 'meeting ended');
+    await closeMeetingTransports(value);
+    clearMeetingCookies(reply, value);
     return reply.status(204).send();
   });
 
@@ -82,8 +96,8 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     const body = request.body as { adminPassword: string };
     const value = slug(request.params);
     await dependencies.hosts.endMeetingWithAdminPassword(value, body.adminPassword);
-    await dependencies.screenSfu.closeMeeting(value);
-    dependencies.p2p.closeRoom(value, 'meeting ended');
+    await closeMeetingTransports(value);
+    clearMeetingCookies(reply, value);
     return reply.status(204).send();
   });
 
@@ -120,6 +134,17 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     if (wasSharing) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
+
+  async function closeMeetingTransports(value: string): Promise<void> {
+    try { await dependencies.screenSfu.closeMeeting(value); }
+    catch { app.log.error({}, 'Screen SFU cleanup failed for a room'); }
+    finally { dependencies.p2p.closeRoom(value, 'meeting ended'); }
+  }
+}
+
+function clearMeetingCookies(reply: import('fastify').FastifyReply, value: string): void {
+  clearMeetingSessionCookie(reply, hostCookie, value);
+  clearMeetingSessionCookie(reply, participantCookie, value);
 }
 
 function hostOptions(app: FastifyInstance) {
@@ -134,7 +159,7 @@ function hostSession(
   hosts: HostApplicationService,
   slugValue: string
 ) {
-  const raw = readSignedSessionCookie(request, hostCookie);
+  const raw = readMeetingSessionCookie(request, hostCookie, slugValue);
   if (!raw) throw new SessionAuthenticationError();
   return hosts.authenticate(raw, slugValue);
 }

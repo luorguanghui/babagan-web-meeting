@@ -7,7 +7,7 @@ import type { AppConfig } from '../../config.js';
 import type { P2pSocket } from '../../p2p/room-registry.js';
 import { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import { P2pSignalingSession } from '../../p2p/signaling-session.js';
-import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
+import { participantCookie, readMeetingSessionCookie } from '../../security/session-token.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { SessionAuthenticationError } from '../auth.js';
 import { assertTrustedOrigin } from '../origin.js';
@@ -44,7 +44,7 @@ export function authenticateP2pHandshake(
   participants: ParticipantApplicationService,
   slugValue: string
 ): P2pHandshakeSession {
-  const raw = readSignedSessionCookie(request, participantCookie);
+  const raw = readMeetingSessionCookie(request, participantCookie, slugValue);
   if (!raw) throw new SessionAuthenticationError();
   const session = participants.authenticate(raw, slugValue);
   return { identity: session.identity, nickname: session.nickname };

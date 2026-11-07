@@ -50,7 +50,7 @@ export async function startManagedServer(dependencies: {
     if (cleanupPromise) return cleanupPromise;
     cleanupPromise = (async () => {
       try {
-        const cleaned = await dependencies.meetings.runCleanup();
+        const cleaned = await dependencies.meetings.runCleanup(() => dependencies.app.log.error({}, 'Meeting cleanup failed for a room'));
         await dependencies.onMeetingsCleaned?.(cleaned);
       } catch {
         dependencies.app.log.error({}, 'Meeting cleanup failed');
@@ -135,8 +135,9 @@ export async function startServer(options: { port?: number } = {}): Promise<{ ap
       meetings,
       onMeetingsCleaned: async (slugs) => {
         for (const slug of slugs) {
-          await screenSfu.closeMeeting(slug);
-          p2p.closeRoom(slug, 'meeting ended');
+          try { await screenSfu.closeMeeting(slug); }
+          catch { app.log.error({}, 'Screen SFU cleanup failed for a room'); }
+          finally { p2p.closeRoom(slug, 'meeting ended'); }
         }
       }
     });

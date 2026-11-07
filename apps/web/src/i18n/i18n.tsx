@@ -148,6 +148,13 @@ const en = {
   'current.join': 'Join current meeting',
   'current.lookupFailed': 'The current meeting could not be loaded.',
   'current.retry': 'Retry',
+  'open.heading': 'Open meetings',
+  'open.capacity': ({ count, max }) => `${count} / ${max} meetings open`,
+  'open.loading': 'Loading open meetings…',
+  'open.empty': 'No meeting is open right now.',
+  'open.lookupFailed': 'Open meetings could not be loaded. Try again to refresh the list.',
+  'open.unavailable': 'Temporarily unavailable',
+  'open.unavailableHint': 'This meeting is still open, but its media connection could not be checked. Retry before joining.',
   'adminEnd.heading': 'End with administrator password',
   'adminEnd.password': 'Admin password to end meeting',
   'adminEnd.passwordRequired': 'Admin password is required.',
@@ -156,6 +163,7 @@ const en = {
   'adminEnd.failed': 'The meeting could not be ended.',
   'join.eyebrow': 'Meeting lobby',
   'join.heading': 'Ready when you are',
+  'join.selectedMeeting': 'You are joining',
   'join.lede': 'Choose a name, check your audio if you like, then enter with your microphone muted.',
   'join.nickname': 'Nickname',
   'join.password': 'Meeting password',
@@ -193,6 +201,7 @@ const en = {
   'error.MEETING_NOT_FOUND': 'This meeting does not exist.',
   'error.MEETING_EXPIRED': 'This meeting has expired.',
   'error.MEETING_FULL': 'This meeting is full.',
+  'error.MEETING_LIMIT_REACHED': 'Three meetings are already open. End one before creating another.',
   'error.INVALID_MEETING_PASSWORD': 'The meeting password is incorrect.',
   'error.ADMIN_AUTH_FAILED': 'Authentication failed.',
   'error.SHARE_ALREADY_ACTIVE': 'Someone is already sharing a screen.',
@@ -528,9 +537,14 @@ const zhCN: Record<MessageKey, Message> = {
   'current.eyebrow': '已开启的会议', 'current.heading': '当前会议', 'current.status.created': '等待成员加入', 'current.status.active': '进行中',
   'current.status.grace': '暂时无人在线', 'current.passwordRequired': '需要会议密码', 'current.noPassword': '无需会议密码', 'current.full': '会议已满',
   'current.join': '加入当前会议', 'current.lookupFailed': '无法加载当前会议。', 'current.retry': '重试',
+  'open.heading': '开放中的会议', 'open.capacity': ({ count, max }) => `已开放 ${count} / ${max} 个会议`,
+  'open.loading': '正在加载开放会议…', 'open.empty': '目前没有开放的会议。',
+  'open.lookupFailed': '无法加载开放会议，请重试刷新列表。', 'open.unavailable': '暂时不可用',
+  'open.unavailableHint': '此会议仍在开放中，但暂时无法确认媒体连接；请重试后再加入。',
   'adminEnd.heading': '使用管理员密码结束会议', 'adminEnd.password': '用于结束会议的管理员密码', 'adminEnd.passwordRequired': '请输入管理员密码。',
   'adminEnd.end': '结束当前会议', 'adminEnd.ending': '正在结束…', 'adminEnd.failed': '无法结束会议。',
   'join.eyebrow': '会议大厅', 'join.heading': '准备好即可加入', 'join.lede': '填写昵称，可按需检查音频，然后以麦克风静音状态进入。',
+  'join.selectedMeeting': '即将加入的会议',
   'join.nickname': '昵称', 'join.password': '会议密码', 'join.ifRequired': '如会议要求', 'join.submit': '静音加入', 'join.form': '加入会议', 'join.submitting': '正在加入…', 'join.loading': '正在检查会议…', 'join.lookupFailed': '无法加载会议信息，请检查网络后重试。', 'join.retry': '重试',
   'join.nicknameRequired': '请输入昵称。', 'join.passwordRequired': '请输入会议密码。', 'join.required': '必填', 'join.failed': '无法加入会议。', 'join.secureRequired': '请通过安全的 HTTPS 连接加入会议。',
   'join.webrtcUnavailable': '此浏览器无法使用 WebRTC，请使用最新版 Chrome 或 Edge。', 'join.mobileNotice': '移动设备仅支持观看和语音，不支持屏幕共享。',
@@ -541,6 +555,7 @@ const zhCN: Record<MessageKey, Message> = {
   'device.speakerUnavailable': '此浏览器无法进行扬声器测试。', 'device.playing': '正在播放短测试音。',
   'error.heading': '出现错误', 'error.retry': '请返回会议链接后重试。', 'error.supportId': ({ id }) => `支持编号：${id}`, 'error.generic': '操作未能完成，请重试。',
   'error.MEETING_NOT_FOUND': '会议不存在。', 'error.MEETING_EXPIRED': '会议已过期。', 'error.MEETING_FULL': '会议人数已满。', 'error.INVALID_MEETING_PASSWORD': '会议密码不正确。',
+  'error.MEETING_LIMIT_REACHED': '同时开放的会议已达 3 个，请先结束一个会议再创建。',
   'error.ADMIN_AUTH_FAILED': '管理员密码不正确。', 'error.SHARE_ALREADY_ACTIVE': '当前已有成员正在共享屏幕。', 'error.SHARE_NOT_AUTHORIZED': '主持人尚未授权屏幕共享。',
   'error.UNSUPPORTED_CLIENT': '当前浏览器不受支持。', 'error.RATE_LIMITED': '请求过于频繁，请稍后重试。', 'error.MEDIA_SERVICE_UNAVAILABLE': '会议媒体服务暂时不可用。',
   'room.eyebrow': '会议室', 'room.heading': ({ name }) => `${name}，你已进入会议`, 'room.sharingBy': ({ name }) => `正在共享：${name}`,     'room.sidePanel': '会议侧栏', 'room.management': '会议管理', 'room.devicesFailed': '无法获取音频设备列表。',
@@ -651,7 +666,7 @@ export function LanguageProvider({ children, initialLocale }: { children: ReactN
 export function useI18n(): I18nContextValue { return useContext(I18nContext); }
 
 const apiErrorKeys = new Set([
-  'MEETING_NOT_FOUND', 'MEETING_EXPIRED', 'MEETING_FULL', 'INVALID_MEETING_PASSWORD', 'ADMIN_AUTH_FAILED',
+  'MEETING_NOT_FOUND', 'MEETING_EXPIRED', 'MEETING_FULL', 'MEETING_LIMIT_REACHED', 'INVALID_MEETING_PASSWORD', 'ADMIN_AUTH_FAILED',
   'SHARE_ALREADY_ACTIVE', 'SHARE_NOT_AUTHORIZED', 'UNSUPPORTED_CLIENT', 'RATE_LIMITED', 'MEDIA_SERVICE_UNAVAILABLE'
 ]);
 

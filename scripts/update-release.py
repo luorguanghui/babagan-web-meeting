@@ -259,6 +259,14 @@ def verify_codec_http(base, fetch, headers):
     return manifests
 
 
+def require_safe_rollback(selected, database, unchanged_configuration):
+    unchanged_configuration()
+    if 'api' in selected:
+        # The candidate may have admitted rooms after activation. An older API
+        # must never replace it while those rooms are still open.
+        require_no_meeting(database)
+
+
 def activate(compose, selected, rollback, verify, log_directory=None, verify_rollback=None, rollback_guard=None):
     with ExitStack() as stack:
         activation_log = stack.enter_context((log_directory / 'activation.log').open('w')) if log_directory else None
@@ -271,6 +279,16 @@ def activate(compose, selected, rollback, verify, log_directory=None, verify_rol
             try:
                 if rollback_guard is not None:
                     rollback_guard()
+            except Exception as blocked:
+                failure.update(rollbackBlocked=True, rollbackAttempted=False,
+                               rollbackError=str(blocked), applicationImagesRestored=False)
+                if log_directory:
+                    save_failure(log_directory, failure)
+                # Keep the verification failure as the primary error while
+                # recording why the candidate and database must be retained.
+                raise original from blocked
+            try:
+                failure['rollbackAttempted'] = True
                 command(['bash', str(rollback)], output=rollback_log)
                 if verify_rollback is not None:
                     verify_rollback()
@@ -477,7 +495,8 @@ def _perform_update(options, app, env_file, state, progress):
     require_unchanged(env_file, files, snapshot, before, inspect)
     require_no_meeting(database)
     progress['stage'] = 'activation-or-verification'
-    activate(candidate, selected, rollback, verify, release, verify_rollback=verify_rollback, rollback_guard=unchanged_configuration)
+    activate(candidate, selected, rollback, verify, release, verify_rollback=verify_rollback,
+             rollback_guard=lambda: require_safe_rollback(selected, database, unchanged_configuration))
     progress['stage'] = 'release-record'
 
     record = {'status': 'deployed-and-verified', 'commit': sha, 'services': selected,

@@ -10,6 +10,10 @@ const migrations = [
   {
     name: '002_media_cleanup.sql',
     sql: readFileSync(new URL('./migrations/002_media_cleanup.sql', import.meta.url), 'utf8')
+  },
+  {
+    name: '003_three_open_meetings.sql',
+    sql: readFileSync(new URL('./migrations/003_three_open_meetings.sql', import.meta.url), 'utf8')
   }
 ] as const;
 

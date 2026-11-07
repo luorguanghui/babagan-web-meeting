@@ -24,7 +24,7 @@ function show(locale: 'en' | 'zh-CN' = 'en') {
 }
 beforeEach(() => {
   client.snapshot = { joined: false, update: 'idle' }; client.check.mockClear();
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meeting: null })));
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meetings: [], maxOpenMeetings: 3 })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
@@ -37,7 +37,7 @@ it('opens the actual lobby route for a pasted invitation without joining or requ
   fireEvent.click(screen.getByRole('button', { name: 'Join meeting' }));
   expect(screen.getByLabelText('Navigation destination')).toHaveTextContent(`/m/${slug}`);
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(fetch).toHaveBeenCalledWith('/api/v1/meetings/current', expect.objectContaining({ credentials: 'include' }));
+  expect(fetch).toHaveBeenCalledWith('/api/v1/meetings/open', expect.objectContaining({ credentials: 'include' }));
   expect(getUserMedia).not.toHaveBeenCalled(); expect(getDisplayMedia).not.toHaveBeenCalled();
 });
 
@@ -54,7 +54,7 @@ it('keeps unsafe input on the workspace and lets a corrected meeting ID navigate
 });
 
 it('offers the validated current meeting without trusting its joinUrl or automatically entering it', async () => {
-  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meeting: { ...meeting, joinUrl: 'https://untrusted.example/redirect', requiresPassword: true } })));
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meetings: [{ ...meeting, joinUrl: 'https://untrusted.example/redirect', requiresPassword: true }], maxOpenMeetings: 3 })));
   show();
   expect(await screen.findByRole('heading', { name: meeting.name })).toBeVisible();
   expect(screen.getByText('Password required')).toBeVisible();
@@ -65,7 +65,7 @@ it('offers the validated current meeting without trusting its joinUrl or automat
 });
 
 it('recovers a failed lookup and keeps a full meeting from being entered by the shortcut', async () => {
-  const request = vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(Response.json({ meeting: { ...meeting, isFull: true } }));
+  const request = vi.fn().mockResolvedValueOnce(new Response(null, { status: 503 })).mockResolvedValueOnce(Response.json({ meetings: [{ ...meeting, isFull: true }], maxOpenMeetings: 3 }));
   vi.stubGlobal('fetch', request); show();
   expect(await screen.findByRole('alert')).toHaveTextContent('could not be loaded');
   fireEvent.click(screen.getByRole('button', { name: 'Try again' }));

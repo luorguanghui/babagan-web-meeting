@@ -34,9 +34,14 @@ const summary = { name: '一起看风景', status: 'active', requiresPassword: f
 window.fetch = async (input, init) => {
   const path = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.origin).pathname;
   if (init?.method && init.method !== 'GET') throw new Error('The isolated UI fixture never changes server state.');
-  if (path === '/api/v1/meetings/current') return scene === 'error' ? new Response(null, { status: 503 })
-    : Response.json({ meeting: scene === 'empty' ? null : { ...summary, slug, joinUrl: `${location.origin}/m/${slug}` } });
+  if (path === '/api/v1/meetings/open') return scene === 'error' ? new Response(null, { status: 503 })
+    : Response.json({ meetings: scene === 'empty' ? [] : ['three', 'unavailable'].includes(scene)
+      ? Array.from({ length: 3 }, (_, index) => ({ ...summary, slug: `${slug}-${index}`, name: `测试会议 ${index + 1}`, joinUrl: `${location.origin}/m/${slug}-${index}`,
+        ...(scene === 'unavailable' && index === 0 ? { unavailable: true } : {}) }))
+      : [{ ...summary, slug, joinUrl: `${location.origin}/m/${slug}` }], maxOpenMeetings: 3 });
   if (path === `/api/v1/meetings/${slug}`) return Response.json(summary);
+  const listedRoom = [0, 1, 2].find(index => path === `/api/v1/meetings/${slug}-${index}`);
+  if (listedRoom !== undefined) return Response.json({ ...summary, name: `测试会议 ${listedRoom + 1}` });
   throw new Error('The isolated UI fixture does not contact external services.');
 };
 

@@ -13,6 +13,7 @@ const publicErrors: Record<ApiErrorCode, { statusCode: number; message: string }
   MEETING_NOT_FOUND: { statusCode: 404, message: 'Meeting not found' },
   MEETING_EXPIRED: { statusCode: 410, message: 'Meeting has ended' },
   MEETING_FULL: { statusCode: 409, message: 'Meeting is full' },
+  MEETING_LIMIT_REACHED: { statusCode: 409, message: 'The limit of three open meetings has been reached' },
   INVALID_MEETING_PASSWORD: { statusCode: 401, message: 'Meeting password is invalid' },
   ADMIN_AUTH_FAILED: { statusCode: 401, message: 'Authentication failed' },
   SHARE_ALREADY_ACTIVE: { statusCode: 409, message: 'Screen sharing is already active' },

@@ -14,6 +14,8 @@ export interface MeetingRepository {
   createMeeting(input: NewMeetingRecord): MeetingRecord;
   findBySlug(slug: string): MeetingRecord | null;
   findNonTerminal(): MeetingRecord | null;
+  listNonTerminal(): MeetingRecord[];
+  countNonTerminal(): number;
   findTerminalMeetingsAwaitingMediaCleanup(): MeetingRecord[];
   updateMeetingLifecycle(meetingId: string, input: {
     status: MeetingRecord['status'];

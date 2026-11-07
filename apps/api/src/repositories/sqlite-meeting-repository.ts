@@ -65,7 +65,7 @@ export class SqliteMeetingRepository implements MeetingRepository {
   }
 
   transaction<T>(fn: () => T): T {
-    return this.db.transaction(fn)();
+    return this.db.transaction(fn).immediate();
   }
 
   createMeeting(input: NewMeetingRecord): MeetingRecord {
@@ -92,11 +92,20 @@ export class SqliteMeetingRepository implements MeetingRepository {
   }
 
   findNonTerminal(): MeetingRecord | null {
-    const row = this.db.prepare(`
+    return this.listNonTerminal()[0] ?? null;
+  }
+
+  listNonTerminal(): MeetingRecord[] {
+    const rows = this.db.prepare(`
       SELECT * FROM meetings
       WHERE status IN ('created', 'active', 'grace')
-    `).get() as MeetingRow | undefined;
-    return row ? toMeetingRecord(row) : null;
+      ORDER BY created_at, rowid
+    `).all() as MeetingRow[];
+    return rows.map(toMeetingRecord);
+  }
+
+  countNonTerminal(): number {
+    return (this.db.prepare("SELECT COUNT(*) AS count FROM meetings WHERE status IN ('created', 'active', 'grace')").get() as { count: number }).count;
   }
 
   findTerminalMeetingsAwaitingMediaCleanup(): MeetingRecord[] {

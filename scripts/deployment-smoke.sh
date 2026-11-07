@@ -44,21 +44,11 @@ probe_output="$(docker run --rm --network none --env-file "$env_file" \
   dist/smoke/deployment-smoke-session-cli.js create)"
 [[ "$(grep -c '^SMOKE_MEETING_SLUG=' <<<"$probe_output")" == 1 ]] \
   || { echo 'deployment smoke session did not return one slug' >&2; exit 1; }
-[[ "$(grep -c '^SMOKE_PARTICIPANT_COOKIE=' <<<"$probe_output")" == 1 ]] \
-  || { echo 'deployment smoke session did not return one cookie' >&2; exit 1; }
-[[ "$(grep -c '^SMOKE_LIVEKIT_TOKEN=' <<<"$probe_output")" == 1 ]] \
-  || { echo 'deployment smoke session did not return one LiveKit token' >&2; exit 1; }
 smoke_slug="$(sed -n 's/^SMOKE_MEETING_SLUG=//p' <<<"$probe_output")"
-smoke_cookie="$(sed -n 's/^SMOKE_PARTICIPANT_COOKIE=//p' <<<"$probe_output")"
-smoke_livekit_token="$(sed -n 's/^SMOKE_LIVEKIT_TOKEN=//p' <<<"$probe_output")"
 [[ "$smoke_slug" =~ ^[A-Za-z0-9_-]+$ && ${#smoke_slug} -ge 22 && ${#smoke_slug} -le 256 ]] \
   || { echo 'deployment smoke session returned an invalid slug' >&2; exit 1; }
-[[ "$smoke_cookie" =~ ^wm_participant=[A-Za-z0-9._~%+-]+$ ]] \
-  || { echo 'deployment smoke session returned an invalid cookie' >&2; exit 1; }
-[[ "$smoke_livekit_token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] \
-  || { echo 'deployment smoke session returned an invalid LiveKit token' >&2; exit 1; }
-unset probe_output
 
+# Once its exact slug is known, every later failure must remove only this probe.
 cleanup_probe() {
   docker run --rm --network none --env-file "$env_file" \
     -e DATABASE_PATH=/data/meetings.sqlite \
@@ -72,6 +62,18 @@ cleanup_on_exit() {
   exit "$status"
 }
 trap cleanup_on_exit EXIT
+
+[[ "$(grep -c '^SMOKE_PARTICIPANT_COOKIE=' <<<"$probe_output")" == 1 ]] \
+  || { echo 'deployment smoke session did not return one cookie' >&2; exit 1; }
+[[ "$(grep -c '^SMOKE_LIVEKIT_TOKEN=' <<<"$probe_output")" == 1 ]] \
+  || { echo 'deployment smoke session did not return one LiveKit token' >&2; exit 1; }
+smoke_cookie="$(sed -n 's/^SMOKE_PARTICIPANT_COOKIE=//p' <<<"$probe_output")"
+smoke_livekit_token="$(sed -n 's/^SMOKE_LIVEKIT_TOKEN=//p' <<<"$probe_output")"
+[[ "$smoke_cookie" =~ ^(wm_participant|__Host-wm_participant_[a-f0-9]{32})=[A-Za-z0-9._~%+-]+$ ]] \
+  || { echo 'deployment smoke session returned an invalid cookie' >&2; exit 1; }
+[[ "$smoke_livekit_token" =~ ^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] \
+  || { echo 'deployment smoke session returned an invalid LiveKit token' >&2; exit 1; }
+unset probe_output
 
 SMOKE_REQUESTED_TURN_PROVIDER=coturn \
 SMOKE_MEETING_SLUG="$smoke_slug" \

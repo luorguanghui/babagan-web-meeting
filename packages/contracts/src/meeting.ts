@@ -61,6 +61,22 @@ export const CurrentMeetingResponseSchema = Type.Object({
 export type CurrentMeeting = Static<typeof CurrentMeetingSchema>;
 export type CurrentMeetingResponse = Static<typeof CurrentMeetingResponseSchema>;
 
+export const MAX_OPEN_MEETINGS = 3;
+
+// Keep the legacy single-room response closed and unchanged for cached clients.
+export const OpenMeetingSchema = Type.Object({
+  ...CurrentMeetingSchema.properties,
+  unavailable: Type.Optional(Type.Literal(true))
+}, { additionalProperties: false });
+
+export const OpenMeetingsResponseSchema = Type.Object({
+  meetings: Type.Array(OpenMeetingSchema, { maxItems: MAX_OPEN_MEETINGS }),
+  maxOpenMeetings: Type.Literal(MAX_OPEN_MEETINGS)
+}, { additionalProperties: false });
+
+export type OpenMeeting = Static<typeof OpenMeetingSchema>;
+export type OpenMeetingsResponse = Static<typeof OpenMeetingsResponseSchema>;
+
 export const AdminEndMeetingRequestSchema = Type.Object({
   adminPassword: Type.String({ minLength: 1, maxLength: 256 })
 }, { additionalProperties: false });
