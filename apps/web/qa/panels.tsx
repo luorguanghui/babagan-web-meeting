@@ -5,6 +5,8 @@ import { MeetingControls, MeetingSettings } from '../src/components/meeting-cont
 import { MeetingDrawer } from '../src/components/meeting-drawer.js';
 import '../src/styles.css';
 import '../src/pages/meeting-room-layout.css';
+import '../src/pages/meeting-sunny-theme.css';
+import '../src/pages/meeting-sunny-dock.css';
 
 function Preview() {
   const [panel, setPanel] = useState<'More' | 'Settings' | null>(null);

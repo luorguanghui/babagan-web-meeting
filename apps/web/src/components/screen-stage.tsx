@@ -444,16 +444,9 @@ export function ScreenStage({
       <div className="screen-stage-sharer">
         <span className="screen-stage-avatar" aria-hidden="true">{[...name][0]}</span>
         <span>{labels.sharing}</span>
+        <span className="screen-stage-live">{t('screen.liveLabel')}</span>
       </div>
-      <div className="screen-stage-actions">
-        {dimensions && <span className="screen-stage-resolution">{dimensions.width} × {dimensions.height}</span>}
-        {pipAllowed && <button type="button" className="screen-stage-pip" aria-label={pipKind ? t('screen.pipReturn') : t('screen.pip')} title={pipKind ? t('screen.pipReturn') : t('screen.pip')} aria-pressed={Boolean(pipKind)} disabled={pipBusy || (sourcePending && !pipKind)} onClick={() => { void togglePip(); }}>
-          <PictureInPicture2 size={16} aria-hidden="true" /><span>{pipKind ? t('screen.pipReturn') : t('screen.pip')}</span>
-        </button>}
-        <button ref={fullscreenButtonRef} type="button" className="screen-stage-fullscreen" disabled={pipBusy} aria-label={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} title={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
-          {isFullscreen ? <Minimize size={16} aria-hidden="true" /> : <Maximize size={16} aria-hidden="true" />}<span>{isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreenAction')}</span>
-        </button>
-      </div>
+      {dimensions && <span className="screen-stage-resolution">{dimensions.width} × {dimensions.height}</span>}
     </header>}
     {hasSource && isFullscreen && <button
       type="button"
@@ -490,6 +483,14 @@ export function ScreenStage({
         <p>{t('screen.pipActive')}</p>
       </div>}
     </div>
+    {hasSource && <div className="screen-stage-actions screen-stage-tools" hidden={isFullscreen}>
+      {pipAllowed && <button type="button" className="screen-stage-pip" aria-label={pipKind ? t('screen.pipReturn') : t('screen.pip')} title={pipKind ? t('screen.pipReturn') : t('screen.pip')} aria-pressed={Boolean(pipKind)} disabled={pipBusy || (sourcePending && !pipKind)} onClick={() => { void togglePip(); }}>
+        <PictureInPicture2 size={18} aria-hidden="true" /><span>{pipKind ? t('screen.pipReturnAction') : t('screen.pipAction')}</span>
+      </button>}
+      <button ref={fullscreenButtonRef} type="button" className="screen-stage-fullscreen" disabled={pipBusy} aria-label={t('screen.fullscreen')} title={t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
+        <Maximize size={18} aria-hidden="true" /><span>{t('screen.fullscreenAction')}</span>
+      </button>
+    </div>}
     {displayMessage && <p className="screen-stage-display-message" role="status">{displayMessage}</p>}
     {hasSource && children}
   </section>;

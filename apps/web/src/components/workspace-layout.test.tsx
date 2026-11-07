@@ -29,18 +29,25 @@ describe('meeting workspace presentation', () => {
     expect(screen.getByRole('combobox', { name: 'Bitrate' })).toHaveFocus();
   });
 
-  it('keeps connection feedback visible and exposes diagnostics in the navigation rail', async () => {
+  it.each([
+    { statsLabel: 'WebRTC data', statsVisibleLabel: 'Connection info', accessibleName: 'Connection info · WebRTC data' },
+    { statsLabel: 'WebRTC 数据', statsVisibleLabel: '连接信息', accessibleName: '连接信息 · WebRTC 数据' },
+    { statsLabel: 'WebRTC data', statsVisibleLabel: undefined, accessibleName: 'WebRTC data' }
+  ])('keeps connection feedback visible and includes the visible diagnostics label in "$accessibleName"', async ({ statsLabel, statsVisibleLabel, accessibleName }) => {
     const onStats = vi.fn();
     render(<MeetingTopBar
       title="Project review" connection={<p role="status">Reconnecting</p>}
       transportLabel="P2P" participantCount={2} navigationLabel="Meeting navigation"
-      participantLabel="Participants" settingsLabel="Settings" statsLabel="WebRTC data"
+      participantLabel="Participants" settingsLabel="Settings" statsLabel={statsLabel} statsVisibleLabel={statsVisibleLabel}
       onParticipants={() => undefined} onSettings={() => undefined} onStats={onStats}
       participantButtonRef={createRef()} settingsButtonRef={createRef()} statsButtonRef={createRef()}
     />);
     expect(screen.getByRole('status').closest('.sr-only')).toBeNull();
     const navigation = screen.getByRole('navigation', { name: 'Meeting navigation' });
-    await userEvent.click(within(navigation).getByRole('button', { name: 'WebRTC data' }));
+    const statsButton = within(navigation).getByRole('button', { name: accessibleName });
+    expect(statsButton).toHaveTextContent(statsVisibleLabel ?? statsLabel);
+    expect(statsButton).toHaveAccessibleName(accessibleName);
+    await userEvent.click(statsButton);
     expect(onStats).toHaveBeenCalledOnce();
   });
 

@@ -43,6 +43,8 @@ export interface MeetingControlsProps {
   screenShareActive?: boolean;
   screenShareBusy?: boolean;
   screenShareStopping?: boolean;
+  /** Presentational context only; permission and capture rules remain unchanged. */
+  screenShareOccupied?: boolean;
   screenCodec?: ScreenShareCodec;
   screenEncodingEngine?: 'project' | 'browser';
   nativeCaptureAvailable?: boolean;
@@ -100,6 +102,7 @@ export function MeetingControls(props: MeetingControlsProps) {
   // Keep the exit animation presentation-only; a replacement panel is never duplicated.
   const quickPresence = useExitPresence(quickPanel, 180);
   const quickPanelId = useId();
+  const quickPanelRef = useRef<HTMLDivElement>(null);
   const audioActionsRef = useRef<HTMLDivElement>(null);
   const shareActionsRef = useRef<HTMLDivElement>(null);
   const internalAudioTriggerRef = useRef<HTMLButtonElement>(null);
@@ -107,12 +110,27 @@ export function MeetingControls(props: MeetingControlsProps) {
   const audioTriggerRef = props.audioSettingsButtonRef ?? internalAudioTriggerRef;
   const shareTriggerRef = props.shareSettingsButtonRef ?? internalShareTriggerRef;
   const MicrophoneIcon = props.microphoneEnabled ? MicOff : Mic;
+  // Opening focus follows the selected panel, not changing callbacks or live settings.
+  useEffect(() => {
+    if (quickPanel === null) return;
+    const trigger = quickPanel === 'audio' ? audioTriggerRef.current : shareTriggerRef.current;
+    if (trigger && getComputedStyle(trigger).display === 'none') {
+      const panel = quickPanelRef.current;
+      const firstControl = Array.from(panel?.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled):not([type="hidden"]), select:not(:disabled), textarea:not(:disabled)'
+      ) ?? []).find(element => !element.closest('[hidden], [inert], details:not([open])') && getComputedStyle(element).display !== 'none');
+      (firstControl ?? panel)?.focus();
+    }
+  }, [audioTriggerRef, quickPanel, shareTriggerRef]);
   useEffect(() => {
     if (quickPanel === null) return;
     const trigger = quickPanel === 'audio' ? audioTriggerRef.current : shareTriggerRef.current;
     const close = (returnFocus: boolean) => {
       setQuickPanel(null);
-      if (returnFocus) queueMicrotask(() => trigger?.focus());
+      if (returnFocus) queueMicrotask(() => {
+        const focusTarget = trigger && getComputedStyle(trigger).display !== 'none' ? trigger : props.moreButtonRef?.current;
+        if (focusTarget && getComputedStyle(focusTarget).display !== 'none') focusTarget.focus();
+      });
     };
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
@@ -134,7 +152,7 @@ export function MeetingControls(props: MeetingControlsProps) {
       document.removeEventListener('keydown', closeOnEscape);
       document.removeEventListener('pointerdown', closeOnOutsidePointer);
     };
-  }, [audioTriggerRef, quickPanel, setQuickPanel, shareTriggerRef]);
+  }, [audioTriggerRef, props.moreButtonRef, quickPanel, setQuickPanel, shareTriggerRef]);
   const settingsProps = {
     ...props,
     microphoneDeviceId: props.microphoneDeviceId ?? microphoneDeviceId,
@@ -143,6 +161,7 @@ export function MeetingControls(props: MeetingControlsProps) {
     onSpeakerDeviceChange: (deviceId: string) => { setSpeakerDeviceId(deviceId); props.onSpeakerDeviceChange(deviceId); }
   };
   const renderQuickPanel = (panel: 'audio' | 'share') => quickPresence.value === panel && <div
+    ref={quickPanelRef}
     id={quickPanelId}
     className="meeting-volume-popover meeting-quick-popover"
     data-quick-panel={panel}
@@ -150,6 +169,7 @@ export function MeetingControls(props: MeetingControlsProps) {
     inert={quickPresence.exiting}
     aria-hidden={quickPresence.exiting || undefined}
     role="group"
+    tabIndex={-1}
     aria-label={t(panel === 'audio' ? 'controls.volumeQuickMenu' : 'controls.screenSettings')}
   >
     <MeetingSettings {...settingsProps} section={panel} />
@@ -167,7 +187,7 @@ export function MeetingControls(props: MeetingControlsProps) {
       <div className="meeting-primary-actions" role="group" aria-label={t('controls.primaryActions')}>
         <div ref={audioActionsRef} className="meeting-split-control meeting-split-microphone">
           <button type="button" className="meeting-action meeting-action-microphone" aria-label={props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')} onClick={props.onMicrophoneToggle} disabled={props.connection !== 'connected'}>
-            <MicrophoneIcon aria-hidden="true" size={19} />
+            <span className="meeting-action-icon"><MicrophoneIcon aria-hidden="true" size={23} /></span>
             <span className="meeting-label-full">{props.microphoneEnabled ? t('controls.mute') : t('controls.unmute')}</span>
             <span className="meeting-label-compact" aria-hidden="true">{props.microphoneEnabled ? t('controls.muteCompact') : t('controls.unmuteCompact')}</span>
           </button>
@@ -192,7 +212,7 @@ export function MeetingControls(props: MeetingControlsProps) {
             title={props.screenShareAuthorized ? undefined : t('controls.shareGrantRequired')}
             disabled={!props.screenShareAuthorized || props.screenShareBusy || props.connection !== 'connected'}
             onClick={() => { setQuickPanel(null); props.onScreenShareToggle?.(); }}
-          ><MonitorUp aria-hidden="true" size={19} /><span className="meeting-label-full">{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span><span className="meeting-label-compact" aria-hidden="true">{props.screenShareStopping ? t('controls.stoppingShareCompact') : props.screenShareActive ? t('controls.stopShareCompact') : t('controls.shareCompact')}</span></button>
+          ><span className="meeting-action-icon"><MonitorUp aria-hidden="true" size={23} /></span><span className="meeting-label-full">{props.screenShareStopping ? t('controls.stoppingShare') : props.screenShareActive ? t('controls.stopShareShort') : t('controls.shareShort')}</span><span className="meeting-label-compact" aria-hidden="true">{props.screenShareStopping ? t('controls.stoppingShareCompact') : props.screenShareActive ? t('controls.stopShareCompact') : t('controls.shareCompact')}</span>{!props.screenShareAuthorized && !props.screenShareActive && <span className="meeting-action-caption" aria-hidden="true">{t(props.screenShareOccupied ? 'controls.shareOccupied' : 'controls.shareAwaitingGrant')}</span>}</button>
           <button
             ref={shareTriggerRef}
             type="button"
@@ -206,9 +226,9 @@ export function MeetingControls(props: MeetingControlsProps) {
           >{quickPanel === 'share' ? <ChevronDown aria-hidden="true" size={16} /> : <ChevronUp aria-hidden="true" size={16} />}</button>
           {renderQuickPanel('share')}
         </div>
-        {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" aria-label={t('controls.more')} onClick={() => { setQuickPanel(null); props.onMore?.(); }}><Ellipsis aria-hidden="true" size={20} /><span>{t('controls.more')}</span></button>}
+        {props.onMore && <button ref={props.moreButtonRef} type="button" className="meeting-action meeting-action-more" aria-label={t('controls.more')} onClick={() => { setQuickPanel(null); props.onMore?.(); }}><span className="meeting-action-icon"><Ellipsis aria-hidden="true" size={23} /></span><span className="meeting-action-label">{t('controls.more')}</span></button>}
         <button type="button" className="danger meeting-leave-action" aria-label={props.leaving ? t('controls.leaving') : t('controls.leave')} onClick={props.onLeave} disabled={props.leaving}>
-          <LogOut aria-hidden="true" size={19} /><span>{props.leaving ? t('controls.leaving') : t('controls.leave')}</span>
+          <span className="meeting-action-icon"><LogOut aria-hidden="true" size={23} /></span><span className="meeting-action-label meeting-label-full">{props.leaving ? t('controls.leaving') : t('controls.leave')}</span><span className="meeting-action-label meeting-label-compact" aria-hidden="true">{props.leaving ? t('controls.leavingCompact') : t('controls.leaveCompact')}</span>
         </button>
       </div>
       {props.p2pRetryVisible && props.onP2pRetry && <button type="button" className="secondary meeting-connection-retry" onClick={props.onP2pRetry}>{t('controls.p2pRetry')}</button>}

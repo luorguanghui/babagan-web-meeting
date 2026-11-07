@@ -594,6 +594,31 @@ describe('meeting room UI', () => {
     expect(trigger).toHaveFocus();
   });
 
+  it.each([
+    { label: 'Audio and devices', field: 'Microphone device', panelLabel: 'Quick audio controls', reducedMotion: false },
+    { label: 'Audio and devices', field: 'Microphone device', panelLabel: 'Quick audio controls', reducedMotion: true },
+    { label: 'Screen sharing settings', field: 'Screen quality', panelLabel: 'Screen sharing settings', reducedMotion: false },
+    { label: 'Screen sharing settings', field: 'Screen quality', panelLabel: 'Screen sharing settings', reducedMotion: true }
+  ])('focuses mobile $label content and returns to More with reduced motion=$reducedMotion', async ({ label, field, panelLabel, reducedMotion }) => {
+    vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: reducedMotion, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
+    renderRoom();
+    const toolbar = screen.getByRole('toolbar');
+    const trigger = within(toolbar).getByRole('button', { name: label });
+    trigger.style.display = 'none';
+    const more = within(toolbar).getByRole('button', { name: 'More' });
+    await userEvent.click(more);
+    within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: label }).focus();
+
+    await userEvent.keyboard('{Enter}');
+
+    expect(screen.getByRole('combobox', { name: field })).toHaveFocus();
+    expect(trigger).not.toHaveFocus();
+    expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
+    await userEvent.keyboard('{Escape}');
+    expect(screen.queryByRole('group', { name: panelLabel })).not.toBeInTheDocument();
+    expect(more).toHaveFocus();
+  });
+
   it('moves focus into the member sidebar from More with reduced motion', async () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
     renderRoom();
@@ -603,6 +628,30 @@ describe('meeting room UI', () => {
     await userEvent.keyboard('{Enter}');
     expect(document.querySelector('.meeting-members-sidebar')).toHaveFocus();
     expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
+  });
+
+  it('keeps mobile audio volume focus through volume and live room updates', async () => {
+    const { controller } = renderRoom();
+    const toolbar = screen.getByRole('toolbar');
+    within(toolbar).getByRole('button', { name: 'Audio and devices' }).style.display = 'none';
+    const more = within(toolbar).getByRole('button', { name: 'More' });
+    await userEvent.click(more);
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Audio and devices' }));
+    expect(screen.getByRole('combobox', { name: 'Microphone device' })).toHaveFocus();
+    const volume = screen.getByRole('slider', { name: 'Call audio volume' });
+    volume.focus();
+
+    fireEvent.change(volume, { target: { value: '55' } });
+    expect(volume).toHaveValue('55');
+    expect(volume).toHaveFocus();
+    await act(() => controller.setMicrophoneEnabled(true));
+    expect(volume).toHaveFocus();
+
+    await userEvent.keyboard('{Escape}');
+    expect(more).toHaveFocus();
+    await userEvent.click(more);
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Audio and devices' }));
+    expect(screen.getByRole('combobox', { name: 'Microphone device' })).toHaveFocus();
   });
 
   it('returns diagnostics opened from general settings to the Settings button', async () => {
