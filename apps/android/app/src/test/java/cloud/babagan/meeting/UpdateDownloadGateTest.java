@@ -14,22 +14,30 @@ public class UpdateDownloadGateTest {
     @Test public void joiningCancelsConnectionAndOldGenerationCannotResume() throws Exception {
         UpdateDownloadGate gate = new UpdateDownloadGate(); AtomicInteger requests = new AtomicInteger(), disconnects = new AtomicInteger();
         gate.setBusy(false);
-        gate.run(ticket -> {
+        try { gate.run(ticket -> {
             requests.incrementAndGet(); ticket.onCancel(disconnects::incrementAndGet);
             gate.setBusy(true); gate.setBusy(false);
             assertEquals(1, disconnects.get());
             try { ticket.check(); fail("Cancelled transfer must not resume"); } catch (UpdateDownloadGate.Deferred expected) { /* expected */ }
             return null;
-        });
+        }); fail("Cancelled transfer returned normally"); } catch (UpdateDownloadGate.Deferred expected) { /* expected */ }
         gate.run(ticket -> requests.incrementAndGet()); assertEquals(2, requests.get());
     }
     @Test public void cancellationBeforeConnectionRegistrationClosesItImmediately() throws Exception {
         UpdateDownloadGate gate = new UpdateDownloadGate(); AtomicInteger disconnects = new AtomicInteger(); gate.setBusy(false);
-        gate.run(ticket -> { gate.setBusy(true); ticket.onCancel(disconnects::incrementAndGet); assertEquals(1,disconnects.get()); return null; });
+        try { gate.run(ticket -> { gate.setBusy(true); ticket.onCancel(disconnects::incrementAndGet); assertEquals(1,disconnects.get()); return null; }); fail("Cancelled transfer returned normally"); }
+        catch (UpdateDownloadGate.Deferred expected) { /* expected */ }
     }
     @Test public void closePreventsAnyLaterApkRequest() throws Exception {
         UpdateDownloadGate gate = new UpdateDownloadGate(); gate.close(); gate.setBusy(false);
         try { gate.run(ticket -> { fail("Closed gate issued APK request"); return null; }); fail("Expected closed gate"); }
         catch (UpdateDownloadGate.Deferred expected) { /* expected */ }
+    }
+    @Test public void meetingBeginningDuringFinalVerificationCannotReturnAReadyFile() throws Exception {
+        UpdateDownloadGate gate = new UpdateDownloadGate(); gate.setBusy(false);
+        try {
+            gate.run(ticket -> { gate.setBusy(true); gate.setBusy(false); return "verified.apk"; });
+            fail("Cancelled generation returned a ready update");
+        } catch (UpdateDownloadGate.Deferred expected) { /* cancelled even after the meeting ends */ }
     }
 }

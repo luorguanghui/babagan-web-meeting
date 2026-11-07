@@ -21,12 +21,14 @@ final class UpdateManager {
     private final BooleanSupplier busy;
     private final Consumer<JSONObject> events;
     private final UpdateDownloadGate downloads = new UpdateDownloadGate();
+    private final UpdateProgress progress = new UpdateProgress();
     private final ExecutorService worker=Executors.newSingleThreadExecutor();
     private final Handler main=new Handler(Looper.getMainLooper());
     private final android.content.SharedPreferences preferences;
     private volatile boolean closed,checking,installing,downloading;
     private UpdateVerifier.Release deferredRelease;
-    private JSONObject state = Json.object("state","idle","status","idle");
+    private JSONObject state = Json.object("state","idle","status","idle","updateRevision",0);
+    private long updateRevision;
     private boolean permissionPrompt;
     private UpdateVerifier.Release pending;
     private File pendingApk;
@@ -34,18 +36,35 @@ final class UpdateManager {
     UpdateManager(Activity activity,BooleanSupplier busy,Consumer<JSONObject> events){this.activity=activity;this.busy=busy;this.events=events;preferences=activity.getSharedPreferences("updates",Context.MODE_PRIVATE);downloads.setBusy(busy.getAsBoolean());}
 
     private JSONObject updateState(String value, String version, String message) {
+        if(!value.equals("downloading"))progress.invalidate();
         state = Json.object("state",value,"status",value);
         try { if(version!=null)state.put("version",version);if(message!=null)state.put("message",message); }
         catch(org.json.JSONException ignored) { }
-        JSONObject event=Json.object("v",1,"event","update.state","state",value);
-        try { if(version!=null)event.put("version",version);if(message!=null)event.put("message",message); }
-        catch(org.json.JSONException ignored) { }
-        events.accept(event);
+        if(value.equals("installing")&&pending!=null)putProgress(state,"installing",pending.bytes(),pending.bytes());
+        publishState();
         return state;
+    }
+    JSONObject currentState(){return state;}
+    private static void putProgress(JSONObject target,String phase,long downloadedBytes,long totalBytes){
+        try{target.put("phase",phase);target.put("downloadedBytes",downloadedBytes);target.put("totalBytes",totalBytes);}catch(org.json.JSONException ignored){}
+    }
+    private void publishState(){
+        try{
+            state.put("updateRevision",++updateRevision);
+            JSONObject event=new JSONObject(state.toString());event.put("v",1);event.put("event","update.state");events.accept(event);
+        }catch(org.json.JSONException ignored){}
+    }
+    private void postProgress(UpdateProgress.Snapshot value,String version){
+        if(value==null)return;
+        main.post(()->{
+            if(closed||busy.getAsBoolean()||!progress.isCurrent(value))return;
+            state=Json.object("state","downloading","status","downloading","version",version);
+            putProgress(state,value.phase(),value.downloadedBytes(),value.totalBytes());publishState();
+        });
     }
     void busyChanged() {
         if(closed)return;
-        boolean hold=busy.getAsBoolean();downloads.setBusy(hold);
+        boolean hold=busy.getAsBoolean();if(hold)progress.invalidate();downloads.setBusy(hold);
         if(hold){if(downloading||pending!=null||deferredRelease!=null)updateState("deferred",pending!=null?pending.version():deferredRelease!=null?deferredRelease.version():null,null);return;}
         if(deferredRelease!=null&&!downloading&&!checking)startDownload(deferredRelease);
         installWhenIdle();
@@ -75,19 +94,31 @@ final class UpdateManager {
     private void startDownload(UpdateVerifier.Release release) {
         if(closed||downloading||busy.getAsBoolean())return;
         downloading=true;downloads.setBusy(false);updateState("downloading",release.version(),null);
+        UpdateProgress.Snapshot run=progress.start(release.bytes(),SystemClock.elapsedRealtime());postProgress(run,release.version());
         worker.execute(()->{
             try {
                 File file=downloads.run(ticket->{
                     File directory=new File(activity.getFilesDir(),"updates");if(!directory.isDirectory()&&!directory.mkdirs())throw new IOException("Cannot create update directory");
                     File destination=new File(directory,"Babagan-"+release.version()+".apk");ticket.check();
-                    if(!verifyBytes(destination,release))downloadApk(destination,release,ticket);
+                    boolean cached=destination.isFile()&&destination.length()==release.bytes();
+                    if(cached)postProgress(progress.verifying(run.generation()),release.version());
+                    if(!cached||!verifyBytes(destination,release,ticket)){
+                        if(cached)postProgress(progress.restart(run.generation(),SystemClock.elapsedRealtime()),release.version());
+                        downloadApk(destination,release,ticket,run.generation());
+                    }
                     ticket.check();verifyPackage(destination,release);ticket.check();return destination;
                 });
-                main.post(()->{downloading=false;if(closed)return;deferredRelease=null;pending=release;pendingApk=file;updateState(busy.getAsBoolean()?"deferred":"downloaded",release.version(),null);installWhenIdle();});
+                main.post(()->{
+                    downloading=false;if(closed)return;
+                    if(busy.getAsBoolean()||!progress.isActive(run.generation())){
+                        updateState("deferred",release.version(),null);if(!busy.getAsBoolean())startDownload(release);return;
+                    }
+                    deferredRelease=null;pending=release;pendingApk=file;updateState("downloaded",release.version(),null);installWhenIdle();
+                });
             } catch(Exception error) {
                 main.post(()->{
                     downloading=false;if(closed)return;
-                    boolean deferred=error instanceof UpdateDownloadGate.Deferred;
+                    boolean deferred=error instanceof UpdateDownloadGate.Deferred||!progress.isActive(run.generation());
                     updateState(deferred?"deferred":"error",release.version(),deferred?null:error.getMessage());
                     if(deferred&&!busy.getAsBoolean())startDownload(release);
                 });
@@ -161,7 +192,7 @@ final class UpdateManager {
     }
     private static byte[] downloadSmall(String url,int maximum)throws Exception{HttpsURLConnection connection=connect(url);try(InputStream input=connection.getInputStream()){return readBounded(input,maximum);}finally{connection.disconnect();}}
     private static byte[] readBounded(InputStream input,int maximum)throws IOException{ByteArrayOutputStream output=new ByteArrayOutputStream();byte[] buffer=new byte[8192];int count;while((count=input.read(buffer))!=-1){if(output.size()+count>maximum)throw new IOException("Response is too large");output.write(buffer,0,count);}return output.toByteArray();}
-    private static void downloadApk(File file,UpdateVerifier.Release release,UpdateDownloadGate.Ticket ticket)throws Exception{
+    private void downloadApk(File file,UpdateVerifier.Release release,UpdateDownloadGate.Ticket ticket,long generation)throws Exception{
         ticket.check();
         HttpsURLConnection connection=(HttpsURLConnection)new URL(release.url()).openConnection();
         connection.setInstanceFollowRedirects(false);connection.setConnectTimeout(15000);connection.setReadTimeout(30000);connection.setRequestProperty("Accept-Encoding","identity");
@@ -172,18 +203,30 @@ final class UpdateManager {
             ticket.check();
             try(InputStream input=connection.getInputStream();OutputStream output=new FileOutputStream(part)){
                 byte[] buffer=new byte[65536];long total=0;int count;
-                while((count=input.read(buffer))!=-1){ticket.check();if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();total+=count;if(total>release.bytes())throw new IOException("APK is larger than the signed manifest");output.write(buffer,0,count);}
+                while((count=input.read(buffer))!=-1){
+                    ticket.check();if(Thread.currentThread().isInterrupted())throw new InterruptedIOException();
+                    if(count>release.bytes()-total)throw new IOException("APK is larger than the signed manifest");
+                    output.write(buffer,0,count);total+=count;
+                    postProgress(progress.downloaded(generation,total,SystemClock.elapsedRealtime()),release.version());
+                }
             }
         }catch(Exception error){part.delete();ticket.check();throw error;}
         finally{connection.disconnect();}
-        ticket.check();
-        if(!verifyBytes(part,release)){part.delete();throw new SecurityException("APK download checksum did not match");}
-        if(file.exists()&&!file.delete())throw new IOException("Cannot replace cached update");if(!part.renameTo(file))throw new IOException("Cannot save verified update");
+        try{
+            ticket.check();
+            if(part.length()==release.bytes())postProgress(progress.verifying(generation),release.version());
+            if(!verifyBytes(part,release,ticket))throw new SecurityException("APK download checksum did not match");
+            ticket.check();
+            if(file.exists()&&!file.delete())throw new IOException("Cannot replace cached update");if(!part.renameTo(file))throw new IOException("Cannot save verified update");
+        }finally{if(part.exists())part.delete();}
     }
     private static boolean verifyBytes(File file,UpdateVerifier.Release release)throws Exception{
+        return verifyBytes(file,release,null);
+    }
+    private static boolean verifyBytes(File file,UpdateVerifier.Release release,UpdateDownloadGate.Ticket ticket)throws Exception{
         if(!file.isFile()||file.length()!=release.bytes())return false;
-        MessageDigest hash=MessageDigest.getInstance("SHA-256");try(InputStream input=new FileInputStream(file)){byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1)hash.update(buffer,0,count);}
+        MessageDigest hash=MessageDigest.getInstance("SHA-256");try(InputStream input=new FileInputStream(file)){byte[] buffer=new byte[65536];int count;while((count=input.read(buffer))!=-1){if(ticket!=null)ticket.check();hash.update(buffer,0,count);}}
         StringBuilder value=new StringBuilder();for(byte part:hash.digest())value.append(String.format(java.util.Locale.ROOT,"%02x",part&255));return value.toString().equals(release.sha256());
     }
-    void close(){closed=true;downloads.close();worker.shutdownNow();}
+    void close(){closed=true;progress.close();downloads.close();worker.shutdownNow();}
 }

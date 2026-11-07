@@ -33,6 +33,7 @@ final class WebViewFullscreen {
     }
     static void reject(WebChromeClient.CustomViewCallback callback) { try { callback.onCustomViewHidden(); } catch (RuntimeException ignored) { /* The WebView document may already be destroyed. */ } }
     boolean exit() { return lifecycle.exit(); }
+    boolean active() { return lifecycle.isActive(); }
     void destroy() { lifecycle.destroy(); }
     void reapply() { if (lifecycle.isActive()) hideBars(); }
 

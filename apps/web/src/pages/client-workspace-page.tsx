@@ -3,6 +3,7 @@ import { type FormEvent, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import { checkClientUpdate, useClientHost } from '../client/client-host.js';
+import { ClientUpdateProgress } from '../client/client-update-progress.js';
 import { useI18n } from '../i18n/i18n.js';
 import { parseClientMeetingInput } from './client-meeting-input.js';
 import { useOpenMeetings } from './use-open-meetings.js';
@@ -81,16 +82,34 @@ export function ClientWorkspacePage() {
   } else if (info) {
     const androidFrameRate = info.maxScreenFrameRate === 60 ? 60 : 30;
     capability = !info.screenCapture ? text.unavailable : platform === 'windows' ? text.windowsCapture : `${text.androidCapture} · ${text.androidFrameRate} ${androidFrameRate} ${text.androidFps}`;
-    capabilityDetail = !info.screenCapture ? text.unavailableDetail : platform === 'windows' ? text.windowsCaptureDetail : text.androidCaptureDetail;
+    capabilityDetail = !info.screenCapture ? text.unavailableDetail : platform === 'windows' ? text.windowsCaptureDetail : info.systemAudio ? t('client.androidDeviceAudioHint') : text.androidCaptureDetail;
   }
   const updateBusy = client.joined || ['checking', 'downloading', 'installing'].includes(client.update);
   const updateLabel = client.joined && ['available', 'ready', 'downloading'].includes(client.update) ? t('client.update.deferred')
     : platform === 'android' && client.update === 'ready' ? t('client.update.readyAndroid') : t(`client.update.${client.update}`);
 
+  const currentMeetings = <section className="client-workspace-current" aria-labelledby="client-current-heading" aria-busy={open.loading}>
+        <div className="client-workspace-panel-heading"><div><h2 id="client-current-heading">{text.current}</h2>{open.loaded && <p className="client-workspace-capacity">{t('open.capacity', { count: open.meetings.length, max: open.maxOpenMeetings })}</p>}</div>
+          <button type="button" className="client-workspace-icon-button" aria-label={text.refresh} title={text.refresh} disabled={open.loading} onClick={() => void open.refresh()}><RefreshCw size={17} aria-hidden="true" /></button>
+        </div>
+        {open.loading && !open.loaded && <p className="client-workspace-loading" role="status">{text.loading}</p>}
+        {open.loaded && !open.meetings.length && <div className="client-workspace-empty"><Video size={28} aria-hidden="true" /><h3>{text.empty}</h3><p>{text.emptyDetail}</p></div>}
+        {open.failed && <div className="client-workspace-load-error"><p role="alert">{text.lookupError}</p><button type="button" className="secondary" onClick={() => void open.refresh()}>{text.retry}</button></div>}
+        {open.meetings.map(meeting => <article className="client-workspace-meeting" key={meeting.slug} aria-label={meeting.name}>
+          <div className="client-workspace-meeting-info"><span className="client-workspace-meeting-state">{text[meeting.status]}</span><h3>{meeting.name}</h3><span className="client-workspace-meeting-id">ID · {meeting.slug.slice(-6)}</span>
+            {meeting.requiresPassword && <p><LockKeyhole size={14} aria-hidden="true" />{text.password}</p>}
+            {meeting.unavailable && <p>{t('open.unavailableHint')}</p>}
+          </div>
+          {meeting.unavailable || meeting.isFull ? <button type="button" className="secondary" disabled>{meeting.unavailable ? t('open.unavailable') : text.full}</button>
+            : <Link className="client-workspace-meeting-link" to={`/m/${meeting.slug}`} aria-label={`${text.enter}: ${meeting.name} · ${meeting.slug.slice(-6)}`}>{text.enter}<ArrowRight size={17} aria-hidden="true" /></Link>}
+        </article>)}
+      </section>;
+
   return <main className="client-workspace" aria-labelledby="client-workspace-title">
     <header className="client-workspace-heading">
       <div><h1 id="client-workspace-title">{text.title}</h1><p>{text.intro}</p></div>
       <div className="client-workspace-tools">
+        <ClientUpdateProgress />
         <span className="client-workspace-platform"><DeviceIcon size={16} aria-hidden="true" />{platformLabel}</span>
         {client.host && <div className="client-workspace-update-summary">
           <div className="client-workspace-update-text"><span>{info ? `${text.version} ${info.appVersion}` : text.versionPending}</span><p role="status">{updateLabel}</p></div>
@@ -99,7 +118,8 @@ export function ClientWorkspacePage() {
       </div>
     </header>
 
-    <div className="client-workspace-grid">
+    <div className="client-workspace-grid" data-has-open={Boolean(open.meetings.length)}>
+      {Boolean(open.meetings.length) && currentMeetings}
       <section className="client-workspace-join" aria-labelledby="client-join-heading">
         <div className="client-workspace-section-title"><span className="client-workspace-icon"><Link2 size={22} aria-hidden="true" /></span><h2 id="client-join-heading">{text.join}</h2></div>
         <form onSubmit={join} noValidate>
@@ -123,22 +143,7 @@ export function ClientWorkspacePage() {
           : <Link className="client-workspace-create-button" to="/create"><Plus size={17} aria-hidden="true" />{text.createButton}</Link>}
       </section>
 
-      <section className="client-workspace-current" aria-labelledby="client-current-heading" aria-busy={open.loading}>
-        <div className="client-workspace-panel-heading"><div><h2 id="client-current-heading">{text.current}</h2>{open.loaded && <p className="client-workspace-capacity">{t('open.capacity', { count: open.meetings.length, max: open.maxOpenMeetings })}</p>}</div>
-          <button type="button" className="client-workspace-icon-button" aria-label={text.refresh} title={text.refresh} disabled={open.loading} onClick={() => void open.refresh()}><RefreshCw size={17} aria-hidden="true" /></button>
-        </div>
-        {open.loading && !open.loaded && <p className="client-workspace-loading" role="status">{text.loading}</p>}
-        {open.loaded && !open.meetings.length && <div className="client-workspace-empty"><Video size={28} aria-hidden="true" /><h3>{text.empty}</h3><p>{text.emptyDetail}</p></div>}
-        {open.failed && <div className="client-workspace-load-error"><p role="alert">{text.lookupError}</p><button type="button" className="secondary" onClick={() => void open.refresh()}>{text.retry}</button></div>}
-        {open.meetings.map(meeting => <article className="client-workspace-meeting" key={meeting.slug} aria-label={meeting.name}>
-          <div className="client-workspace-meeting-info"><span className="client-workspace-meeting-state">{text[meeting.status]}</span><h3>{meeting.name}</h3>
-            {meeting.requiresPassword && <p><LockKeyhole size={14} aria-hidden="true" />{text.password}</p>}
-            {meeting.unavailable && <p>{t('open.unavailableHint')}</p>}
-          </div>
-          {meeting.unavailable || meeting.isFull ? <button type="button" className="secondary" disabled>{meeting.unavailable ? t('open.unavailable') : text.full}</button>
-            : <Link className="client-workspace-meeting-link" to={`/m/${meeting.slug}`}>{text.enter}<ArrowRight size={17} aria-hidden="true" /></Link>}
-        </article>)}
-      </section>
+      {!open.meetings.length && currentMeetings}
 
       <aside className="client-workspace-device" aria-labelledby="client-device-heading">
         <h2 id="client-device-heading">{text.deviceHeading}</h2>

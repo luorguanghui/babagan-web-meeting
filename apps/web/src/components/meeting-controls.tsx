@@ -51,6 +51,9 @@ export interface MeetingControlsProps {
   nativeCapturePlatform?: 'windows' | 'android';
   nativeCaptureMaxFrameRate?: 30 | 60;
   nativeCaptureEnabled?: boolean;
+  systemAudioAvailable?: boolean;
+  systemAudioEnabled?: boolean;
+  onSystemAudioChange?: (enabled: boolean) => void;
   onNativeCaptureChange?: (enabled: boolean) => void;
   screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
   onScreenSourceTransportChange?: (transport: 'p2p' | 'cloudflare-sfu') => void;
@@ -301,7 +304,8 @@ export function MeetingSettings(props: MeetingSettingsProps) {
       <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>
       <div className="meeting-settings-section-grid">
         {!props.nativeCaptureAvailable && <a className="meeting-settings-field-wide" href="/native" target="_blank" rel="noopener noreferrer">{t('native.downloadNav')}</a>}
-        {props.nativeCapturePlatform === 'android' && <div className="meeting-settings-field-wide"><strong>{t('client.androidCapture')}</strong>{props.nativeCaptureMaxFrameRate !== 60 && <p className="meeting-settings-share-hint">{t('client.androidCaptureHint')}</p>}<p className="meeting-settings-share-hint">{t('client.androidAudioHint')}</p></div>}
+        {props.nativeCapturePlatform === 'android' && <div className="meeting-settings-field-wide"><strong>{t('client.androidCapture')}</strong>{props.nativeCaptureMaxFrameRate !== 60 && <p className="meeting-settings-share-hint">{t('client.androidCaptureHint')}</p>}<p className="meeting-settings-share-hint">{t(props.systemAudioAvailable ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint')}</p></div>}
+        {props.nativeCapturePlatform === 'android' && props.systemAudioAvailable && props.onSystemAudioChange && <label className="meeting-settings-field-wide meeting-device-audio-choice"><input type="checkbox" checked={props.systemAudioEnabled ?? true} disabled={screenShareProviderDisabled} onChange={event => props.onSystemAudioChange?.(event.target.checked)} />{t('client.androidDeviceAudioLabel')}</label>}
         {props.nativeCaptureAvailable && props.nativeCapturePlatform !== 'android' && <label className="meeting-settings-field-wide">{t('native.captureLabel')}<select aria-label={t('native.captureLabel')}
           value={props.nativeCaptureEnabled ? 'native' : 'browser'} disabled={props.screenShareActive || props.screenShareBusy}
           onChange={event => props.onNativeCaptureChange?.(event.target.value === 'native')}>

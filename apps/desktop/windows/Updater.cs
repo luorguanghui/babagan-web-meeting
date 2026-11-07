@@ -7,21 +7,39 @@ using System.Threading.Tasks;
 
 namespace Babagan {
   internal sealed class PendingUpdate { public string relative; public string version; public long sequence; }
+  internal sealed class ClientUpdateState {
+    public string state, status, message, phase;
+    public long updateRevision;
+    public long? downloadedBytes, totalBytes;
+  }
   internal sealed class ClientUpdater {
     readonly string root, currentDirectory; readonly Func<bool> busy; readonly Action<string, string> changed; bool checking; CancellationTokenSource downloading;
-    internal ClientUpdater(string installationRoot, string directory, Func<bool> isBusy, Action<string, string> stateChanged) { root = installationRoot; currentDirectory = directory; busy = isBusy; changed = stateChanged; }
+    internal ClientUpdateState State { get; private set; }
+    internal ClientUpdater(string installationRoot, string directory, Func<bool> isBusy, Action<string, string> stateChanged) { root = installationRoot; currentDirectory = directory; busy = isBusy; changed = stateChanged; State = new ClientUpdateState { state = "current", status = "current" }; }
+    void Change(string state, string text, DownloadProgress progress = null) {
+      State = new ClientUpdateState { state = state, status = state, message = text, updateRevision = State.updateRevision + 1,
+        phase = progress != null ? progress.phase : state == "installing" ? "installing" : null,
+        downloadedBytes = progress != null ? (long?)progress.downloadedBytes : null, totalBytes = progress != null ? (long?)progress.totalBytes : null };
+      changed(state, text);
+    }
     internal async Task Check(CancellationToken token) {
       if (checking) return; checking = true;
       try {
-        changed("checking", "正在检查更新…"); UpdateKey key;
+        token.ThrowIfCancellationRequested(); Change("checking", "正在检查更新…"); UpdateKey key;
         using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("update-key.json")) using (var reader = new StreamReader(stream)) key = Package.Json().Deserialize<UpdateKey>(reader.ReadToEnd());
         var release = ReleaseVerifier.Verify(await Downloads.Manifest(Package.FeedUrl, token), key);
+        token.ThrowIfCancellationRequested();
         var installed = VersionStore.Read(root); long sequence = installed == null ? 1 : installed.sequence;
-        if (release.sequence <= sequence || System.Version.Parse(release.version) <= System.Version.Parse(Package.Version)) { changed("current", "已是最新版本"); return; }
-        if (busy()) { changed("available", "新版本可用，将在会议结束后下载。"); return; }
-        changed("downloading", "发现新版本，正在后台下载…");
+        if (release.sequence <= sequence || System.Version.Parse(release.version) <= System.Version.Parse(Package.Version)) { Change("current", "已是最新版本"); return; }
+        if (busy()) { Change("available", "新版本可用，将在会议结束后下载。"); return; }
+        Change("downloading", "发现新版本，正在后台下载…", new DownloadProgress(0, release.artifact.bytes, "downloading"));
         downloading = CancellationTokenSource.CreateLinkedTokenSource(token); var downloadToken = downloading.Token;
-        var zip = await Downloads.Get(release.artifact.url, release.artifact.sha256, release.artifact.bytes, Package.Child(root, "downloads"), new Progress<string>(_ => {}), downloadToken);
+        var zip = await Downloads.Get(release.artifact.url, release.artifact.sha256, release.artifact.bytes, Package.Child(root, "downloads"), new Progress<string>(_ => {}), downloadToken, progress => {
+          downloadToken.ThrowIfCancellationRequested();
+          if (busy()) { downloading.Cancel(); downloadToken.ThrowIfCancellationRequested(); }
+          Change("downloading", progress.phase == "verifying" ? "正在验证更新…" : "发现新版本，正在后台下载…", progress);
+        });
+        downloadToken.ThrowIfCancellationRequested();
         var stage = Package.Child(root, "stage-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(stage);
         try {
           using (var stream = File.OpenRead(zip)) Package.Extract(stream, stage);
@@ -34,22 +52,23 @@ namespace Babagan {
           Package.AtomicJson(Package.Child(root, "pending.json"), new PendingUpdate { relative = relative, version = release.version, sequence = release.sequence });
           TryActivate();
         } finally { Package.RemoveStage(stage, root); }
-      } catch (OperationCanceledException) { if (!token.IsCancellationRequested) changed("available", "新版本可用，将在会议结束后下载。"); }
-      catch { changed("error", "暂时无法更新，稍后会自动重试。"); }
+      } catch (OperationCanceledException) { if (!token.IsCancellationRequested) Change("available", "新版本可用，将在会议结束后下载。"); }
+      catch { if (!token.IsCancellationRequested) Change("error", "暂时无法更新，稍后会自动重试。"); }
       finally { if (downloading != null) { downloading.Dispose(); downloading = null; } checking = false; }
     }
-    internal void ActivityChanged() { if (busy() && downloading != null) downloading.Cancel(); TryActivate(); }
+    internal void ActivityChanged() { if (busy() && downloading != null) { downloading.Cancel(); Change("available", "新版本可用，将在会议结束后下载。"); } TryActivate(); }
     internal void TryActivate() {
       var path = Package.Child(root, "pending.json"); if (!File.Exists(path)) return;
-      if (busy()) { changed("ready", "更新已准备好，将在会议结束后安装。"); return; }
+      if (busy()) { Change("ready", "更新已准备好，将在会议结束后安装。"); return; }
       try {
         var pending = Package.Json().Deserialize<PendingUpdate>(File.ReadAllText(path));
         // Re-check authoritative host activity immediately before switching the pointer.
         if (busy()) return;
         var current = VersionStore.Read(root);
+        Change("installing", "正在安装更新…");
         if (current == null || pending.sequence > current.sequence) VersionStore.Activate(root, pending.relative, pending.version, pending.sequence, false, false);
-        File.Delete(path); changed("ready", "更新已安装，下次打开客户端生效。");
-      } catch { changed("error", "更新准备失败，当前会议不受影响。"); }
+        File.Delete(path); Change("ready", "更新已安装，下次打开客户端生效。");
+      } catch { Change("error", "更新准备失败，当前会议不受影响。"); }
     }
     internal static void ValidatePayload(string stage) {
       foreach (var file in new[] { "Babagan.Client.exe", "Babagan.exe", "Microsoft.Web.WebView2.Core.dll", "Microsoft.Web.WebView2.WinForms.dll", "WebView2Loader.dll", "apps/native-capture/dist/desktop-host.js" })

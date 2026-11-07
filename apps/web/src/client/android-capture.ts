@@ -3,7 +3,13 @@ import { registerNativeCaptureTrack } from '../meeting/native-capture.js';
 import { ClientHostError, type ClientHost } from './host-bridge.js';
 
 interface CaptureFormat { width: number; height: number; frameRate: number; }
-interface StartResult extends CaptureFormat { sessionId: string; offer: RTCSessionDescriptionInit; }
+export type SystemAudioUnavailableReason = 'permission-denied' | 'unsupported' | 'unavailable';
+interface StartResult extends CaptureFormat { sessionId: string; offer: RTCSessionDescriptionInit; systemAudio?: boolean; systemAudioExcludesOwnApp?: boolean; systemAudioReason?: SystemAudioUnavailableReason; }
+const verifiedPlaybackAudio = new WeakSet<MediaStreamTrack>();
+/** Only this module can register a track, after its native session confirms own-UID exclusion. */
+export function isAndroidPlaybackAudioTrack(track: MediaStreamTrack): boolean {
+  return verifiedPlaybackAudio.has(track) && track.kind === 'audio' && track.readyState === 'live';
+}
 interface AndroidCaptureDependencies {
   signal?: AbortSignal;
   createPeer?: () => RTCPeerConnection;
@@ -13,6 +19,7 @@ interface AndroidCaptureDependencies {
   negotiationTimeoutMs?: number;
   /** Use 30 for a client that did not advertise the v0.1.2 capture capability. */
   maxFrameRate?: 30 | 60;
+  onSystemAudioUnavailable?: (reason: SystemAudioUnavailableReason) => void;
 }
 function format(value: unknown): CaptureFormat | undefined {
   if (!value || typeof value !== 'object') return;
@@ -42,10 +49,13 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
   const sessionId = deps.sessionId ?? crypto.randomUUID();
   const frameRate = Math.min(requestedRate(constraints), deps.maxFrameRate ?? 30) as 30 | 60;
   const lifecycle = deps.lifecycle ?? window;
+  const requestedAudio = !!constraints.audio;
   return new Promise<MediaStream>((resolve, reject) => {
     let peer: RTCPeerConnection | undefined;
     let closed = false, remoteReady = false, negotiated = false, resolved = false, started = false;
     let capturedTrack: MediaStreamTrack | undefined, originalStop: (() => void) | undefined;
+    let audioTrack: MediaStreamTrack | undefined, stream: MediaStream | undefined;
+    let expectedAudio = false, audioUnavailable = false;
     let activeFormat: CaptureFormat | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const queuedCandidates: Array<RTCIceCandidateInit | null> = [];
@@ -59,16 +69,28 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
       deps.signal?.removeEventListener('abort', abort); lifecycle.removeEventListener('pagehide', abort);
       unsubscribe(); queuedCandidates.length = 0;
       capturedTrack?.removeEventListener('ended', onTrackEnded);
+      if (audioTrack) { verifiedPlaybackAudio.delete(audioTrack); audioTrack.removeEventListener('ended', onAudioEnded); audioTrack.stop(); }
       stopHost(); peer?.close(); originalStop?.();
       if (!resolved) reject(error);
       else if (signalEnded) capturedTrack?.dispatchEvent(new Event('ended'));
     };
     const abort = () => cleanup(captureAborted());
     const onTrackEnded = () => cleanup(new ClientHostError('capture-ended', 'Screen capture ended.'), false);
+    const loseAudio = (reason: SystemAudioUnavailableReason) => {
+      expectedAudio = false;
+      if (audioTrack) {
+        verifiedPlaybackAudio.delete(audioTrack);
+        audioTrack.removeEventListener('ended', onAudioEnded); audioTrack.stop(); stream?.removeTrack(audioTrack); audioTrack = undefined;
+      }
+      if (requestedAudio && !audioUnavailable) { audioUnavailable = true; deps.onSystemAudioUnavailable?.(reason); }
+      deliver();
+    };
+    const onAudioEnded = () => loseAudio('unavailable');
     const deliver = () => {
-      if (closed || resolved || !negotiated || !capturedTrack || !activeFormat) return;
+      if (closed || resolved || !negotiated || !capturedTrack || !activeFormat || (expectedAudio && !audioTrack)) return;
       if (capturedTrack.readyState === 'ended') { cleanup(new ClientHostError('capture-ended', 'Screen capture ended.')); return; }
-      const stream = (deps.createStream ?? (track => new MediaStream([track])))(capturedTrack);
+      stream = (deps.createStream ?? (track => new MediaStream([track])))(capturedTrack);
+      if (audioTrack) stream.addTrack(audioTrack);
       clearTimeout(timer); resolved = true; resolve(stream);
     };
     const addCandidate = (value: RTCIceCandidateInit | null) => {
@@ -82,7 +104,12 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
           .catch(error => { if (!closed) cleanup(error instanceof Error ? error : new ClientHostError('capture-failed', 'Screen signaling failed.')); });
       };
       peer.ontrack = event => {
-        if (capturedTrack === event.track) return;
+        if (capturedTrack === event.track || audioTrack === event.track) return;
+        if (!closed && event.track.kind === 'audio' && expectedAudio && !audioTrack) {
+          if (event.track.readyState === 'ended') { loseAudio('unavailable'); return; }
+          audioTrack = event.track; verifiedPlaybackAudio.add(audioTrack);
+          audioTrack.addEventListener('ended', onAudioEnded, { once: true }); deliver(); return;
+        }
         if (closed || event.track.kind !== 'video' || capturedTrack) { event.track.stop(); return; }
         capturedTrack = event.track; originalStop = capturedTrack.stop.bind(capturedTrack);
         const getSettings = capturedTrack.getSettings.bind(capturedTrack);
@@ -98,6 +125,7 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
       unsubscribe = host.subscribe(event => {
         if (closed || event.sessionId !== sessionId) return;
         if (event.event === 'capture.ended') cleanup(new ClientHostError('capture-ended', typeof event.reason === 'string' ? event.reason : 'Screen capture ended.'));
+        else if (event.event === 'capture.audio-ended') loseAudio('unavailable');
         else if (event.event === 'capture.resized' && activeFormat) {
           const resized = format({ width: event.width, height: event.height, frameRate: event.frameRate ?? activeFormat.frameRate });
           if (resized && resized.frameRate === frameRate) activeFormat = resized;
@@ -110,14 +138,19 @@ export function captureAndroidScreen(host: ClientHost, constraints: DisplayMedia
       deps.signal?.addEventListener('abort', abort, { once: true }); lifecycle.addEventListener('pagehide', abort);
       if (deps.signal?.aborted) { abort(); return; }
       started = true;
-      void host.request<StartResult>('capture.start', { sessionId, width: 1920, height: 1080, frameRate, audio: false }, { timeoutMs: 120_000, signal: requestAbort.signal })
+      void host.request<StartResult>('capture.start', { sessionId, width: 1920, height: 1080, frameRate, audio: requestedAudio }, { timeoutMs: 120_000, signal: requestAbort.signal })
         .then(async result => {
           if (closed) { stopHost(); return; }
           const receivedFormat = format(result);
           if (!receivedFormat || result.sessionId !== sessionId || result.offer?.type !== 'offer' || typeof result.offer.sdp !== 'string' || result.offer.sdp.length > 200_000) throw new ClientHostError('protocol', 'Invalid screen capture offer.');
           if (receivedFormat.frameRate !== frameRate) throw new ClientHostError('protocol', 'Native capture did not configure the selected frame rate.');
           activeFormat = receivedFormat;
-          timer = setTimeout(() => cleanup(new ClientHostError('timeout', 'The screen capture connection timed out.')), deps.negotiationTimeoutMs ?? 20_000);
+          expectedAudio = requestedAudio && result.systemAudio === true && result.systemAudioExcludesOwnApp === true && !audioUnavailable;
+          if (requestedAudio && !expectedAudio) loseAudio(result.systemAudioReason === 'permission-denied' || result.systemAudioReason === 'unsupported' ? result.systemAudioReason : 'unavailable');
+          timer = setTimeout(() => {
+            if (negotiated && capturedTrack?.readyState !== 'ended' && capturedTrack && expectedAudio) loseAudio('unavailable');
+            else cleanup(new ClientHostError('timeout', 'The screen capture connection timed out.'));
+          }, deps.negotiationTimeoutMs ?? 20_000);
           await peer!.setRemoteDescription(result.offer);
           if (closed) return;
           remoteReady = true; for (const value of queuedCandidates.splice(0)) addCandidate(value);
