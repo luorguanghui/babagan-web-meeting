@@ -1,0 +1,67 @@
+{
+  "date": "2026-11-07",
+  "version": "0.1.0",
+  "versionCode": 1,
+  "applicationId": "cloud.babagan.meeting",
+  "build": {
+    "debug": "passed",
+    "release": "passed",
+    "java": "22.0.2",
+    "gradle": "8.13",
+    "androidGradlePlugin": "8.11.1",
+    "compileSdk": 36,
+    "targetSdk": 36,
+    "minSdk": 26
+  },
+  "unitTests": {
+    "passed": 21,
+    "failed": 0,
+    "suites": [
+      "BridgeOriginTest",
+      "CaptureGateTest",
+      "ScreenDimensionsTest",
+      "UpdateVerifierTest",
+      "ClientOwnershipTest",
+      "UpdateDownloadGateTest"
+    ]
+  },
+  "lint": {
+    "debug": "passed",
+    "releaseVital": "passed",
+    "remainingWarnings": "JavaScript is required for the trusted meeting application; newer backup/audio manifest attributes are ignored on older Android releases."
+  },
+  "releaseInspection": {
+    "apkSignatureV2": true,
+    "apkSignatureV3": true,
+    "publicUpdateKeyBundled": true,
+    "debugHarnessAbsent": true,
+    "privateSigningFilesAbsent": true,
+    "abis": [
+      "arm64-v8a",
+      "armeabi-v7a",
+      "x86",
+      "x86_64"
+    ]
+  },
+  "deviceValidation": {
+    "status": "deferred-to-user-device",
+    "physicalDeviceAvailable": false,
+    "emulator": "37.2.13.0 / API 35 Google APIs x86_64 revision 9",
+    "ownedAvd": "BabaganApi35",
+    "accelerationCheck": "Android Emulator hypervisor driver is not installed on this machine",
+    "softwareAttempts": [
+      "37.2.13 held process: 0xC0000005 before Android boot",
+      "35.6.11 official verified archive with TCG opt-in: 0xC0000005 after 1.19 seconds",
+      "37.2.13 documented TCG opt-in: 0xC0000005 after 1.95 seconds"
+    ],
+    "cleanup": "User authorized cleanup. SDK tools uninstalled the emulator, API35 image and owned AVD. Older isolated emulator, archive and logs moved to Recycle Bin after permanent deletion was blocked by automatic review. Build SDK, Gradle and ADB retained. No OS/BIOS/security changes.",
+    "notClaimed": [
+      "Native WebRTC to WebView decoded frames",
+      "MediaProjection foreground lifecycle",
+      "Android to remote participant media",
+      "APK update installation"
+    ],
+    "userDecision": "User will perform real Android device testing. No emulator/device capture pass claimed."
+  },
+  "capturePolicy": "No Windows desktop or game was captured. The debug-only native synthetic harness uses generated I420 pixels; emulator MediaProjection verification remains pending."
+}

@@ -1,0 +1,74 @@
+{
+  "at": "2026-11-07T09:56:30.427Z",
+  "checks": [
+    {
+      "path": "/",
+      "exactBuildHtml": true,
+      "coop": true,
+      "coep": true
+    },
+    {
+      "path": "/assets/index-_yfgBITF.js",
+      "bytes": 1117643,
+      "sha256": "2af3dcb41a87a8c6f1b4530c2439edd46f0cbb3bf20754905b437eb3876dc983"
+    },
+    {
+      "path": "/assets/index-zKI7QEt0.css",
+      "bytes": 63617,
+      "sha256": "a84aa88f72bb6f3f8e5f8bb6dc737de974b90aa0a066fa41665b122786ee0eb1"
+    },
+    {
+      "path": "/downloads/clients/catalog.json",
+      "status": 200,
+      "cacheControl": "no-store, max-age=0"
+    },
+    {
+      "path": "/downloads/clients/windows/stable.json",
+      "status": 200,
+      "cacheControl": "no-store, max-age=0"
+    },
+    {
+      "path": "/downloads/clients/windows/0.1.1/client.zip",
+      "bytes": 825906,
+      "sha256": "ea0d9010bf4ce9e33414e5c1b8dc124cee91d0fc015a98c34f012e5ba287dcdc"
+    },
+    {
+      "path": "/downloads/clients/windows/0.1.1/BabaganClientSetup-0.1.1.exe",
+      "bytes": 1139712,
+      "sha256": "adf6cf6aef2dbd3572979634360b691f3e4a0c0bdcadb4effbbd3a998ce19b64"
+    },
+    {
+      "path": "/downloads/clients/android/stable.json",
+      "status": 200,
+      "cacheControl": "no-store, max-age=0"
+    },
+    {
+      "path": "/downloads/clients/android/0.1.1/Babagan.apk",
+      "bytes": 49205271,
+      "sha256": "883ffc3428aa4d969e5fe82cdb1f22cfa15d0547fc12880d3b80d821d6d4d5e8"
+    },
+    {
+      "path": "/downloads/native-release.json",
+      "status": 200,
+      "cacheControl": "no-store, max-age=0"
+    },
+    {
+      "path": "/downloads/BabaganSetup-0.2.2.exe",
+      "bytes": 602624,
+      "sha256": "3743d70a70046e6d335ffea5f1948ddff91a3122345d13464aee03abb95ff5df"
+    },
+    {
+      "path": "/downloads/runtime/MicrosoftEdgeWebView2RuntimeInstallerX64-2688308af557.exe",
+      "publicBytes": 214927568,
+      "fullHashVerifiedOnServer": true
+    },
+    {
+      "path": "/.well-known/assetlinks.json",
+      "status": 200,
+      "cacheControl": null
+    },
+    {
+      "missingDownloadStatus": 404
+    }
+  ]
+}

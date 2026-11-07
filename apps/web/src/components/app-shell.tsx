@@ -1,17 +1,21 @@
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 
 import { LanguageSelector } from './language-selector.js';
 import { useI18n } from '../i18n/i18n.js';
+import { homeCopy } from '../pages/home-copy.js';
+import { ClientUpdateStatus } from '../client/client-update-status.js';
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { t } = useI18n();
+  const { locale } = useI18n();
+  const copy = homeCopy[locale];
+  const [avatarFailed, setAvatarFailed] = useState(false);
   return <div className="app-root app-shell">
     <header className="app-bar">
-      <a className="app-brand" href="/create" aria-label="Babagan home">
-        <img src="/brand/babagan-wordmark.svg" alt="Babagan" width="138" height="35" />
-        <span className="sr-only">Babagan</span>
+      <a className="app-brand" href="/" aria-label={copy.home}>
+        {!avatarFailed && <img className="app-brand-avatar" src="/theme/sigrika-avatar.png" alt="" width="42" height="42" onError={() => setAvatarFailed(true)} />}
+        <span className="app-brand-wordmark">Babagan</span>
       </a>
-      <div className="app-bar-actions"><a href="/native" target="_blank" rel="noopener noreferrer">{t('native.downloadNav')}</a><LanguageSelector /></div>
+      <div className="app-bar-actions"><ClientUpdateStatus /><a className="app-component-link" href="/native">{copy.componentNav}</a><a href="/#downloads">{copy.downloads}</a><LanguageSelector /></div>
     </header>
     {children}
   </div>;

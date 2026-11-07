@@ -3,6 +3,13 @@
   header Cross-Origin-Embedder-Policy require-corp
   root * /srv
   encode zstd gzip
-  try_files {path} /index.html
-  file_server
+  @release_metadata path /downloads/native-release.json /downloads/clients/catalog.json /downloads/clients/*/stable.json
+  header @release_metadata Cache-Control "no-store, max-age=0"
+  handle /downloads/* {
+    file_server
+  }
+  handle {
+    try_files {path} /index.html
+    file_server
+  }
 }

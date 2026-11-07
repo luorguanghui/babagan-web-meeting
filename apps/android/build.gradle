@@ -1,0 +1,8 @@
+plugins { id 'com.android.application' version '8.11.1' apply false }
+
+// Java's Windows test worker cannot load classes from some non-ASCII paths.
+// Keep generated outputs in the local development directory when using our script.
+allprojects {
+    def outputRoot = System.getenv('BABAGAN_ANDROID_BUILD_ROOT')
+    if (outputRoot) layout.buildDirectory = file("${outputRoot}/${project.name}")
+}

@@ -1,0 +1,35 @@
+{
+  "isolatedProfileProcessObserved": true,
+  "isolatedWebViewProfile": "output/windows-update-acceptance-20261107/ui-test-profile",
+  "meetingJoined": false,
+  "observedWith": "Computer Use @oai/sky",
+  "defaultInstallationMetadataUnchanged": true,
+  "observedVersion": "0.1.1",
+  "desktopCaptured": false,
+  "observedUpdateStatus": "已是最新版本",
+  "previousRetained": true,
+  "current": {
+    "current": "versions/0.1.1-4c28c427",
+    "previous": "versions/0.1.0-1b67d3fb",
+    "version": "0.1.1",
+    "sequence": 2,
+    "pendingHealth": false
+  },
+  "defaultProfileDirectoryUnchanged": true,
+  "windowTitle": "Babagan · 会议",
+  "completedAt": "2026-11-07T09:59:59.2895374Z",
+  "securityPromptBypassed": false,
+  "observedUrl": "https://meet.babagan.cloud/",
+  "bootstrapHealthy": true,
+  "passed": true,
+  "cleanup": {
+    "toolError": "user input was detected in this window; call get_window_state before continuing",
+    "windowCloseAttempted": true,
+    "ownedClientPid": 30244,
+    "additionalUiActionsStopped": true,
+    "forceTerminated": false,
+    "ownedHelperPid": 41628,
+    "closed": false,
+    "reason": "Computer Use rejected the close action because user input was detected in the owned window."
+  }
+}

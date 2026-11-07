@@ -11,6 +11,7 @@ function packetLength(value: unknown): number {
 const nativeTracks = new WeakSet<MediaStreamTrack>();
 const nativePacers = new WeakMap<MediaStreamTrack, NativePacer>();
 export function isNativeCaptureTrack(track: MediaStreamTrack): boolean { return nativeTracks.has(track); }
+export function registerNativeCaptureTrack(track: MediaStreamTrack): void { nativeTracks.add(track); }
 export function getNativePacingStats(track: MediaStreamTrack) { return nativePacers.get(track)?.stats(); }
 export interface NativeCaptureConnection { port: number; token: string; }
 function validConnection(value: unknown): value is NativeCaptureConnection {

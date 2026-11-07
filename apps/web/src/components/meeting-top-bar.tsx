@@ -45,7 +45,7 @@ export function MeetingTopBar({
   }, [startedAt]);
   const duration = [Math.floor(elapsed / 3600), Math.floor(elapsed / 60) % 60, elapsed % 60].map(value => String(value).padStart(2, '0')).join(':');
   return <header className="meeting-topbar meeting-room-header">
-    <div className="meeting-brand"><img src="/brand/babagan-wordmark.svg" alt="Babagan" width="138" height="35" /></div>
+    <div className="meeting-brand"><span className="meeting-brand-lockup"><img className="meeting-brand-avatar" src="/theme/sigrika-avatar.png" alt="" width="32" height="32" onError={event => { event.currentTarget.hidden = true; }} /><span>Babagan</span></span></div>
     <div className="meeting-room-title">
       <h1>{title}</h1>
       <div className="meeting-connection">{connection}</div>

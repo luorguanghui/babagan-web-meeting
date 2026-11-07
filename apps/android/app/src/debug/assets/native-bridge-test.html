@@ -1,0 +1,25 @@
+<!doctype html><html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Babagan media test</title>
+<style>body{margin:0;background:#faf9f6;color:#24301e;font:16px sans-serif;padding:24px}canvas{width:100%;height:160px;border-radius:20px}video{width:100%;height:180px;background:#222;border-radius:12px}button{padding:14px;background:#617a50;color:white;border:0;border-radius:12px}pre{white-space:pre-wrap;font:13px monospace}</style>
+<h2>Babagan owned emulator test</h2><p>Generated test pixels only. No external app content.</p><canvas width="640" height="220"></canvas><button id="start">Start media test</button><p id="status">Waiting</p><video autoplay muted playsinline></video><pre id="output"></pre>
+<script>
+const canvas=document.querySelector('canvas'),ctx=canvas.getContext('2d');let step=0;
+function animate(){ctx.fillStyle='#d8e4cc';ctx.fillRect(0,0,640,220);ctx.fillStyle='#617a50';ctx.fillRect((step++*4)%540,50,100,100);ctx.fillStyle='#24301e';ctx.font='28px sans-serif';ctx.fillText('Synthetic frame '+step,20,35);requestAnimationFrame(animate)}animate();
+const pending=new Map(),events=[];let serial=0,pc,session,frames=0,ready=false,stopped=false;const ice=[];
+function request(method,params={}){const id=String(++serial);return new Promise((resolve,reject)=>{pending.set(id,{resolve,reject});BabaganAndroid.postMessage(JSON.stringify({v:1,id,method,params}));setTimeout(()=>{if(pending.has(id)){pending.delete(id);reject(new Error(method+' timed out'))}},45000)})}
+BabaganAndroid.onmessage=async({data})=>{const msg=JSON.parse(data);if(msg.id){const item=pending.get(msg.id);if(item){pending.delete(msg.id);msg.ok?item.resolve(msg.result):item.reject(new Error(JSON.stringify(msg.error)))}}else if(msg.event==='capture.signal'&&msg.sessionId===session){if(ready)await pc.addIceCandidate(msg.candidate);else ice.push(msg.candidate)}else events.push(msg)};
+const video=document.querySelector('video');function frame(){frames++;if(!stopped)video.requestVideoFrameCallback(frame)}
+async function run(){try{
+document.querySelector('#start').disabled=true;document.querySelector('#status').textContent='Connecting';
+const info=await request('client.info');await request('meeting.state',{joined:true});session=crypto.randomUUID();
+pc=new RTCPeerConnection({iceServers:[]});pc.onicecandidate=event=>request('capture.signal',{sessionId:session,candidate:event.candidate?.toJSON()??null}).catch(()=>{});
+pc.ontrack=event=>{video.srcObject=event.streams[0]??new MediaStream([event.track]);video.play();if(video.requestVideoFrameCallback)video.requestVideoFrameCallback(frame)};
+const mode=new URL(location.href).searchParams.get('mode');const start=await request(mode==='projection'?'capture.start':'capture.test',{sessionId:session,width:1920,height:1080,frameRate:30,audio:false});
+await pc.setRemoteDescription(start.offer);ready=true;for(const candidate of ice)await pc.addIceCandidate(candidate);
+const answer=await pc.createAnswer();await pc.setLocalDescription(answer);await request('capture.signal',{sessionId:session,description:{type:'answer',sdp:answer.sdp}});
+document.querySelector('#status').textContent='Receiving generated content';
+await new Promise(resolve=>setTimeout(resolve,15000));const reports=await pc.getStats();const inbound=[...reports.values()].filter(item=>item.type==='inbound-rtp'&&item.kind==='video').map(item=>({framesReceived:item.framesReceived,framesDecoded:item.framesDecoded,frameWidth:item.frameWidth,frameHeight:item.frameHeight,framesPerSecond:item.framesPerSecond,bytesReceived:item.bytesReceived}));
+stopped=true;const result={mode,info,start:{width:start.width,height:start.height,frameRate:start.frameRate},connection:pc.connectionState,displayedFrames:frames,inbound};await request('capture.stop',{sessionId:session});pc.close();await request('meeting.state',{joined:false});result.ended=events.some(item=>item.event==='capture.ended');result.passed=frames>30&&inbound.some(item=>item.framesDecoded>30);
+document.querySelector('#output').textContent=JSON.stringify(result,null,2);document.querySelector('#status').textContent=result.passed?'PASS':'FAIL';console.log('BABAGAN_TEST '+JSON.stringify(result));
+}catch(error){console.log('BABAGAN_TEST '+JSON.stringify({passed:false,error:String(error)}));document.querySelector('#output').textContent=String(error)}}
+document.querySelector('#start').onclick=run;if(new URL(location.href).searchParams.get('mode')==='synthetic')setTimeout(run,1500);
+</script></html>

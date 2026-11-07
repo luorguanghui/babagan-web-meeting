@@ -1,0 +1,7 @@
+Babagan Android client
+
+WebRTC (webrtc-sdk/android 144.7559.15): BSD license, see LICENSE-WebRTC.txt.
+https://github.com/webrtc-sdk/android
+AndroidX WebKit 1.14.0: Apache License 2.0; https://android.googlesource.com/platform/frameworks/support/
+Android platform components remain supplied by the device.
+The Sigrika-inspired character art is an original unofficial fan-theme asset. Babagan is not affiliated with KURO GAMES.

@@ -1,0 +1,7 @@
+.client-update-status { display: inline-flex; align-items: center; gap: 6px; font-size: .73rem; color: var(--muted); }
+.client-update-status .client-update-check { padding: 6px; min-height: 32px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); }
+.client-update-status .client-version { font-variant-numeric: tabular-nums; }
+.meeting-client-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 24px; }
+.meeting-client-status > p { color: var(--muted); font-size: .8rem; line-height: 1.6; margin: 0; }
+@media (max-width: 800px) { .app-bar-actions > .client-update-status > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; } }
+@media (max-width: 480px) { .app-bar-actions:has(.client-update-status) > a { display: none; } }

@@ -1,0 +1,11 @@
+# Always include this override in production web deployments after seeding the
+# host directory with all existing /srv/downloads files (see client-releases.md).
+services:
+  web:
+    volumes:
+      - type: bind
+        source: ${CLIENT_DOWNLOADS_ROOT:-/opt/babagan-web-meeting/var/downloads}
+        target: /srv/downloads
+        read_only: true
+        bind:
+          create_host_path: false
