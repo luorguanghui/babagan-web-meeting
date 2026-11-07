@@ -4,6 +4,8 @@ import { useCallback, useEffect, useId, useRef, useState, type RefObject } from 
 
 import { useI18n } from '../i18n/i18n.js';
 import { useExitPresence } from './use-exit-presence.js';
+import { AndroidAudioSettings } from '../client/android-audio-settings.js';
+import type { AndroidAudioControls } from '../client/android-audio-routes.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { ScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
 import type { ViewerTransportPreference } from '../meeting/viewer-transport-preference.js';
@@ -30,6 +32,8 @@ export interface MeetingControlsProps {
   devices: MediaDeviceInfo[];
   microphoneDeviceId?: string;
   speakerDeviceId?: string;
+  /** Android communication routes pair microphone and output; browser device selectors stay separate elsewhere. */
+  nativeAudio?: AndroidAudioControls;
   quickPanel?: MeetingQuickPanel;
   audioSettingsButtonRef?: RefObject<HTMLButtonElement | null>;
   shareSettingsButtonRef?: RefObject<HTMLButtonElement | null>;
@@ -258,14 +262,14 @@ export function MeetingSettings(props: MeetingSettingsProps) {
     {(section === 'all' || section === 'audio') && <section className="meeting-settings-section" data-section="audio" aria-labelledby={audioHeadingId}>
       <h3 className="meeting-settings-section-heading" id={audioHeadingId}>{t('controls.audioDevices')}</h3>
       <div className="meeting-settings-section-grid">
-        <label className="meeting-device-control"><span><Mic aria-hidden="true" size={17} />{t('controls.microphoneDevice')}</span><select aria-label={t('controls.microphoneDevice')} value={microphoneDevices.some(device => device.deviceId === microphoneDeviceId) ? microphoneDeviceId : ''} onChange={(event) => { setSelectedMicrophone(event.target.value); props.onMicrophoneDeviceChange(event.target.value); }}>
+        {props.nativeAudio ? <AndroidAudioSettings audio={props.nativeAudio} /> : <><label className="meeting-device-control"><span><Mic aria-hidden="true" size={17} />{t('controls.microphoneDevice')}</span><select aria-label={t('controls.microphoneDevice')} value={microphoneDevices.some(device => device.deviceId === microphoneDeviceId) ? microphoneDeviceId : ''} onChange={(event) => { setSelectedMicrophone(event.target.value); props.onMicrophoneDeviceChange(event.target.value); }}>
           <option value="" disabled>{t('controls.selectMicrophone')}</option>
           {microphoneDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.microphone')}</option>)}
         </select></label>
         <label className="meeting-device-control"><span><Volume2 aria-hidden="true" size={17} />{t('controls.speakerDevice')}</span><select aria-label={t('controls.speakerDevice')} value={speakerDevices.some(device => device.deviceId === speakerDeviceId) ? speakerDeviceId : ''} onChange={(event) => { setSelectedSpeaker(event.target.value); props.onSpeakerDeviceChange(event.target.value); }}>
           <option value="" disabled>{t('controls.selectSpeaker')}</option>
           {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
-        </select></label>
+        </select></label></>}
         <VolumeSlider label={t('controls.callAudioVolume')} displayLabel={t('controls.callAudioShort')} kind="call" value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
         {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} displayLabel={t('controls.sharedAudioShort')} kind="shared" value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
       </div>

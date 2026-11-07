@@ -71,7 +71,7 @@ export class NativeClientBridge implements ClientHost {
       else { const error = value.error as { code: string; message: string }; item.reject(new ClientHostError(error.code, error.message)); }
       return;
     }
-    if (typeof value.event !== 'string' || !['capture.signal', 'capture.ended', 'capture.resized', 'update.state'].includes(value.event)) return;
+    if (typeof value.event !== 'string' || !['capture.signal', 'capture.ended', 'capture.resized', 'update.state', 'pictureInPicture.state', 'audio.routesChanged'].includes(value.event)) return;
     for (const listener of this.listeners) { try { listener(value as ClientHostEvent); } catch { /* One consumer cannot prevent another from receiving an event. */ } }
   }
 }
@@ -103,5 +103,7 @@ export function validClientInfo(value: unknown, platform: ClientHostInfo['platfo
   return record(value) && value.protocol === 1 && value.platform === platform
     && typeof value.appVersion === 'string' && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value.appVersion)
     && typeof value.screenCapture === 'boolean' && (value.systemAudio === undefined || typeof value.systemAudio === 'boolean')
-    && (value.maxScreenFrameRate === undefined || value.maxScreenFrameRate === 30 || value.maxScreenFrameRate === 60);
+    && (value.maxScreenFrameRate === undefined || value.maxScreenFrameRate === 30 || value.maxScreenFrameRate === 60)
+    && (value.pictureInPicture === undefined || typeof value.pictureInPicture === 'boolean')
+    && (value.audioRouting === undefined || typeof value.audioRouting === 'boolean');
 }

@@ -13,6 +13,7 @@ import { DeviceCheck } from '../components/device-check.js';
 import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, type Translate, useI18n } from '../i18n/i18n.js';
 import { MeetingRoomPage } from './meeting-room-page.js';
+import { useClientHost } from '../client/client-host.js';
 
 interface JoinLobbyPageProps { slug: string; }
 type ClientNotice = { kind: 'block'; message: string } | { kind: 'notice'; message: string } | undefined;
@@ -22,10 +23,13 @@ type LobbySummaryState =
   | { kind: 'unavailable' };
 type JoinedMeeting = { slug: string; meetingName: string; response: JoinMeetingResponse };
 
-function clientNotice(t: Translate): ClientNotice {
+function clientNotice(t: Translate, nativeAndroid: boolean): ClientNotice {
   const userAgent = navigator.userAgent;
   if (!window.isSecureContext) return { kind: 'block', message: t('join.secureRequired') };
   if (!globalThis.RTCPeerConnection) return { kind: 'block', message: t('join.webrtcUnavailable') };
+  // The installed Android host supplies MediaProjection capture; browser-only
+  // mobile restrictions must not describe its capabilities or room permissions.
+  if (nativeAndroid) return undefined;
   if (/Android|iPhone|iPad|iPod|Mobi/i.test(userAgent)) return { kind: 'notice', message: t('join.mobileNotice') };
   if (/Macintosh|Mac OS X/i.test(userAgent)) return { kind: 'block', message: t('join.unsupported') };
   const blockedChromium = /OPR\/|Opera|Brave|Vivaldi|YaBrowser|SamsungBrowser|UCBrowser|DuckDuckGo|Whale/i.test(userAgent)
@@ -47,6 +51,7 @@ function isTerminalMeetingFailure(reason: unknown): boolean {
 
 export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const { t } = useI18n();
+  const { host: clientHost } = useClientHost();
   const navigate = useNavigate();
   const [nickname, setNickname] = useState('');
   const [meetingPassword, setMeetingPassword] = useState('');
@@ -57,7 +62,7 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
   const [summaryState, setSummaryState] = useState<LobbySummaryState>({ kind: 'loading' });
   const [deviceCheckOpen, setDeviceCheckOpen] = useState(() => !window.matchMedia?.('(max-width: 44.999rem)').matches);
   const summaryRequestGeneration = useRef(0);
-  const notice = clientNotice(t);
+  const notice = clientNotice(t, clientHost?.platform === 'android');
   const registerCleanup = useCallback((cleanup: (() => void) | null) => setPreviewCleanup(() => cleanup), []);
   const readySummary = summaryState.kind === 'ready' && summaryState.slug === slug ? summaryState.summary : undefined;
   const passwordRequired = Boolean(readySummary?.requiresPassword);

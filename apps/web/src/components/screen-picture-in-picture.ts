@@ -1,3 +1,7 @@
+import { getClientSnapshot } from '../client/client-host.js';
+import { openAndroidPictureInPicture } from '../client/android-picture-in-picture.js';
+import { ClientHostError } from '../client/host-bridge.js';
+
 /** One media host moves between documents. No extra player, capture, or audio subscription. */
 export interface PictureInPictureLabels {
   sharing: string;
@@ -8,13 +12,13 @@ export interface PictureInPictureLabels {
 }
 
 export interface ScreenPictureInPictureSession {
-  kind: 'document' | 'video';
-  close(): Promise<void> | void;
+  kind: 'document' | 'video' | 'android';
+  close(options?: { returnToMeeting?: boolean }): Promise<void> | void;
   updateLabels(labels: PictureInPictureLabels): void;
 }
 
 export class ScreenPictureInPictureError extends Error {
-  constructor(readonly reason: 'unsupported' | 'denied' | 'failed') { super(reason); }
+  constructor(readonly reason: 'unsupported' | 'denied' | 'failed' | 'client-update') { super(reason); }
 }
 
 interface DocumentPipApi {
@@ -46,10 +50,21 @@ export async function openScreenPictureInPicture(options: {
   video: HTMLVideoElement;
   labels: PictureInPictureLabels;
   onClose: () => void;
+  signal?: AbortSignal;
 }): Promise<ScreenPictureInPictureSession> {
   const { mediaHost, home, video, labels, onClose } = options;
   const ownerDocument = home.ownerDocument;
   const ownerWindow = ownerDocument.defaultView ?? window;
+  const client = getClientSnapshot();
+  if (client.host?.platform === 'android') {
+    if (client.info?.pictureInPicture === undefined) throw new ScreenPictureInPictureError('client-update');
+    if (!client.info.pictureInPicture) throw new ScreenPictureInPictureError('unsupported');
+    try { return await openAndroidPictureInPicture(client.host, options); }
+    catch (error) {
+      if (error instanceof ClientHostError) throw new ScreenPictureInPictureError(error.code === 'denied' ? 'denied' : error.code === 'unsupported' ? 'unsupported' : 'failed');
+      throw pipError(error);
+    }
+  }
   const api = (ownerWindow as Window & { documentPictureInPicture?: DocumentPipApi }).documentPictureInPicture;
   if (api?.requestWindow) {
     let pipWindow: Window;

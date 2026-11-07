@@ -66,4 +66,27 @@ it('validates host capabilities against the detected platform and protocol', () 
   expect(validClientInfo({ ...info, maxScreenFrameRate: 30 }, 'android')).toBe(true);
   expect(validClientInfo({ ...info, appVersion: '0.1.2', maxScreenFrameRate: 60 }, 'android')).toBe(true);
   for (const maxScreenFrameRate of [0, 15, 90, '60', null]) expect(validClientInfo({ ...info, maxScreenFrameRate }, 'android')).toBe(false);
+  expect(validClientInfo({ ...info, pictureInPicture: true }, 'android')).toBe(true);
+  expect(validClientInfo({ ...info, pictureInPicture: false }, 'android')).toBe(true);
+  expect(validClientInfo({ ...info, pictureInPicture: 'true' }, 'android')).toBe(false);
+  expect(validClientInfo({ ...info, audioRouting: true }, 'android')).toBe(true);
+  expect(validClientInfo({ ...info, audioRouting: false }, 'android')).toBe(true);
+  expect(validClientInfo({ ...info, audioRouting: 'true' }, 'android')).toBe(false);
+});
+
+it('delivers native PiP lifecycle events independently from the enter RPC response', async () => {
+  const h = harness(), listener = vi.fn(); h.bridge.subscribe(listener);
+  const sessionId = '11111111-1111-4111-8111-111111111111';
+  const entered = h.bridge.request('pictureInPicture.enter', { sessionId, width: 1920, height: 1080 });
+  const event = { v: 1, event: 'pictureInPicture.state', sessionId, active: false, reason: 'system-exit' };
+  h.receive(event); expect(listener).toHaveBeenCalledWith(event);
+  h.receive({ ...event, event: 'pictureInPicture.internal' }); expect(listener).toHaveBeenCalledOnce();
+  h.receive({ v: 1, id: h.sent[0]!.id, ok: true, result: { sessionId, active: true } });
+  await expect(entered).resolves.toEqual({ sessionId, active: true });
+});
+
+it('delivers native audio route changes without altering RPC state', () => {
+  const h = harness(), listener = vi.fn(); h.bridge.subscribe(listener);
+  const event = { v: 1, event: 'audio.routesChanged', state: { revision: 3 } };
+  h.receive(event); expect(listener).toHaveBeenCalledWith(event);
 });

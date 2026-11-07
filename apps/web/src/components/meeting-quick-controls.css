@@ -174,3 +174,5 @@
   .meeting-controls .meeting-action-more > span, .meeting-controls .meeting-leave-action > span { display: none; }
   .meeting-controls .meeting-connection-retry { justify-self: stretch; width: 100%; }
 }
+.meeting-settings-native-audio-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.meeting-settings-native-audio-actions > button { display: inline-flex; align-items: center; gap: 6px; font-size: .8rem; }
