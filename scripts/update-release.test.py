@@ -241,6 +241,14 @@ class UpdateTests(unittest.TestCase):
     def test_complete_api_update_migrates_and_keeps_media_containers(self):
         self.run_complete_update(web_only=False)
 
+    @unittest.skipUnless(os.name == 'posix', 'full updater fixture requires POSIX mode-600 files')
+    def test_api_environment_drift_refuses_before_build_backup_or_migration(self):
+        self.run_complete_update(web_only=False, scenario='environment-drift')
+
+    @unittest.skipUnless(os.name == 'posix', 'full updater fixture requires POSIX mode-600 files')
+    def test_web_update_ignores_api_environment_drift(self):
+        self.run_complete_update(web_only=True, scenario='environment-drift')
+
     @unittest.skipUnless(sys.platform == 'linux', 'real flock exclusion requires Linux')
     def test_full_deploy_refuses_the_lock_held_by_updater(self):
         import fcntl
@@ -429,6 +437,9 @@ class UpdateTests(unittest.TestCase):
                                   'Labels': {'com.docker.compose.project': 'babagan-meeting',
                                              'com.docker.compose.project.config_files': f'{base},{overlay}'}},
                        'State': {'Health': {'Status': 'healthy'}}} for service in updater.SERVICES]
+            if scenario == 'environment-drift':
+                # A prior API-only overlay is absent from the web Compose chain.
+                before[0]['Config']['Env'].append('CLOUDFLARE_SFU_GATEWAY_TOKEN=' + 's' * 64)
             old_commit = 'b' * 40
             record = {'status': 'deployed-and-verified', 'commit': old_commit,
                       'services': ['api', 'web'], 'containers': updater.container_metadata(before)}
@@ -444,6 +455,11 @@ class UpdateTests(unittest.TestCase):
             def run(args, output=None, env=None):
                 nonlocal activated, smoke_changed
                 calls.append(args)
+                if args[:2] == ['docker', 'compose'] and args[-3:] == ['config', '--format', 'json']:
+                    return json.dumps({'services': {'api': {'environment': {'SECRET': 'private-value'}}}})
+                if args[:3] == ['docker', 'image', 'inspect'] and args[-1] == '{{json .Config.Env}}':
+                    self.assertEqual(args[3], 'sha256:api-old')
+                    return '[]'
                 if args[:2] == ['docker', 'inspect']:
                     after = json.loads(json.dumps(before))
                     if activated:
@@ -501,6 +517,15 @@ class UpdateTests(unittest.TestCase):
                 return b'<script type="module" src="/assets/index-new.js"></script>' if args[-1].endswith('/') else (b'stale public JavaScript' if mismatch else asset)
             options = SimpleNamespace(ref='main', commit=None, web_only=web_only)
             with patch.object(updater, 'command', side_effect=run), patch.object(updater.subprocess, 'check_output', side_effect=fetch):
+                if scenario == 'environment-drift' and not web_only:
+                    with self.assertRaisesRegex(RuntimeError, 'CLOUDFLARE_SFU_GATEWAY_TOKEN') as raised:
+                        updater.perform_update(options, app, env, state)
+                    self.assertNotIn('s' * 64, str(raised.exception))
+                    self.assertFalse(any(args[:2] == ['docker', 'build'] or args[:3] == ['docker', 'run', '--rm']
+                                         or args[:1] == ['bash'] or args[:2] == ['git', 'clone'] for args in calls))
+                    self.assertFalse(activated)
+                    self.assertFalse((state / 'update-pending.json').exists())
+                    return
                 if scenario == 'meeting-during-verification':
                     with self.assertRaisesRegex(RuntimeError, '^authenticated verification failed$'):
                         updater.perform_update(options, app, env, state)
@@ -583,6 +608,73 @@ class UpdateTests(unittest.TestCase):
             self.assertEqual(any(args[:3] == ['docker', 'run', '--rm'] for args in calls), not web_only)
             self.assertEqual(env.read_text(), 'PUBLIC_BASE_URL=https://meet.example.test\nCOOKIE_SECRET=private-value\n')
             self.assertNotIn('private-value', json.dumps(record))
+            if web_only:
+                self.assertFalse(any(args[-3:] == ['config', '--format', 'json'] or args[-1:] == ['{{json .Config.Env}}'] for args in calls))
+
+
+class ApiEnvironmentGuardTests(unittest.TestCase):
+    def check(self, environment, image, actual, selected=('api', 'web')):
+        compose = ['docker', 'compose', '--env-file', '/protected/canonical.env', '-f', '/installed/web-chain.yml']
+        api = {'Name': '/babagan-meeting-api-1', 'Image': 'sha256:immutable-api',
+               'Config': {'Env': actual, 'Labels': {'com.docker.compose.project.config_files': '/old/api-only-overlay.yml'}}}
+        def run(args):
+            if args == compose + ['config', '--format', 'json']:
+                return json.dumps({'services': {'api': {'environment': environment}}})
+            if args == ['docker', 'image', 'inspect', api['Image'], '--format', '{{json .Config.Env}}']:
+                return json.dumps(image)
+            self.fail('Unexpected metadata command')
+        with patch.object(updater, 'command', side_effect=run) as invoked:
+            updater.require_api_environment(selected, compose, [api])
+        return invoked
+
+    def test_missing_api_only_overlay_token_is_rejected_without_exposing_its_value(self):
+        secret = 's' * 64
+        with self.assertRaises(RuntimeError) as raised:
+            self.check({'PUBLIC_BASE_URL': 'https://meet.example.test'}, ['NODE_ENV=production'],
+                       ['NODE_ENV=production', 'PUBLIC_BASE_URL=https://meet.example.test', 'CLOUDFLARE_SFU_GATEWAY_TOKEN=' + secret])
+        self.assertIn('CLOUDFLARE_SFU_GATEWAY_TOKEN', str(raised.exception))
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertNotIn('https://meet.example.test', str(raised.exception))
+
+    def test_image_defaults_are_inherited_and_explicit_compose_values_override_them(self):
+        self.check({'NODE_ENV': 'production', 'SECRET': 'part=one=two'},
+                   ['PATH=/usr/local/bin:/usr/bin', 'NODE_ENV=development', 'SECRET=image-value'],
+                   ['PATH=/usr/local/bin:/usr/bin', 'NODE_ENV=production', 'SECRET=part=one=two'])
+
+    def test_explicit_null_unsets_the_image_default_and_bare_container_entry_is_not_a_value(self):
+        self.check({'REMOVED': None, 'EMPTY': ''}, ['REMOVED=old-secret', 'EMPTY=image-default', 'INHERITED=keep'],
+                   ['REMOVED', 'EMPTY=', 'INHERITED=keep'])
+        with self.assertRaisesRegex(RuntimeError, 'REMOVED'):
+            self.check({'REMOVED': None}, ['REMOVED=old-secret'], ['REMOVED=old-secret'])
+        with self.assertRaisesRegex(RuntimeError, 'REMOVED'):
+            self.check({'REMOVED': None}, ['REMOVED=old-secret'], [])
+
+    def test_empty_value_and_absent_variable_are_different(self):
+        with self.assertRaisesRegex(RuntimeError, 'EMPTY'):
+            self.check({'EMPTY': ''}, [], ['EMPTY'])
+
+    def test_all_changed_added_and_missing_variable_names_are_reported_without_values(self):
+        with self.assertRaises(RuntimeError) as raised:
+            self.check({'ADDED': 'candidate-secret', 'CHANGED': 'new-secret'}, [],
+                       ['MISSING=old-secret', 'CHANGED=previous-secret'])
+        self.assertIn('ADDED, CHANGED, MISSING', str(raised.exception))
+        for value in ('candidate-secret', 'new-secret', 'old-secret', 'previous-secret'):
+            self.assertNotIn(value, str(raised.exception))
+
+    def test_web_only_does_not_read_or_compare_api_metadata(self):
+        self.check({}, [], ['CLOUDFLARE_SFU_GATEWAY_TOKEN=private-value'], selected=['web']).assert_not_called()
+
+    def test_invalid_metadata_fails_closed_without_echoing_secrets(self):
+        with self.assertRaisesRegex(RuntimeError, '^Invalid rendered API environment metadata$'):
+            self.check({'TOKEN': {'secret': 'private-value'}}, [], [])
+        with self.assertRaisesRegex(RuntimeError, '^Invalid API environment metadata$'):
+            self.check({}, {'secret': 'private-value'}, [])
+
+    def test_duplicate_keys_fail_closed_without_exposing_values(self):
+        with self.assertRaisesRegex(RuntimeError, '^Duplicate API environment variable: TOKEN$'):
+            self.check({}, ['TOKEN=image-secret', 'TOKEN=second-secret'], [])
+        with self.assertRaisesRegex(RuntimeError, '^Duplicate API environment variable: TOKEN$'):
+            self.check({}, [], ['TOKEN=private-value', 'TOKEN'])
 
 
 class CloudflareSfuComposeMigrationTests(unittest.TestCase):
