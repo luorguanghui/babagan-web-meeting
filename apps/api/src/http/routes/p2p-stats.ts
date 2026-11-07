@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
-import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
+import { participantCookie, readMeetingSessionCookie } from '../../security/session-token.js';
 import type {
   ActiveParticipantSession,
   P2pStatsReport,
@@ -52,7 +52,7 @@ function participantSession(
   participants: ParticipantApplicationService,
   slugValue: string
 ): ActiveParticipantSession {
-  const raw = readSignedSessionCookie(request, participantCookie);
+  const raw = readMeetingSessionCookie(request, participantCookie, slugValue);
   if (!raw) throw new SessionAuthenticationError();
   return participants.authenticateForLeave(raw, slugValue);
 }

@@ -27,7 +27,7 @@ describe('SQLite meeting repository', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  it('migrates all persistence tables and enforces one non-terminal meeting', () => {
+  it('migrates all persistence tables and enforces three non-terminal meetings', () => {
     const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>;
 
     expect(tables.map(({ name }) => name)).toEqual(expect.arrayContaining([
@@ -37,9 +37,11 @@ describe('SQLite meeting repository', () => {
     expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
 
     repo.createMeeting(newMeeting());
-
-    expect(() => repo.createMeeting(newMeeting({ id: 'meeting-2', slug: 'meeting-two' })))
-      .toThrow(/UNIQUE constraint failed/);
+    repo.createMeeting(newMeeting({ id: 'meeting-2', slug: 'meeting-two' }));
+    repo.createMeeting(newMeeting({ id: 'meeting-3', slug: 'meeting-three' }));
+    expect(repo.countNonTerminal()).toBe(3);
+    expect(() => repo.createMeeting(newMeeting({ id: 'meeting-4', slug: 'meeting-four' })))
+      .toThrow('MEETING_LIMIT_REACHED');
   });
 
   it('checks persistent database writability without falling back to temp storage', () => {

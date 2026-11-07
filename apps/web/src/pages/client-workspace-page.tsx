@@ -1,12 +1,11 @@
-import { CurrentMeetingResponseSchema, type CurrentMeeting, type CurrentMeetingResponse } from '@meeting/contracts';
 import { ArrowRight, CircleHelp, Globe2, Link2, LockKeyhole, Monitor, Plus, RefreshCw, Settings2, Smartphone, Video } from 'lucide-react';
-import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { type FormEvent, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import { apiRequest } from '../api/client.js';
 import { checkClientUpdate, useClientHost } from '../client/client-host.js';
 import { useI18n } from '../i18n/i18n.js';
 import { parseClientMeetingInput } from './client-meeting-input.js';
+import { useOpenMeetings } from './use-open-meetings.js';
 import './client-workspace-page.css';
 
 const words = {
@@ -17,9 +16,9 @@ const words = {
     inputPlaceholder: 'Paste a meeting link or ID', joinButton: 'Join meeting', beforeJoin: 'You can choose your name and check your devices before joining.',
     inputError: 'Enter a valid meeting ID or a meeting link from this Babagan site.',
     create: 'Start a meeting', createDetail: 'Choose a name for your room, then share its invitation.', createButton: 'Create meeting',
-    current: 'Current meeting', refresh: 'Refresh current meeting', loading: 'Looking for a current meeting…',
+    current: 'Open meetings', refresh: 'Refresh open meetings', loading: 'Looking for open meetings…',
     empty: 'No meeting is open right now', emptyDetail: 'Join using an invitation above, or create a room when you are ready.',
-    lookupError: 'The current meeting could not be loaded.', retry: 'Try again',
+    lookupError: 'Open meetings could not be loaded.', retry: 'Try again',
     created: 'Ready to join', active: 'In progress', grace: 'Waiting for participants', password: 'Password required', full: 'Meeting full', enter: 'Open meeting',
     deviceHeading: 'This device', capabilityPending: 'Sharing capability not confirmed', capabilityPendingDetail: 'The client has not reported its sharing capabilities. You can still open a meeting to continue.',
     windowsCapture: 'Native Windows screen capture', windowsCaptureDetail: 'The client supports native capture. Your sharing session starts only when you choose to share in a meeting.',
@@ -37,9 +36,9 @@ const words = {
     inputPlaceholder: '粘贴会议链接或 ID', joinButton: '加入会议', beforeJoin: '进入后可填写昵称、检查设备，再确认加入。',
     inputError: '请输入有效的会议 ID，或当前 Babagan 站点的会议链接。',
     create: '发起新会议', createDetail: '为会议起个名字，然后把邀请分享给其他人。', createButton: '创建会议',
-    current: '当前会议', refresh: '刷新当前会议', loading: '正在查找当前会议…',
+    current: '开放中的会议', refresh: '刷新开放会议', loading: '正在查找开放会议…',
     empty: '目前没有开放的会议', emptyDetail: '可以在上方粘贴邀请加入，或准备好后创建会议。',
-    lookupError: '暂时无法读取当前会议。', retry: '重试',
+    lookupError: '暂时无法读取开放会议。', retry: '重试',
     created: '等待加入', active: '进行中', grace: '等待成员返回', password: '需要会议密码', full: '会议已满', enter: '进入会议',
     deviceHeading: '本机能力', capabilityPending: '共享能力尚未确认', capabilityPendingDetail: '客户端尚未返回共享能力信息。可以先打开会议，开始共享时再检查。',
     windowsCapture: 'Windows 本机屏幕采集', windowsCaptureDetail: '客户端支持本机采集。只有在会议里主动选择共享，才会开始采集画面。',
@@ -52,8 +51,6 @@ const words = {
   },
 } as const;
 
-type CurrentState = { kind: 'loading' | 'empty' | 'error' } | { kind: 'meeting'; meeting: CurrentMeeting; path: string };
-
 export function ClientWorkspacePage() {
   const { locale, t } = useI18n();
   const text = words[locale];
@@ -61,35 +58,8 @@ export function ClientWorkspacePage() {
   const navigate = useNavigate();
   const [meetingInput, setMeetingInput] = useState('');
   const [inputInvalid, setInputInvalid] = useState(false);
-  const [current, setCurrent] = useState<CurrentState>({ kind: 'loading' });
+  const open = useOpenMeetings();
   const input = useRef<HTMLInputElement>(null);
-  const activeRequest = useRef<AbortController | undefined>(undefined);
-  const generation = useRef(0);
-
-  const loadCurrent = useCallback(async () => {
-    activeRequest.current?.abort();
-    const abort = new AbortController(); activeRequest.current = abort;
-    const request = ++generation.current;
-    setCurrent({ kind: 'loading' });
-    try {
-      const response = await apiRequest<CurrentMeetingResponse>('/meetings/current', CurrentMeetingResponseSchema, { signal: abort.signal });
-      if (abort.signal.aborted || request !== generation.current) return;
-      if (!response.meeting) { setCurrent({ kind: 'empty' }); return; }
-      // Construct a local route from the validated ID; never trust an API-provided join URL.
-      const target = parseClientMeetingInput(response.meeting.slug, window.location.origin);
-      if (!target) throw new Error('Invalid current meeting identifier');
-      setCurrent({ kind: 'meeting', meeting: response.meeting, path: target.path });
-    } catch {
-      if (!abort.signal.aborted && request === generation.current) setCurrent({ kind: 'error' });
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadCurrent();
-    const onVisible = () => { if (!document.hidden) void loadCurrent(); };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => { generation.current++; activeRequest.current?.abort(); document.removeEventListener('visibilitychange', onVisible); };
-  }, [loadCurrent]);
 
   function join(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -149,23 +119,25 @@ export function ClientWorkspacePage() {
       <section className="client-workspace-create" aria-labelledby="client-create-heading">
         <span className="client-workspace-icon"><Plus size={22} aria-hidden="true" /></span>
         <h2 id="client-create-heading">{text.create}</h2><p>{text.createDetail}</p>
-        <Link className="client-workspace-create-button" to="/create"><Plus size={17} aria-hidden="true" />{text.createButton}</Link>
+        {open.atCapacity ? <><button type="button" className="client-workspace-create-button" disabled><Plus size={17} aria-hidden="true" />{text.createButton}</button><p className="client-workspace-capacity-note">{t('error.MEETING_LIMIT_REACHED')}</p></>
+          : <Link className="client-workspace-create-button" to="/create"><Plus size={17} aria-hidden="true" />{text.createButton}</Link>}
       </section>
 
-      <section className="client-workspace-current" aria-labelledby="client-current-heading" aria-busy={current.kind === 'loading'}>
-        <div className="client-workspace-panel-heading"><h2 id="client-current-heading">{text.current}</h2>
-          <button type="button" className="client-workspace-icon-button" aria-label={text.refresh} title={text.refresh} disabled={current.kind === 'loading'} onClick={() => void loadCurrent()}><RefreshCw size={17} aria-hidden="true" /></button>
+      <section className="client-workspace-current" aria-labelledby="client-current-heading" aria-busy={open.loading}>
+        <div className="client-workspace-panel-heading"><div><h2 id="client-current-heading">{text.current}</h2>{open.loaded && <p className="client-workspace-capacity">{t('open.capacity', { count: open.meetings.length, max: open.maxOpenMeetings })}</p>}</div>
+          <button type="button" className="client-workspace-icon-button" aria-label={text.refresh} title={text.refresh} disabled={open.loading} onClick={() => void open.refresh()}><RefreshCw size={17} aria-hidden="true" /></button>
         </div>
-        {current.kind === 'loading' && <p className="client-workspace-loading" role="status">{text.loading}</p>}
-        {current.kind === 'empty' && <div className="client-workspace-empty"><Video size={28} aria-hidden="true" /><h3>{text.empty}</h3><p>{text.emptyDetail}</p></div>}
-        {current.kind === 'error' && <div className="client-workspace-load-error"><p role="alert">{text.lookupError}</p><button type="button" className="secondary" onClick={() => void loadCurrent()}>{text.retry}</button></div>}
-        {current.kind === 'meeting' && <article className="client-workspace-meeting">
-          <div className="client-workspace-meeting-info"><span className="client-workspace-meeting-state">{text[current.meeting.status]}</span><h3>{current.meeting.name}</h3>
-            {current.meeting.requiresPassword && <p><LockKeyhole size={14} aria-hidden="true" />{text.password}</p>}
+        {open.loading && !open.loaded && <p className="client-workspace-loading" role="status">{text.loading}</p>}
+        {open.loaded && !open.meetings.length && <div className="client-workspace-empty"><Video size={28} aria-hidden="true" /><h3>{text.empty}</h3><p>{text.emptyDetail}</p></div>}
+        {open.failed && <div className="client-workspace-load-error"><p role="alert">{text.lookupError}</p><button type="button" className="secondary" onClick={() => void open.refresh()}>{text.retry}</button></div>}
+        {open.meetings.map(meeting => <article className="client-workspace-meeting" key={meeting.slug} aria-label={meeting.name}>
+          <div className="client-workspace-meeting-info"><span className="client-workspace-meeting-state">{text[meeting.status]}</span><h3>{meeting.name}</h3>
+            {meeting.requiresPassword && <p><LockKeyhole size={14} aria-hidden="true" />{text.password}</p>}
+            {meeting.unavailable && <p>{t('open.unavailableHint')}</p>}
           </div>
-          {current.meeting.isFull ? <button type="button" className="secondary" disabled>{text.full}</button>
-            : <Link className="client-workspace-meeting-link" to={current.path}>{text.enter}<ArrowRight size={17} aria-hidden="true" /></Link>}
-        </article>}
+          {meeting.unavailable || meeting.isFull ? <button type="button" className="secondary" disabled>{meeting.unavailable ? t('open.unavailable') : text.full}</button>
+            : <Link className="client-workspace-meeting-link" to={`/m/${meeting.slug}`}>{text.enter}<ArrowRight size={17} aria-hidden="true" /></Link>}
+        </article>)}
       </section>
 
       <aside className="client-workspace-device" aria-labelledby="client-device-heading">

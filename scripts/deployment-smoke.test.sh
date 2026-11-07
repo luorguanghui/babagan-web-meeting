@@ -13,7 +13,7 @@ printf '%s\n' "$*" >>"$MOCK_DOCKER_LOG"
 case "$*" in
   *'deployment-smoke-session-cli.js create'*)
     printf '%s\n' 'SMOKE_MEETING_SLUG=abcdefghijklmnopqrstuvwx'
-    printf '%s\n' 'SMOKE_PARTICIPANT_COOKIE=wm_participant=signed%2Fcookie.value'
+    printf 'SMOKE_PARTICIPANT_COOKIE=%s\n' "${MOCK_COOKIE:-__Host-wm_participant_0123456789abcdef0123456789abcdef=signed%2Fcookie.value}"
     printf '%s\n' 'SMOKE_LIVEKIT_TOKEN=fresh.header.signature'
     ;;
   *'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx'*) ;;
@@ -76,7 +76,7 @@ grep -Fq 'deployment-smoke-session-cli.js create' "$temp_dir/docker.log"
 grep -Fq -- '-e DATABASE_PATH=/data/meetings.sqlite' "$temp_dir/docker.log"
 grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log"
 grep -Fqx 'slug=abcdefghijklmnopqrstuvwx' "$temp_dir/smoke.log"
-grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
+grep -Fqx 'cookie=__Host-wm_participant_0123456789abcdef0123456789abcdef=signed%2Fcookie.value' "$temp_dir/smoke.log"
 grep -Fqx 'provider=coturn' "$temp_dir/smoke.log"
 grep -Fqx 'requested=coturn' "$temp_dir/smoke.log"
 grep -Fqx 'stun=stun:stun.example.com:3478' "$temp_dir/smoke.log"
@@ -111,5 +111,21 @@ if SMOKE_SHOULD_FAIL=1 run_smoke; then
 fi
 grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log" \
   || { echo 'failed smoke did not clean its disposable meeting' >&2; exit 1; }
+
+# Legacy API images remain verifiable during a guarded rollback.
+: >"$temp_dir/smoke.log"
+MOCK_COOKIE=wm_participant=signed%2Fcookie.value run_smoke >/dev/null
+grep -Fqx 'cookie=wm_participant=signed%2Fcookie.value' "$temp_dir/smoke.log"
+
+# Invalid metadata must not leave the already-created probe occupying a slot.
+: >"$temp_dir/docker.log"
+: >"$temp_dir/smoke.log"
+if MOCK_COOKIE=invalid run_smoke; then
+  echo 'invalid probe metadata was accepted' >&2
+  exit 1
+fi
+grep -Fq 'deployment-smoke-session-cli.js delete abcdefghijklmnopqrstuvwx' "$temp_dir/docker.log" \
+  || { echo 'invalid probe metadata left its disposable meeting behind' >&2; exit 1; }
+[[ ! -s "$temp_dir/smoke.log" ]] || { echo 'invalid probe metadata reached network smoke' >&2; exit 1; }
 
 echo 'deployment authenticated smoke regression checks passed'

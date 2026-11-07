@@ -7,6 +7,7 @@ import { authenticateMeetingPassword, Argon2PasswordHasher } from '../src/securi
 import {
   hashSessionToken,
   hostCookie,
+  meetingSessionCookieName,
   participantCookie,
   setHostSessionCookie,
   setParticipantSessionCookie
@@ -80,31 +81,32 @@ describe('session tokens and cookies', () => {
     await app.register(cookie, { secret: 'a'.repeat(32) });
     const sessions = new FakeSessionRepository();
     app.get('/host', async (_request, reply) => {
-      setHostSessionCookie(reply, 'host-session');
+      setHostSessionCookie(reply, 'host-session', 'test-meeting', 10_000);
       return { ok: true };
     });
     app.get('/participant', async (_request, reply) => {
-      setParticipantSessionCookie(reply, 'participant-session');
+      setParticipantSessionCookie(reply, 'participant-session', 'test-meeting', 10_000);
       return { ok: true };
     });
     app.get('/host/authorized', async (request) => {
-      requireHostSession(request, sessions, 1_000, 'meeting-1');
+      requireHostSession(request, sessions, 1_000, 'meeting-1', 'test-meeting');
       return { ok: true };
     });
     app.get('/participant/authorized', async (request) => {
-      requireParticipantSession(request, sessions, 1_000, 'meeting-1');
+      requireParticipantSession(request, sessions, 1_000, 'meeting-1', 'test-meeting');
       return { ok: true };
     });
 
     const host = await app.inject('/host');
     const participant = await app.inject('/participant');
 
-    expect(host.headers['set-cookie']).toMatch(new RegExp(`^${hostCookie}=`));
+    expect(host.headers['set-cookie']).toMatch(new RegExp(`^${meetingSessionCookieName(hostCookie, 'test-meeting')}=`));
     expect(host.headers['set-cookie']).toContain('HttpOnly');
     expect(host.headers['set-cookie']).toContain('Secure');
     expect(host.headers['set-cookie']).toContain('SameSite=Strict');
     expect(host.headers['set-cookie']).toContain('Path=/');
-    expect(participant.headers['set-cookie']).toMatch(new RegExp(`^${participantCookie}=`));
+    expect(host.headers['set-cookie']).toContain('Expires=' + new Date(10_000).toUTCString());
+    expect(participant.headers['set-cookie']).toMatch(new RegExp(`^${meetingSessionCookieName(participantCookie, 'test-meeting')}=`));
     expect(participant.headers['set-cookie']).toContain('HttpOnly');
     expect(participant.headers['set-cookie']).toContain('Secure');
     expect(participant.headers['set-cookie']).toContain('SameSite=Strict');
@@ -123,7 +125,7 @@ describe('session tokens and cookies', () => {
     const app = Fastify();
     await app.register(cookie, { secret: 'a'.repeat(32) });
     app.get('/protected', async (request) => {
-      await requireHostSession(request, new FakeSessionRepository(), 1_000, 'meeting-1');
+      await requireHostSession(request, new FakeSessionRepository(), 1_000, 'meeting-1', 'test-meeting');
       return { ok: true };
     });
 
@@ -142,8 +144,8 @@ describe('session tokens and cookies', () => {
     const app = Fastify();
     await app.register(cookie, { secret: 'a'.repeat(32) });
     const repo = new FakeSessionRepository();
-    app.get('/host', async (request) => requireHostSession(request, repo, 1_000, 'meeting-2'));
-    app.get('/participant', async (request) => requireParticipantSession(request, repo, 1_000, 'meeting-2'));
+    app.get('/host', async (request) => requireHostSession(request, repo, 1_000, 'meeting-2', 'other-meeting'));
+    app.get('/participant', async (request) => requireParticipantSession(request, repo, 1_000, 'meeting-2', 'other-meeting'));
 
     const hostResponse = await app.inject({
       url: '/host', headers: { cookie: `${hostCookie}=${app.signCookie('host-session')}` }

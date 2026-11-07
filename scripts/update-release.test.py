@@ -7,6 +7,7 @@ import hashlib
 import os
 import sys
 import subprocess
+import sqlite3
 from types import SimpleNamespace
 from contextlib import closing
 import unittest
@@ -150,6 +151,89 @@ class UpdateTests(unittest.TestCase):
             self.assertFalse(evidence['applicationImagesRestored'])
             for name in ['activation.log', 'rollback.log']:
                 self.assertIn('diagnostics', (release / name).read_text())
+
+    def test_api_rollback_is_blocked_for_each_open_status_without_losing_original_failure(self):
+        for statuses in [('created',), ('active', 'active', 'active'), ('grace',)]:
+            with self.subTest(statuses=statuses):
+                self.run_active_room_rollback(web_only=False, statuses=statuses)
+
+    def test_web_only_rollback_preserves_open_rooms_and_database(self):
+        self.run_active_room_rollback(web_only=True, statuses=('active', 'created', 'grace'))
+
+    def test_api_rollback_guard_allows_empty_or_terminal_only_database(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / 'meetings.sqlite'
+            with closing(sqlite3.connect(database)) as db:
+                db.execute('create table meetings(status text)')
+                db.commit()
+                updater.require_safe_rollback(['api', 'web'], database, lambda: None)
+                db.executemany('insert into meetings values(?)', [('ended',), ('expired',)])
+                db.commit()
+                updater.require_safe_rollback(['api', 'web'], database, lambda: None)
+
+    def test_rollback_guard_checks_configuration_before_database_for_both_update_modes(self):
+        for selected in (['web'], ['api', 'web']):
+            with self.subTest(selected=selected), patch.object(updater, 'require_no_meeting') as meeting_check:
+                def changed():
+                    raise RuntimeError('configuration changed')
+                with self.assertRaisesRegex(RuntimeError, 'configuration changed'):
+                    updater.require_safe_rollback(selected, Path('unused.sqlite'), changed)
+                meeting_check.assert_not_called()
+
+    def run_active_room_rollback(self, web_only, statuses):
+        with tempfile.TemporaryDirectory() as directory:
+            release = Path(directory)
+            database = release / 'meetings.sqlite'
+            with closing(sqlite3.connect(database)) as db:
+                db.execute('create table meetings(status text)')
+                db.commit()
+            pending = release / 'pending.json'
+            pending.write_text('{}')
+            selected = ['web'] if web_only else ['api', 'web']
+            original = RuntimeError('authenticated verification failed')
+            calls = []
+            snapshot = None
+            def verify():
+                nonlocal snapshot
+                # Model real user rooms admitted after candidate activation.
+                with closing(sqlite3.connect(database)) as db:
+                    db.executemany('insert into meetings values(?)', [(status,) for status in statuses])
+                    db.commit()
+                snapshot = database.read_bytes()
+                raise original
+            with patch.object(updater, 'command', side_effect=lambda args, **kwargs: calls.append(args)), \
+                    patch.object(updater, 'configuration_snapshot', return_value={}) as configuration, \
+                    patch.object(updater, 'verify_containers') as restored:
+                with self.assertRaises(RuntimeError) as raised:
+                    updater.activate(['docker', 'compose'], selected, release / 'rollback.sh', verify, release,
+                                     verify_rollback=lambda: restored(),
+                                     rollback_guard=lambda: updater.require_safe_rollback(
+                                         selected, database, lambda: configuration()))
+            self.assertIs(raised.exception, original)
+            configuration.assert_called_once()
+            rollback_calls = [args for args in calls if args[0] == 'bash']
+            self.assertEqual(len(rollback_calls), int(web_only))
+            self.assertEqual(restored.call_count, int(web_only))
+            self.assertEqual(database.read_bytes(), snapshot)
+            self.assertTrue(pending.exists())
+            with closing(sqlite3.connect(database)) as db:
+                self.assertEqual(db.execute('select status from meetings').fetchall(), [(status,) for status in statuses])
+            failure = json.loads((release / 'failure.json').read_text())
+            self.assertEqual(failure['activationOrVerificationError'], str(original))
+            self.assertEqual(failure['rollbackAttempted'], web_only)
+            self.assertEqual(failure['applicationImagesRestored'], web_only)
+            if not web_only:
+                self.assertTrue(failure['rollbackBlocked'])
+                self.assertIn('open meeting exists', failure['rollbackError'])
+                self.assertIsNotNone(raised.exception.__cause__)
+
+    @unittest.skipUnless(os.name == 'posix', 'full updater fixture requires POSIX mode-600 files')
+    def test_complete_api_update_preserves_candidate_when_room_opens_during_verification(self):
+        self.run_complete_update(web_only=False, scenario='meeting-during-verification')
+
+    @unittest.skipUnless(os.name == 'posix', 'full updater fixture requires POSIX mode-600 files')
+    def test_complete_web_update_rolls_back_when_room_opens_during_verification(self):
+        self.run_complete_update(web_only=True, scenario='meeting-during-verification')
 
     def test_complete_web_update_records_backup_preserves_overlays_and_skips_api_migration(self):
         self.run_complete_update(web_only=True)
@@ -397,6 +481,11 @@ class UpdateTests(unittest.TestCase):
                     return 'sha256:api-new' if 'meeting-api:' in args[3] else 'sha256:web-new'
                 if args[:1] == ['bash'] and args[1].endswith('deployment-smoke.sh') and scenario == 'smoke-change':
                     smoke_changed = True
+                if args[:1] == ['bash'] and args[1].endswith('deployment-smoke.sh') and scenario == 'meeting-during-verification':
+                    with closing(sqlite3.connect(database)) as db:
+                        db.executemany('insert into meetings values(?)', [('created',), ('active',), ('grace',)])
+                        db.commit()
+                    raise RuntimeError('authenticated verification failed')
                 if args[:3] == ['docker', 'run', '--rm'] and scenario == 'migration-failure':
                     raise RuntimeError('migration failed')
                 if args[:3] == ['docker', 'run', '--rm'] and scenario == 'migration-change':
@@ -412,6 +501,30 @@ class UpdateTests(unittest.TestCase):
                 return b'<script type="module" src="/assets/index-new.js"></script>' if args[-1].endswith('/') else (b'stale public JavaScript' if mismatch else asset)
             options = SimpleNamespace(ref='main', commit=None, web_only=web_only)
             with patch.object(updater, 'command', side_effect=run), patch.object(updater.subprocess, 'check_output', side_effect=fetch):
+                if scenario == 'meeting-during-verification':
+                    with self.assertRaisesRegex(RuntimeError, '^authenticated verification failed$'):
+                        updater.perform_update(options, app, env, state)
+                    self.assertEqual(activated, not web_only)
+                    rollback_calls = [args for args in calls if args[:1] == ['bash'] and args[1].endswith('rollback.sh')]
+                    self.assertEqual(len(rollback_calls), int(web_only))
+                    pending = json.loads((state / 'update-pending.json').read_text())
+                    release = Path(pending['releaseDirectory'])
+                    failure = json.loads((release / 'failure.json').read_text())
+                    self.assertEqual(failure['error'], 'authenticated verification failed')
+                    self.assertEqual(failure['activationOrVerificationError'], failure['error'])
+                    self.assertEqual(failure['rollbackAttempted'], web_only)
+                    self.assertEqual(failure['applicationImagesRestored'], web_only)
+                    self.assertFalse(failure['databaseAutomaticallyRestored'])
+                    if not web_only:
+                        self.assertTrue(failure['rollbackBlocked'])
+                        self.assertIn('open meeting exists', failure['rollbackError'])
+                    with closing(sqlite3.connect(database)) as db:
+                        self.assertEqual(db.execute('select status from meetings').fetchall(), [('created',), ('active',), ('grace',)])
+                    with closing(sqlite3.connect(pending['databaseBackup'])) as db:
+                        self.assertEqual(db.execute('select count(*) from meetings').fetchone()[0], 0)
+                    self.assertEqual(json.loads((state / 'current-update.json').read_text())['commit'], old_commit)
+                    self.assertTrue((release / 'override.yml').is_file())
+                    return
                 if scenario == 'smoke-change':
                     with self.assertRaisesRegex(RuntimeError, 'both failed'):
                         updater.perform_update(options, app, env, state)
@@ -419,7 +532,7 @@ class UpdateTests(unittest.TestCase):
                     self.assertTrue((state / 'update-pending.json').exists())
                     return
                 if scenario == 'post-activation-change':
-                    with self.assertRaisesRegex(RuntimeError, 'rollback'):
+                    with self.assertRaisesRegex(RuntimeError, 'configuration changed'):
                         updater.perform_update(options, app, env, state)
                     self.assertTrue(activated)
                     self.assertFalse(any(args[:1] == ['bash'] and args[1].endswith('rollback.sh') for args in calls))

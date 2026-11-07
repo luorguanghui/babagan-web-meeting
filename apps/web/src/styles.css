@@ -87,6 +87,9 @@ output { background: #fbf3e9; border-radius: 8px; overflow-wrap: anywhere; paddi
 .task-context .lede { max-width: 28rem; }
 .task-context-content { display: grid; gap: 1rem; margin-top: 2rem; }
 .task-context-content:empty { display: none; }
+.join-selected-meeting { border-top: 1px solid var(--border); margin-top: 1.75rem; padding-top: 1.25rem; }
+.join-selected-meeting .eyebrow { margin-bottom: .45rem; }
+.join-selected-meeting h2 { font-size: 1.35rem; line-height: 1.4; }
 .task-surface { align-content: center; display: grid; min-width: 0; padding: clamp(1.5rem, 4vw, 3.5rem); }
 .task-surface form > button[type='submit'] { margin-top: .4rem; min-height: 48px; }
 .panel { background: #fff; border: 1px solid var(--border); border-radius: 16px; max-width: 38rem; padding: clamp(1.5rem, 4vw, 3rem); width: 100%; }

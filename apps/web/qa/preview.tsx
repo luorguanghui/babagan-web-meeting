@@ -211,6 +211,10 @@ window.fetch = async (input, init) => {
     slug, name: createdMeetingName, status: 'created',
     joinUrl: `${location.origin}/qa/preview.html?scene=lobby`, requiresPassword: false, isFull: false
   } : null });
+  if (url.pathname === '/api/v1/meetings/open') return json({ meetings: createdMeeting ? [{
+    slug, name: createdMeetingName, status: 'created',
+    joinUrl: `${location.origin}/qa/preview.html?scene=lobby`, requiresPassword: false, isFull: false
+  }] : [], maxOpenMeetings: 3 });
   if (url.pathname === '/api/v1/meetings' && method === 'POST') {
     const body = JSON.parse(String(init?.body ?? '{}')) as { name?: string };
     createdMeeting = true;

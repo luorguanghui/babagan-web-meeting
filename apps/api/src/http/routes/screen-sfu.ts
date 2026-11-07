@@ -3,7 +3,7 @@ import { Type, type TSchema } from '@sinclair/typebox';
 import { Value } from '@sinclair/typebox/value';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { domainError } from '../../domain/errors.js';
-import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
+import { participantCookie, readMeetingSessionCookie } from '../../security/session-token.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import { SessionAuthenticationError } from '../auth.js';
@@ -23,7 +23,7 @@ export function registerScreenSfuRoutes(app: FastifyInstance, dependencies: { pa
   }
   function participant(request: FastifyRequest) {
     const slug = (request.params as { slug: string }).slug;
-    const raw = readSignedSessionCookie(request, participantCookie);
+    const raw = readMeetingSessionCookie(request, participantCookie, slug);
     if (!raw) throw new SessionAuthenticationError();
     return { slug, owner: dependencies.participants.authenticate(raw, slug) };
   }

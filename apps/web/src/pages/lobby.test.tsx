@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -41,7 +41,7 @@ async function renderValidLobby() {
 describe('meeting creation', () => {
   it('places creation context and the form in separate task regions', async () => {
     installBrowserFakes();
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({ meeting: null })));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(success({ meetings: [], maxOpenMeetings: 3 })));
     renderAt('/create');
 
     expect(await screen.findByRole('complementary')).toHaveTextContent('short-lived room');
@@ -76,8 +76,8 @@ describe('meeting creation', () => {
     installBrowserFakes();
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(window.navigator, 'clipboard', { configurable: true, value: { writeText } });
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/current')
-      ? success({ meeting: null })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/open')
+      ? success({ meetings: [], maxOpenMeetings: 3 })
       : success({ slug, joinUrl: `https://meet.example/m/${slug}` }, 201)));
     renderAt('/create');
 
@@ -93,8 +93,8 @@ describe('meeting creation', () => {
 
   it('shows the API error without persisting the admin password', async () => {
     installBrowserFakes();
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/current')
-      ? success({ meeting: null })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/meetings/open')
+      ? success({ meetings: [], maxOpenMeetings: 3 })
       : success({
         error: { code: 'ADMIN_AUTH_FAILED', message: 'Authentication failed', correlationId: 'corr-123' }
       }, 401)));
@@ -114,15 +114,15 @@ describe('meeting creation', () => {
     let ended = false;
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url.endsWith('/meetings/current')) return success({
-        meeting: ended ? null : {
+      if (url.endsWith('/meetings/open')) return success({
+        meetings: ended ? [] : [{
           slug,
           name: 'Design review',
           status: 'active',
           joinUrl: `https://meet.example/meetings/${slug}`,
           requiresPassword: true,
           isFull: false
-        }
+        }], maxOpenMeetings: 3
       });
       if (url.endsWith(`/meetings/${slug}/admin-end`) && init?.method === 'POST') {
         ended = true;
@@ -135,7 +135,7 @@ describe('meeting creation', () => {
 
     expect(await screen.findByRole('heading', { name: 'Current meeting' })).toBeVisible();
     expect(screen.getByRole('link', { name: 'Join current meeting' }))
-      .toHaveAttribute('href', `https://meet.example/meetings/${slug}`);
+      .toHaveAttribute('href', `/m/${slug}`);
     await userEvent.type(screen.getByLabelText('Admin password to end meeting'), 'admin-secret');
     await userEvent.click(screen.getByRole('button', { name: 'End current meeting' }));
 
@@ -195,8 +195,9 @@ describe('join lobby', () => {
   it('hides a validated lobby immediately when navigating to another meeting slug', async () => {
     installBrowserFakes();
     const nextSlug = 'another-meeting-slug-long-enough';
+    let resolveNext!: (response: Response) => void;
     const fetchMock = vi.fn((input: RequestInfo | URL) => String(input).endsWith(nextSlug)
-      ? new Promise<Response>(() => undefined)
+      ? new Promise<Response>(resolve => { resolveNext = resolve; })
       : Promise.resolve(success({ name: 'Daily', status: 'created', requiresPassword: true, isFull: false })));
     vi.stubGlobal('fetch', fetchMock);
     function SwitchMeeting() {
@@ -205,11 +206,36 @@ describe('join lobby', () => {
     }
     render(<MemoryRouter initialEntries={[`/m/${slug}`]}><SwitchMeeting /><App /></MemoryRouter>);
     expect(await screen.findByLabelText('Nickname')).toBeVisible();
+    expect(screen.getByRole('heading', { name: 'Daily' })).toBeVisible();
 
     await userEvent.click(screen.getByRole('button', { name: 'Switch meeting' }));
 
     expect(screen.queryByLabelText('Nickname')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Join muted' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Daily' })).not.toBeInTheDocument();
+    await act(async () => resolveNext(success({ name: 'Second room', status: 'active', requiresPassword: false, isFull: false })));
+    expect(await screen.findByRole('heading', { name: 'Second room' })).toBeVisible();
+    expect(screen.getByRole('region', { name: 'You are joining' })).toHaveTextContent('Second room');
+    expect(screen.getByRole('button', { name: 'Join muted' })).toBeVisible();
+  });
+
+  it('does not replace the selected second room name with a late response for the first room', async () => {
+    installBrowserFakes();
+    const nextSlug = 'another-meeting-slug-long-enough';
+    let resolveFirst!: (response: Response) => void;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => String(input).endsWith(nextSlug)
+      ? Promise.resolve(success({ name: 'Second room', status: 'active', requiresPassword: false, isFull: false }))
+      : new Promise<Response>(resolve => { resolveFirst = resolve; })));
+    function SwitchMeeting() {
+      const navigate = useNavigate();
+      return <button type="button" onClick={() => navigate(`/m/${nextSlug}`)}>Switch meeting</button>;
+    }
+    render(<MemoryRouter initialEntries={[`/m/${slug}`]}><SwitchMeeting /><App /></MemoryRouter>);
+    await userEvent.click(screen.getByRole('button', { name: 'Switch meeting' }));
+    expect(await screen.findByRole('heading', { name: 'Second room' })).toBeVisible();
+    await act(async () => resolveFirst(success({ name: 'Late first room', status: 'active', requiresPassword: false, isFull: false })));
+    expect(screen.getByRole('region', { name: 'You are joining' })).toHaveTextContent('Second room');
+    expect(screen.queryByRole('heading', { name: 'Late first room' })).not.toBeInTheDocument();
   });
 
   it('keeps the mobile join form before a collapsed device check', async () => {

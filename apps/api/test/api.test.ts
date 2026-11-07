@@ -2,6 +2,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { AddressInfo } from 'node:net';
+import { WebSocket } from 'ws';
 
 import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -23,6 +25,9 @@ import { KeyedMutex } from '../src/services/keyed-mutex.js';
 import { ParticipantApplicationService } from '../src/services/participant-application-service.js';
 import { startManagedServer } from '../src/server.js';
 import { FakeClock } from './fakes/fake-clock.js';
+import { CloudflareSfuService } from '../src/services/cloudflare-sfu.js';
+import type { CloudflareSfuApi, SfuTrack } from '../src/services/cloudflare-sfu-client.js';
+import { meetingSessionCookieName, hostCookie, participantCookie } from '../src/security/session-token.js';
 
 describe('meeting HTTP API', () => {
   let fixture: ApiFixture;
@@ -43,7 +48,7 @@ describe('meeting HTTP API', () => {
       slug: 'bqG-uP7Yz5mR9vK2xN4dQw',
       joinUrl: 'https://meet.example.test/meetings/bqG-uP7Yz5mR9vK2xN4dQw'
     });
-    expect(response.headers['set-cookie']).toContain('wm_host=');
+    expect(response.headers['set-cookie']).toMatch(/^__Host-wm_host_[a-f0-9]{32}=/);
     expect(response.headers['set-cookie']).toContain('HttpOnly');
     expect(response.body).not.toContain('admin-secret');
     expect(response.body).not.toContain('join-secret');
@@ -73,7 +78,7 @@ describe('meeting HTTP API', () => {
       livekitUrl: 'wss://rtc.example.test/',
       permissions: { publishSources: ['microphone'] }
     });
-    expect(joined.headers['set-cookie']).toContain('wm_participant=');
+    expect(joined.headers['set-cookie']).toMatch(/^__Host-wm_participant_[a-f0-9]{32}=/);
     expect(joined.body).not.toContain('raw-participant-session');
     expect(joined.body).not.toContain('join-secret');
   });
@@ -97,6 +102,126 @@ describe('meeting HTTP API', () => {
     expect(response.body).not.toContain('join-secret');
     expect(response.body).not.toContain('meeting-id');
   });
+
+  it('lists all three open rooms while preserving the singular legacy endpoint and rejecting the fourth', async () => {
+    const rooms = await Promise.all(Array.from({ length: 3 }, () => fixture.createMeeting()));
+    const response = await fixture.app.inject('/api/v1/meetings/open');
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.headers['cache-control']).toBe('no-store');
+    expect(response.json().maxOpenMeetings).toBe(3);
+    expect(response.json().meetings.map((room: { slug: string }) => room.slug)).toEqual(rooms.map(room => room.slug));
+    expect(response.body).not.toMatch(/raw-host|tokenHash|passwordHash|participant/);
+    const current = (await fixture.app.inject('/api/v1/meetings/current')).json();
+    expect(Object.keys(current)).toEqual(['meeting']);
+    expect(current.meeting).toEqual(response.json().meetings[0]);
+    const rejected = await fixture.app.inject({ method: 'POST', url: '/api/v1/meetings', headers: { origin: config.publicBaseUrl.origin },
+      payload: { adminPassword: 'admin-secret', name: 'Fourth' } });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toMatchObject({ error: { code: 'MEETING_LIMIT_REACHED' } });
+    expect(rejected.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('keeps one unavailable room in the list without masking two healthy rooms or freeing its slot', async () => {
+    const rooms = await Promise.all(Array.from({ length: 3 }, () => fixture.createMeeting()));
+    const middle = fixture.db.prepare('SELECT id FROM meetings WHERE slug = ?').get(rooms[1]!.slug) as { id: string };
+    fixture.media.unavailableMeetings.add(middle.id);
+    const response = await fixture.app.inject('/api/v1/meetings/open');
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json().meetings).toHaveLength(3);
+    expect(response.json().meetings.map((room: { unavailable?: boolean }) => Boolean(room.unavailable))).toEqual([false, true, false]);
+    expect(response.json().meetings[1].slug).toBe(rooms[1]!.slug);
+  });
+
+  it('keeps host and participant authentication for three rooms in a single browser cookie jar', async () => {
+    const rooms = await Promise.all(Array.from({ length: 3 }, () => fixture.createMeeting()));
+    const members = await Promise.all(rooms.map((room, index) => fixture.join(room.slug, 'Member ' + index)));
+    const allCookies = [...rooms.map(room => cookiePair(room.setCookie)), ...members.map(member => cookiePair(member.headers['set-cookie']))];
+    expect(new Set(allCookies.map(pair => pair.split('=', 1)[0])).size).toBe(6);
+    const jar = allCookies.join('; ');
+    for (let index = 0; index < rooms.length; index++) {
+      const value = rooms[index]!.slug;
+      expect((await fixture.app.inject({ url: `/api/v1/meetings/${value}/host-session`, headers: { cookie: jar } })).statusCode).toBe(204);
+      const result = await fixture.modify('POST', `${value}/token`, jar);
+      expect(result.statusCode, result.body).toBe(200);
+      expect(result.json().participantIdentity).toBe(members[index]!.json().participantIdentity);
+      expect((await fixture.app.inject({ url: `/api/v1/meetings/${value}/ice-servers`, headers: { cookie: jar } })).statusCode).toBe(200);
+    }
+    const source = cookiePair(members[0]!.headers['set-cookie']);
+    const stolen = `${meetingSessionCookieName(participantCookie, rooms[1]!.slug)}=${source.slice(source.indexOf('=') + 1)}`;
+    expect((await fixture.modify('POST', `${rooms[1]!.slug}/token`, stolen)).statusCode).toBe(401);
+    const host = cookiePair(rooms[0]!.setCookie);
+    const stolenHost = `${meetingSessionCookieName(hostCookie, rooms[1]!.slug)}=${host.slice(host.indexOf('=') + 1)}`;
+    expect((await fixture.modify('POST', `${rooms[1]!.slug}/end`, stolenHost)).statusCode).toBe(401);
+    const left = await fixture.modify('POST', `${rooms[0]!.slug}/leave`, jar);
+    expect(left.statusCode, left.body).toBe(204);
+    expect(left.headers['set-cookie']).toBeUndefined(); // a delayed leave cannot delete a fresh same-room rejoin
+    expect((await fixture.modify('POST', `${rooms[0]!.slug}/token`, jar)).statusCode).toBe(401);
+    for (const room of rooms.slice(1)) expect((await fixture.modify('POST', `${room.slug}/token`, jar)).statusCode).toBe(200);
+  });
+
+  it('accepts legacy cookies only for their own room and fails closed on a corrupt scoped cookie', async () => {
+    const first = await fixture.createMeeting(); const second = await fixture.createMeeting();
+    const joined = await fixture.join(first.slug, 'Old client');
+    const participant = cookiePair(joined.headers['set-cookie']);
+    const legacy = `${participantCookie}=${participant.slice(participant.indexOf('=') + 1)}`;
+    expect((await fixture.modify('POST', `${first.slug}/token`, legacy)).statusCode).toBe(200);
+    expect((await fixture.modify('POST', `${second.slug}/token`, legacy)).statusCode).toBe(401);
+    const badNew = legacy + `; ${meetingSessionCookieName(participantCookie, first.slug)}=invalid`;
+    expect((await fixture.modify('POST', `${first.slug}/token`, badNew)).statusCode).toBe(401);
+    const host = cookiePair(first.setCookie);
+    const legacyHost = `${hostCookie}=${host.slice(host.indexOf('=') + 1)}`;
+    expect((await fixture.app.inject({ url: `/api/v1/meetings/${first.slug}/host-session`, headers: { cookie: legacyHost } })).statusCode).toBe(204);
+    expect((await fixture.app.inject({ url: `/api/v1/meetings/${second.slug}/host-session`, headers: { cookie: legacyHost } })).statusCode).toBe(401);
+  });
+
+  it('ends one room without crossing cookie, LiveKit, P2P or Cloudflare publication boundaries', async () => {
+    await fixture.close();
+    const upstream = new IsolatedSfuFake(); fixture = await createFixture({ sfuApi: upstream });
+    const rooms = await Promise.all(Array.from({ length: 3 }, () => fixture.createMeeting()));
+    const members = await Promise.all(rooms.map((room, index) => fixture.join(room.slug, 'Sharer ' + index)));
+    const jar = [...rooms.map(room => cookiePair(room.setCookie)), ...members.map(member => cookiePair(member.headers['set-cookie']))].join('; ');
+    const roomIds = rooms.map(room => (fixture.db.prepare('SELECT id FROM meetings WHERE slug = ?').get(room.slug) as { id: string }).id);
+    for (let index = 0; index < rooms.length; index++) {
+      const identity = members[index]!.json().participantIdentity as string;
+      fixture.media.identities.set(roomIds[index]!, new Set([identity]));
+      expect((await fixture.modify('PUT', `${rooms[index]!.slug}/share-grant`, jar, { participantIdentity: identity })).statusCode).toBe(204);
+    }
+    const publications: Array<{ sessionId: string; shareId: string }> = [];
+    for (const room of rooms) {
+      const publication = await fixture.modify('POST', `${room.slug}/screen-sfu/publish`, jar, { sessionDescription: { type: 'offer', sdp: 'v=0\r\n' }, tracks: [{ kind: 'video', mid: '0' }] });
+      expect(publication.statusCode, publication.body).toBe(200); publications.push(publication.json());
+      expect((await fixture.modify('POST', `${room.slug}/screen-sfu/publish/ready`, jar, { sessionId: publication.json().sessionId })).statusCode).toBe(204);
+    }
+    expect((await fixture.modify('DELETE', `${rooms[1]!.slug}/screen-sfu/sessions/${publications[0]!.sessionId}`, jar)).statusCode).toBe(403);
+    expect((await fixture.modify('POST', `${rooms[1]!.slug}/screen-sfu/subscribe`, jar, { shareId: publications[0]!.shareId })).statusCode).toBe(403);
+    await fixture.app.listen({ host: '127.0.0.1', port: 0 });
+    const port = (fixture.app.server.address() as AddressInfo).port;
+    const sockets: WebSocket[] = [];
+    try {
+      for (const room of rooms) {
+        const socket = new WebSocket(`ws://127.0.0.1:${port}/api/v1/meetings/${room.slug}/p2p`, { headers: { origin: config.publicBaseUrl.origin, cookie: jar } });
+        sockets.push(socket);
+        const welcome = await new Promise<{ type: string; peers: unknown[] }>((resolve, reject) => { socket.once('error', reject); socket.once('message', data => resolve(JSON.parse(String(data)))); });
+        expect(welcome.type).toBe('welcome'); expect(welcome.peers).toEqual([]);
+      }
+      const closed = new Promise<void>(resolve => sockets[0]!.once('close', () => resolve()));
+      const ended = await fixture.modify('POST', `${rooms[0]!.slug}/end`, jar);
+      expect(ended.statusCode, ended.body).toBe(204); await closed;
+      expect((ended.headers['set-cookie'] as string[]).map(value => value.split('=', 1)[0])).toEqual([
+        meetingSessionCookieName(hostCookie, rooms[0]!.slug), meetingSessionCookieName(participantCookie, rooms[0]!.slug)
+      ]);
+      expect(fixture.media.deletedRooms).toEqual([roomIds[0]]);
+      expect(upstream.closed).toEqual([publications[0]!.sessionId]);
+      expect(sockets.slice(1).every(socket => socket.readyState === WebSocket.OPEN)).toBe(true);
+      expect(fixture.p2p.listPeers(rooms[0]!.slug)).toEqual([]);
+      for (let index = 1; index < 3; index++) {
+        expect(fixture.p2p.listPeers(rooms[index]!.slug)).toHaveLength(1);
+        const status = await fixture.app.inject({ url: `/api/v1/meetings/${rooms[index]!.slug}/screen-sfu`, headers: { cookie: jar } });
+        expect(status.json().publication.shareId).toBe(publications[index]!.shareId);
+        expect((await fixture.modify('POST', `${rooms[index]!.slug}/token`, jar)).statusCode).toBe(200);
+      }
+    } finally { sockets.forEach(socket => socket.close()); }
+  }, 15_000);
 
   it('refreshes, lists and leaves only through the scoped participant cookie', async () => {
     const created = await fixture.createMeeting();
@@ -199,14 +324,15 @@ describe('meeting HTTP API', () => {
     expect((await fixture.modify('POST', `${created.slug}/end`, undefined)).statusCode).toBe(401);
   });
 
-  it('ends through the admin password endpoint without setting a host cookie', async () => {
+  it('ends through the admin password endpoint while only clearing this room credentials', async () => {
     const created = await fixture.createMeeting();
     const response = await fixture.modify('POST', `${created.slug}/admin-end`, undefined, {
       adminPassword: 'admin-secret'
     });
 
     expect(response.statusCode, response.body).toBe(204);
-    expect(response.headers['set-cookie']).toBeUndefined();
+    expect(response.headers['set-cookie']).toHaveLength(2);
+    expect((response.headers['set-cookie'] as string[]).every(value => value.includes('Max-Age=0'))).toBe(true);
     expect((await fixture.app.inject('/api/v1/meetings/current')).json()).toEqual({ meeting: null });
   });
 
@@ -477,7 +603,7 @@ interface ApiFixture {
   close(): Promise<void>;
 }
 
-async function createFixture(options: { meetingSummaryError?: Error } = {}): Promise<ApiFixture> {
+async function createFixture(options: { meetingSummaryError?: Error; sfuApi?: CloudflareSfuApi } = {}): Promise<ApiFixture> {
   const directory = mkdtempSync(join(tmpdir(), 'meeting-api-'));
   const db = createDatabase(join(directory, 'meetings.sqlite'));
   migrate(db);
@@ -506,7 +632,8 @@ async function createFixture(options: { meetingSummaryError?: Error } = {}): Pro
   const participants = new ParticipantApplicationService({ repository, media, clock, ids, config });
   const webhooks = new CapturingWebhookHandler();
   const p2p = new P2pRoomRegistry();
-  const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p });
+  const screenSfu = new CloudflareSfuService({ participants, registry: p2p, api: options.sfuApi });
+  const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu });
 
   const fixture: ApiFixture = {
     app, db, directory, media, p2p, webhooks,
@@ -545,7 +672,8 @@ const config: AppConfig = {
   livekitApiKey: 'key', livekitApiSecret: 'secret', adminPasswordHash: 'hash:admin-secret',
   cookieSecret: 'a'.repeat(32), databasePath: ':memory:', meetingTtlMs: 86_400_000,
   emptyGraceMs: 600_000, reconnectGraceMs: 30_000, reservationTtlMs: 60_000, maxParticipants: 5,
-  p2pStunUrls: ['stun:stun.example.test:3478']
+  p2pStunUrls: ['stun:stun.example.test:3478'], p2pTurnUrls: ['turn:turn.example.test:3478?transport=udp'],
+  p2pTurnSecret: 'b'.repeat(32), p2pTurnTtlSeconds: 600
 };
 
 class LiteralPasswordHasher implements PasswordHasher {
@@ -555,21 +683,24 @@ class LiteralPasswordHasher implements PasswordHasher {
 
 class ApiIds implements IdGenerator {
   private participant = 0;
+  private slugCount = 0;
   private tokenCount = 0;
   private uuidCount = 0;
   uuid(): string { return this.uuidCount++ === 0 ? 'meeting-id' : `host-${this.uuidCount}`; }
-  slug(): string { return 'bqG-uP7Yz5mR9vK2xN4dQw'; }
+  slug(): string { return 'bqG-uP7Yz5mR9vK2xN4dQw' + (this.slugCount++ === 0 ? '' : `-${this.slugCount}`); }
   token(): string { return this.tokenCount++ === 0 ? 'raw-host-session' : `raw-participant-session-${this.tokenCount}`; }
   participantIdentity(): string { return `participant-${++this.participant}`; }
 }
 
 class ApiMediaFake implements MediaService {
   readonly identities = new Map<string, Set<string>>();
+  readonly unavailableMeetings = new Set<string>();
+  readonly deletedRooms: string[] = [];
   readonly sourceUpdates: Array<{ identity: string; sources: PublishSource[] }> = [];
   readonly removeAttempts: string[] = [];
   removeFailuresRemaining = 0;
   pingError?: Error;
-  async listParticipantIdentities(roomName: string): Promise<Set<string>> { return new Set(this.identities.get(roomName) ?? []); }
+  async listParticipantIdentities(roomName: string): Promise<Set<string>> { if (this.unavailableMeetings.has(roomName)) throw new Error('media unavailable'); return new Set(this.identities.get(roomName) ?? []); }
   async issueToken(input: { identity: string }): Promise<string> { return `livekit-token:${input.identity}`; }
   async updateParticipantSources(_roomName: string, identity: string, sources: PublishSource[]): Promise<void> {
     this.sourceUpdates.push({ identity, sources: [...sources] });
@@ -582,8 +713,20 @@ class ApiMediaFake implements MediaService {
     }
     this.identities.get(roomName)?.delete(identity);
   }
-  async deleteRoom(roomName: string): Promise<void> { this.identities.delete(roomName); }
+  async deleteRoom(roomName: string): Promise<void> { this.deletedRooms.push(roomName); this.identities.delete(roomName); }
   async ping(): Promise<void> { if (this.pingError) throw this.pingError; }
+}
+
+class IsolatedSfuFake implements CloudflareSfuApi {
+  private next = 0;
+  readonly closed: string[] = [];
+  async createSession() { return `sfu-${++this.next}`; }
+  async newTracks(_id: string, body: { tracks: SfuTrack[]; sessionDescription?: { type: 'offer'; sdp: string } }) {
+    return { sessionDescription: { type: body.sessionDescription ? 'answer' as const : 'offer' as const, sdp: 'v=0\r\n' }, tracks: body.tracks.map((track, index) => ({ ...track, mid: track.mid ?? String(index) })) };
+  }
+  async answer() {}
+  async closeTracks(id: string) { this.closed.push(id); return []; }
+  async getSessionMids() { return ['0']; }
 }
 
 class CapturingWebhookHandler implements WebhookHandler {

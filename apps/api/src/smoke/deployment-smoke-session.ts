@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import fastifyCookie from '@fastify/cookie';
 import type Database from 'better-sqlite3';
+import { meetingSessionCookieName, participantCookie } from '../security/session-token.js';
 
 export interface DeploymentSmokeSession {
   meetingId: string;
@@ -23,6 +24,8 @@ export function createDeploymentSmokeSession(
   const expiresAt = now + 5 * 60_000;
 
   db.transaction(() => {
+    const open = db.prepare("SELECT COUNT(*) AS count FROM meetings WHERE status IN ('created', 'active', 'grace')").get() as { count: number };
+    if (open.count !== 0) throw new Error('Cannot create a deployment probe while a meeting is open');
     db.prepare(`
       INSERT INTO meetings (
         id, slug, name, password_hash, status, share_identity,
@@ -34,14 +37,14 @@ export function createDeploymentSmokeSession(
         identity, meeting_id, nickname, token_hash, expires_at, revoked_at
       ) VALUES (?, ?, 'Deployment smoke probe', ?, ?, NULL)
     `).run(identity, meetingId, tokenHash, expiresAt);
-  })();
+  }).immediate();
 
   const signedToken = fastifyCookie.sign(rawToken, cookieSecret);
   return {
     meetingId,
     identity,
     slug,
-    cookieHeader: `wm_participant=${encodeURIComponent(signedToken)}`
+    cookieHeader: `${meetingSessionCookieName(participantCookie, slug)}=${encodeURIComponent(signedToken)}`
   };
 }
 

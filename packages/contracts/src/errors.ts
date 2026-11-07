@@ -4,6 +4,7 @@ export const ApiErrorCodeSchema = Type.Union([
   Type.Literal('MEETING_NOT_FOUND'),
   Type.Literal('MEETING_EXPIRED'),
   Type.Literal('MEETING_FULL'),
+  Type.Literal('MEETING_LIMIT_REACHED'),
   Type.Literal('INVALID_MEETING_PASSWORD'),
   Type.Literal('ADMIN_AUTH_FAILED'),
   Type.Literal('SHARE_ALREADY_ACTIVE'),

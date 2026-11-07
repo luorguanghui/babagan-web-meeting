@@ -7,6 +7,8 @@ import {
   CreateMeetingResponseSchema,
   CreateMeetingRequestSchema,
   CurrentMeetingResponseSchema,
+  MAX_OPEN_MEETINGS,
+  OpenMeetingsResponseSchema,
   JoinMeetingRequestSchema,
   JoinMeetingResponseSchema,
   RefreshParticipantTokenResponseSchema,
@@ -20,6 +22,21 @@ import {
 } from './index.js';
 
 describe('meeting HTTP contracts', () => {
+  it('bounds the public open-room list and keeps unavailable rooms without leaking private fields', () => {
+    const meeting = { slug: 'abcdefghijklmnopqrstuv', name: 'Room', status: 'active', joinUrl: 'https://meet.example/m/abcdefghijklmnopqrstuv', requiresPassword: true, isFull: false };
+    expect(MAX_OPEN_MEETINGS).toBe(3);
+    expect(Value.Check(OpenMeetingsResponseSchema, { meetings: [meeting, { ...meeting, unavailable: true }], maxOpenMeetings: 3 })).toBe(true);
+    for (const value of [
+      { meetings: Array(4).fill(meeting), maxOpenMeetings: 3 },
+      { meetings: [meeting], maxOpenMeetings: 4 },
+      { meetings: [{ ...meeting, unavailable: false }], maxOpenMeetings: 3 },
+      { meetings: [{ ...meeting, token: 'private' }], maxOpenMeetings: 3 },
+      { meetings: [{ ...meeting, status: 'ended' }], maxOpenMeetings: 3 }
+    ]) expect(Value.Check(OpenMeetingsResponseSchema, value)).toBe(false);
+    expect(Value.Check(CurrentMeetingResponseSchema, { meeting })).toBe(true);
+    expect(Value.Check(CurrentMeetingResponseSchema, { meeting: { ...meeting, unavailable: true } })).toBe(false);
+    expect(Value.Check(CurrentMeetingResponseSchema, { meeting, meetings: [meeting] })).toBe(false);
+  });
   it('accepts the 1080p60 detail quality', () => {
     expect(Value.Check(ScreenShareQualitySchema, 'detail60')).toBe(true);
   });

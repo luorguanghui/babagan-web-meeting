@@ -358,7 +358,7 @@ describe('Cloudflare SFU broker routes', () => {
   });
   it('rejects a different meeting even with a valid cookie and rejects a wrong Origin', async () => {
     const f = await setup();
-    expect((await call('abcdefghijklmnopqrstuv', f.viewer)).statusCode).toBe(404);
+    expect((await call('abcdefghijklmnopqrstuv', f.viewer)).statusCode).toBe(401);
     expect((await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${f.slug}/screen-sfu/publish`, headers: { cookie: f.publisher, origin: 'https://other.example.test' }, payload: offer })).statusCode).toBe(403);
     expect(requests).toHaveLength(0);
   });  it.each(['leave', 'kick', 'end'])('closes publication and receiving sessions on %s', async (operation) => {

@@ -1,7 +1,7 @@
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { AppConfig } from '../../config.js';
-import { participantCookie, readSignedSessionCookie } from '../../security/session-token.js';
+import { participantCookie, readMeetingSessionCookie } from '../../security/session-token.js';
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import { createTurnCredentials } from '../../services/turn-credentials.js';
 import { SessionAuthenticationError } from '../auth.js';
@@ -19,7 +19,7 @@ export function registerIceServersRoutes(app: FastifyInstance, dependencies: { p
     }, preHandler: app.rateLimit(generalApiRateLimit())
   }, async (request: FastifyRequest, reply) => {
     const slug = (request.params as { slug: string }).slug;
-    const raw = readSignedSessionCookie(request, participantCookie);
+    const raw = readMeetingSessionCookie(request, participantCookie, slug);
     if (!raw) throw new SessionAuthenticationError();
     const session = dependencies.participants.authenticate(raw, slug);
     const config = dependencies.config;

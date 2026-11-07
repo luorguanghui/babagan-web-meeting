@@ -140,6 +140,10 @@ export function JoinLobbyPage({ slug }: JoinLobbyPageProps) {
     eyebrow={t('join.eyebrow')}
     title={t('join.heading')}
     lede={t('join.lede')}
+    context={<section className="join-selected-meeting" aria-label={t('join.selectedMeeting')}>
+      <p className="eyebrow">{t('join.selectedMeeting')}</p>
+      <h2>{readySummary.name}</h2>
+    </section>}
   >
     {notice && <p className={`message ${notice.kind === 'block' ? 'error' : 'notice'}`} role={notice.kind === 'block' ? 'alert' : 'status'}>{notice.message}</p>}
     <form aria-label={t('join.form')} onSubmit={join} noValidate>

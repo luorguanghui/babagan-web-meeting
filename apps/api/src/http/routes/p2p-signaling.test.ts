@@ -97,14 +97,14 @@ describe('P2P signaling websocket endpoint', () => {
     ).rejects.toThrow('Unexpected server response: 403');
   });
 
-  it('rejects the handshake with 404 for an unknown meeting', async () => {
+  it('rejects a room-scoped cookie on a different meeting handshake', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
     await expect(
       fixture.app.injectWS('/api/v1/meetings/abcdefghijklmnopqrstuv/p2p', {
         headers: { cookie: joined.cookie, origin: config.publicBaseUrl.origin }
       })
-    ).rejects.toThrow('Unexpected server response: 404');
+    ).rejects.toThrow('Unexpected server response: 401');
   });
 
   it('rejects the handshake with 401 after the meeting ended', async () => {

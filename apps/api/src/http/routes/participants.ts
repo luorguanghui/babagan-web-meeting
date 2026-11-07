@@ -14,7 +14,7 @@ import type { HostApplicationService } from '../../services/host-application-ser
 import type { ParticipantApplicationService } from '../../services/participant-application-service.js';
 import {
   participantCookie,
-  readSignedSessionCookie,
+  readMeetingSessionCookie,
   setParticipantSessionCookie
 } from '../../security/session-token.js';
 import { SessionAuthenticationError } from '../auth.js';
@@ -35,7 +35,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     const result = await dependencies.meetings.joinMeeting(slug(request.params), request.body as {
       nickname: string; meetingPassword?: string;
     });
-    setParticipantSessionCookie(reply, result.participantSessionToken);
+    setParticipantSessionCookie(reply, result.participantSessionToken, slug(request.params), result.meetingExpiresAt);
     return {
       participantIdentity: result.participantIdentity,
       participantName: result.participantName,
@@ -63,6 +63,8 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     await dependencies.meetings.leaveMeeting(value, participant.identity);
     await dependencies.screenSfu.closeParticipant(value, participant.identity);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
+    // Revocation rejects further room use, but retain the bounded cookie for
+    // final stats and to avoid a late leave response deleting a newer rejoin.
     return reply.status(204).send();
   });
 
@@ -91,13 +93,13 @@ function participantOptions(app: FastifyInstance) {
 }
 
 function session(request: FastifyRequest, participants: ParticipantApplicationService, slugValue: string) {
-  const raw = readSignedSessionCookie(request, participantCookie);
+  const raw = readMeetingSessionCookie(request, participantCookie, slugValue);
   if (!raw) throw new SessionAuthenticationError();
   return participants.authenticate(raw, slugValue);
 }
 
 function leaveSession(request: FastifyRequest, participants: ParticipantApplicationService, slugValue: string) {
-  const raw = readSignedSessionCookie(request, participantCookie);
+  const raw = readMeetingSessionCookie(request, participantCookie, slugValue);
   if (!raw) throw new SessionAuthenticationError();
   return participants.authenticateForLeave(raw, slugValue);
 }

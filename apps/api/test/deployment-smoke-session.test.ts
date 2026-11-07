@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createDatabase } from '../src/db/database.js';
 import { migrate } from '../src/db/migrate.js';
+import { meetingSessionCookieName, participantCookie } from '../src/security/session-token.js';
 import {
   createDeploymentSmokeSession,
   deleteDeploymentSmokeSession
@@ -26,8 +27,9 @@ describe('deployment smoke session', () => {
     expect(probe.meetingId).toMatch(/^[0-9a-f-]{36}$/);
     expect(probe.identity).toMatch(/^smoke-[0-9a-f-]{36}$/);
     expect(probe.slug).toMatch(/^[A-Za-z0-9_-]{22,256}$/);
-    expect(probe.cookieHeader).toMatch(/^wm_participant=/);
-    const signed = decodeURIComponent(probe.cookieHeader.slice('wm_participant='.length));
+    const prefix = meetingSessionCookieName(participantCookie, probe.slug) + '=';
+    expect(probe.cookieHeader.startsWith(prefix)).toBe(true);
+    const signed = decodeURIComponent(probe.cookieHeader.slice(prefix.length));
     const unsigned = fastifyCookie.unsign(signed, secret);
     expect(unsigned.valid).toBe(true);
     expect(db.prepare('SELECT status, name FROM meetings WHERE slug = ?').get(probe.slug))
@@ -53,7 +55,7 @@ describe('deployment smoke session', () => {
     `).run('real-meeting', 'real-meeting-slug-123456', 'Real meeting', 10, 20);
 
     expect(() => createDeploymentSmokeSession(db, 'deployment-smoke-cookie-secret-32-bytes', 11))
-      .toThrow(/UNIQUE constraint failed/);
+      .toThrow('Cannot create a deployment probe while a meeting is open');
     expect(db.prepare('SELECT id, name FROM meetings').all())
       .toEqual([{ id: 'real-meeting', name: 'Real meeting' }]);
   });

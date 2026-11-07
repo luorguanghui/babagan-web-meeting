@@ -78,7 +78,7 @@ afterEach(async () => {
     expect(fixture.media.fetchCalls).toBe(0);
   });
 
-  it('returns 404 for an unknown meeting even with a valid participant cookie', async () => {
+  it('does not authenticate another room using a valid room-scoped participant cookie', async () => {
     const created = await fixture.createMeeting();
     const joined = await fixture.join(created.slug, 'Ada');
 
@@ -87,8 +87,8 @@ afterEach(async () => {
       headers: { cookie: cookiePair(joined.headers['set-cookie']) }
     });
 
-    expect(response.statusCode, response.body).toBe(404);
-    expect(response.json()).toMatchObject({ error: { code: 'MEETING_NOT_FOUND' } });
+    expect(response.statusCode, response.body).toBe(401);
+    expect(response.json()).toMatchObject({ error: { code: 'ADMIN_AUTH_FAILED' } });
   });
 
   it('deduplicates UDP coturn STUN endpoints and preserves IPv6 addresses', async () => {

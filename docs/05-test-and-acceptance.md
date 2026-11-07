@@ -17,7 +17,7 @@
 - 会议状态机和 24 小时/10 分钟/30 秒时间边界。
 - 密码哈希、会话 Token 哈希和常量时间比较。
 - 昵称、会议名、密码和请求体校验。
-- 单会议、5 人限制和共享锁的并发竞争。
+- 最多3个开放会议、每房5人限制和每房共享锁的并发竞争。
 - LiveKit 权限映射和错误码转换。
 
 ### 2.2 API 集成测试
@@ -29,6 +29,7 @@
 - 验证 5 分钟 JWT 到期后的完整重连刷新，以及被移除成员无法刷新并会被 Webhook 再次移除。
 - 验证 Cookie、Origin、CORS、速率限制和错误响应不泄密。
 - 验证进程重启后的会议恢复和过期清理。
+- 验证4个独立SQLite写连接只能创建3个开放会议，升级旧数据库保留已有会议与会话；同浏览器三房凭据并存且无法跨房使用，单房结束或清理失败不影响其他房间。
 - P2P 信令：无 Cookie 拒绝升级；有 Cookie 可加入房间名单并收到进退广播；仅共享者可发 `offer`，观看者只能应答共享者；非法目标与越权消息被拒绝；消息限速与 64 KiB 上限；共享锁释放后全员收到失效通知。
 - ICE 凭据端点：参与者 Cookie 可获取 STUN 与短期 TURN 凭据；查询参数支持 `turnProvider=auto|coturn|cloudflare`；响应包含 `availableTurnProviders`、实际 `turnProvider` 和 `Cache-Control: no-store`。无 Cookie 拒绝；coturn 凭据每次在 API 本地生成（HMAC-SHA1，不调用 LiveKit、无缓存）；Cloudflare 失败或未配置时显式/默认请求均应回退为有效 coturn 响应。
 

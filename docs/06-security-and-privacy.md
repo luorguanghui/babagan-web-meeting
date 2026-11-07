@@ -38,6 +38,7 @@
 
 - 使用密码认证后产生 256 位随机 Token。
 - 浏览器 Cookie 名使用 `__Host-` 前缀，设置 `Secure; HttpOnly; SameSite=Strict; Path=/`。
+- 三会议版本使用按slug哈希命名的独立主持人/参与者Cookie，避免同一浏览器创建或加入另一房间时覆盖已有认证；服务端仍逐请求校验Cookie所对应的meetingId，不能通过改Cookie名称跨房使用。旧全局Cookie仅作受同样meetingId约束的兼容读取。
 - 数据库保存 Token 的 SHA-256 哈希。
 - 会话有效期不超过会议有效期，结束会议后立即撤销。
 

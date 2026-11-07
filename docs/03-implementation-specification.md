@@ -69,7 +69,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 | `ended_at` | INTEGER NULL | 终止时间 |
 | `version` | INTEGER | 乐观并发控制 |
 
-数据库以部分唯一索引保证同一时间最多一个非终态会议。共享者更新必须在事务中比较 `version`，防止并发授权两人。
+迁移003在保留已有记录的前提下移除旧单会议唯一索引，以INSERT与状态UPDATE触发器保证同一时间最多3个非终态会议。创建服务在IMMEDIATE事务内检查同一上限，密码哈希等异步操作留在事务外；数据库仍能拒绝绕过服务的第四个并发写入。共享者更新仍按会议比较 `version`，防止同一房间并发授权两人。
 
 ### 3.2 `host_sessions`
 
@@ -82,7 +82,7 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 | `expires_at` | INTEGER | 不晚于会议到期时间 |
 | `revoked_at` | INTEGER NULL | 结束或退出后撤销 |
 
-浏览器只持有原始随机 Token 的安全 Cookie，数据库只保存哈希。
+浏览器只持有原始随机Token的签名安全Cookie，数据库只保存哈希。新Cookie名是`__Host-wm_host_<slug的SHA256前32位>`及对应`__Host-wm_participant_<hash>`，保留`Secure; HttpOnly; SameSite=Strict; Path=/`且不设置Domain，过期时间与会议TTL一致。仅在该房新Cookie缺失时读取旧全局`wm_host`/`wm_participant`，随后仍验证数据库会话的meetingId；无效新Cookie不能退回旧凭据。结束会议只清该房Cookie；离会仅撤销服务端会话，保留有限期Cookie用于最终匿名统计，并防止迟到leave响应删除新rejoin凭据。
 
 ### 3.3 `audit_events`
 
@@ -122,7 +122,8 @@ Cloudflare 凭据允许与 `P2P_TURN_PROVIDER=coturn` 同时存在，用于开�
 | 方法 | 路径 | 权限 | 作用 |
 |---|---|---|---|
 | POST | `/meetings` | 管理密码 | 原子创建会议并建立会议主持人会话 |
-| GET | `/meetings/current` | 公开 | 返回当前非终态会议摘要（无则 `meeting: null`） |
+| GET | `/meetings/current` | 公开 | 兼容旧客户端，返回最早创建的非终态会议摘要（无则 `meeting: null`），保持原响应结构 |
+| GET | `/meetings/open` | 公开 | 返回`meetings`列表与`maxOpenMeetings:3`；单房查询失败保留`unavailable:true`并继续占名额，不阻断其他房间 |
 | GET | `/meetings/:slug` | 公开 | 返回名称、状态、是否需要密码和是否满员 |
 | GET | `/meetings/:slug/host-session` | 主持人 | 校验主持人会话是否有效（204） |
 | POST | `/meetings/:slug/end` | 主持人 | 结束会议并移除所有成员 |
