@@ -102,5 +102,6 @@ export function detectClientTransport(target: ClientHostWindow): ClientHostTrans
 export function validClientInfo(value: unknown, platform: ClientHostInfo['platform']): value is ClientHostInfo {
   return record(value) && value.protocol === 1 && value.platform === platform
     && typeof value.appVersion === 'string' && /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(value.appVersion)
-    && typeof value.screenCapture === 'boolean' && (value.systemAudio === undefined || typeof value.systemAudio === 'boolean');
+    && typeof value.screenCapture === 'boolean' && (value.systemAudio === undefined || typeof value.systemAudio === 'boolean')
+    && (value.maxScreenFrameRate === undefined || value.maxScreenFrameRate === 30 || value.maxScreenFrameRate === 60);
 }

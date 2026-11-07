@@ -1,6 +1,9 @@
 .client-update-status { display: inline-flex; align-items: center; gap: 6px; font-size: .73rem; color: var(--muted); }
 .client-update-status .client-update-check { padding: 6px; min-height: 32px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); }
 .client-update-status .client-version { font-variant-numeric: tabular-nums; }
+.client-host-label { color: var(--muted); font-size: .72rem; font-weight: 500; letter-spacing: 0; margin-left: 6px; padding-left: 12px; border-left: 1px solid var(--border); }
+.app-shell-client .app-bar { min-height: 72px; }
+@media (max-width: 680px) { .client-host-label { display: none; } }
 .meeting-client-status { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 24px; }
 .meeting-client-status > p { color: var(--muted); font-size: .8rem; line-height: 1.6; margin: 0; }
 @media (max-width: 800px) { .app-bar-actions > .client-update-status > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; } }

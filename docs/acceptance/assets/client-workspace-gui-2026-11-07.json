@@ -1,0 +1,27 @@
+{
+  "closedThroughCua": true,
+  "bootstrapHealthy": true,
+  "screenshot": "client-workspace-native-2026-11-07.png",
+  "observedVersion": "0.1.2",
+  "defaultInstallationMetadataUnchanged": true,
+  "defaultProfileDirectoryUnchanged": true,
+  "securityPromptBypassed": false,
+  "passed": true,
+  "downloadMarketingAbsent": true,
+  "isolatedProfile": "output/windows-update-012-acceptance/ui-test-profile",
+  "desktopCaptured": false,
+  "previousRetained": true,
+  "workspaceObserved": true,
+  "remainingOwnedProcesses": 0,
+  "current": {
+    "current": "versions/0.1.2-25e060ef",
+    "previous": "versions/0.1.1-e23d8c59",
+    "version": "0.1.2",
+    "sequence": 3,
+    "pendingHealth": false
+  },
+  "completedAt": "2026-11-07T10:50:33.4700849Z",
+  "observedWith": "mcp__cua_repl documented Windows App API",
+  "observedUrl": "https://meet.babagan.cloud/client?clientVersion=0.1.2",
+  "meetingJoined": false
+}

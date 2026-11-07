@@ -215,7 +215,10 @@ export function MeetingRoomPage({
   onTerminal
 }: MeetingRoomPageProps) {
   const { t } = useI18n();
-  const { host: clientHost } = useClientHost();
+  const { host: clientHost, info: clientInfo } = useClientHost();
+  const androidMaxFrameRate = clientInfo?.maxScreenFrameRate ?? 30;
+  const androidMaxFrameRateRef = useRef(androidMaxFrameRate);
+  androidMaxFrameRateRef.current = androidMaxFrameRate;
   const isAndroidClient = clientHost?.platform === 'android';
   const browserCaptureUnsupported = !clientHost && !getDisplayMedia && typeof navigator.mediaDevices?.getDisplayMedia !== 'function';
   const [controller] = useState(() => providedController ?? controllerFactory());
@@ -398,7 +401,7 @@ export function MeetingRoomPage({
       : meetingApi.verifyParticipantShare(slug),
     releaseGrant: () => meetingApi.releaseOwnShare(slug),
     getDisplayMedia: getDisplayMedia ?? ((constraints, signal) => {
-      if (clientHost?.platform === 'android') return captureAndroidScreen(clientHost, constraints, { signal });
+      if (clientHost?.platform === 'android') return captureAndroidScreen(clientHost, constraints, { signal, maxFrameRate: androidMaxFrameRateRef.current });
       if (nativeCaptureEnabledRef.current && nativeCaptureConnection) return captureNativeScreen(nativeCaptureConnection, constraints, { signal });
       if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return Promise.reject(new ClientHostError('unsupported', 'Browser screen capture is unavailable.'));
       return navigator.mediaDevices.getDisplayMedia(constraints);
@@ -1129,6 +1132,7 @@ export function MeetingRoomPage({
     screenEncodingEngine,
     nativeCaptureAvailable: Boolean(nativeCaptureConnection) || isAndroidClient,
     nativeCapturePlatform: clientHost?.platform,
+    nativeCaptureMaxFrameRate: clientInfo?.maxScreenFrameRate,
     nativeCaptureEnabled,
     onNativeCaptureChange: (enabled) => { nativeCaptureEnabledRef.current = enabled; setNativeCaptureEnabled(enabled); },
     onScreenEncodingEngineChange: setScreenEncodingEngine,

@@ -1,6 +1,6 @@
 # Babagan Android client
 
-Android 8.0+ (API 26), targeting API 36. The app opens only `https://meet.babagan.cloud` in its embedded WebView. AndroidX WebKit exposes the `BabaganAndroid` bridge only to that exact origin; native handlers additionally require the main frame. Meeting UI, cookies, microphone, viewing and existing network transports remain in the web application.
+Android 8.0+ (API 26), targeting API 36. Version 0.1.2 opens `https://meet.babagan.cloud/client?clientVersion=0.1.2` by default; trusted meeting deep links keep their original URL. The app opens only the trusted meeting origin in its embedded WebView. AndroidX WebKit exposes the `BabaganAndroid` bridge only to that exact origin; native handlers additionally require the main frame. Meeting UI, cookies, microphone, viewing and existing network transports remain in the web application.
 
 ## Build
 
@@ -12,6 +12,8 @@ From the repository root in PowerShell 7:
 ```
 
 Tooling is installed under `%LOCALAPPDATA%/BabaganDevelopment`; scripts set process-local environment variables without altering the global PATH. Java 22 works with pinned Gradle 8.13 / Android Gradle Plugin 8.11.1. Dependencies are pinned in `app/build.gradle`. Add `-Emulator` to setup to install an API 35 Google APIs x86_64 image and the emulator. The setup does not modify Windows hypervisor or BIOS settings.
+
+The build script also redirects generated outputs and test reports to `%LOCALAPPDATA%/BabaganDevelopment/android-build/app` to avoid Java test-worker issues with non-ASCII workspace paths. Read current test reports there; an old repository-local `app/build` directory may contain historical output from earlier attempts.
 
 Debug builds include unit tests and Android lint by default. Release build:
 
@@ -25,7 +27,9 @@ The signing password is passed to Android `apksigner` through its file option, n
 
 `capture.start` first opens Android's MediaProjection chooser. A foreground service and persistent Stop notification own the approved session. Native WebRTC sends the video over an on-device peer connection, providing a normal `MediaStream` to the existing web publisher. Signaling for this local connection crosses the origin-scoped bridge; no local HTTP server or additional meeting identity is created.
 
-The initial native bridge profile is capped at an aspect-preserving 1920×1080 pixel envelope and 30 fps even when the web UI requests 60. Frame arrival is source driven. There is an extra local encode/decode step before the web publisher; actual performance and background continuity need device validation. `client.info` explicitly reports `systemAudio:false`: microphone audio uses the normal webpage/WebView permission path, while Android internal playback audio is not included in this first version.
+Version 0.1.2 advertises `maxScreenFrameRate:60` and lets the user select 30 or 60 fps. Both choices preserve the same aspect-preserving 1920×1080 pixel envelope. The selected rate configures the native video source, capturer calls, RTP sender maximum, SDP hint and returned track settings. The sender keeps resolution rather than requesting a lower resolution to pursue 60 fps. Its existing 12 Mbps on-device bridge budget is unchanged; the separate web publisher retains the user's selected outgoing bitrate, including 10 Mbps.
+
+Frame arrival remains source driven, and the app never duplicates frames to claim 60 fps. Returned frame-rate settings describe configuration, not measured achievement; device/codec load may still reduce actual delivered cadence. There is an extra local encode/decode step before the web publisher, so actual performance and background continuity need device validation. Older clients without the new capability remain limited to 30 fps in the web UI and capture requests. `client.info` continues to report `systemAudio:false`: microphone audio uses the normal webpage/WebView permission path, while Android internal playback audio is not included.
 
 Session IDs must be UUIDs. Cancelled permission dialogs cannot start late capture. A new request waits until the previous Android chooser has returned. Leaving the meeting, revocation, Stop, page navigation or closing the app releases capture. Rotation resizes the same virtual display instead of reusing the one-shot projection permission.
 
@@ -45,7 +49,7 @@ No tests in this project capture the Windows desktop or launch games. Device tes
 
 ## Current validation
 
-The dated record is in `validation/2026-11-07.json`. Debug/release builds, 21 JVM tests, Android lint and release APK signature/content inspection passed. Device media and update installation have **not** been validated: this host has no working emulator acceleration, and two software-emulation attempts stalled before Android boot. A signed APK is available for device validation; this build result does not establish successful screen sharing or sustained frame rate.
+The dated record in `validation/2026-11-07.json` describes the earlier release checks. The 0.1.2 workspace/frame-rate change passed the Debug build, 28 JVM tests, Android lint, 40 focused web tests and web type checking. Its release package is built and signed separately after the source commit. Device media and update installation have **not** been validated: this host has no usable emulator acceleration, and bounded software-emulation attempts terminated with native access-violation crashes before Android boot. Build results do not establish successful screen sharing or sustained frame rate; those require the user's device and receiver statistics.
 
 On an available owned emulator, install the debug APK and launch the generated-content harness:
 

@@ -5,6 +5,8 @@ export interface ClientHostInfo {
   protocol: 1;
   screenCapture: boolean;
   systemAudio?: boolean;
+  /** Absent on older Android clients, whose native capture is limited to 30 fps. */
+  maxScreenFrameRate?: 30 | 60;
 }
 export interface ClientHostRequest {
   v: 1; id: string;

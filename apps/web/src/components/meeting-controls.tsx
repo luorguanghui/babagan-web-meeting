@@ -43,6 +43,7 @@ export interface MeetingControlsProps {
   screenEncodingEngine?: 'project' | 'browser';
   nativeCaptureAvailable?: boolean;
   nativeCapturePlatform?: 'windows' | 'android';
+  nativeCaptureMaxFrameRate?: 30 | 60;
   nativeCaptureEnabled?: boolean;
   onNativeCaptureChange?: (enabled: boolean) => void;
   screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
@@ -276,14 +277,14 @@ export function MeetingSettings(props: MeetingSettingsProps) {
       <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>
       <div className="meeting-settings-section-grid">
         {!props.nativeCaptureAvailable && <a className="meeting-settings-field-wide" href="/native" target="_blank" rel="noopener noreferrer">{t('native.downloadNav')}</a>}
-        {props.nativeCapturePlatform === 'android' && <div className="meeting-settings-field-wide"><strong>{t('client.androidCapture')}</strong><p className="meeting-settings-share-hint">{t('client.androidCaptureHint')}</p><p className="meeting-settings-share-hint">{t('client.androidAudioHint')}</p></div>}
+        {props.nativeCapturePlatform === 'android' && <div className="meeting-settings-field-wide"><strong>{t('client.androidCapture')}</strong>{props.nativeCaptureMaxFrameRate !== 60 && <p className="meeting-settings-share-hint">{t('client.androidCaptureHint')}</p>}<p className="meeting-settings-share-hint">{t('client.androidAudioHint')}</p></div>}
         {props.nativeCaptureAvailable && props.nativeCapturePlatform !== 'android' && <label className="meeting-settings-field-wide">{t('native.captureLabel')}<select aria-label={t('native.captureLabel')}
           value={props.nativeCaptureEnabled ? 'native' : 'browser'} disabled={props.screenShareActive || props.screenShareBusy}
           onChange={event => props.onNativeCaptureChange?.(event.target.value === 'native')}>
           <option value="native">{t('native.primaryScreen')}</option><option value="browser">{t('native.browserCapture')}</option>
         </select>{props.nativeCaptureEnabled && <span>{t('native.primaryHint')}</span>}</label>}
         <label className="meeting-settings-field-wide">{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} aria-describedby={qualityDescriptionId} value={quality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
-          <option value="flow">{t('controls.flowShort')}</option><option value="standard">{t('controls.standardShort')}</option><option value="motion" disabled={props.nativeCapturePlatform === 'android'}>{t('controls.motionShort')}</option><option value="detail60" disabled={props.nativeCapturePlatform === 'android'}>{t('controls.detail60Short')}</option>
+          <option value="flow">{t('controls.flowShort')}</option><option value="standard">{t('controls.standardShort')}</option><option value="motion" disabled={props.nativeCapturePlatform === 'android' && props.nativeCaptureMaxFrameRate !== 60}>{t('controls.motionShort')}</option><option value="detail60" disabled={props.nativeCapturePlatform === 'android' && props.nativeCaptureMaxFrameRate !== 60}>{t('controls.detail60Short')}</option>
         </select><span id={qualityDescriptionId}>{(props.screenSourceTransport === 'cloudflare-sfu' || (props.screenEncodingEngine ?? 'browser') === 'browser') ? `${t(`controls.${quality}Short`)} · ${t('controls.browserQualityHint')}` : t(`controls.${quality}`)}</span></label>
       </div>
       {screenShareProviderDisabled && <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>}

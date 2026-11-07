@@ -98,7 +98,7 @@ namespace Babagan {
         web.CoreWebView2.WebMessageReceived += OnMessage;
         web.CoreWebView2.NavigationCompleted += (_, e) => { if (!closing) status.Text = e.IsSuccess ? "Babagan · Windows 客户端 " + Package.Version : "网页连接失败，请检查网络后重新打开客户端。"; };
         if (health != null) File.WriteAllText(health, "ready");
-        initialized = true; web.CoreWebView2.Navigate(launch);
+        initialized = true; web.CoreWebView2.Navigate(Package.ClientStartUrl(launch));
         updater.TryActivate(); await updater.Check(cancel.Token);
       } catch { status.Text = "客户端启动失败。请检查网络，或重新运行安装器修复。"; }
     }
