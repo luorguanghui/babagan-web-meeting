@@ -16,6 +16,7 @@ import java.util.*;
 public final class MainActivity extends Activity implements ScreenCaptureService.Listener {
     static final String ORIGIN=UpdateVerifier.ORIGIN;
     private WebView web;
+    private WebViewFullscreen fullscreen;
     private JavaScriptReplyProxy reply;
     private ScreenCaptureService capture;
     private boolean bound,ownsActivity;
@@ -51,7 +52,10 @@ public final class MainActivity extends Activity implements ScreenCaptureService
         if(Build.VERSION.SDK_INT>=33){backCallback=this::handleBack;getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,backCallback);}
         web=new WebView(this);
         web.setBackgroundColor(0xfffaf9f6);
-        setContentView(web);
+        android.widget.FrameLayout content=new android.widget.FrameLayout(this);
+        content.addView(web,new android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,android.view.ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(content);
+        fullscreen=new WebViewFullscreen(this,content);
         web.setOnApplyWindowInsetsListener((view,insets)->{view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;});
         WebSettings settings=web.getSettings();
         settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setMediaPlaybackRequiresUserGesture(false);
@@ -80,10 +84,15 @@ public final class MainActivity extends Activity implements ScreenCaptureService
                 if(request.hasGesture()&&("https".equals(scheme)||"mailto".equals(scheme)))try{startActivity(new Intent(Intent.ACTION_VIEW,request.getUrl()));}catch(ActivityNotFoundException ignored){}
                 return true;
             }
-            @Override public void onPageStarted(WebView view,String url,android.graphics.Bitmap icon){cancelCapture("navigation");joined=false;microphoneState(false);reply=null;updateBusyState();}
+            @Override public void onPageStarted(WebView view,String url,android.graphics.Bitmap icon){if(fullscreen!=null)fullscreen.exit();cancelCapture("navigation");joined=false;microphoneState(false);reply=null;updateBusyState();}
             @Override public void onReceivedSslError(WebView view,SslErrorHandler handler,android.net.http.SslError error){handler.cancel();}
         });
         web.setWebChromeClient(new WebChromeClient(){
+            @Override public void onShowCustomView(android.view.View view,CustomViewCallback callback){
+                if(fullscreen==null||web==null||!trusted(web.getUrl())||isFinishing()||isDestroyed()){WebViewFullscreen.reject(callback);return;}
+                try{fullscreen.show(view,callback);}catch(RuntimeException error){android.util.Log.w("Babagan","Could not attach fullscreen view");}
+            }
+            @Override public void onHideCustomView(){if(fullscreen!=null)fullscreen.exit();}
             @Override public boolean onConsoleMessage(ConsoleMessage message){if(BuildConfig.DEBUG&&message.message().startsWith("BABAGAN_TEST ")){android.util.Log.i("BabaganTest",message.message());return true;}return super.onConsoleMessage(message);}
             @Override public void onPermissionRequest(PermissionRequest request){
                 runOnUiThread(()->{
@@ -210,8 +219,10 @@ public final class MainActivity extends Activity implements ScreenCaptureService
     @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==30&&microphoneRequest!=null){PermissionRequest pending=microphoneRequest;microphoneRequest=null;if(results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED&&trusted(web.getUrl()))pending.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});else pending.deny();}}
     @Override protected void onResume(){super.onResume();visible=true;if(microphoneEnabled&&joined&&checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)try{microphoneState(true);}catch(RuntimeException error){Toast.makeText(this,"The microphone could not stay active in the background",Toast.LENGTH_LONG).show();}updateBusyState();updateTimer.removeCallbacks(periodicUpdate);updateTimer.post(periodicUpdate);}
     @Override protected void onPause(){visible=false;updateTimer.removeCallbacks(periodicUpdate);updateBusyState();super.onPause();}
-    private void handleBack(){if(web!=null&&web.canGoBack())web.goBack();else if(joined)new AlertDialog.Builder(this).setMessage("Leave the meeting and close Babagan?").setPositiveButton("Leave",(dialog,which)->finish()).setNegativeButton("Stay",null).show();else finish();}
+    @Override public void onConfigurationChanged(android.content.res.Configuration configuration){super.onConfigurationChanged(configuration);if(fullscreen!=null)fullscreen.reapply();}
+    @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused&&fullscreen!=null)fullscreen.reapply();}
+    private void handleBack(){if(fullscreen!=null&&fullscreen.exit())return;if(web!=null&&web.canGoBack())web.goBack();else if(joined)new AlertDialog.Builder(this).setMessage("Leave the meeting and close Babagan?").setPositiveButton("Leave",(dialog,which)->finish()).setNegativeButton("Stay",null).show();else finish();}
     // API 33+ uses the registered predictive-back callback above; retain this only for API 26–32.
     @android.annotation.SuppressLint("GestureBackNavigation") @Override public void onBackPressed(){handleBack();}
-    @Override protected void onDestroy(){updateTimer.removeCallbacks(periodicUpdate);if(!ownsActivity){super.onDestroy();return;}if(Build.VERSION.SDK_INT>=33&&backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);if(active.get()==this)active.clear();MicrophoneService.disable(this);cancelCapture("app-closed");if(capture!=null)capture.detachListener(this);if(bound)unbindService(connection);if(microphoneRequest!=null)microphoneRequest.deny();if(updater!=null)updater.close();if(web!=null){web.stopLoading();web.destroy();web=null;}super.onDestroy();}
+    @Override protected void onDestroy(){updateTimer.removeCallbacks(periodicUpdate);if(!ownsActivity){super.onDestroy();return;}if(fullscreen!=null)fullscreen.destroy();if(Build.VERSION.SDK_INT>=33&&backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);if(active.get()==this)active.clear();MicrophoneService.disable(this);cancelCapture("app-closed");if(capture!=null)capture.detachListener(this);if(bound)unbindService(connection);if(microphoneRequest!=null)microphoneRequest.deny();if(updater!=null)updater.close();if(web!=null){web.stopLoading();web.destroy();web=null;}super.onDestroy();}
 }

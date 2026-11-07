@@ -5,7 +5,7 @@ import static org.junit.Assert.*;
 
 public class BridgeOriginTest {
     @Test public void launchesWorkspaceAndPreservesTrustedMeetingDeepLinks(){
-        String workspace="https://meet.babagan.cloud/client?clientVersion=0.1.2";
+        String workspace="https://meet.babagan.cloud/client?clientVersion="+BuildConfig.VERSION_NAME;
         assertEquals(workspace,MainActivity.entryUrl(null));
         assertEquals(workspace,MainActivity.entryUrl("https://evil.example/m/room"));
         assertEquals(workspace,MainActivity.entryUrl("https://meet.babagan.cloud@evil.example/m/room"));

@@ -1,6 +1,6 @@
 # Babagan Android client
 
-Android 8.0+ (API 26), targeting API 36. Version 0.1.2 opens `https://meet.babagan.cloud/client?clientVersion=0.1.2` by default; trusted meeting deep links keep their original URL. The app opens only the trusted meeting origin in its embedded WebView. AndroidX WebKit exposes the `BabaganAndroid` bridge only to that exact origin; native handlers additionally require the main frame. Meeting UI, cookies, microphone, viewing and existing network transports remain in the web application.
+Android 8.0+ (API 26), targeting API 36. Version 0.1.3 opens `https://meet.babagan.cloud/client?clientVersion=0.1.3` by default; trusted meeting deep links keep their original URL. The app opens only the trusted meeting origin in its embedded WebView. AndroidX WebKit exposes the `BabaganAndroid` bridge only to that exact origin; native handlers additionally require the main frame. Meeting UI, cookies, microphone, viewing and existing network transports remain in the web application.
 
 ## Build
 
@@ -36,6 +36,8 @@ Session IDs must be UUIDs. Cancelled permission dialogs cannot start late captur
 The Activity uses `singleTask`. An external room link cannot replace a joined meeting or active capture; users leave the current room before opening another. A listener lease prevents another Activity instance from replacing or detaching the capture service's owner. Update decisions also inspect capture service resources, including capture teardown.
 
 The webpage reports actual microphone changes using `microphone.state`. Only an enabled microphone with existing Android audio permission and a foreground meeting can start the microphone foreground service. It remains active when that meeting moves to the background and stops on mute, leave, navigation or app close. The host never requests microphone permission or starts recording solely because a room was joined.
+
+Version 0.1.3 implements both WebChromeClient custom-view callbacks for standard `HTMLElement.requestFullscreen()`, including the shared-screen container. Fullscreen uses an overlay while retaining the original WebView and media session. Back exits fullscreen before any meeting navigation; page navigation and Activity destruction release the custom view once. System-bar visibility/behavior and legacy window flags are restored on exit. Rotation reuses the existing Activity/WebView and reapplies immersive bars without stopping capture. The missing callbacks in earlier versions caused WebView to declare fullscreen unsupported, as documented in the [Android WebChromeClient API](https://developer.android.com/reference/android/webkit/WebChromeClient#onShowCustomView(android.view.View,%20android.webkit.WebChromeClient.CustomViewCallback)). Actual device fullscreen/rotation behavior remains subject to user validation.
 
 Debug builds alone expose `capture.test` with the same arguments and response as `capture.start`; it generates moving 640×360 I420 test pixels at 15 fps without any screen capture or permission. Release builds reject this method. It exists to validate native→WebView media independently from MediaProjection.
 

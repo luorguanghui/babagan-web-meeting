@@ -7,6 +7,30 @@ import { homeCopy } from './home-copy.js';
 type Platform = 'windows' | 'android';
 interface ClientRelease { available: true; version: string; url: string; bytes: number; sha256: string; }
 type Catalog = Record<Platform, ClientRelease | undefined>;
+const mobileWidth = '(max-width: 767px)';
+
+function useAndroidFirst(): boolean {
+  const android = typeof navigator !== 'undefined' && /\bAndroid\b/i.test(navigator.userAgent);
+  const [narrow, setNarrow] = useState(() => typeof window !== 'undefined'
+    && (typeof window.matchMedia === 'function' ? window.matchMedia(mobileWidth).matches : window.innerWidth <= 767));
+  useEffect(() => {
+    if (typeof window.matchMedia === 'function') {
+      const media = window.matchMedia(mobileWidth);
+      const update = () => setNarrow(media.matches);
+      update();
+      if (typeof media.addEventListener === 'function') {
+        media.addEventListener('change', update);
+        return () => media.removeEventListener('change', update);
+      }
+      media.addListener(update);
+      return () => media.removeListener(update);
+    }
+    const update = () => setNarrow(window.innerWidth <= 767);
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  return android || narrow;
+}
 
 function readRelease(value: unknown, platform: Platform): ClientRelease | undefined {
   if (!value || typeof value !== 'object') return;
@@ -34,6 +58,8 @@ export function ClientDownloads() {
   const [catalog, setCatalog] = useState<Catalog>();
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const androidFirst = useAndroidFirst();
+  const platforms: readonly Platform[] = androidFirst ? ['android', 'windows'] : ['windows', 'android'];
   useEffect(() => {
     const controller = new AbortController();
     void fetch('/downloads/clients/catalog.json', { cache: 'no-store', signal: controller.signal })
@@ -46,7 +72,7 @@ export function ClientDownloads() {
   }, [attempt]);
 
   return <div className="client-downloads">
-    {(['windows', 'android'] as const).map(platform => {
+    {platforms.map(platform => {
       const release = catalog?.[platform];
       const Icon = platform === 'windows' ? Monitor : Smartphone;
       const action = platform === 'windows' ? copy.downloadWindows : copy.downloadAndroid;

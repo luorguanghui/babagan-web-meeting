@@ -8,7 +8,7 @@ using System.Web.Script.Serialization;
 
 namespace Babagan {
   internal static class Package {
-    internal const string Version = "0.1.2";
+    internal const string Version = "0.1.3";
     internal const int MinimumWebViewMajor = 156;
     internal static bool SupportedWebView(string value) {
       System.Version version;

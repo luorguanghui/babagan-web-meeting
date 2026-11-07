@@ -120,7 +120,13 @@ export function ClientWorkspacePage() {
   return <main className="client-workspace" aria-labelledby="client-workspace-title">
     <header className="client-workspace-heading">
       <div><h1 id="client-workspace-title">{text.title}</h1><p>{text.intro}</p></div>
-      <span className="client-workspace-platform"><DeviceIcon size={16} aria-hidden="true" />{platformLabel}</span>
+      <div className="client-workspace-tools">
+        <span className="client-workspace-platform"><DeviceIcon size={16} aria-hidden="true" />{platformLabel}</span>
+        {client.host && <div className="client-workspace-update-summary">
+          <div className="client-workspace-update-text"><span>{info ? `${text.version} ${info.appVersion}` : text.versionPending}</span><p role="status">{updateLabel}</p></div>
+          <button type="button" className="secondary" disabled={updateBusy} aria-busy={client.update === 'checking'} aria-describedby="client-update-policy" onClick={() => void checkClientUpdate()}><RefreshCw size={15} aria-hidden="true" />{text.checkUpdate}</button>
+        </div>}
+      </div>
     </header>
 
     <div className="client-workspace-grid">
@@ -166,10 +172,8 @@ export function ClientWorkspacePage() {
         <h2 id="client-device-heading">{text.deviceHeading}</h2>
         <div className="client-workspace-capability"><DeviceIcon size={21} aria-hidden="true" /><div><h3>{capability}</h3><p>{capabilityDetail}</p></div></div>
         {client.host ? <section className="client-workspace-updates" aria-labelledby="client-updates-heading">
-          <div><h3 id="client-updates-heading">{text.updates}</h3><span>{info ? `${text.version} ${info.appVersion}` : text.versionPending}</span></div>
-          <p role="status">{updateLabel}</p>
-          <button type="button" className="secondary" disabled={updateBusy} onClick={() => void checkClientUpdate()}><RefreshCw size={15} aria-hidden="true" />{text.checkUpdate}</button>
-          <p className="client-workspace-update-note">{text.updateDetail} {platform === 'windows' ? text.windowsUpdateDetail : text.androidUpdateDetail}</p>
+          <h3 id="client-updates-heading">{text.updates}</h3>
+          <p id="client-update-policy" className="client-workspace-update-note">{text.updateDetail} {platform === 'windows' ? text.windowsUpdateDetail : text.androidUpdateDetail}</p>
         </section> : <p className="client-workspace-web-updates">{text.webUpdates}</p>}
         <details className="client-workspace-settings"><summary><Settings2 size={16} aria-hidden="true" />{text.settings}</summary>
           <p>{text.settingsDevice}</p><p>{text.settingsLanguage}</p><p>{text.settingsPermission}</p>

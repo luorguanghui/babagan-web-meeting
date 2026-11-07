@@ -32,6 +32,12 @@
 .client-workspace-heading h1 { font-size: clamp(1.65rem, 3vw, 2rem); font-weight: 700; letter-spacing: -.035em; line-height: 1.25; }
 .client-workspace-heading p { color: var(--workspace-muted); font-size: .93rem; line-height: 1.6; margin: 8px 0 0; }
 .client-workspace-platform { align-items: center; background: #f7f8fa; border: 1px solid var(--workspace-line); border-radius: 99px; display: inline-flex; flex: none; font-size: .78rem; gap: 7px; padding: 8px 12px; }
+.client-workspace-tools { display: grid; justify-items: end; gap: 10px; max-width: 430px; min-width: 0; }
+.client-workspace-update-summary { align-items: center; display: flex; gap: 14px; min-width: 0; }
+.client-workspace-update-text { display: grid; gap: 3px; min-width: 0; text-align: right; }
+.client-workspace-update-text > span { color: var(--workspace-muted); font-size: .73rem; }
+.client-workspace-update-text > p[role='status'] { color: #414650; font-size: .8rem; line-height: 1.5; margin: 0; }
+.client-workspace-update-summary button { align-items: center; display: inline-flex; flex: none; gap: 7px; min-height: 44px; padding: 8px 12px; }
 .client-workspace-grid { align-items: start; display: grid; gap: 22px; grid-template-columns: minmax(0, 1.65fr) minmax(280px, 1fr); }
 .client-workspace-join, .client-workspace-current, .client-workspace-device { background: #fff; border: 1px solid var(--workspace-line); border-radius: 16px; min-width: 0; padding: 26px; }
 .client-workspace-section-title { align-items: center; display: flex; gap: 11px; margin-bottom: 24px; }
@@ -77,13 +83,9 @@
 .client-workspace-capability h3 { font-size: .86rem; font-weight: 650; line-height: 1.5; margin: 0; }
 .client-workspace-capability p { color: var(--workspace-muted); font-size: .79rem; line-height: 1.65; margin: 7px 0 0; }
 .client-workspace-updates { border-top: 1px solid var(--workspace-line); margin-top: 22px; padding-top: 18px; }
-.client-workspace-updates > div { align-items: baseline; display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; }
 .client-workspace-updates h3 { font-size: .84rem; margin: 0; }
-.client-workspace-updates > div > span { color: var(--workspace-muted); font-size: .73rem; }
-.client-workspace-updates > p[role='status'] { font-size: .81rem; line-height: 1.5; margin: 10px 0; }
 .client-workspace .secondary { background: #fff; border-color: #d9dee5; border-radius: 8px; color: #414650; font-size: .8rem; }
 .client-workspace .secondary:hover { background: #fff4e8; }
-.client-workspace-updates button { align-items: center; display: inline-flex; gap: 7px; min-height: 40px; padding: 8px 11px; }
 .client-workspace-update-note, .client-workspace-web-updates { color: var(--workspace-muted); font-size: .73rem; line-height: 1.7; margin: 13px 0 0; }
 .client-workspace-settings { border-top: 1px solid var(--workspace-line); margin-top: 22px; padding-top: 7px; }
 .client-workspace-settings summary { align-items: center; color: #555c66; cursor: pointer; display: flex; font-size: .79rem; font-weight: 600; gap: 7px; min-height: 44px; }
@@ -102,6 +104,9 @@
 @media (max-width: 520px) {
   .client-workspace { padding: 24px 16px 36px; }
   .client-workspace-heading { align-items: flex-start; flex-direction: column; gap: 13px; margin-bottom: 21px; }
+  .client-workspace-tools { justify-items: start; max-width: none; width: 100%; }
+  .client-workspace-update-summary { justify-content: space-between; width: 100%; }
+  .client-workspace-update-text { text-align: left; }
   .client-workspace-join, .client-workspace-current, .client-workspace-device, .client-workspace-create { padding: 21px; }
   .client-workspace-input-row { flex-direction: column; }
   .client-workspace-input-row button { justify-content: center; }
