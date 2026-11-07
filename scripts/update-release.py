@@ -164,6 +164,55 @@ def configuration_snapshot(env_file, files):
     return {str(path): hashlib.sha256(path.read_bytes()).hexdigest() for path in [env_file, *map(Path, files)]}
 
 
+def docker_environment(entries):
+    """Parse Config.Env, preserving bare keys as explicit unset markers."""
+    if entries is None:
+        return {}
+    if not isinstance(entries, list):
+        raise RuntimeError('Invalid API environment metadata')
+    values = {}
+    for entry in entries:
+        if not isinstance(entry, str):
+            raise RuntimeError('Invalid API environment metadata')
+        key, separator, value = entry.partition('=')
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key):
+            raise RuntimeError('Invalid API environment variable name')
+        if key in values:
+            raise RuntimeError('Duplicate API environment variable: ' + key)
+        values[key] = value if separator else None
+    return values
+
+
+def require_api_environment(selected, compose, containers):
+    if 'api' not in selected:
+        return
+    api = next(c for c in containers if c['Name'] == '/babagan-meeting-api-1')
+    # Inspect the current immutable image, not a mutable Compose image tag.
+    # Both command outputs may contain secrets: keep them only in memory.
+    try:
+        rendered = json.loads(command(compose + ['config', '--format', 'json']))
+        environment = rendered['services']['api'].get('environment', {})
+        image_environment = json.loads(command(['docker', 'image', 'inspect', api['Image'], '--format', '{{json .Config.Env}}']))
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise RuntimeError('Could not read API environment metadata') from None
+    if not isinstance(environment, dict):
+        raise RuntimeError('Invalid rendered API environment metadata')
+    expected = docker_environment(image_environment)
+    for key, value in environment.items():
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', key) or (value is not None and not isinstance(value, str)):
+            raise RuntimeError('Invalid rendered API environment metadata')
+        # Compose passes null as a bare key, suppressing the image default.
+        # Preserve that marker: absent, explicitly unset and empty differ.
+        expected[key] = value
+    actual = docker_environment(api['Config'].get('Env'))
+    missing = object()
+    changed = sorted(key for key in expected.keys() | actual.keys()
+                     if expected.get(key, missing) != actual.get(key, missing))
+    if changed:
+        raise RuntimeError('API environment differs from the running container: ' + ', '.join(changed) +
+                           '; reconcile the active Compose configuration before updating')
+
+
 def require_unchanged(env_file, files, snapshot, before, inspect):
     if configuration_snapshot(env_file, files) != snapshot:
         raise RuntimeError('Production configuration changed; stop and inspect before continuing')
@@ -367,6 +416,7 @@ def _perform_update(options, app, env_file, state, progress):
     for filename in files:
         compose += ['-f', filename]
     command(compose + ['config', '-q'])
+    require_api_environment(selected, compose, before)
     mount = Path(command(['docker', 'volume', 'inspect', '--format', '{{.Mountpoint}}', 'babagan-meeting_api-data']))
     database = mount / 'meetings.sqlite'
     require_unchanged(env_file, files, snapshot, before, inspect)
