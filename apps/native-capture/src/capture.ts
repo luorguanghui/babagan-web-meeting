@@ -10,6 +10,7 @@ export interface CaptureOptions {
   spawnProcess?: CaptureSpawner;
   startupTimeoutMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
+  outputSize?: { width: number; height: number };
   onFormat(format: NativeCaptureFormat): void;
   onFrame(frame: TimedFrame): void;
   onError(code: string, message: string): void;
@@ -27,14 +28,17 @@ export async function getActiveWindowsDisplayCount(): Promise<number> {
     });
   });
 }
-export function buildCaptureArguments(frameRate: 30 | 60): string[] {
+export function buildCaptureArguments(frameRate: 30 | 60, outputSize?: { width: number; height: number }): string[] {
   const scale = 'min(1,min(1080/min(iw,ih),sqrt(8294400/(iw*ih))))';
   const selection = `isnan(prev_selected_t)+gt(floor((t-start_t)*${frameRate}+0.000001),floor((prev_selected_t-start_t)*${frameRate}+0.000001))`;
+  const resize = outputSize
+    ? `scale=${outputSize.width}:${outputSize.height}:force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear:out_color_matrix=bt709:out_range=tv,pad=${outputSize.width}:${outputSize.height}:(ow-iw)/2:(oh-ih)/2`
+    : `scale=w='trunc(iw*${scale}/2)*2':h='trunc(ih*${scale}/2)*2':flags=fast_bilinear:out_color_matrix=bt709:out_range=tv`;
   return [
     '-hide_banner', '-nostdin', '-nostats', '-loglevel', 'info', '-filter_threads', '2',
     '-f', 'lavfi', '-i', `ddagrab=framerate=${frameRate * 2}:output_idx=0:draw_mouse=1:dup_frames=0`,
     // Select actual input samples at the target cadence, including static content; never synthesize CFR/fps frames.
-    '-vf', `hwdownload,format=bgra,scale=w='trunc(iw*${scale}/2)*2':h='trunc(ih*${scale}/2)*2':flags=fast_bilinear:out_color_matrix=bt709:out_range=tv,format=yuv420p,select='${selection}',showinfo=checksum=0`,
+    '-vf', `hwdownload,format=bgra,${resize},format=yuv420p,select='${selection}',showinfo=checksum=0`,
     '-an', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-colorspace', 'bt709',
     '-color_primaries', 'bt709', '-color_trc', 'bt709', '-fps_mode', 'passthrough',
     '-f', 'yuv4mpegpipe', 'pipe:1'
@@ -46,6 +50,8 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
   let stopped = false;
   let finished = false;
   let hadFrame = false;
+  let stderrTail = '';
+  let accessLost = false;
   let killDeadline: ReturnType<typeof setTimeout> | undefined;
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => resolveDone = resolve);
@@ -97,7 +103,7 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
       const spawnProcess = options.spawnProcess ?? ((executable, args) => spawn(executable, args, {
         stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false
       }));
-      child = spawnProcess(options.ffmpeg, buildCaptureArguments(options.frameRate));
+      child = spawnProcess(options.ffmpeg, buildCaptureArguments(options.frameRate, options.outputSize));
       child.stdout.on('data', (chunk: Buffer) => {
         if (stopped) return;
         try { parser.push(chunk); }
@@ -105,11 +111,18 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
       });
       child.stderr.on('data', (chunk: Buffer) => {
         if (stopped) return;
+        // Only classify known DXGI/device/desktop transition failures. Never
+        // log raw stderr (paths), retry arbitrary corruption, or evade revocation.
+        stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4096);
+        accessLost ||= /\b(?:887a0026|887a0005|887a0007|80070005)\b|DXGI_ERROR_(?:ACCESS_LOST|DEVICE_REMOVED|DEVICE_RESET)|Desktop duplication access denied|Output parameters changed!/i.test(stderrTail);
         try { clock.pushStderr(chunk); }
         catch { fail('capture_stream', 'Native capture returned invalid or unsynchronized frame timestamps.'); }
       });
       child.on('error', () => { fail('capture_launch', 'Unable to launch FFmpeg. Check the configured FFmpeg executable.'); complete(); });
       child.on('close', (code) => {
+        if (!stopped) {
+          if (accessLost) fail('capture_access_lost', 'Desktop capture access changed.');
+        }
         if (!stopped) {
           try { parser.finish(); clock.finish(); }
           catch { fail('capture_stream', 'Native capture ended with an incomplete video stream.'); }

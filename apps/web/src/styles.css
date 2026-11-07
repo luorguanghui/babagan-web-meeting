@@ -18,6 +18,18 @@
 }
 * { box-sizing: border-box; }
 body { min-width: 320px; margin: 0; }
+.app-bar-actions { display: flex; align-items: center; gap: 20px; font-size: 13px; }
+.native-download { padding: clamp(24px, 4vw, 48px); line-height: 1.7; }
+.native-download h2 { margin-top: 0; }
+.native-download-button { display: inline-block; padding: 12px 22px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; margin-top: 12px; }
+.native-download-button:hover { background: var(--accent-hover); }
+.native-download-meta { font-size: 13px; color: var(--muted); }
+.native-download-steps { padding-left: 22px; margin: 28px 0; }
+.native-download-steps li { padding-left: 8px; margin-bottom: 20px; }
+.native-download-steps p { margin: 4px 0 0; color: var(--muted); }
+.native-download-checksum { display: block; overflow-wrap: anywhere; margin: 12px 0; font-size: 12px; }
+.native-download details { margin-bottom: 20px; }
+@media (max-width: 480px) { .app-bar-actions { gap: 8px; font-size: 12px; } }
 button, input, select { font: inherit; }
 button, .host-link { align-items: center; background: var(--accent); border: 1px solid transparent; border-radius: 10px; color: #fff; cursor: pointer; font-weight: 600; min-height: 44px; padding: .72rem 1rem; transition: background-color var(--motion-quick) var(--motion-ease), border-color var(--motion-quick) var(--motion-ease), color var(--motion-quick) var(--motion-ease), box-shadow var(--motion-quick) var(--motion-ease), scale 180ms var(--motion-ease); }
 button:active:not(:disabled), .host-link:active { scale: .98; transition-duration: 90ms; }

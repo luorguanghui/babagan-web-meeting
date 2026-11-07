@@ -211,7 +211,7 @@ describe('grouped meeting settings', () => {
     expect(screen.getByRole('combobox', { name: 'Screen quality' })).toHaveValue('standard');
     expect(within(sharing).getByRole('combobox', { name: 'Screen-share codec' })).toHaveValue('h264');
     expect(within(sharing).getByRole('combobox', { name: 'Screen encoding engine' })).toHaveValue('browser');
-    expect(within(sharing).getByRole('combobox', { name: 'Maximum screen-share bitrate' })).toHaveValue('8000000');
+    expect(within(sharing).getByRole('combobox', { name: 'Maximum screen-share bitrate' })).toHaveValue('10000000');
     expect(within(sharing).queryByRole('slider')).not.toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Receiving a screen' })).not.toBeInTheDocument();
   });

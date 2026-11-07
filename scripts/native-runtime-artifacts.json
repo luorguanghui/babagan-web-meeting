@@ -1,0 +1,16 @@
+[
+  {
+    "file": "node-v24.15.0-win-x64.zip",
+    "sha256": "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62",
+    "bytes": 36465163,
+    "sourceUrl": "https://nodejs.org/dist/v24.15.0/node-v24.15.0-win-x64.zip",
+    "sourceCode": "https://nodejs.org/dist/v24.15.0/node-v24.15.0.tar.gz"
+  },
+  {
+    "file": "ffmpeg-9.0.2-essentials_build.zip",
+    "sha256": "60f467265b1e312373dbcd92200c2618a74850f98d3d078e94296bb3fa2047ba",
+    "bytes": 114768076,
+    "sourceUrl": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip",
+    "sourceCode": "https://github.com/FFmpeg/FFmpeg/commit/946fcce07b"
+  }
+]

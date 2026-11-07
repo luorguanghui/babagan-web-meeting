@@ -32,6 +32,16 @@ async function startStreaming(server: NativeCaptureServer): Promise<IncomingMess
 }
 
 describe('authenticated HTTP native frame stream', () => {
+  it('keeps the same authorized HTTP stream alive after DXGI access loss without a second metadata header', async () => {
+    let count = 0;
+    const server = await helper({ spawnProcess: () => spawn(process.execPath, ['-e', validStream +
+      (count++ === 0 ? "process.stderr.write('AcquireNextFrame failed: 887a0026\\n');process.exitCode=1;" : '')], { windowsHide: true }) });
+    const result = await call(server);
+    const offset = 4 + result.body.readUInt32BE(0), packets = result.body.subarray(offset);
+    expect(count).toBe(2); expect(packets.length).toBe(56);
+    expect(packets.readUInt32BE(4)).toBe(0); expect(packets.readUInt32BE(32)).toBe(1);
+    expect(packets.readDoubleBE(36)).toBeGreaterThan(packets.readDoubleBE(8));
+  });
   it('allows only the exact POST preflight and never grants wildcard or credential CORS', async () => {
     const server = await helper();
     const preflight = { Origin: server.origin, 'Access-Control-Request-Method': 'POST', 'Access-Control-Request-Headers': 'authorization,content-type' };

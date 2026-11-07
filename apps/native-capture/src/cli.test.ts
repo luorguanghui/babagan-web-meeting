@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { edgeLaunchArguments, parseCliArgs, runCli, assertDdagrabCapabilities } from './cli.js';
+import { edgeLaunchArguments, edgeSpawnOptions, parseCliArgs, runCli, assertDdagrabCapabilities } from './cli.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -17,6 +17,9 @@ async function statusFile() {
 }
 
 describe('native capture launcher configuration', () => {
+  it('opens Edge as a visible GUI without allocating a detached console', () => {
+    expect(edgeSpawnOptions).toMatchObject({ windowsHide: false, detached: false, shell: false, stdio: 'ignore' });
+  });
   it('requires a ddagrab build that can disable its own duplicate-frame fallback', () => {
     const legacy = 'Filter ddagrab\n  Grab Windows Desktop images\nddagrab AVOptions:\n  framerate <video_rate> ..FV....... set video frame rate\n';
     expect(() => assertDdagrabCapabilities(legacy)).toThrow(/dup_frames/);

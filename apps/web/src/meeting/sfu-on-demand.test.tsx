@@ -13,6 +13,11 @@ function fixture() {
   return { hybrid, publish, release, start, stop, left, retry, removeViewer: (identity: string) => { viewers = viewers.filter((viewer) => viewer.identity !== identity); hybrid.viewerLeft(identity); } };
 }
 describe('explicit SFU demand', () => {
+  it('keeps an explicit SFU request inside the selected per-viewer ceiling', async () => {
+    const f = fixture(); await f.hybrid.publish(stream, { ...options, maxBitrate: 5_000_000 });
+    await f.hybrid.setViewerScreenTransport('a', 'sfu');
+    expect(f.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 5_000_000 }));
+  });
   it('starts P2P without publishing a backup stream', async () => {
     const f = fixture(); await f.hybrid.publish(stream, options);
     expect(f.start).toHaveBeenCalledOnce(); expect(f.publish).not.toHaveBeenCalled();

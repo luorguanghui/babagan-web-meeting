@@ -274,6 +274,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
     <section className="meeting-settings-section" aria-label={t('controls.screenQuality')}>
       <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>
       <div className="meeting-settings-section-grid">
+        {!props.nativeCaptureAvailable && <a className="meeting-settings-field-wide" href="/native" target="_blank" rel="noopener noreferrer">{t('native.downloadNav')}</a>}
         {props.nativeCaptureAvailable && <label className="meeting-settings-field-wide">{t('native.captureLabel')}<select aria-label={t('native.captureLabel')}
           value={props.nativeCaptureEnabled ? 'native' : 'browser'} disabled={props.screenShareActive || props.screenShareBusy}
           onChange={event => props.onNativeCaptureChange?.(event.target.value === 'native')}>
@@ -308,7 +309,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
           {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}
         </select><span className="meeting-controls-hint">{props.screenSourceTransport === 'cloudflare-sfu'
           ? t('controls.sfuBitrateHint')
-          : t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0, quality) / 1_000_000 })}</span></label>
+          : t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0, quality) / 1_000_000 })}</span><span>{t('native.capHint')}</span></label>
       </div>
     </section>
     </details>

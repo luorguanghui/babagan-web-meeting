@@ -7,6 +7,9 @@ apps/web/test-results/
 apps/web/playwright-report/
 artifacts/
 /output/
+/apps/web/public/downloads/*.exe
+/apps/web/public/downloads/native-release.json
+/apps/web/public/downloads/runtime/
 /var/
 *.tsbuildinfo
 .env

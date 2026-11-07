@@ -10,6 +10,7 @@ import {
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { readScreenBitrate, saveScreenBitrate } from '../meeting/screen-bitrate-preference.js';
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { resolveActiveSharer } from '../meeting/active-share.js';
@@ -50,8 +51,6 @@ import {
 import {
   createScreenShareController,
   HybridScreenSharePublisher,
-  recommendP2pBitrate,
-  screenShareDefaultBitrate,
   screenShareDefaultQuality,
   type ScreenShareBitrate,
   type ScreenShareState,
@@ -269,8 +268,7 @@ export function MeetingRoomPage({
   const [browserEncodingPreference, setBrowserEncodingPreference] = useState<'hardware' | 'compatible'>('hardware');
   const browserEncodingPreferenceRef = useRef<'hardware' | 'compatible'>('hardware');
   const [projectMediaError, setProjectMediaError] = useState<string>();
-  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(nativeCaptureConnection ? 20_000_000 : screenShareDefaultBitrate);
-  const screenBitrateTouchedRef = useRef(false);
+  const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(() => readScreenBitrate());
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(nativeCaptureConnection ? 'motion' : screenShareDefaultQuality);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
@@ -456,17 +454,7 @@ export function MeetingRoomPage({
   }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection]);
 
   useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
-  // Suggest headroom for the selected quality without replacing a manual cap.
-  // Cloudflare publishes one upstream regardless of the number of viewers.
-  useEffect(() => {
-    if (screenBitrateTouchedRef.current) return;
-    if (screenState.status !== 'idle') return;
-    setScreenBitrate(recommendP2pBitrate(screenSourceTransport === 'cloudflare-sfu' ? 1 : viewerCount, screenQuality));
-  }, [screenState.status, viewerCount, screenQuality, screenSourceTransport]);
-  useEffect(() => {
-    // After a share ends the suggestion is re-applied for the next share.
-    if (screenState.status === 'idle') screenBitrateTouchedRef.current = false;
-  }, [screenState.status]);
+  // Quality, roster, network recovery and stop/start never raise the chosen cap.
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
   const [viewerTurnProvider, setViewerTurnProvider] = useState<P2pTurnProvider>();
@@ -1139,7 +1127,7 @@ export function MeetingRoomPage({
     onSharedAudioVolumeChange: setSharedAudioVolume,
     onScreenCodecChange: setScreenCodec,
     onScreenBitrateChange: (bitrate) => {
-      screenBitrateTouchedRef.current = true;
+      saveScreenBitrate(bitrate);
       setScreenBitrate(bitrate);
     },
     onScreenQualityChange: setScreenQuality,

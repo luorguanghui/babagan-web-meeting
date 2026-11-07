@@ -39,6 +39,7 @@ afterEach(() => {
   PageFakePc.instances = [];
   PageFakePc.remoteDescriptionGate = undefined;
   window.localStorage.removeItem('babagan.viewer-transport');
+  window.localStorage.removeItem('babagan.screen-bitrate-cap');
   window.sessionStorage.removeItem('babagan.native-capture');
 });
 
@@ -1649,7 +1650,7 @@ describe('on-demand screen share publisher', () => {
     const { stream } = displayStream({ audio: true });
     await hybrid.publish(stream, p2pPublishOptions(8_000_000));
     await hybrid.setViewerScreenTransport('viewer-1', 'sfu');
-    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 10_000_000 }));
+    expect(sfuPublisher.publish).toHaveBeenCalledWith(stream, expect.objectContaining({ maxBitrate: 8_000_000 }));
     await hybrid.setViewerScreenTransport('viewer-1', 'peer');
     expect(sfuPublisher.release).toHaveBeenCalledOnce();
   });
@@ -1912,7 +1913,7 @@ describe('P2P-first screen sharing in the room', () => {
 
 
 
-  it('defaults the P2P bitrate to the suggestion for the online viewer count', async () => {
+  it('keeps the chosen default when the online viewer count changes', async () => {
     const signaling = fakeSignalingClient();
     renderP2pRoom({
       meetingApi: authorizedMeetingApi(),
@@ -1925,7 +1926,7 @@ describe('P2P-first screen sharing in the room', () => {
     await userEvent.click(screen.getByText('Advanced settings'));
     const selector = screen.getByLabelText('Maximum screen-share bitrate');
 
-    await waitFor(() => expect(selector).toHaveValue('5000000'));
+    await waitFor(() => expect(selector).toHaveValue('10000000'));
     expect(screen.getByText('Suggested P2P bitrate cap per viewer: 5 Mbps for 4 online viewers.')).toBeVisible();
   });
 
@@ -1938,13 +1939,13 @@ describe('P2P-first screen sharing in the room', () => {
     expect(screen.getByRole('combobox', { name: 'Screen capture' })).toHaveValue('native');
     expect(screen.getByRole('combobox', { name: 'Screen quality' })).toHaveValue('motion');
     await userEvent.click(screen.getByText('Advanced settings'));
-    expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('20000000');
+    expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('10000000');
     expect(screen.getByLabelText('Screen-share codec')).toHaveValue('auto');
     await userEvent.selectOptions(screen.getByRole('combobox', { name: 'Screen capture' }), 'browser');
     expect(screen.getByRole('combobox', { name: 'Screen capture' })).toHaveValue('browser');
   });
 
-  it('keeps the 60fps SFU recommendation at one upload when the roster grows', async () => {
+  it('does not raise the cap when changing quality, transport or roster', async () => {
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       if (String(input).endsWith('/screen-sfu')) return Response.json({ available: true, publication: null });
       if (String(input).includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
@@ -1960,10 +1961,10 @@ describe('P2P-first screen sharing in the room', () => {
     await waitFor(() => expect(option).toBeEnabled());
     fireEvent.change(option.closest('select')!, { target: { value: 'cloudflare-sfu' } });
     act(() => signaling.welcome(fourViewers));
-    await waitFor(() => expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('20000000'));
+    await waitFor(() => expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('10000000'));
   });
 
-  it('raises untouched motion headroom while preserving a manually chosen cap across quality and roster changes', async () => {
+  it('preserves the manually chosen ceiling across quality and roster changes and a room remount', async () => {
     const signaling = fakeSignalingClient();
     renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });
@@ -1973,11 +1974,16 @@ describe('P2P-first screen sharing in the room', () => {
     const quality = screen.getByRole('combobox', { name: 'Screen quality' });
     const bitrate = screen.getByLabelText('Maximum screen-share bitrate');
     await userEvent.selectOptions(quality, 'motion');
-    await waitFor(() => expect(bitrate).toHaveValue('20000000'));
-    await userEvent.selectOptions(bitrate, '8000000');
+    expect(bitrate).toHaveValue('10000000');
+    await userEvent.selectOptions(bitrate, '5000000');
     await userEvent.selectOptions(quality, 'detail60');
     act(() => signaling.welcome(fourViewers));
-    expect(bitrate).toHaveValue('8000000');
+    expect(bitrate).toHaveValue('5000000');
+    cleanup();
+    renderP2pRoom({ meetingApi: authorizedMeetingApi(), createSignalingClient: signaling.factory, shareControllerFactory: fakeShareControllerFactory });
+    await userEvent.click(screen.getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(screen.getByText('Advanced settings'));
+    expect(screen.getByLabelText('Maximum screen-share bitrate')).toHaveValue('5000000');
   });
 
   it('publishes a cloned LiveKit screen only on explicit demand and releases it on return to peer', async () => {

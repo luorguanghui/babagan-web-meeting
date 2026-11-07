@@ -42,7 +42,7 @@ export const screenShareAudioContentHint = 'music' as const;
 export const screenShareBitrates = P2P_SCREEN_BITRATES;
 export type ScreenShareBitrate = P2pScreenBitrate;
 /** Default P2P bitrate. */
-export const screenShareDefaultBitrate = 8_000_000;
+export const screenShareDefaultBitrate = 10_000_000;
 /**
  * Suggested per-viewer caps: 60fps profiles use 20 Mbps for one/two viewers,
  * 10 Mbps for more; 30fps profiles retain 8/5 Mbps. Manual caps are preserved
@@ -563,7 +563,7 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
   private sfuOptions(): ScreenSharePublishOptions {
     const options = this.activeOptions;
     if (!options) throw new Error('Screen sharing is not active.');
-    return { ...options, maxBitrate: this.sfuFallbackBitrate };
+    return { ...options, maxBitrate: Math.min(options.maxBitrate, this.sfuFallbackBitrate) };
   }
 
   /** Serializes SFU publish/release so the track state stays consistent under races. */

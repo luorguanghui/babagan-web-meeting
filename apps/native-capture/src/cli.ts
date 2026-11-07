@@ -5,12 +5,13 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createNativeCaptureServer, validateOrigin } from './server.js';
 
-export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; idleTimeoutMs: number; help: boolean; statusFile?: string }
+export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; idleTimeoutMs: number; help: boolean; statusFile?: string; managed?: boolean }
 export function parseCliArgs(args: string[], env: NodeJS.ProcessEnv = process.env): CliOptions {
   const options: CliOptions = { ffmpeg: env.BABAGAN_FFMPEG ?? 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true, idleTimeoutMs: 1_800_000, help: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--no-open') { options.openBrowser = false; continue; }
+    if (arg === '--managed') { options.managed = true; continue; }
     if (arg === '--help' || arg === '-h') { options.help = true; continue; }
     if (!['--ffmpeg', '--origin', '--edge', '--idle-timeout-ms', '--status-file'].includes(arg)) throw new Error('Unknown native capture option. Use --help.');
     const value = args[++i];
@@ -35,6 +36,9 @@ export function edgeLaunchArguments(profileDirectory: string, launchUrl: string)
     '--no-first-run', '--new-window', launchUrl
   ];
 }
+
+/** Edge is the visible application, unlike the console-free capture helper. */
+export const edgeSpawnOptions = { windowsHide: false, shell: false, detached: false, stdio: 'ignore' as const };
 
 function findEdge(override?: string): string {
   const candidates = override ? [override] : [process.env['ProgramFiles(x86)'], process.env.ProgramFiles, process.env.LOCALAPPDATA]
@@ -85,19 +89,37 @@ export async function runCli(args: string[]): Promise<void> {
     await verifyFfmpeg(options.ffmpeg);
     const edge = options.openBrowser ? findEdge(options.edge) : undefined;
     if (edge && !process.env.LOCALAPPDATA) throw new Error('LOCALAPPDATA is required for the isolated meeting profile.');
-    const helper = await createNativeCaptureServer({ ffmpeg: options.ffmpeg, origin: options.origin, idleTimeoutMs: options.idleTimeoutMs });
+    const helper = await createNativeCaptureServer({ ffmpeg: options.ffmpeg, origin: options.origin, idleTimeoutMs: options.idleTimeoutMs,
+      onDiagnostic: event => { if (options.managed) console.log(JSON.stringify({ time: new Date().toISOString(), ...event })); } });
     const shutdown = () => { void helper.close(); };
     process.once('SIGINT', shutdown);
     process.once('SIGTERM', shutdown);
-    try {
+    const openBrowser = async () => {
       if (edge) {
         const profile = join(process.env.LOCALAPPDATA!, 'Babagan', 'MeetingEdge');
         await new Promise<void>((resolve, reject) => {
-          const child = spawn(edge, edgeLaunchArguments(profile, helper.launchUrl), { windowsHide: true, shell: false, detached: true, stdio: 'ignore' });
+          const child = spawn(edge, edgeLaunchArguments(profile, helper.launchUrl), edgeSpawnOptions);
           child.once('error', () => reject(new Error('Unable to open the isolated meeting Edge window.')));
           child.once('spawn', () => { child.unref(); resolve(); });
         });
       }
+    };
+    let input = '';
+    const onInput = (chunk: Buffer) => {
+      input += chunk.toString('utf8');
+      if (input.length > 1024) { shutdown(); return; }
+      let newline: number;
+      while ((newline = input.indexOf('\n')) >= 0) {
+        const command = input.slice(0, newline).trim(); input = input.slice(newline + 1);
+        if (command === 'open') void openBrowser().catch(() => console.log(JSON.stringify({ event: 'open_failed' })));
+        else if (command === 'stop') shutdown();
+      }
+    };
+    if (options.managed) {
+      process.stdin.on('data', onInput); process.stdin.once('end', shutdown); process.stdin.once('error', shutdown);
+    }
+    try {
+      await openBrowser();
       if (options.statusFile) await writeStartupStatus(options.statusFile, { version: 1, state: 'ready', pid: process.pid, port: helper.port, origin: helper.origin });
       reportedReady = true;
       if (!options.statusFile) console.log(`Native capture helper ready on 127.0.0.1:${helper.port}. Capture starts only after an explicit screen-share action.`);
@@ -106,6 +128,9 @@ export async function runCli(args: string[]): Promise<void> {
       await helper.close();
       process.off('SIGINT', shutdown);
       process.off('SIGTERM', shutdown);
+      if (options.managed) {
+        process.stdin.off('data', onInput); process.stdin.off('end', shutdown); process.stdin.off('error', shutdown); process.stdin.pause();
+      }
     }
   } catch (error) {
     if (!reportedReady && statusPath && !statusPath.startsWith('--') && !statusPath.includes('\0')) {

@@ -13,6 +13,13 @@ function fixture(script: string): { spawn: CaptureSpawner; child: () => ChildPro
 const validStream = `process.stderr.write('[Parsed_showinfo_7 @ 1] config in time_base: 1/1000000, frame_rate: 120/1\\n[Parsed_showinfo_7 @ 1] n: 0 pts: 0 pts_time:0 pos:-1\\n'); process.stdout.write('YUV4MPEG2 W4 H2 F120:1 Ip A1:1 C420mpeg2\\nFRAME\\nabcdefghijkl');`;
 
 describe('owned FFmpeg capture session', () => {
+  it('identifies desktop access loss even when FFmpeg leaves a partial final frame', async () => {
+    const source = fixture(validStream + `process.stdout.write('FRAME\\nabc'); process.stderr.write('AcquireNextFrame failed: 887A0026\\n'); process.exitCode=1;`);
+    const errors: string[] = [];
+    await createCaptureSession({ ffmpeg: 'unused', frameRate: 60, getActiveDisplayCount: async () => 1, spawnProcess: source.spawn,
+      onFormat() {}, onFrame() {}, onError: code => errors.push(code) }).done;
+    expect(errors).toEqual(['capture_access_lost']);
+  });
   it('emits validated metadata and original PTS with pixels from a real subprocess', async () => {
     const source = fixture(validStream);
     const formats: unknown[] = [];

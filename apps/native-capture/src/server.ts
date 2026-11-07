@@ -2,7 +2,8 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
 import { WebSocket, WebSocketServer } from 'ws';
 import { NATIVE_CAPTURE_PROTOCOL } from '@meeting/contracts';
-import { createCaptureSession, type CaptureSession, type CaptureSpawner } from './capture.js';
+import { type CaptureSession, type CaptureSpawner } from './capture.js';
+import { createRecoveringCaptureSession as createCaptureSession, type CaptureDiagnostic } from './capture-recovery.js';
 import { FrameSender } from './frame-sender.js';
 import { sendControl as send } from './control-sender.js';
 import { HttpCaptureError, httpFrameTransport, readHttpStart, writeHttpError, writeHttpFormat } from './http-stream.js';
@@ -15,6 +16,7 @@ export interface NativeCaptureServerOptions {
   idleTimeoutMs?: number;
   statsIntervalMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
+  onDiagnostic?: (event: CaptureDiagnostic) => void;
 }
 export interface NativeCaptureServer {
   port: number;
@@ -79,7 +81,7 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         clearTimeout(idleTimer);
         const sender = new FrameSender(httpFrameTransport(response));
         const session = createCaptureSession({ ffmpeg, frameRate, spawnProcess: options.spawnProcess,
-          startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
+          startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount, onDiagnostic: options.onDiagnostic,
           onFormat: (format) => writeHttpFormat(response, format), onFrame: (frame) => sender.send(frame),
           onError: (code, message) => writeHttpError(response, code === 'UNSUPPORTED_SOURCE' ? 422 : 502, code, message)
         });
@@ -160,7 +162,7 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
       clearTimeout(idleTimer);
       const sender = new FrameSender(socket);
       const session = createCaptureSession({ ffmpeg, frameRate: control.frameRate as 30 | 60,
-        spawnProcess: options.spawnProcess, startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
+        spawnProcess: options.spawnProcess, startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount, onDiagnostic: options.onDiagnostic,
         onFormat: (format) => send(socket, format), onFrame: (frame) => sender.send(frame),
         onError: (code, message) => send(socket, { type: 'error', code, message })
       });
