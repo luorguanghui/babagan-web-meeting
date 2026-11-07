@@ -27,6 +27,7 @@
 /* Fullscreen is the media viewport, not the normal padded workspace card.
    Keep contain sizing: only source/display aspect-ratio bars may remain. */
 .screen-stage .screen-stage-header[hidden] { display: none; }
+.screen-stage .screen-stage-tools[hidden] { display: none; }
 .screen-stage.screen-stage:is(:fullscreen, :-webkit-full-screen, [data-fullscreen]) {
   width: 100vw;
   height: 100dvh;

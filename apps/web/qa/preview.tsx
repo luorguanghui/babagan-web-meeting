@@ -27,6 +27,7 @@ type Scene = 'receiver' | 'settings' | 'host' | 'idle' | 'create' | 'lobby';
 const scenes: Scene[] = ['receiver', 'settings', 'host', 'idle', 'create', 'lobby'];
 const requestedScene = new URLSearchParams(location.search).get('scene');
 const initialScene = scenes.includes(requestedScene as Scene) ? requestedScene as Scene : 'receiver';
+const sunnyDesign = new URLSearchParams(location.search).get('design') === 'sunny';
 // Opt-in emulated fullscreen keeps a constrained QA iframe viewport. Native
 // fullscreen is still exercised separately without this query parameter.
 if (new URLSearchParams(location.search).get('fullscreen') === 'emulated') {
@@ -48,22 +49,26 @@ if (new URLSearchParams(location.search).get('fullscreen') === 'emulated') {
     document.dispatchEvent(new Event('fullscreenchange'));
   };
 }
+// Deterministic browser-denial state for checking visible retry controls.
+if (new URLSearchParams(location.search).get('display') === 'denied') {
+  HTMLElement.prototype.requestFullscreen = async () => { throw new DOMException('Isolated QA denial', 'NotAllowedError'); };
+}
 const slug = 'illustrative-workshop-qa-only';
-const meetingName = 'Design workshop · demo';
+const meetingName = sunnyDesign ? '周末放映室' : 'Design workshop · demo';
 const expiresAt = Date.now() + 24 * 60 * 60 * 1000;
 const join: JoinMeetingResponse = {
   participantIdentity: 'demo-jamie',
-  participantName: 'Jamie Chen',
+  participantName: sunnyDesign ? '阿橙' : 'Jamie Chen',
   livekitUrl: 'wss://preview.invalid',
   token: 'inert-qa-token-not-a-credential',
   meetingExpiresAt: expiresAt,
   permissions: { publishSources: ['microphone'] }
 };
 const initialParticipants: MeetingParticipant[] = [
-  { identity: 'demo-jamie', name: 'Jamie Chen', isLocal: true, microphoneEnabled: false, isSharing: false },
-  { identity: 'demo-maya', name: 'Maya Patel', isLocal: false, microphoneEnabled: true, isSharing: true },
-  { identity: 'demo-oliver', name: 'Oliver Brooks', isLocal: false, microphoneEnabled: false, isSharing: false },
-  { identity: 'demo-sofia', name: 'Sofia Rivera', isLocal: false, microphoneEnabled: true, isSharing: false }
+  { identity: 'demo-jamie', name: sunnyDesign ? '阿橙' : 'Jamie Chen', isLocal: true, microphoneEnabled: false, isSharing: false },
+  { identity: 'demo-maya', name: sunnyDesign ? '小夏' : 'Maya Patel', isLocal: false, microphoneEnabled: true, isSharing: true },
+  { identity: 'demo-oliver', name: sunnyDesign ? '小白' : 'Oliver Brooks', isLocal: false, microphoneEnabled: false, isSharing: false },
+  { identity: 'demo-sofia', name: sunnyDesign ? '小满' : 'Sofia Rivera', isLocal: false, microphoneEnabled: true, isSharing: false }
 ];
 
 // Observable QA-only state lets browser checks prove requests stayed fake.
@@ -237,7 +242,7 @@ window.fetch = async (input, init) => {
   return block(`unhandled fetch ${method} ${url.pathname}`);
 };
 
-const poster = new URL('./illustrative-screen.svg', import.meta.url).href;
+const poster = sunnyDesign ? new URL('./assets/sunny-shared-screen.png', import.meta.url).href : new URL('./illustrative-screen.svg', import.meta.url).href;
 const posterTrack: LiveKitTrackAdapter = {
   kind: 'video',
   attach(element = document.createElement('video')) {
@@ -259,8 +264,17 @@ const posterTrack: LiveKitTrackAdapter = {
       context.font = '40px sans-serif'; context.fillText('All four edges remain visible', 80, 360);
       const artwork = new Image();
       artwork.onload = () => {
-        if (!portrait) context.drawImage(artwork, 12, 12, canvas.width - 24, canvas.height - 24);
+        document.documentElement.dataset.qaArtwork = 'loaded';
+        if (!portrait && sunnyDesign) {
+          context.fillStyle = '#fffaf3'; context.fillRect(0, 0, canvas.width, canvas.height);
+          const scale = Math.min(canvas.width / artwork.naturalWidth, canvas.height / artwork.naturalHeight);
+          const width = artwork.naturalWidth * scale, height = artwork.naturalHeight * scale;
+          context.drawImage(artwork, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
+        } else if (!portrait) context.drawImage(artwork, 12, 12, canvas.width - 24, canvas.height - 24);
+        const frameTrack = (element.srcObject as MediaStream | null)?.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack | undefined;
+        frameTrack?.requestFrame?.();
       };
+      artwork.onerror = () => { document.documentElement.dataset.qaArtwork = 'failed'; };
       artwork.src = poster;
       element.srcObject = canvas.captureStream(5);
       element.muted = true;
@@ -287,9 +301,9 @@ function createFixtureController(scene: Scene) {
     })),
     microphoneEnabled: false,
     audioPlaybackBlocked: false,
-    screenShareAuthorized: scene === 'host',
+    screenShareAuthorized: scene === 'host' && !sunnyDesign,
     ...(scene !== 'idle' ? { remoteScreenShare: {
-      track: posterTrack, sharerIdentity: 'demo-maya', sharerName: 'Maya Patel'
+      track: posterTrack, sharerIdentity: 'demo-maya', sharerName: initialParticipants[1].name
     } } : {})
   };
   function update(patch: Partial<MeetingRoomState>) {
@@ -313,7 +327,7 @@ function createFixtureController(scene: Scene) {
     async resumeAudioPlayback() { update({ audioPlaybackBlocked: false }); }
   };
   const api: MeetingRoomApi = {
-    async authorizeHost() { if (scene !== 'host') throw new ApiRequestError('Demo participant is not the host.', 403); },
+    async authorizeHost() { if (scene !== 'host' && !sunnyDesign) throw new ApiRequestError('Demo participant is not the host.', 403); },
     async verifyParticipantShare() { if (!state.screenShareAuthorized) throw new ApiRequestError('No demo share grant.', 403); },
     async grantShare(_slug, identity) {
       diagnostics.actions.push(`fake-grant:${identity}`);

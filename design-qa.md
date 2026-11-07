@@ -1,92 +1,61 @@
-# Babagan frontend verification
+# Babagan meeting redesign — Sunny companions
 
-## Result
+Date: 2026-11-08 (Asia/Hong_Kong)
 
 final result: passed
 
-No actionable P0/P1/P2 findings remain in the scoped frontend review. This is an implementation of the approved visual direction and subsequent user edits, not a pixel-identical copy of the generated concepts. Live media acceptance is deliberately outside this verification.
+## Visual target and scope
 
-## Visual truth and evidence
+- Selected visual truth: `docs/acceptance/meeting-sunny-2026-11-08/selected-reference.png`, the third displayed Product Design concept.
+- User amendment after seeing the implementation: “移动端这底部排版不合理pc端的也是”. The final footer therefore deliberately replaces the mock's detached circular chevrons: four equal primary actions on phones, compact split controls on desktop, and phone audio/share settings inside the existing More menu.
+- Existing application components and real capture/media/permissions remain in use. No prototype replaces the product runtime.
+- The generated landscape is only a synthetic QA media source under `apps/web/qa/assets/`. It is never substituted for a user's shared screen and is not an entry in the production build.
 
-- Source: `../babagan_concepts/Babagan-revised-receiver.png`, `Babagan-revised-settings.png`, `Babagan-revised-host.png` (each 1487×1058 pixels).
-- Branding: `../babagan_concepts/Babagan-logo-01.png` icon only; `Babagan-logo-03.png` wordmark only. The people pictogram is not used.
-- Actual cloud Chromium screenshots: `../babagan-qa/receiver-desktop-zh.png`, `settings-desktop-zh.png`, `host-desktop-zh.png`, `create-desktop-zh.png` at 1488×1056 CSS/pixels, 1× density.
-- Mobile evidence: `receiver-mobile-zh.png`, `volumes-mobile-zh.png`, `settings-mobile-zh.png`, `lobby-mobile-zh.png` at 390×844; `idle-mobile-320-zh.png` at 320×640. Screenshots contain the app viewport, not device chrome.
-- Full-view combined comparison: `../babagan-qa/design-comparison-final.png`. Reference and implementation were rendered together at 744×528 per panel; the sub-0.2% source-size normalization is immaterial to these findings.
-- Focused settings typography/control and logo comparison: `../babagan-qa/design-comparison-details-final.png`. The small rendered icon is enlarged for silhouette inspection, not judged for enlarged screenshot sharpness.
-- Earlier comparison evidence: `design-comparison.png` and `design-comparison-details.png`.
-- Delivery bundle maps the screenshot filenames above into `screenshots/` and includes source references in `references/`.
+## Evidence and normalization
 
-The shared-screen image and participant names are fictional QA content. The screen video is a poster-only fixture, so its content/aspect ratio intentionally differs from the illustrative slides in the concepts. Production does not import that poster or the QA entry.
+- Final implementation: `http://127.0.0.1:4183/qa/preview.html?scene=receiver&design=sunny`.
+- Source dimensions: 1487 × 1058. Final desktop capture: 1487 × 1058 CSS and screenshot pixels, density 1; no resampling, crop or device frame.
+- Final full-view comparison: selected reference and `docs/acceptance/meeting-sunny-2026-11-08/desktop.jpg` were opened together in the same comparison input. Earlier 1488 × 1056 captures were used during iteration only; the one/two-pixel difference was not treated as a typography defect.
+- Focused review: header identity/metadata, member rows and bottom control groups inspected in the full-resolution paired inputs. Their text and icons are readable at that resolution. Browser geometry additionally checked all primary hit targets and the error-message/tool-row boundary. No post-processed image crop is used as evidence.
+- `mobile.jpg`: 390 × 844, Chinese, four-action footer. `mobile-english.jpg`: 320 × 640, English. `mobile-error.jpg`: 320 × 640, denied fullscreen.
+- `landscape.jpg`: 844 × 390, four-action footer. `fullscreen.jpg`: 844 × 390, isolated browser-shaped fullscreen state. `idle.jpg`: 1280 × 720 waiting state.
+- All captures use the real MeetingRoomPage with mocked network, device and media boundaries. No real meeting or phone was accessed.
+
+## Findings and comparison history
+
+1. **Resolved P2 — desktop type hierarchy too small.** Initial header/participant labels were visually weaker than the selected image. Large desktop now uses a 34px title, 20px metadata/navigation and 21px names. Phone sizes remain compact. Verified in final desktop evidence.
+2. **Resolved P2 — footer grouping and alignment.** The user identified detached arrow buttons and uneven spacing on both platforms. The former dock overrides were removed from the theme and replaced with one dedicated dock stylesheet. Phones expose four equal columns; desktop arrows share the microphone/share boundary. Final measured widths: four × 88px at 390px, four × 70.5px at 320px, and four × 125.5px at 844px landscape. Primary hit regions are 66px tall on phones; inline desktop arrows remain at least 44px wide. No horizontal overflow.
+3. **Resolved P2 — hidden mobile leave icon / oval icons.** Legacy span rules affected the new wrappers. Specific final dock rules restore icons and labels and fix their dimensions. Verified in final phone captures.
+4. **Resolved P2 — visible and accessible navigation labels differed.** Connection info's accessible name now includes the visible label and the existing WebRTC data description, in both languages.
+5. **Resolved P2 — display failure message covered viewing controls.** Normal-view errors now occupy a separate flow row below the tools. At 320px, the message starts at the tools' bottom; PiP and fullscreen remain clickable. Fullscreen-only exit remains independently positioned.
+6. **Resolved P2 — hidden settings arrows broke keyboard handoff.** On phones More opens the first usable setting, Escape returns to More, and changing volume or receiving a room update does not steal focus. Opening/switching focus is separate from callback/listener refresh. A regression test first reproduced the focus steal and then passed after the fix.
+7. **Resolved P2 — short desktop footer and decorations consumed space.** Compact windows use the shorter footer; the nonessential brand note hides at low heights. Empty-stage radius/background now follow the bounded waiting surface. Verified in final idle and landscape captures.
+8. **Resolved P2 — fullscreen tools remained visible when the QA fullscreen target moved outside the meeting ancestor.** The component's `[hidden]` rule now owns this invariant. Verified entry, exit and return focus; media remains `object-fit: contain`.
 
 ## Required fidelity surfaces
 
-- **Typography:** System sans-serif stack with Chinese fallbacks, dark readable headings, 14px settings fields, compact labels and clear hierarchy. Original descriptive option labels and accessible names remain. Native selects can ellipsize long selected quality labels; the complete option is exposed when opened. The rounded olive wordmark uses the selected artwork, rather than an approximate installed font.
-- **Spacing/layout:** Warm-white canvas, 96px desktop rail, generous stage, right settings/participant panels and mobile sheets. Stage remains aspect-ratio-contained instead of cropping real shared content. Desktop panels shrink the workspace on wide screens and overlay it at narrower widths. Mobile controls fit 320px; drawers scroll independently.
-- **Colors/tokens:** Canvas `#faf9f6`, text `#202726`, olive accent `#617a50`, subtle `#e3e4de` borders. Muted/disabled/share/error states remain distinguishable. Visible keyboard-focus rings are retained.
-- **Assets:** Selected abstract B in icon-only rail; selected rounded olive name in create/lobby header. A low-opacity hole in the first extraction was corrected. Both assets are transparent raster-backed SVGs, not resolution-independent path artwork; normal-size clarity is good. No concept-board raster is rendered as app UI.
-- **Copy/content:** Existing English/Chinese messages, real controls, conditions and provider availability remain authoritative. QA locale is Chinese only inside its disposable fixture; production language inference/storage is unchanged. Latest user edits supersede mock content: one bottom-bar Volume entry on every screen size, and one member avatar per management row.
+- **Typography:** existing system Chinese/Latin font stack retained, readable weights and hierarchy, no new external font fetch. Large-screen emphasis now matches the selected direction. Compact footer labels fit in Chinese and English.
+- **Spacing/layout:** large complete shared frame, right member list and persistent bottom actions remain. Responsive roster scrolling does not hide the footer. The revised footer follows the user's later direction rather than the superseded mock detail.
+- **Colors/tokens:** warm white, clear orange, neutral text and semantic red/green. Orange fullscreen uses dark text for legibility instead of the mock's low-contrast white. No gradients, animated decorations or video filters were added.
+- **Image quality:** existing Sigrika brand assets retained, with a restrained desktop-only note. The QA slide is a real generated raster. The rounded media frame has an inset so source corners are not clipped; fullscreen remains unpadded. No decorative artwork is recreated with CSS/SVG approximations.
+- **Copy/content:** real source dimensions are shown instead of hardcoded “60 FPS”. The host marker is shown only for a confirmed local host. Microphone enabled state is not misrepresented as active speaking. Existing host permission/takeover behavior is preserved, so the QA host's share control may be available where the concept was disabled. Elapsed time is live.
 
-## Comparison history and fixes
+## Interaction and regression verification
 
-1. **P1 no-notice stage geometry:** empty notices could move the size-contained stage to an auto-height grid row. Fixed with explicit workspace grid row 3. Actual no-notice desktop stage measured 549px at 1180×757; final screenshots show full-height stage.
-2. **P2 unified roster microphone semantics:** a generic labelled span did not expose its status as a named semantic object. Added `role="img"`; regression failed before and passed after the fix.
-3. **P2 settings alignment:** unequal help text stretched neighbouring select rows. Added start alignment; final focused screenshot shows aligned 44px selectors.
-4. **P2 redundant volume entries, updated user requirement:** both old mobile buttons opened the same panel. Replaced actual-room entries with one Volume/音量 button at all widths. Independent call/share sliders are inside the panel, with shared volume conditional on receiving a share. Final desktop/mobile screenshots and regression tests cover this.
-5. **P2 B-mark opacity defect:** earlier extracted icon had an unwanted low-opacity hole in its lower lobe. Replaced with closer source extraction, verified zero enclosed low-alpha holes at thresholds 64/128/200, and inspected final focused comparison.
-6. **Motion enhancement:** restrained entry and interaction motion added and observed in the running browser. A follow-up completed scoped closing transitions using presentation-only presence, without document-level snapshots or media remounts.
-
-## Interaction and accessibility verification
-
-- Desktop and mobile: one closed volume entry; independent keyboard-adjusted call/shared values (95/90) and 100/100 initial values.
-- Idle state: only call slider; no false shared slider.
-- Settings drawer: background inert/hidden from accessibility tree; Escape restores Settings focus. Mobile More → Audio/devices → Back → Escape restores More focus.
-- Host mock API: revoke current share enables eligible rows; grant another member updates the sharing row and disables competing grants. One roster, distinct status/action labels, separate End control.
-- Authorization/default/media regression suite also covers host-session guards, manual bitrate protection, muted join, persistence and existing media callbacks.
-- Runtime motion: 180ms popover entry/140ms exit, 220ms drawer entry/160ms exit, 180ms menu/backdrop entry; easing `cubic-bezier(.22,1,.36,1)`. Button press feedback is 90ms. `motion-runtime.json` records real transition start/end events for opening and closing; stage attached once and detached zero times across panel cycles.
-- Closing immediately disables accessibility/pointer interaction and restores focus/background access. The noninteractive node remains for 180ms (popover) or 200ms (drawer/modal), covering its visual exit plus 40ms paint allowance. Reopening cancels stale cleanup. `prefers-reduced-motion` disables transitions/animations and removes the closing node immediately. Native browser select menus are not custom animated. OS-level reduced-motion emulation was not exercised in this browser.
-- Console inspection found cloud browser-extension metadata errors. Hot-module replacement briefly produced duplicate-root warnings in the QA entry; a disposal cleanup and fresh reload resolved that fixture-only warning. The poster-only video has no playable source by design.
-
-## Automated verification
-
-On the final product code and assets:
-
-- `pnpm test`: 64 files, 892 tests passed.
-- `pnpm lint`: passed.
-- `pnpm typecheck`: passed.
-- `pnpm build`: passed; Vite reports the existing large JavaScript chunk warning (about 1.04MB, 290KB gzip).
-- `git diff --check`: passed.
-- The first earlier root run had one exact-millisecond reconnect test flake (29999 vs 30000); isolated and subsequent full runs passed. No reconnect behavior/test was changed.
-
-## Residual scope and follow-up polish
-
-- No live microphone/camera/screen-capture, real meeting, production provider, deployment or acoustic separation acceptance was run. Separate audio routing is established by source inspection and isolated assertions, not audible testing.
-- Branding can later be supplied as original vector paths for smaller payloads. Current assets preserve the chosen appearance but are raster-backed.
-- Exit presence tests cover Escape, outside close, rapid replacement/reopen, immediate focus/background unlock, reduced-motion changes and unmount cleanup. The drawer width is retained through exit to avoid a 30rem-to-26rem snap.
-- The developer QA fixture is excluded from the ordinary Vite production build. It must remain a development-only entry.
+- Browser: microphone toggle and participant-state update; audio output selection; separate call/shared volume; 1080p60 selection; advanced codec/transport/10 Mbps settings; More-to-audio settings; keyboard Escape/focus return; volume updates without focus theft; fullscreen entry/exit; denied fullscreen; desktop/portrait/landscape layouts; English narrow labels; waiting state.
+- Primary browser viewport checks: 1487×1058, 1280×720, 390×844, 320×640, 844×390. No horizontal overflow in checked states; every final phone primary control is wider than 44px.
+- Browser console: no errors/warnings in the final normal preview.
+- Full Web suite before final footer refinement: 78 files / 903 tests passed. Final footer/focus change: complete controls + room suites, 80 tests passed, including new mobile/reduced-motion/focus-update cases. Final translated labels also passed 61 focused tests. Typecheck, changed-source lint and production build passed.
+- Physical Android system PiP/fullscreen and real multi-party media load were not re-run for this presentation change. No native capture, codec, rate-control, API or SFU logic was changed.
 
 ## Implementation checklist
 
-- [x] Warm-white rail/stage/panels, responsive create/lobby.
-- [x] Unified member-management rows and separate End action.
-- [x] One bottom-bar volume entry with independent conditional sliders.
-- [x] Original defaults, stored-setting compatibility and permission guards.
-- [x] Selected mark/wordmark, corrected opacity defect.
-- [x] Restrained motion and reduced-motion CSS.
-- [x] Isolated tests/build, visual comparisons and cloud-browser interaction QA.
-- [x] Reviewable patch and source/evidence bundle; feature-branch publication authorized separately, with no merge or deployment.
+- [x] Preserve actual product behavior and media nodes.
+- [x] Match selected visual system with the user's amended footer layout.
+- [x] Verify desktop, phone, short-screen and failure states.
+- [x] Complete keyboard/focus and regression checks.
+- [x] Retain a local isolated preview and saved evidence.
 
-## Selected-icon replacement — 2026-10-13
+## Follow-up polish
 
-The later user-selected `image(5).png` replaces the initial abstract B mark. Its approved silhouette is an olive rounded open screen/window, detached upper-right curved segment and inset lower-right leaf. The transparent extracted mark is delivered as PNG and an embedded-PNG SVG wrapper, not as vector paths. The approved rounded Babagan wordmark files remain byte-for-byte unchanged.
-
-- Updated the meeting rail mark to its landscape aspect ratio (44×37 CSS pixels).
-- Added production SVG/32px browser favicons and a 180px warm-white home-screen icon; no manifest, service worker, installation flow or new persistence.
-- The isolated QA pages use the same selected favicon.
-- Inspected the selected source and actual Chinese receiver screenshot at 1488×1056; the three identifying shape features remain readable at rail size. Inspected the 32px favicon and home-screen icon separately. Captured the unchanged rounded wordmark in the 390×844 mobile lobby.
-- Actual screenshots: `babagan-icon-qa/receiver-desktop-zh.png` and `babagan-icon-qa/lobby-mobile-zh.png` in the delivery workspace. The cloud preview runs the clean updater worktree at base `e470eee1a7598fc84ae592ef7252df176b48f430` plus the icon-only changes.
-- Single Volume button smoke-tested: its two guarded source sliders still open at 100%. No media capture or live service is used.
-- New asset/link tests were observed failing before implementation and passing after it. Final test count for this replacement is 895 tests in 65 files; lint, typecheck and build pass, with the same large-chunk warning.
-- No provider, device, quality, codec, bitrate, audio default, authorization, motion, network or update-script code was changed in this replacement.
-
-Icon replacement final result: passed.
+No remaining P0/P1/P2. Platform font rasterization and varying participant-name lengths can differ from the generated mock; these are expected product conditions, not placeholder content.

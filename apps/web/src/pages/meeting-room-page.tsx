@@ -17,6 +17,8 @@ import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { resolveActiveSharer } from '../meeting/active-share.js';
 import { LanguageSelector } from '../components/language-selector.js';
 import './meeting-room-layout.css';
+import './meeting-sunny-theme.css';
+import './meeting-sunny-dock.css';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
@@ -25,6 +27,7 @@ import { MeetingDrawer, type MeetingPanel } from '../components/meeting-drawer.j
 import { MeetingMenu, type MeetingMenuAction } from '../components/meeting-menu.js';
 import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
+import { MeetingBrandNote } from '../components/meeting-brand-note.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { useExitPresence } from '../components/use-exit-presence.js';
@@ -1185,7 +1188,8 @@ export function MeetingRoomPage({
       setMeetingPanel(null); setMeetingPanelParent(null); setMembersExpanded(true);
     } else if (action === 'audio-devices' || action === 'screen-settings') {
       // Hand off before the menu unmounts, including reduced-motion mode.
-      (action === 'audio-devices' ? audioSettingsButtonRef : shareSettingsButtonRef).current?.focus();
+      const trigger = (action === 'audio-devices' ? audioSettingsButtonRef : shareSettingsButtonRef).current;
+      if (trigger && getComputedStyle(trigger).display !== 'none') trigger.focus();
       setMeetingPanel(null); setMeetingPanelParent(null); setQuickPanel(action === 'audio-devices' ? 'audio' : 'share');
     }
     else if (action === 'webrtc-stats') { setMeetingPanelParent('more'); setMeetingPanel('stats'); }
@@ -1210,6 +1214,7 @@ export function MeetingRoomPage({
       settingsButtonRef={settingsButtonRef}
       statsButtonRef={statsButtonRef}
       statsLabel={t('controls.webrtcData')}
+      statsVisibleLabel={t('controls.connectionInfo')}
       onStats={() => { statsOpenerRef.current = statsButtonRef; openMeetingPanel('stats'); }}
       activePanel={meetingPanel ?? (membersExpanded ? 'participants' : null)}
       participants={state.participants}
@@ -1310,7 +1315,7 @@ export function MeetingRoomPage({
       </div>
       <aside ref={membersSidebarRef} tabIndex={-1} className="meeting-members-sidebar" aria-label={t('participants.label')}>
         <button type="button" className="meeting-members-close" aria-label={t('controls.closePanel')} onClick={() => { setMembersExpanded(false); participantButtonRef.current?.focus(); }}><X size={20} aria-hidden="true" /></button>
-        <ParticipantList participants={displayParticipants} />
+        <ParticipantList participants={displayParticipants} localHostIdentity={hostAuthorized ? join.participantIdentity : undefined} />
         <details className="meeting-management">
           <summary>{t('room.management')}</summary>
           {hostAuthorized ? <>
@@ -1336,10 +1341,12 @@ export function MeetingRoomPage({
 
           </>}
         </details>
+        <MeetingBrandNote />
       </aside>
         <MeetingControls
           {...meetingControlsProps}
           className="meeting-control-dock"
+          screenShareOccupied={hasActiveScreenShare && !screenState.stream && activeSharer.identity !== join.participantIdentity}
           includeSettings={false}
           audioSettingsButtonRef={audioSettingsButtonRef}
           shareSettingsButtonRef={shareSettingsButtonRef}
