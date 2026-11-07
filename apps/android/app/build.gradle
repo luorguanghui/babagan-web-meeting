@@ -1,0 +1,33 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'cloud.babagan.meeting'
+    compileSdk 36
+    defaultConfig {
+        applicationId 'cloud.babagan.meeting'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName '0.1.0'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    buildTypes { release { minifyEnabled false } }
+    testOptions { unitTests.returnDefaultValues = true }
+    sourceSets { main.assets.srcDir(layout.buildDirectory.dir('generated/update-assets')) }
+}
+
+tasks.register('prepareUpdatePublicKey', Copy) {
+    doFirst { if (!file('../../../scripts/client-update-public-key.json').isFile()) throw new GradleException('Missing pinned public update key') }
+    from('../../../scripts/client-update-public-key.json')
+    into(layout.buildDirectory.dir('generated/update-assets'))
+}
+tasks.named('preBuild').configure { dependsOn 'prepareUpdatePublicKey' }
+
+dependencies {
+    implementation 'androidx.webkit:webkit:1.14.0'
+    implementation 'io.github.webrtc-sdk:android:144.7559.15'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.json:json:20250517'
+}

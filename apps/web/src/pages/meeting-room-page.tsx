@@ -58,6 +58,10 @@ import {
 } from '../meeting/screen-share.js';
 import { createP2pStatsCollector, type P2pStatsCollector } from '../meeting/p2p-stats.js';
 import { captureNativeScreen, NativeCaptureError, readNativeCaptureConnection } from '../meeting/native-capture.js';
+import { acquireClientMeeting, setClientMicrophoneEnabled, useClientHost } from '../client/client-host.js';
+import { captureAndroidScreen } from '../client/android-capture.js';
+import { ClientHostError } from '../client/host-bridge.js';
+import { ClientUpdateStatus } from '../client/client-update-status.js';
 import { useCloudflareScreen } from '../meeting/use-cloudflare-screen.js';
 import type { CloudflareScreenRecovery } from '../meeting/cloudflare-recovery.js';
 import { CloudflareTurnFallback } from '../meeting/cloudflare-turn-fallback.js';
@@ -211,6 +215,9 @@ export function MeetingRoomPage({
   onTerminal
 }: MeetingRoomPageProps) {
   const { t } = useI18n();
+  const { host: clientHost } = useClientHost();
+  const isAndroidClient = clientHost?.platform === 'android';
+  const browserCaptureUnsupported = !clientHost && !getDisplayMedia && typeof navigator.mediaDevices?.getDisplayMedia !== 'function';
   const [controller] = useState(() => providedController ?? controllerFactory());
   const [p2pStats] = useState(() => (createStatsCollector ?? (() => createP2pStatsCollector({ slug })))());
   const refresh = useCallback((signal?: AbortSignal) => apiRequest<RefreshParticipantTokenResponse>(
@@ -220,6 +227,14 @@ export function MeetingRoomPage({
   ), [slug]);
   const { state, error: connectionError, reconnectState, reconnectRateLimited, stopRecovery } = useMeetingRoom(join, controller, refresh);
   const [sessionActive, setSessionActive] = useState(true);
+  useEffect(() => {
+    if (!sessionActive || reconnectState.kind === 'terminal' || reconnectState.kind === 'rejoin-required') return;
+    return acquireClientMeeting();
+  }, [clientHost, sessionActive, reconnectState.kind]);
+  useEffect(() => {
+    if (clientHost?.platform !== 'android') return;
+    setClientMicrophoneEnabled(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required' && state.microphoneEnabled);
+  }, [clientHost, sessionActive, reconnectState.kind, state.microphoneEnabled]);
   useMeetingExitGuard(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required');
   useMeetingMediaSession(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required', meetingName || 'Babagan', () => { void leave(); });
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -256,8 +271,8 @@ export function MeetingRoomPage({
   const [hostAuthorization, setHostAuthorization] = useState<HostAuthorizationState>('unknown');
   const hostAuthorizedRef = useRef(false);
   const [nativeCaptureConnection] = useState(() => readNativeCaptureConnection());
-  const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection ? 'auto' : 'h264');
-  const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection));
+  const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection || isAndroidClient ? 'auto' : 'h264');
+  const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection) || isAndroidClient);
   const nativeCaptureEnabledRef = useRef(nativeCaptureEnabled);
   const [screenSourceTransport, setScreenSourceTransport] = useState<'p2p' | 'cloudflare-sfu'>('p2p');
   const screenSourceTransportRef = useRef<'p2p' | 'cloudflare-sfu'>('p2p');
@@ -269,7 +284,7 @@ export function MeetingRoomPage({
   const browserEncodingPreferenceRef = useRef<'hardware' | 'compatible'>('hardware');
   const [projectMediaError, setProjectMediaError] = useState<string>();
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(() => readScreenBitrate());
-  const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(nativeCaptureConnection ? 'motion' : screenShareDefaultQuality);
+  const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(nativeCaptureConnection && !isAndroidClient ? 'motion' : screenShareDefaultQuality);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
   const [viewerCount, setViewerCount] = useState(0);
@@ -382,9 +397,12 @@ export function MeetingRoomPage({
       ? meetingApi.grantShare(slug, join.participantIdentity)
       : meetingApi.verifyParticipantShare(slug),
     releaseGrant: () => meetingApi.releaseOwnShare(slug),
-    getDisplayMedia: getDisplayMedia ?? ((constraints, signal) => nativeCaptureEnabledRef.current && nativeCaptureConnection
-      ? captureNativeScreen(nativeCaptureConnection, constraints, { signal })
-      : navigator.mediaDevices.getDisplayMedia(constraints)),
+    getDisplayMedia: getDisplayMedia ?? ((constraints, signal) => {
+      if (clientHost?.platform === 'android') return captureAndroidScreen(clientHost, constraints, { signal });
+      if (nativeCaptureEnabledRef.current && nativeCaptureConnection) return captureNativeScreen(nativeCaptureConnection, constraints, { signal });
+      if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return Promise.reject(new ClientHostError('unsupported', 'Browser screen capture is unavailable.'));
+      return navigator.mediaDevices.getDisplayMedia(constraints);
+    }),
     ...(supportsOwnAudioRestriction ? { supportsOwnAudioRestriction } : {}),
     chooseUnrestrictedSystemAudio,
     cancelPendingCapture: () => resolveSystemAudioDecision('cancel'),
@@ -451,7 +469,7 @@ export function MeetingRoomPage({
         if (hybrid) await hybrid.release(stream);
       }
     }
-  }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection]);
+  }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection, clientHost]);
 
   useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
   // Quality, roster, network recovery and stop/start never raise the chosen cap.
@@ -923,7 +941,8 @@ export function MeetingRoomPage({
       if (screenState.status === 'sharing') await screenShare.stop();
       else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'cloudflare-sfu' ? 'browser' : screenEncodingEngine);
     } catch (error) {
-      if (error instanceof NativeCaptureError) setNotice(t(`native.error.${error.code}`));
+      if (error instanceof ClientHostError) setNotice(t(error.code === 'unsupported' ? 'client.mobileShareUnsupported' : 'client.captureFailed'));
+      else if (error instanceof NativeCaptureError) setNotice(t(`native.error.${error.code}`));
       else if (screenSourceTransportRef.current === 'cloudflare-sfu') cf.reportError(error);
       else setNotice(t('room.shareFailed'));
     }
@@ -1108,7 +1127,8 @@ export function MeetingRoomPage({
       browserEncodingPreferenceRef.current = value; setBrowserEncodingPreference(value);
     },
     screenEncodingEngine,
-    nativeCaptureAvailable: Boolean(nativeCaptureConnection),
+    nativeCaptureAvailable: Boolean(nativeCaptureConnection) || isAndroidClient,
+    nativeCapturePlatform: clientHost?.platform,
     nativeCaptureEnabled,
     onNativeCaptureChange: (enabled) => { nativeCaptureEnabledRef.current = enabled; setNativeCaptureEnabled(enabled); },
     onScreenEncodingEngineChange: setScreenEncodingEngine,
@@ -1194,7 +1214,8 @@ export function MeetingRoomPage({
       {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
       {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
-      {screenState.audioGuidance && <p role="status">{localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
+      {screenState.audioGuidance && <p role="status">{isAndroidClient ? t('client.androidAudioHint') : localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
+      {browserCaptureUnsupported && <p role="status">{t('client.mobileShareUnsupported')} <a href="/#downloads" target="_blank" rel="noopener noreferrer">{t('client.getAndroid')}</a></p>}
       {audioDecisionPresence.value && <section
         className="system-audio-warning"
         data-state={audioDecisionPresence.exiting ? 'exiting' : 'open'}
@@ -1241,6 +1262,7 @@ export function MeetingRoomPage({
     ><p className="meeting-settings-description">{t('room.settingsDescription')}</p>
       <div className="meeting-general-language"><LanguageSelector /></div>
       <MeetingSettings {...meetingControlsProps} section="general" onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
+      {clientHost && <div className="meeting-client-status"><ClientUpdateStatus />{isAndroidClient && <p>{t('client.androidAudioHint')}</p>}</div>}
       <p className="meeting-settings-callout">{t('room.settingsHint')}</p></MeetingDrawer>}
     {displayedPanel === 'more' && <MeetingDrawer
       modal={false}

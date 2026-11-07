@@ -6,7 +6,7 @@ using System.Security.Cryptography;
 
 namespace Babagan {
   internal static class Package {
-    internal const string Version = "0.2.1";
+    internal const string Version = "0.2.2";
     internal const string NodeUrl = "https://meet.babagan.cloud/downloads/runtime/node-v24.15.0-win-x64.zip";
     internal const string NodeHash = "cc5149eabd53779ce1e7bdc5401643622d0c7e6800ade18928a767e940bb0e62";
     internal const string FfmpegUrl = "https://meet.babagan.cloud/downloads/runtime/ffmpeg-9.0.2-essentials_build.zip";

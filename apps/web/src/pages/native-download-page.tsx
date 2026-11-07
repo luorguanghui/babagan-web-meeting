@@ -1,6 +1,10 @@
 import { useEffect, useState } from 'react';
 import { TaskPageLayout } from '../components/task-page-layout.js';
 import { useI18n } from '../i18n/i18n.js';
+import { ClientDownloads } from './client-downloads.js';
+import { homeCopy } from './home-copy.js';
+import './home-page.css';
+import './native-download-page.css';
 
 interface NativeRelease { version: string; url: string; sha256: string; bytes: number }
 function validRelease(value: unknown): value is NativeRelease {
@@ -11,7 +15,8 @@ function validRelease(value: unknown): value is NativeRelease {
     && /^[a-f0-9]{64}$/.test(release.sha256) && Number.isSafeInteger(release.bytes) && release.bytes > 0;
 }
 export function NativeDownloadPage() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const copy = homeCopy[locale];
   const [release, setRelease] = useState<NativeRelease>();
   const [failed, setFailed] = useState(false);
   useEffect(() => {
@@ -24,10 +29,10 @@ export function NativeDownloadPage() {
     }).catch(() => { if (!abort.signal.aborted) setFailed(true); });
     return () => abort.abort();
   }, []);
-  return <TaskPageLayout eyebrow="BABAGAN · WINDOWS" title={t('native.downloadTitle')} lede={t('native.downloadLede')}
+  return <div className="native-download-page"><TaskPageLayout eyebrow={copy.componentType} title={t('native.downloadTitle')} lede={t('native.downloadLede')}
     context={<p>{t('native.receiverHint')}</p>}>
     <div className="native-download">
-      <div className="native-download-heading"><img src="/brand/babagan-desktop.png" alt="" width="64" height="64" /><h2>{t('native.downloadHeading')}</h2></div>
+      <div className="native-download-heading"><img src="/theme/sigrika-avatar.png" alt="" width="64" height="64" onError={event => { event.currentTarget.hidden = true; }} /><h2>{copy.componentType}</h2></div>
       <p>{t('native.downloadRequirements')}</p>
       {release ? <>
         <a className="primary-button native-download-button" href={release.url} download>{t('native.downloadButton')}</a>
@@ -43,5 +48,10 @@ export function NativeDownloadPage() {
       {release && <details><summary>{t('native.checksum')}</summary><code className="native-download-checksum">{release.sha256}</code></details>}
       <a href="/create">{t('native.backToMeeting')}</a>
     </div>
-  </TaskPageLayout>;
+  </TaskPageLayout>
+    <section className="native-client-section" aria-labelledby="native-client-title">
+      <div><h2 id="native-client-title">{copy.nativeFullTitle}</h2><p>{copy.nativeFullIntro}</p></div>
+      <ClientDownloads />
+    </section>
+  </div>;
 }

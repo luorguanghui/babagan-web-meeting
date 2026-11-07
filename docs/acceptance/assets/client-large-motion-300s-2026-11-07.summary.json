@@ -1,0 +1,497 @@
+{
+  "runtime": "WebView2",
+  "browser": "156.0.4314.58",
+  "input": "Cached synthetic 4096x2304 chart; full-viewport fast pan/diagonal/scroll/cuts; no desktop capture",
+  "bitrate": 10000000,
+  "snapshots": false,
+  "sampledSeconds": 300,
+  "errors": [],
+  "observerError": null,
+  "failure": null,
+  "stopped": true,
+  "all": {
+    "samples": 296,
+    "sourceFps": 59.987,
+    "encodedFps": 59.986,
+    "decodedFps": 59.959,
+    "encodedP05": 59.035,
+    "decodedP05": 52.922,
+    "actualMbps": 8.023,
+    "actualMbpsRange": [
+      5.918,
+      10.401
+    ],
+    "targetMbps": 6.169,
+    "targetMbpsRange": [
+      5.322,
+      7.425
+    ],
+    "availableMbps": 10,
+    "qp": 116.346,
+    "encodeMs": 5.314,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "visibility": [
+      "visible",
+      "hidden"
+    ]
+  },
+  "motion": {
+    "samples": 296,
+    "sourceFps": 59.987,
+    "encodedFps": 59.986,
+    "decodedFps": 59.959,
+    "encodedP05": 59.035,
+    "decodedP05": 52.922,
+    "actualMbps": 8.023,
+    "actualMbpsRange": [
+      5.918,
+      10.401
+    ],
+    "targetMbps": 6.169,
+    "targetMbpsRange": [
+      5.322,
+      7.425
+    ],
+    "availableMbps": 10,
+    "qp": 116.346,
+    "encodeMs": 5.314,
+    "loss": 0,
+    "sizes": [
+      "1920x1080"
+    ],
+    "visibility": [
+      "visible",
+      "hidden"
+    ]
+  },
+  "phases": {
+    "foreground": {
+      "samples": 16,
+      "sourceFps": 59.938,
+      "encodedFps": 60.001,
+      "decodedFps": 60.752,
+      "encodedP05": 59.035,
+      "decodedP05": 53.981,
+      "actualMbps": 8.699,
+      "actualMbpsRange": [
+        7.197,
+        10.401
+      ],
+      "targetMbps": 6.371,
+      "targetMbpsRange": [
+        5.678,
+        7.114
+      ],
+      "availableMbps": 10,
+      "qp": 80.815,
+      "encodeMs": 5.434,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "background-test": {
+      "samples": 20,
+      "sourceFps": 59.999,
+      "encodedFps": 59.999,
+      "decodedFps": 60.099,
+      "encodedP05": 59.187,
+      "decodedP05": 56.754,
+      "actualMbps": 8.29,
+      "actualMbpsRange": [
+        7.141,
+        9.386
+      ],
+      "targetMbps": 6.57,
+      "targetMbpsRange": [
+        6.156,
+        7.425
+      ],
+      "availableMbps": 10,
+      "qp": 112.138,
+      "encodeMs": 5.173,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "window-minimized": {
+      "samples": 20,
+      "sourceFps": 59.843,
+      "encodedFps": 59.843,
+      "decodedFps": 59.643,
+      "encodedP05": 57.813,
+      "decodedP05": 53.908,
+      "actualMbps": 7.972,
+      "actualMbpsRange": [
+        6.861,
+        8.986
+      ],
+      "targetMbps": 6.097,
+      "targetMbpsRange": [
+        5.688,
+        6.624
+      ],
+      "availableMbps": 10,
+      "qp": 143.239,
+      "encodeMs": 5.834,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "hidden"
+      ]
+    },
+    "foreground-restored": {
+      "samples": 240,
+      "sourceFps": 60.001,
+      "encodedFps": 59.996,
+      "decodedFps": 59.921,
+      "encodedP05": 59.044,
+      "decodedP05": 51.992,
+      "actualMbps": 7.96,
+      "actualMbpsRange": [
+        5.918,
+        10.262
+      ],
+      "targetMbps": 6.128,
+      "targetMbpsRange": [
+        5.322,
+        7.374
+      ],
+      "availableMbps": 10,
+      "qp": 116.824,
+      "encodeMs": 5.275,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    }
+  },
+  "motionKinds": {
+    "horizontal-pan": {
+      "samples": 115,
+      "sourceFps": 59.999,
+      "encodedFps": 59.999,
+      "decodedFps": 60.086,
+      "encodedP05": 59.035,
+      "decodedP05": 51.98,
+      "actualMbps": 8.376,
+      "actualMbpsRange": [
+        6.788,
+        10.401
+      ],
+      "targetMbps": 6.396,
+      "targetMbpsRange": [
+        5.457,
+        7.425
+      ],
+      "availableMbps": 10,
+      "qp": 85.915,
+      "encodeMs": 5.28,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "diagonal-pan": {
+      "samples": 91,
+      "sourceFps": 59.956,
+      "encodedFps": 59.944,
+      "decodedFps": 59.791,
+      "encodedP05": 59.016,
+      "decodedP05": 54.992,
+      "actualMbps": 7.959,
+      "actualMbpsRange": [
+        6.627,
+        9.959
+      ],
+      "targetMbps": 6.177,
+      "targetMbpsRange": [
+        5.611,
+        6.886
+      ],
+      "availableMbps": 10,
+      "qp": 141.589,
+      "encodeMs": 5.357,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible",
+        "hidden"
+      ]
+    },
+    "fast-scroll": {
+      "samples": 90,
+      "sourceFps": 60.002,
+      "encodedFps": 60.013,
+      "decodedFps": 59.968,
+      "encodedP05": 59.039,
+      "decodedP05": 51.992,
+      "actualMbps": 7.635,
+      "actualMbpsRange": [
+        5.918,
+        9.464
+      ],
+      "targetMbps": 5.872,
+      "targetMbpsRange": [
+        5.322,
+        6.386
+      ],
+      "availableMbps": 10,
+      "qp": 129.707,
+      "encodeMs": 5.314,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "hidden",
+        "visible"
+      ]
+    }
+  },
+  "trendSegments": {
+    "first30": {
+      "rangeSeconds": [
+        5,
+        30
+      ],
+      "samples": 25,
+      "sourceFps": 59.961,
+      "encodedFps": 60.001,
+      "decodedFps": 60.641,
+      "encodedP05": 59.037,
+      "decodedP05": 54.996,
+      "actualMbps": 8.697,
+      "actualMbpsRange": [
+        7.141,
+        10.401
+      ],
+      "targetMbps": 6.526,
+      "targetMbpsRange": [
+        5.678,
+        7.425
+      ],
+      "availableMbps": 10,
+      "qp": 80.618,
+      "encodeMs": 5.363,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "middle30": {
+      "rangeSeconds": [
+        135,
+        165
+      ],
+      "samples": 30,
+      "sourceFps": 59.999,
+      "encodedFps": 59.965,
+      "decodedFps": 59.966,
+      "encodedP05": 59.039,
+      "decodedP05": 52.006,
+      "actualMbps": 7.894,
+      "actualMbpsRange": [
+        6.361,
+        9.959
+      ],
+      "targetMbps": 6.035,
+      "targetMbpsRange": [
+        5.322,
+        6.557
+      ],
+      "availableMbps": 10,
+      "qp": 136.816,
+      "encodeMs": 5.293,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "last30": {
+      "rangeSeconds": [
+        270,
+        300
+      ],
+      "samples": 30,
+      "sourceFps": 60,
+      "encodedFps": 59.999,
+      "decodedFps": 59.965,
+      "encodedP05": 58.997,
+      "decodedP05": 51.029,
+      "actualMbps": 8.343,
+      "actualMbpsRange": [
+        7.03,
+        10.235
+      ],
+      "targetMbps": 6.419,
+      "targetMbpsRange": [
+        5.627,
+        7.374
+      ],
+      "availableMbps": 10,
+      "qp": 86.143,
+      "encodeMs": 5.274,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    }
+  },
+  "repeatedHorizontal": {
+    "0-30s": {
+      "samples": 25,
+      "sourceFps": 59.961,
+      "encodedFps": 60.001,
+      "decodedFps": 60.641,
+      "encodedP05": 59.037,
+      "decodedP05": 54.996,
+      "actualMbps": 8.697,
+      "actualMbpsRange": [
+        7.141,
+        10.401
+      ],
+      "targetMbps": 6.526,
+      "targetMbpsRange": [
+        5.678,
+        7.425
+      ],
+      "availableMbps": 10,
+      "qp": 80.618,
+      "encodeMs": 5.363,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "90-120s": {
+      "samples": 30,
+      "sourceFps": 60.03,
+      "encodedFps": 59.997,
+      "decodedFps": 59.831,
+      "encodedP05": 59.927,
+      "decodedP05": 52.985,
+      "actualMbps": 8.167,
+      "actualMbpsRange": [
+        6.861,
+        9.925
+      ],
+      "targetMbps": 6.364,
+      "targetMbpsRange": [
+        5.525,
+        7.267
+      ],
+      "availableMbps": 10,
+      "qp": 89.351,
+      "encodeMs": 5.283,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "180-210s": {
+      "samples": 30,
+      "sourceFps": 59.999,
+      "encodedFps": 59.999,
+      "decodedFps": 59.999,
+      "encodedP05": 59.034,
+      "decodedP05": 51.98,
+      "actualMbps": 8.349,
+      "actualMbpsRange": [
+        6.788,
+        10.262
+      ],
+      "targetMbps": 6.296,
+      "targetMbpsRange": [
+        5.457,
+        7.251
+      ],
+      "availableMbps": 10,
+      "qp": 86.664,
+      "encodeMs": 5.214,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    },
+    "270-300s": {
+      "samples": 30,
+      "sourceFps": 60,
+      "encodedFps": 59.999,
+      "decodedFps": 59.965,
+      "encodedP05": 58.997,
+      "decodedP05": 51.029,
+      "actualMbps": 8.343,
+      "actualMbpsRange": [
+        7.03,
+        10.235
+      ],
+      "targetMbps": 6.419,
+      "targetMbpsRange": [
+        5.627,
+        7.374
+      ],
+      "availableMbps": 10,
+      "qp": 86.143,
+      "encodeMs": 5.274,
+      "loss": 0,
+      "sizes": [
+        "1920x1080"
+      ],
+      "visibility": [
+        "visible"
+      ]
+    }
+  },
+  "codecs": [
+    "video/AV1"
+  ],
+  "lastPacing": {
+    "queuedFrames": 2,
+    "submittedFrames": 17909,
+    "droppedFrames": 98,
+    "receivedFrames": 18009,
+    "refreshFrames": 0,
+    "inFlightFrames": 0,
+    "mode": "worker",
+    "scheduler": "atomics"
+  }
+}

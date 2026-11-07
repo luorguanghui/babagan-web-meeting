@@ -4,7 +4,9 @@ import { BrowserRouter } from 'react-router-dom';
 
 import { App } from './app.js';
 import { initializeNativeCaptureConnection } from './meeting/native-capture.js';
+import { initializeClientHost } from './client/client-host.js';
 import './styles.css';
 
 try { initializeNativeCaptureConnection(); } catch { /* Ordinary meetings remain usable when tab storage is blocked. */ }
+try { initializeClientHost(); } catch { /* An absent native bridge must not prevent browser meetings. */ }
 createRoot(document.getElementById('root')!).render(<StrictMode><BrowserRouter><App /></BrowserRouter></StrictMode>);

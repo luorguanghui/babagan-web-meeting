@@ -1,0 +1,14 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "cloud.babagan.meeting",
+      "sha256_cert_fingerprints": [
+        "A1:59:9A:0E:3F:0B:CC:DB:FC:F2:03:73:8E:23:64:8B:3E:44:3B:DA:B0:C0:9B:22:3A:EE:12:E2:92:19:1F:8B"
+      ]
+    }
+  }
+]

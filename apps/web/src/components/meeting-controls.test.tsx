@@ -22,6 +22,18 @@ const baseProps: MeetingControlsProps = {
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
+it('makes Android capture limits explicit without offering the Windows/browser capture selector', () => {
+  render(<MeetingSettings {...baseProps} section="share" nativeCaptureAvailable nativeCaptureEnabled nativeCapturePlatform="android" />);
+  expect(screen.getByText('Android screen capture')).toBeVisible();
+  expect(screen.getByText(/currently limited to 30 fps/)).toBeVisible();
+  expect(screen.getByText(/without system sound/)).toBeVisible();
+  const quality = screen.getByRole('combobox', { name: 'Screen quality' }) as HTMLSelectElement;
+  expect(quality.querySelector('option[value="motion"]')).toBeDisabled();
+  expect(quality.querySelector('option[value="detail60"]')).toBeDisabled();
+  expect(quality.querySelector('option[value="standard"]')).toBeEnabled();
+  expect(screen.queryByRole('link', { name: 'High-quality sharing' })).not.toBeInTheDocument();
+});
+
 describe('meeting dock audio controls', () => {
   it('opens call volume from one room-dock entry with the unchanged default', async () => {
     render(<MeetingControls {...baseProps} includeSettings={false} />);

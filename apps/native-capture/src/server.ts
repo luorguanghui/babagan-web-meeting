@@ -17,6 +17,8 @@ export interface NativeCaptureServerOptions {
   statsIntervalMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
   onDiagnostic?: (event: CaptureDiagnostic) => void;
+  onActivity?: (captureActive: boolean) => void;
+  parentOwned?: boolean;
 }
 export interface NativeCaptureServer {
   port: number;
@@ -86,11 +88,12 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
           onError: (code, message) => writeHttpError(response, code === 'UNSUPPORTED_SOURCE' ? 422 : 502, code, message)
         });
         owner = { connection: response, session };
+        options.onActivity?.(true);
         response.once('close', () => session.stop());
         response.once('error', () => session.stop());
         void session.done.then(() => {
           if (!response.destroyed && !response.writableEnded) response.end();
-          if (owner?.session === session) owner = undefined;
+          if (owner?.session === session) { owner = undefined; options.onActivity?.(false); }
           armIdle();
         });
       } catch (error) {
@@ -126,7 +129,7 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
   };
   const armIdle = () => {
     clearTimeout(idleTimer);
-    if (!owner && !closing) idleTimer = setTimeout(() => void close(), options.idleTimeoutMs ?? 1_800_000);
+    if (!owner && !closing && !options.parentOwned) idleTimer = setTimeout(() => void close(), options.idleTimeoutMs ?? 1_800_000);
   };
   http.on('upgrade', (request, socket, head) => {
     const protocols = (request.headers['sec-websocket-protocol'] ?? '').split(',').map((part) => part.trim());
@@ -167,12 +170,13 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         onError: (code, message) => send(socket, { type: 'error', code, message })
       });
       owner = { connection: socket, session };
+      options.onActivity?.(true);
       const statsTimer = setInterval(() => send(socket, sender.stats()), options.statsIntervalMs ?? 1000);
       void session.done.then(() => {
         clearInterval(statsTimer);
         send(socket, sender.stats());
         send(socket, { type: 'stopped' });
-        if (owner?.session === session) owner = undefined;
+        if (owner?.session === session) { owner = undefined; options.onActivity?.(false); }
         armIdle();
       });
     });

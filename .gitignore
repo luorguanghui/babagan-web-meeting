@@ -10,6 +10,10 @@ artifacts/
 /apps/web/public/downloads/*.exe
 /apps/web/public/downloads/native-release.json
 /apps/web/public/downloads/runtime/
+/apps/web/public/downloads/clients/
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/**/build/
 /var/
 *.tsbuildinfo
 .env

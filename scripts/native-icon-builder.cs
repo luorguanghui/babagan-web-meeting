@@ -43,6 +43,10 @@ class NativeIconBuilder {
     using (var source = Image.FromFile(args[0])) {
       foreach(int size in sizes) using(var bitmap=Scale(source,size)) frames.Add(Encode(bitmap));
       using(var preview=Scale(source,256)) preview.Save(args[2],ImageFormat.Png);
+      if(args.Length > 4) {
+        Directory.CreateDirectory(args[4]);
+        foreach(int size in new[]{32,180,512}) using(var bitmap=Scale(source,size)) bitmap.Save(Path.Combine(args[4],size+".png"),ImageFormat.Png);
+      }
       using(var sheet = new Bitmap(650,180)) using(var graphics=Graphics.FromImage(sheet)) {
         graphics.Clear(ColorTranslator.FromHtml("#faf9f6")); int x=20;
         foreach(int size in new[]{16,24,32,48,64,128}) using(var bitmap=Scale(source,size)) {

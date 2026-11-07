@@ -61,4 +61,8 @@ sudo bash scripts/update.sh --app-dir /opt/babagan-web-meeting
 
 ## 项目边界
 
-首版只验收 Windows 10/11 最新版 Chrome 和 Edge。手机浏览器可作为语音与观看端，但不作为屏幕共享端；macOS、Firefox、Safari 不属于首版兼容范围。
+Windows 10/11 的 Chrome/Edge 可作为网页收发端，并可选原生共享组件或独立 Windows 客户端。Android 客户端新增整屏共享与签名更新，首版最高30fps、暂不采集系统声音，实际设备验收由用户进行；手机浏览器保留语音与观看，整屏共享需使用客户端。macOS、Firefox、Safari 暂无完整平台验收。
+
+## 客户端与主页
+
+主页提供网页、共享组件和 Windows / Android 客户端入口，采用原创西格莉卡萌系同人主题，会议布局保持原结构。客户端发布使用独立签名清单、不可变文件和持久下载卷，详见 [客户端发布指南](docs/runbooks/client-releases.md)、[手机验收步骤](docs/runbooks/android-client-testing.md)及[本轮验收记录](docs/acceptance/native-clients-2026-11-07.md)。Windows正式发布者代码签名仍待接入；Android APK和客户端更新清单已具备独立签名机制。

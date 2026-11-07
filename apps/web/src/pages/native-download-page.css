@@ -1,0 +1,16 @@
+.native-download-page { padding-bottom: 64px; }
+.native-download-page .task-page-shell { min-height: 0; padding-top: 48px; padding-bottom: 40px; }
+.native-download-page .task-page, .native-download-page .task-surface { background: var(--surface); }
+.native-download-page .task-context { background: var(--accent-soft); }
+.native-download-page .native-download { padding: 0; }
+.native-download-page .native-download-button { color: var(--on-accent); }
+.native-download-page .eyebrow, .native-download-page a:not(.native-download-button):not(.client-download-action) { color: #a74700; }
+.native-client-section { max-width: 68rem; margin: 0 auto; padding: 30px 32px; display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); gap: 48px; }
+.native-client-section h2 { font-size: 1.4rem; line-height: 1.4; }
+.native-client-section > div > p { color: var(--muted); font-size: .93rem; line-height: 1.8; max-width: 26rem; }
+.native-client-section .client-downloads { margin: 0; }
+.native-client-section .client-release:first-child { border-top: 0; padding-top: 0; }
+@media (max-width: 767px) {
+  .native-download-page .task-page-shell { padding-top: 0; padding-bottom: 16px; }
+  .native-client-section { grid-template-columns: minmax(0, 1fr); gap: 20px; padding: 30px 20px; }
+}
