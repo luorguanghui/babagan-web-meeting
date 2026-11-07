@@ -51,4 +51,3 @@ export async function verifyFfmpeg(executable: string): Promise<void> {
     });
   });
 }
-
