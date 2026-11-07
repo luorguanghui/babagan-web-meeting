@@ -39,6 +39,42 @@ function setup(configure: (pc: Pc) => void = () => {}) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('Cloudflare native screen session', () => {
+  it.each([false, true])('applies bounded native SDP hints to Cloudflare local and remote descriptions only for native capture (%s)', async nativeCapture => {
+    const sdp = 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 AV1/90000\r\n';
+    const { create, pcs, api } = setup(pc => { pc.createOffer = async () => ({ type: 'offer', sdp }); });
+    vi.mocked(api.publish).mockResolvedValue({ sessionId: 'publisher', shareId: 'share', sessionDescription: { type: 'answer', sdp }, tracks: [{ kind: 'video', mid: '0', trackName: 'screen' }] });
+    const session = create();
+    await session.publish(new Stream([new Track('video')]) as unknown as MediaStream,
+      { nativeCapture, codec: 'auto', maxBitrate: 10_000_000, frameRate: 60, degradationPreference: 'maintain-resolution' });
+    const local = pcs[0].localDescription.sdp;
+    if (nativeCapture) expect(local).toContain('x-google-start-bitrate=10000;x-google-max-bitrate=10000');
+    else expect(local).toBe(sdp);
+    expect(local).not.toContain('x-google-min-bitrate');
+    expect(pcs[0].remoteDescription).toEqual({ type: 'answer', sdp: local });
+    expect(api.publish).toHaveBeenCalledWith(expect.objectContaining({ sessionDescription: expect.objectContaining({ sdp: local }) }));
+    await session.close();
+  });
+
+  it.each(['AV1', 'H264'])('offers verified hardware AV1 but sets L1T1 only if the Cloudflare answer negotiates %s', async negotiatedCodec => {
+    const av1 = { mimeType: 'video/AV1', clockRate: 90000, sdpFmtpLine: 'profile=0' };
+    const high = { mimeType: 'video/H264', clockRate: 90000, sdpFmtpLine: 'packetization-mode=1;profile-level-id=640032' };
+    vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [high, av1] }) });
+    vi.stubGlobal('navigator', { mediaCapabilities: { encodingInfo: async () => ({ supported: true, powerEfficient: true }) } });
+    const { create, pcs } = setup(pc => {
+      pc.setRemoteDescription = async description => {
+        pc.remoteDescription = description;
+        pc.transceivers[0].sender.getParameters = () => ({ encodings: [], codecs: [{ mimeType: `video/${negotiatedCodec}`, payloadType: 96, clockRate: 90000 }] });
+      };
+    });
+    const session = create();
+    await session.publish(new Stream([new Track('video')]) as unknown as MediaStream,
+      { nativeCapture: true, codec: 'auto', maxBitrate: 20_000_000, frameRate: 60, degradationPreference: 'maintain-resolution' });
+    expect(pcs[0].transceivers[0].setCodecPreferences).toHaveBeenCalledWith([av1, high]);
+    const written = pcs[0].transceivers[0].sender.setParameters.mock.calls.at(-1)![0] as RTCRtpSendParameters;
+    expect(written.encodings[0]).toMatchObject({ maxBitrate: 20_000_000, maxFramerate: 60, scaleResolutionDownBy: 1 });
+    expect((written.encodings[0] as RTCRtpEncodingParameters & { scalabilityMode?: string }).scalabilityMode).toBe(negotiatedCodec === 'AV1' ? 'L1T1' : undefined);
+    await session.close();
+  });
   it('stops cloned capture immediately and never offers after close during a capability probe', async () => {
     const high = { mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=64001f;packetization-mode=1' };
     vi.stubGlobal('RTCRtpSender', { getCapabilities: () => ({ codecs: [high] }) });

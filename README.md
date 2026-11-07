@@ -4,6 +4,8 @@
 
 屏幕共享默认使用浏览器编码（默认 H.264）；P2P 路径保留手动 WASM 编码。共享者也可选择 Cloudflare SFU，只上行一份屏幕视频／电脑声音，所有观看者从 SFU 订阅。新增“细节”1080p60/detail档，60fps档选定源后明确请求60fps采集，不保证所有负载下实际达到60fps。
 
+Windows 共享者可选择[本机原生采集入口](docs/runbooks/native-capture-user-guide.md)，通过 DXGI、本机认证流和独立线程送帧接入现有 WebRTC 传输。需单显示器、兼容的 FFmpeg 及配套网页版本；原生自动编码优先实际支持的硬件 AV1。静止保活单独计数，不作为运动 60fps 的证明。当前修复候选版的测量与未完成验收项见[原生共享验收记录](docs/acceptance/native-screen-repair-2026-11-07.md)。
+
 ## 已确认的部署环境
 
 - 阿里云轻量应用服务器，华中 1（武汉）

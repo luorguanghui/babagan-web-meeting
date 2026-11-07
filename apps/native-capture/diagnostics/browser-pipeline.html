@@ -1,0 +1,50 @@
+<!doctype html><meta charset="utf-8"><title>Native capture synthetic pipeline test</title>
+<style>body{font:16px system-ui;background:#16202a;color:#fff}video{width:640px;max-width:100%}pre{white-space:pre-wrap}</style>
+<h1>Native capture synthetic pipeline test</h1><p>This fixture uses generated test video only. It never opens the desktop picker.</p>
+<button id="start">Start synthetic share</button><button id="stop">Stop</button><video autoplay muted playsinline></video><pre id="state">Ready</pre>
+<script type="module">
+import {createScreenShareController} from '/apps/web/src/meeting/screen-share.ts';
+import {createP2pShareController} from '/apps/web/src/meeting/p2p-share-controller.ts';
+import {initializeNativeCaptureConnection,readNativeCaptureConnection,openNativeVideoTrack,getNativePacingStats} from '/apps/web/src/meeting/native-capture.ts';
+initializeNativeCaptureConnection();
+const q=new URLSearchParams(location.search),maxBitrate=Number(q.get('bitrate')||20000000),codec=q.get('codec')||'auto';
+let capture,share,tx,rx,stream,timer,signal=Promise.resolve(),pendingIce=[],prev,firstTimestamp,observer;
+window.samples=[];window.sourceFrames=0;window.decodedFrameChecks={frames:0,changes:0};
+const state=document.querySelector('#state');
+async function sample(){
+ const send=await tx.getStats(),receive=await rx.getStats();
+ const out=[...send.values()].find(s=>s.type==='outbound-rtp'&&s.kind==='video');
+ const input=[...receive.values()].find(s=>s.type==='inbound-rtp'&&s.kind==='video');
+ const source=send.get(out?.mediaSourceId);if(!out||!input)return;
+ const dt=prev?(out.timestamp-prev.out.timestamp)/1000:0;
+ const delta=(a,b)=>dt>0&&typeof a==='number'&&typeof b==='number'&&a>=b?a-b:undefined;
+ const encoded=delta(out.framesEncoded,prev?.out.framesEncoded);
+ const transport=send.get(out.transportId),pair=send.get(transport?.selectedCandidatePairId);
+ const row={elapsedSeconds:(performance.now()*1000-firstTimestamp)/1e6,visibility:document.visibilityState,testPhase:window.testPhase??'foreground',
+  sourceFps:delta(source?.frames,prev?.source?.frames)/dt,encodedFps:encoded/dt,decodedFps:delta(input.framesDecoded,prev?.input.framesDecoded)/dt,
+  width:out.frameWidth,height:out.frameHeight,actualMbps:delta(out.bytesSent,prev?.out.bytesSent)*8/dt/1e6,targetMbps:out.targetBitrate/1e6,
+  availableMbps:pair?.availableOutgoingBitrate/1e6,rttMs:pair?.currentRoundTripTime*1000,
+  qp:encoded>0?delta(out.qpSum,prev?.out.qpSum)/encoded:undefined,encodeMs:encoded>0?delta(out.totalEncodeTime,prev?.out.totalEncodeTime)*1000/encoded:undefined,
+  lossDelta:delta(input.packetsLost,prev?.input.packetsLost),sendDelayMs:delta(out.totalPacketSendDelay,prev?.out.totalPacketSendDelay)*1000/delta(out.packetsSent,prev?.out.packetsSent),
+  codec:send.get(out.codecId)?.mimeType,limitation:out.qualityLimitationReason,pacing:getNativePacingStats(stream.getVideoTracks()[0]),
+  receivedNativeFrames:window.sourceFrames,decodedChecks:{...window.decodedFrameChecks}};
+ prev={out,input,source};window.samples.push(row);state.textContent=JSON.stringify(row,null,2);
+}
+document.querySelector('#start').onclick=async()=>{try{
+ capture=createScreenShareController({requestGrant:async()=>{},releaseGrant:async()=>{},getDisplayMedia:async()=>{
+   const track=await openNativeVideoTrack(readNativeCaptureConnection(),60,{createFrame:(bytes,init)=>{firstTimestamp??=init.timestamp;window.sourceFrames++;return new VideoFrame(bytes,init);}});
+   return new MediaStream([track]);},publisher:{publish:async(s,options)=>{
+    stream=s;rx=new RTCPeerConnection({iceServers:[]});rx.ontrack=e=>{document.querySelector('video').srcObject=new MediaStream([e.track]);
+     const track=e.track.clone(),reader=new MediaStreamTrackProcessor({track,maxBufferSize:1}).readable.getReader();observer=()=>{track.stop();reader.cancel().catch(()=>{});};
+     (async()=>{let last;while(true){const {value,done}=await reader.read();if(done)break;try{const opts={format:'RGBA',rect:{x:320,y:400,width:64,height:32}};const pixels=new Uint8Array(value.allocationSize(opts));await value.copyTo(pixels,opts);let hash=2166136261;for(const pixel of pixels)hash=Math.imul(hash^pixel,16777619);window.decodedFrameChecks.frames++;if(last!==undefined&&hash!==last)window.decodedFrameChecks.changes++;last=hash;}finally{value.close();}}})().catch(error=>window.observerError=String(error));};
+    rx.onicecandidate=e=>share.handleIce('viewer',e.candidate?JSON.stringify(e.candidate.toJSON()):null);
+    share=createP2pShareController({slug:'synthetic-local',fetchIceServers:async()=>[],createPeerConnection:()=>tx=new RTCPeerConnection({iceServers:[]}),
+      signaling:{sendOffer:(_to,sdp,generation)=>{signal=signal.then(async()=>{await rx.setRemoteDescription({type:'offer',sdp});for(const ice of pendingIce.splice(0))await rx.addIceCandidate(ice);const answer=await rx.createAnswer();await rx.setLocalDescription(answer);await share.handleAnswer('viewer',answer.sdp,generation);});},
+      sendIce:(_to,value)=>{const ice=value===null?undefined:JSON.parse(value);if(rx.remoteDescription)void rx.addIceCandidate(ice);else pendingIce.push(ice);},sendBye:()=>{}}});
+    await share.start(s,{...options,encodingPreference:'hardware'},[{identity:'viewer',nickname:'Synthetic receiver'}]);await signal;
+    await new Promise((resolve,reject)=>{if(tx.connectionState==='connected')return resolve();const timeout=setTimeout(()=>reject(new Error('P2P test connection timed out')),15000);tx.addEventListener('connectionstatechange',()=>{if(tx.connectionState==='connected'){clearTimeout(timeout);resolve();}});});share.handleMediaReady('viewer');
+   },release:async()=>{await share?.stop();rx?.close();observer?.();}}});
+ await capture.start(codec,maxBitrate,'motion','browser');window.ready=true;timer=setInterval(()=>void sample(),1000);
+}catch(error){window.failure=String(error);state.textContent=String(error);}};
+document.querySelector('#stop').onclick=async()=>{clearInterval(timer);await capture?.stop();window.stopped=true;};
+</script>

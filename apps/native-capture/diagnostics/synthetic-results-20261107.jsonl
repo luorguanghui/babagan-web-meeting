@@ -1,0 +1,3 @@
+{"mode":"unpaced_ffmpeg_pipe_y4m_parser_only","frames":240,"seconds":0.6249553000000001,"fps":384.02746564434284,"nodeCpu":{"user":422000,"system":344000}}
+{"mode":"realtime60_ffmpeg_pipe_parser_pts","frames":240,"seconds":4.0704606000000005,"fps":58.96138633549234,"nodeCpu":{"user":203000,"system":313000},"errors":[]}
+{"mode":"realtime60_ffmpeg_pipe_parser_websocket","frames":239,"seconds":4.079581,"fps":58.58444776559161,"steadyFps":59.53330888632188,"counters":{"type":"stats","capturedFrames":240,"sentFrames":239,"droppedFrames":1},"nodeCpu":{"user":1062000,"system":812000},"errors":[]}

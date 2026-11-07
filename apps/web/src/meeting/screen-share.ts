@@ -7,25 +7,28 @@ import {
 
 import type { P2pShareController, ViewerSessionState } from './p2p-share-controller.js';
 import type { Peer } from './p2p-signaling.js';
+import { isNativeCaptureTrack } from './native-capture.js';
+import { abortableCapture, captureAborted, stopCaptureStream } from './capture-abort.js';
 
 export interface ScreenShareQualityPreset {
   width: number;
   height: number;
   frameRate: number;
   degradationPreference: RTCDegradationPreference;
+  contentHint: 'motion' | 'detail';
 }
 
 /**
  * Screen-share quality presets applied to both the SFU fallback and the P2P
  * path. All presets capture at least 1080p when the source supports it.
- * Direct P2P overrides degradation to preserve resolution; relay/SFU paths
- * can still prioritize the standard/motion frame-rate targets.
+ * Dynamic content keeps the motion encoder hint independently of its
+ * resolution protection. Capture cadence is separate from publication rate.
  */
 export const screenShareQualityPresets: Record<ScreenShareQuality, ScreenShareQualityPreset> = {
-  flow: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution' },
-  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-framerate' },
-  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-framerate' },
-  detail60: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution' }
+  flow: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-resolution', contentHint: 'detail' },
+  standard: { width: 1920, height: 1080, frameRate: 30, degradationPreference: 'maintain-framerate', contentHint: 'motion' },
+  motion: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution', contentHint: 'motion' },
+  detail60: { width: 1920, height: 1080, frameRate: 60, degradationPreference: 'maintain-resolution', contentHint: 'detail' }
 };
 
 export const screenShareDefaultQuality: ScreenShareQuality = 'standard';
@@ -41,12 +44,12 @@ export type ScreenShareBitrate = P2pScreenBitrate;
 /** Default P2P bitrate. */
 export const screenShareDefaultBitrate = 8_000_000;
 /**
- * Suggested P2P bitrate cap per viewer for the number of online viewers: 8 Mbps
- * for up to three viewers, 5 Mbps from four on. The suggestion is applied as
- * the default selection before sharing and can still be overridden manually;
- * the sharer's total uplink budget caps the aggregate regardless.
+ * Suggested per-viewer caps: 60fps profiles use 20 Mbps for one/two viewers,
+ * 10 Mbps for more; 30fps profiles retain 8/5 Mbps. Manual caps are preserved
+ * by the caller, and the sender retains its aggregate uplink budget.
  */
-export function recommendP2pBitrate(viewerCount: number): ScreenShareBitrate {
+export function recommendP2pBitrate(viewerCount: number, quality: ScreenShareQuality = screenShareDefaultQuality): ScreenShareBitrate {
+  if (screenShareQualityPresets[quality].frameRate === 60) return viewerCount >= 3 ? 10_000_000 : 20_000_000;
   return viewerCount >= 4 ? 5_000_000 : 8_000_000;
 }
 
@@ -92,8 +95,12 @@ class BrowserScreenShareController implements ScreenShareController {
   private activeStream?: MediaStream;
   private publication?: Promise<void>;
   private stopPromise?: Promise<void>;
-  /** Set by `stop()` while a start is still in flight (grant/capture/audio decision). */
-  private cancelRequested = false;
+  private stoppingStartup = false;
+  private startAbort?: AbortController;
+  private startWork?: Promise<void>;
+  private startRequest = 0;
+  private stopTracks?: () => void;
+  private releaseResources?: () => Promise<void>;
   /** Monotonic generation of `start()`; a start that is no longer current must abort. */
   private startGen = 0;
   /** Removes the current start's `ended` listener; the newer start owns this slot. */
@@ -102,9 +109,10 @@ class BrowserScreenShareController implements ScreenShareController {
   constructor(private readonly dependencies: {
     requestGrant(): Promise<void>;
     releaseGrant(): Promise<void>;
-    getDisplayMedia(constraints: DisplayMediaStreamOptions): Promise<MediaStream>;
+    getDisplayMedia(constraints: DisplayMediaStreamOptions, signal?: AbortSignal): Promise<MediaStream>;
     supportsOwnAudioRestriction(): boolean;
     chooseUnrestrictedSystemAudio(context: { displaySurface: string }): Promise<UnrestrictedSystemAudioChoice>;
+    cancelPendingCapture?(): void;
     publisher: ScreenSharePublisher;
   }) {}
 
@@ -114,24 +122,50 @@ class BrowserScreenShareController implements ScreenShareController {
     quality: ScreenShareQuality = screenShareDefaultQuality,
     encodingEngine?: 'project' | 'browser'
   ): Promise<void> {
+    const request = ++this.startRequest;
     if (this.stopPromise) await this.stopPromise;
+    if (this.startRequest !== request) return;
     if (this.state.status !== 'idle') throw new Error('Screen sharing is already active.');
     const myGen = ++this.startGen;
-    this.cancelRequested = false;
+    const abort = new AbortController();
+    this.startAbort = abort;
+    let begin!: () => void;
+    const work = new Promise<void>((resolve, reject) => {
+      begin = () => { void this.startCapture(codec, maxBitrate, quality, encodingEngine, myGen, abort.signal).then(resolve, reject); };
+    });
+    this.startWork = work;
+    this.update({ status: 'starting', stream: undefined, audioGuidance: undefined });
+    begin();
+    try { await work; } finally { if (this.startWork === work) this.startWork = undefined; }
+  }
+
+  private async startCapture(codec: ScreenShareCodec, maxBitrate: ScreenShareBitrate,
+    quality: ScreenShareQuality, encodingEngine: 'project' | 'browser' | undefined, myGen: number, signal: AbortSignal): Promise<void> {
     const settings = screenShareQualityPresets[quality];
     let grantAcquired = false;
+    let publicationStarted = false;
     let stream: MediaStream | undefined;
+    let tracksStopped = false;
+    const stopTracks = () => {
+      if (tracksStopped || !stream) return;
+      tracksStopped = true; stopCaptureStream(stream);
+    };
+    const assertCurrent = () => {
+      if (signal.aborted || this.startGen !== myGen) throw captureAborted();
+    };
+    let released: Promise<void> | undefined;
+    const releaseResources = () => released ??= Promise.allSettled([
+      ...(stream && publicationStarted ? [Promise.resolve().then(() => this.dependencies.publisher.release(stream!))] : []),
+      ...(grantAcquired ? [Promise.resolve().then(() => this.dependencies.releaseGrant())] : [])
+    ]).then(() => undefined);
+    this.releaseResources = releaseResources;
     let shareAudioGuidance: string | undefined;
-    this.update({ status: 'starting', stream: undefined, audioGuidance: undefined });
     try {
+      assertCurrent();
       await this.dependencies.requestGrant();
       grantAcquired = true;
-      if (this.cancelRequested || this.startGen !== myGen) {
-        // Revoked or superseded while the grant was in flight.
-        await this.cancelStart(undefined, grantAcquired);
-        return;
-      }
-      stream = await this.dependencies.getDisplayMedia({
+      assertCurrent();
+      stream = await abortableCapture(() => this.dependencies.getDisplayMedia({
         video: {
           // Inspect native dimensions before applying the aspect-aware cap.
           // A 16:9 picker hint can already shrink an ultrawide source below 1080p.
@@ -152,32 +186,42 @@ class BrowserScreenShareController implements ScreenShareController {
         systemAudio: 'include';
         windowAudio: 'window';
         selfBrowserSurface: 'exclude';
-      });
-      if (this.cancelRequested || this.startGen !== myGen) {
-        // Revoked or superseded while the source picker was open.
-        await this.cancelStart(stream, grantAcquired);
-        return;
-      }
+      }, signal), signal, stopCaptureStream);
+      assertCurrent();
       const [videoTrack] = stream.getVideoTracks();
       if (!videoTrack) throw new Error('The selected source did not provide a video track.');
+      const assertCaptureLive = () => {
+        assertCurrent();
+        if (videoTrack.readyState === 'ended') throw captureAborted();
+      };
+      assertCaptureLive();
+      this.activeStream = stream;
+      this.stopTracks = stopTracks;
+      const onEnded = () => { if (this.startGen === myGen) void this.stop(); };
+      videoTrack.addEventListener('ended', onEnded, { once: true });
+      this.endedCleanup = () => videoTrack.removeEventListener('ended', onEnded);
       const displaySurface = videoTrack.getSettings?.().displaySurface;
       const [audioTrack] = stream.getAudioTracks();
       if (audioTrack) {
         audioTrack.contentHint = screenShareAudioContentHint;
-        await (typeof audioTrack.applyConstraints === 'function'
+        await abortableCapture(() => typeof audioTrack.applyConstraints === 'function'
           ? audioTrack.applyConstraints({
             autoGainControl: false,
             echoCancellation: false,
             noiseSuppression: false
           }).catch(() => undefined)
-          : undefined);
-        const ownAudioRestricted = await this.verifyOwnAudioRestriction(audioTrack);
+          : undefined, signal);
+        const ownAudioRestricted = await abortableCapture(() => this.verifyOwnAudioRestriction(audioTrack), signal);
         if ((displaySurface === 'monitor' || displaySurface === 'window') && !ownAudioRestricted) {
-          const choice = await this.dependencies.chooseUnrestrictedSystemAudio({ displaySurface });
+          const choice = await abortableCapture(() => this.dependencies.chooseUnrestrictedSystemAudio({ displaySurface }), signal);
+          assertCurrent();
           if (choice === 'cancel') {
-            for (const track of stream.getTracks()) track.stop();
-            await Promise.allSettled([this.dependencies.releaseGrant()]);
+            stopTracks();
+            await releaseResources();
             grantAcquired = false;
+            this.endedCleanup?.(); this.endedCleanup = undefined;
+            this.activeStream = undefined; this.stopTracks = undefined;
+            this.releaseResources = undefined;
             stream = undefined;
             this.update({ status: 'idle', stream: undefined, audioGuidance: tabAudioGuidance });
             return;
@@ -193,11 +237,7 @@ class BrowserScreenShareController implements ScreenShareController {
           }
         }
       }
-      if (this.cancelRequested || this.startGen !== myGen) {
-        // Revoked or superseded while the system-audio decision was pending.
-        await this.cancelStart(stream, grantAcquired);
-        return;
-      }
+      assertCurrent();
       // Keep the source aspect ratio and a 1080px short side. A 1920px
       // width cap alone would shrink ultrawide captures below 1080p.
       const sourceSettings = videoTrack.getSettings?.() ?? {};
@@ -210,42 +250,35 @@ class BrowserScreenShareController implements ScreenShareController {
         ? Math.round(sourceWidth / sourceScale) : portrait ? settings.height : settings.width;
       const maximumHeight = sourceScale && sourceHeight
         ? Math.round(sourceHeight / sourceScale) : portrait ? settings.width : settings.height;
-      if (typeof videoTrack.applyConstraints === 'function') {
+      if (typeof videoTrack.applyConstraints === 'function' && !isNativeCaptureTrack(videoTrack)) {
         const compatibleConstraints = {
           width: { max: maximumWidth }, height: { max: maximumHeight },
           frameRate: { ideal: settings.frameRate }
         };
-        // min/max are allowed after source selection, not in getDisplayMedia.
-        // An ideal-only 60fps request can leave capture near 30fps even while
-        // the hardware encoder has headroom. Preserve the compatibility path
-        // for sources that cannot accept a 60fps minimum.
-        const motionCapture = settings.frameRate === 60;
-        await videoTrack.applyConstraints(motionCapture
+        const sixtyFps = settings.frameRate === 60;
+        await abortableCapture(() => videoTrack.applyConstraints(sixtyFps
           ? { ...compatibleConstraints, frameRate: { min: 60, ideal: 60, max: 60 } }
           : compatibleConstraints).catch(async () => {
-          if (motionCapture) await videoTrack.applyConstraints(compatibleConstraints).catch(() => undefined);
-        });
+          if (sixtyFps && !signal.aborted) await videoTrack.applyConstraints(compatibleConstraints).catch(() => undefined);
+        }), signal);
       }
+      assertCaptureLive();
       // Set before publication so the encoder starts in the intended content
       // mode. Detail favors sharp individual frames and can drop motion frames
       // even while outbound qualityLimitationReason remains "none".
-      videoTrack.contentHint = settings.degradationPreference === 'maintain-framerate'
-        ? 'motion' : screenShareContentHint;
-      this.activeStream = stream;
-      const onEnded = () => {
-        // Only the current start's ended track may stop the share; a
-        // superseded start's track ending must not tear down a newer share.
-        if (this.startGen === myGen) void this.stop();
-      };
-      videoTrack.addEventListener('ended', onEnded, { once: true });
-      this.endedCleanup = () => videoTrack.removeEventListener('ended', onEnded);
-      const publication = Promise.resolve().then(() => this.dependencies.publisher.publish(stream!, {
-        maxBitrate,
-        frameRate: settings.frameRate,
-        degradationPreference: settings.degradationPreference,
-        codec,
-        ...(encodingEngine ? { encodingEngine } : {})
-      }));
+      videoTrack.contentHint = settings.contentHint;
+      const publication = Promise.resolve().then(() => {
+        assertCaptureLive();
+        publicationStarted = true;
+        return this.dependencies.publisher.publish(stream!, {
+          maxBitrate,
+          frameRate: settings.frameRate,
+          degradationPreference: settings.degradationPreference,
+          codec,
+          ...(isNativeCaptureTrack(videoTrack) ? { nativeCapture: true } : {}),
+          ...(encodingEngine ? { encodingEngine } : {})
+        });
+      });
       this.publication = publication;
       await publication;
       if (this.publication === publication) this.publication = undefined;
@@ -261,17 +294,12 @@ class BrowserScreenShareController implements ScreenShareController {
       });
     } catch (error) {
       const superseded = this.startGen !== myGen;
-      if (!superseded && stream && this.activeStream !== stream && this.stopPromise) {
+      if (!superseded && stream && this.activeStream !== stream && this.stopPromise && this.publication) {
         await this.stopPromise;
         return;
       }
-      for (const track of stream?.getTracks() ?? []) track.stop();
-      await Promise.allSettled([
-        // Only the current start may release the publication: it could belong
-        // to a newer start that superseded this one.
-        ...(stream && !superseded ? [this.dependencies.publisher.release(stream)] : []),
-        ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
-      ]);
+      stopTracks();
+      await releaseResources();
       if (superseded) {
         // A superseded start fails silently: a newer start owns the state machine.
         return;
@@ -279,52 +307,55 @@ class BrowserScreenShareController implements ScreenShareController {
       this.endedCleanup?.();
       this.endedCleanup = undefined;
       this.activeStream = undefined;
+      this.stopTracks = undefined;
+      this.releaseResources = undefined;
       this.publication = undefined;
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
+      if (signal.aborted) return;
       throw error;
     }
   }
 
   async stop(): Promise<void> {
-    if (this.stopPromise) return this.stopPromise;
-    this.cancelRequested = true;
+    ++this.startRequest;
+    // A pending grant can outlive local cancellation. Keep it as a restart
+    // barrier without making Leave wait on an unbounded network request.
+    if (this.stopPromise) return this.stoppingStartup ? undefined : this.stopPromise;
     const stream = this.activeStream ?? this.state.stream;
-    if (!stream) {
+    const abort = this.startAbort;
+    const cancelCapture = () => {
+      this.endedCleanup?.(); this.endedCleanup = undefined;
+      this.activeStream = undefined;
+      this.stopTracks?.(); this.stopTracks = undefined;
+      if (abort && !abort.signal.aborted) {
+        abort.abort(); this.dependencies.cancelPendingCapture?.();
+      }
+    };
+    if (!this.publication && this.state.status === 'starting') {
+      const work = this.startWork;
+      const barrier = (work?.catch(() => undefined) ?? Promise.resolve()).finally(() => {
+        if (this.stopPromise === barrier) { this.stopPromise = undefined; this.stoppingStartup = false; }
+      });
+      this.stoppingStartup = true;
+      this.stopPromise = barrier;
+      cancelCapture();
       this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       return;
     }
-    this.endedCleanup?.();
-    this.endedCleanup = undefined;
-    this.activeStream = undefined;
-    for (const track of stream.getTracks()) track.stop();
+    if (!stream) return;
     const publication = this.publication;
+    const releaseResources = this.releaseResources;
     this.stopPromise = (publication?.catch(() => undefined) ?? Promise.resolve())
-      .then(() => Promise.allSettled([
-        this.dependencies.publisher.release(stream),
-        this.dependencies.releaseGrant()
-      ]))
-      .then(() => undefined)
+      .then(() => releaseResources?.())
       .finally(() => {
         if (this.publication === publication) this.publication = undefined;
+        if (this.releaseResources === releaseResources) this.releaseResources = undefined;
         this.stopPromise = undefined;
         this.update({ status: 'idle', stream: undefined, audioGuidance: undefined });
       });
+    cancelCapture();
     this.update({ status: 'stopping', stream: undefined, audioGuidance: undefined });
     return this.stopPromise;
-  }
-
-  /**
-   * Aborts a start that was stopped or superseded while still in the
-   * `starting` window (grant in flight, source picker open, or audio decision
-   * pending). Only releases resources owned by this start: its acquired
-   * tracks and its grant. The state machine is left untouched — `stop()` (or
-   * the superseding start) already owns it.
-   */
-  private async cancelStart(stream: MediaStream | undefined, grantAcquired: boolean): Promise<void> {
-    for (const track of stream?.getTracks() ?? []) track.stop();
-    await Promise.allSettled([
-      ...(grantAcquired ? [this.dependencies.releaseGrant()] : [])
-    ]);
   }
 
   getState(): ScreenShareState { return { ...this.state }; }
@@ -373,6 +404,7 @@ export interface HybridScreenSharePublisherDependencies {
 }
 
 export interface ScreenSharePublishOptions {
+  nativeCapture?: boolean;
   encodingPreference?: 'hardware' | 'compatible';
   encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
@@ -545,7 +577,8 @@ export class HybridScreenSharePublisher implements ScreenSharePublisher {
 export function createScreenShareController(dependencies: {
   requestGrant(): Promise<void>;
   releaseGrant(): Promise<void>;
-  getDisplayMedia?: (constraints: DisplayMediaStreamOptions) => Promise<MediaStream>;
+  getDisplayMedia?: (constraints: DisplayMediaStreamOptions, signal?: AbortSignal) => Promise<MediaStream>;
+  cancelPendingCapture?: () => void;
   supportsOwnAudioRestriction?: () => boolean;
   chooseUnrestrictedSystemAudio?: (
     context: { displaySurface: string }

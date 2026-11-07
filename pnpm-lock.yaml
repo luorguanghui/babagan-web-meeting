@@ -85,6 +85,25 @@ importers:
         specifier: ^8.21.3
         version: 8.21.3
 
+  apps/native-capture:
+    dependencies:
+      '@meeting/contracts':
+        specifier: workspace:*
+        version: link:../../packages/contracts
+      ws:
+        specifier: ^8.21.3
+        version: 8.21.3
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.2
+        version: 26.1.2
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
+      tsx:
+        specifier: ^4.23.11
+        version: 4.23.11
+
   apps/web:
     dependencies:
       '@libav.js/variant-vp8-opus':

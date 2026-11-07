@@ -1,7 +1,8 @@
 import { CloudflareSfuSessionResponseSchema, type CloudflareSfuPublication, type CloudflareSfuSessionResponse } from '@meeting/contracts';
 import { apiNoContent, apiRequest } from '../api/client.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
-import { applyBrowserVideoCodecPreference, type BrowserEncodingPreference } from './browser-video-encoding.js';
+import { applyBrowserVideoCodecPreference, nativeHardwareAv1Encoding, type BrowserEncodingPreference } from './browser-video-encoding.js';
+import { withNativeScreenBitrateHints } from './native-screen-sdp.js';
 import { computeResolutionScale } from './screen-resolution.js';
 export interface CloudflareScreenApi {
   publish(body: unknown): Promise<CloudflareSfuSessionResponse>;
@@ -42,11 +43,14 @@ export class CloudflareScreenSession {
         clone.contentHint = track.contentHint;
         this.clones.push(clone);
         const transceiver = pc.addTransceiver(clone, { direction: 'sendonly', sendEncodings: [{ maxBitrate: track.kind === 'video' ? options.maxBitrate : 128000, ...(track.kind === 'video' ? { maxFramerate: options.frameRate } : {}) }] });
-        if (track.kind === 'video') await applyBrowserVideoCodecPreference(transceiver, options, preference, track.getSettings?.() ?? {});
-        return { track, transceiver };
+        const codecSelection = track.kind === 'video'
+          ? await applyBrowserVideoCodecPreference(transceiver, options, preference, track.getSettings?.() ?? {}) : undefined;
+        return { track, transceiver, codecSelection };
       }));
       if (!this.current(epoch)) return;
-      await pc.setLocalDescription(await pc.createOffer());
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(options.nativeCapture && offer.sdp !== undefined
+        ? { ...offer, sdp: withNativeScreenBitrateHints(offer.sdp, options.maxBitrate) } : offer);
       await waitForGatheredIce(pc, this.abort.signal);
       if (!this.current(epoch))
         return;
@@ -60,12 +64,14 @@ export class CloudflareScreenSession {
         return;
       if (allocation.sessionDescription.type !== 'answer')
         throw new Error('Cloudflare SFU returned an invalid publisher answer.');
-      await pc.setRemoteDescription(allocation.sessionDescription);
-      for (const { track, transceiver } of transceivers) {
+      await pc.setRemoteDescription(options.nativeCapture
+        ? { ...allocation.sessionDescription, sdp: withNativeScreenBitrateHints(allocation.sessionDescription.sdp, options.maxBitrate) }
+        : allocation.sessionDescription);
+      for (const { track, transceiver, codecSelection } of transceivers) {
         if (track.kind !== 'video')
           continue;
         const parameters = transceiver.sender.getParameters();
-        parameters.encodings = [{ ...parameters.encodings?.[0], maxBitrate: options.maxBitrate, maxFramerate: options.frameRate,
+        parameters.encodings = [{ ...parameters.encodings?.[0], ...nativeHardwareAv1Encoding(codecSelection, parameters), maxBitrate: options.maxBitrate, maxFramerate: options.frameRate,
           scaleResolutionDownBy: computeResolutionScale(track.getSettings?.() ?? {}) ?? 1 }];
         parameters.degradationPreference = 'maintain-resolution';
         await transceiver.sender.setParameters(parameters);

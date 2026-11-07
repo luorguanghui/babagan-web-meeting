@@ -9,7 +9,8 @@ import {
 import { Type } from '@sinclair/typebox';
 
 import { apiRequest } from '../api/client.js';
-import { applyBrowserVideoCodecPreference } from './browser-video-encoding.js';
+import { applyBrowserVideoCodecPreference, nativeHardwareAv1Encoding, type BrowserCodecSelection } from './browser-video-encoding.js';
+import { withNativeScreenBitrateHints } from './native-screen-sdp.js';
 import { computeResolutionScale } from './screen-resolution.js';
 export { computeResolutionScale } from './screen-resolution.js';
 import {
@@ -42,6 +43,7 @@ const P2P_RESOLUTION_RECOVERY_RETRY_MS = 30_000;
  * path encode the share the same way (codec, frame rate, degradation).
  */
 export interface P2pShareOptions {
+  nativeCapture?: boolean;
   encodingPreference?: 'hardware' | 'compatible';
   encodingEngine?: 'project' | 'browser';
   maxBitrate: number;
@@ -163,6 +165,7 @@ interface ViewerSession {
   turnProvider: P2pTurnProvider;
   videoSender?: RTCRtpSender;
   videoTransceiver?: RTCRtpTransceiver;
+  codecSelection?: BrowserCodecSelection;
   options: P2pShareOptions;
   state: ViewerSessionState;
   queuedCandidates: Array<RTCIceCandidateInit | undefined>;
@@ -257,7 +260,9 @@ class P2pShareControllerImpl implements P2pShareController {
     if (!session || session.state !== 'negotiating') return;
     if (generation !== undefined && generation !== session.generation) return;
     try {
-      await session.pc.setRemoteDescription({ type: 'answer', sdp });
+      await session.pc.setRemoteDescription({ type: 'answer', sdp: session.options.nativeCapture
+        ? withNativeScreenBitrateHints(sdp, session.options.maxBitrate) : sdp });
+      if (session.codecSelection?.preferredHardwareCodec === 'av1') await this.applySenderParameters(session);
       await this.flushCandidates(session);
     } catch {
       this.fallback(session);
@@ -541,7 +546,7 @@ class P2pShareControllerImpl implements P2pShareController {
     this.clearNegotiationTimer(session);
     try {
       if (session.videoTransceiver) {
-        await applyBrowserVideoCodecPreference(session.videoTransceiver, session.options,
+        session.codecSelection = await applyBrowserVideoCodecPreference(session.videoTransceiver, session.options,
           session.options.encodingPreference ?? 'hardware', session.videoSender?.track?.getSettings?.() ?? {});
       }
       if (session.pcClosed || this.sessions.get(session.identity) !== session) return;
@@ -550,7 +555,9 @@ class P2pShareControllerImpl implements P2pShareController {
       }
       if (session.pcClosed || this.sessions.get(session.identity) !== session) return;
       const offer = await session.pc.createOffer();
-      const sdp = offer.sdp !== undefined ? configureOpusSdp(offer.sdp) : undefined;
+      const configuredSdp = offer.sdp !== undefined ? configureOpusSdp(offer.sdp) : undefined;
+      const sdp = configuredSdp !== undefined && session.options.nativeCapture
+        ? withNativeScreenBitrateHints(configuredSdp, session.options.maxBitrate) : configuredSdp;
       const offerWithSdp = sdp !== undefined ? { ...offer, sdp } : offer;
       await session.pc.setLocalDescription(offerWithSdp);
       if (session.state === 'closed' || session.state === 'livekit-fallback') return; // left or fell back mid-establish
@@ -835,6 +842,7 @@ class P2pShareControllerImpl implements P2pShareController {
             // Keep negotiated rid/active/priority and browser-specific fields;
             // dropping them can make setParameters reject the entire update.
             ...currentParameters.encodings[0],
+            ...nativeHardwareAv1Encoding(session.codecSelection, currentParameters),
             maxBitrate: options.maxBitrate,
             maxFramerate: options.frameRate,
             scaleResolutionDownBy: scale
