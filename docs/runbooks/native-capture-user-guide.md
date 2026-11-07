@@ -35,3 +35,5 @@
 ## 构建和发布
 
 Windows 构建机运行 `pwsh -File scripts/build-native-installer.ps1`，再运行 `node scripts/prepare-native-download.mjs`。准备脚本验证安装器与两份运行依赖的固定 SHA-256，生成网页静态下载资源。随后构建网页并按网页发布流程部署；API、音视频服务器无需变更。依赖清单、来源、许可证和原始归档一并保留在下载目录。
+
+当前安装器尚未使用受信任的发布者数字签名。Windows 下载后首次运行可能显示 SmartScreen 提示，请核对本站来源和 SHA-256 后自行判断。图标与产品名不能替代代码签名，自签名证书也不能让其它电脑自动信任。

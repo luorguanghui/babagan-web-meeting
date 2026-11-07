@@ -6,6 +6,7 @@ type Message = string | ((params: Params) => string);
 
 const en = {
   'native.downloadNav': 'High-quality sharing',
+  'native.signingNotice': 'This release is not digitally signed. Windows may show a first-run security warning. Check the download source and SHA-256 before deciding whether to run it.',
   'native.downloadTitle': 'Share clearly. Start from your desktop.',
   'native.downloadLede': 'Install the Windows sender to use native screen capture and hardware encoding.',
   'native.receiverHint': 'Viewers need nothing to install. Join the meeting in your usual browser.',
@@ -373,6 +374,7 @@ export type MessageKey = keyof typeof en;
 const zhCN: Record<MessageKey, Message> = {
   ...en,
   'native.downloadNav': '高质量共享',
+  'native.signingNotice': '当前版本尚未数字签名，Windows 首次运行可能显示安全提示。请核对下载来源和 SHA-256 后自行决定是否运行。',
   'native.downloadTitle': '清晰共享，从桌面开始。',
   'native.downloadLede': '为发送端安装 Windows 组件，使用本机屏幕采集与硬件编码。',
   'native.receiverHint': '观看者无需安装。用普通浏览器加入会议，即可接收画面。',

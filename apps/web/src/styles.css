@@ -21,6 +21,9 @@ body { min-width: 320px; margin: 0; }
 .app-bar-actions { display: flex; align-items: center; gap: 20px; font-size: 13px; }
 .native-download { padding: clamp(24px, 4vw, 48px); line-height: 1.7; }
 .native-download h2 { margin-top: 0; }
+.native-download-heading { display: flex; align-items: center; gap: 14px; margin-bottom: 20px; }
+.native-download-heading h2 { margin: 0; }
+.native-download-heading img { flex: none; }
 .native-download-button { display: inline-block; padding: 12px 22px; border-radius: 8px; background: var(--accent); color: #fff; text-decoration: none; margin-top: 12px; }
 .native-download-button:hover { background: var(--accent-hover); }
 .native-download-meta { font-size: 13px; color: var(--muted); }

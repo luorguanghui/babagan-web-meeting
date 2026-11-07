@@ -112,7 +112,7 @@ namespace Babagan {
       helper = new Helper(AppDomain.CurrentDomain.BaseDirectory);
       signal = new EventWaitHandle(false, EventResetMode.AutoReset, Package.MutexName + ".open");
       stopSignal = new EventWaitHandle(false, EventResetMode.AutoReset, Package.MutexName + ".stop");
-      tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "Babagan · 正在启动", Visible = true };
+      tray = new NotifyIcon { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath), Text = "Babagan · 正在启动", Visible = true };
       var menu = new ContextMenuStrip(); menu.Items.Add("打开会议", null, (_, e) => { if(ready) helper.Open(); });
       menu.Items.Add("查看诊断日志", null, (_, e) => Process.Start(new ProcessStartInfo(Package.LogRoot) { UseShellExecute = true }));
       menu.Items.Add("退出本机组件", null, (_, e) => {
@@ -120,7 +120,8 @@ namespace Babagan {
       });
       tray.ContextMenuStrip = menu; tray.DoubleClick += (_, e) => { if (ready) helper.Open(); };
       progress = new Form { Text = "Babagan 高质量共享", ClientSize = new Size(420,120), StartPosition = FormStartPosition.CenterScreen,
-        FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false };
+        FormBorderStyle = FormBorderStyle.FixedDialog, MaximizeBox = false, MinimizeBox = false,
+        Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath), BackColor = ColorTranslator.FromHtml("#faf9f6") };
       progress.Controls.Add(new Label { Text = "正在检查本机组件并打开会议…", AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter });
       progress.FormClosed += (_, e) => { if(!ready && !closing) ExitThread(); };
       progress.Shown += async (_, e) => {
@@ -150,7 +151,7 @@ namespace Babagan {
       closing = true; poll.Stop(); helper.Dispose(); tray.Visible = false; progress.Close(); base.ExitThreadCore();
     }
     protected override void Dispose(bool disposing) {
-      if (disposing) { helper.Dispose(); tray.Dispose(); poll.Dispose(); signal.Dispose(); stopSignal.Dispose(); progress.Dispose(); }
+      if (disposing) { helper.Dispose(); var icon = tray.Icon; tray.Dispose(); if(icon != null) icon.Dispose(); poll.Dispose(); signal.Dispose(); stopSignal.Dispose(); progress.Dispose(); }
       base.Dispose(disposing);
     }
   }

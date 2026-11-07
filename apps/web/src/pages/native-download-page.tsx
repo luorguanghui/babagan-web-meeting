@@ -27,11 +27,12 @@ export function NativeDownloadPage() {
   return <TaskPageLayout eyebrow="BABAGAN · WINDOWS" title={t('native.downloadTitle')} lede={t('native.downloadLede')}
     context={<p>{t('native.receiverHint')}</p>}>
     <div className="native-download">
-      <h2>{t('native.downloadHeading')}</h2>
+      <div className="native-download-heading"><img src="/brand/babagan-desktop.png" alt="" width="64" height="64" /><h2>{t('native.downloadHeading')}</h2></div>
       <p>{t('native.downloadRequirements')}</p>
       {release ? <>
         <a className="primary-button native-download-button" href={release.url} download>{t('native.downloadButton')}</a>
         <p className="native-download-meta">Windows x64 · v{release.version} · {(release.bytes / 1024 / 1024).toFixed(1)} MB</p>
+        <p className="native-download-meta">{t('native.signingNotice')}</p>
       </> : <p role="status">{t(failed ? 'native.downloadUnavailable' : 'native.downloadLoading')}</p>}
       <ol className="native-download-steps">
         <li><strong>{t('native.installStep')}</strong><p>{t('native.installDetail')}</p></li>

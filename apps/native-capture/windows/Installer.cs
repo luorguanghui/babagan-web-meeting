@@ -83,7 +83,7 @@ namespace Babagan {
         using (var timeout = CancellationTokenSource.CreateLinkedTokenSource(token))
         using (var client = new HttpClient { Timeout = TimeSpan.FromMinutes(20) }) {
           timeout.CancelAfter(TimeSpan.FromMinutes(20)); var downloadToken = timeout.Token;
-          client.DefaultRequestHeaders.UserAgent.ParseAdd("BabaganSetup/0.2.0");
+          client.DefaultRequestHeaders.UserAgent.ParseAdd("BabaganSetup/" + Package.Version);
           using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, downloadToken)) {
             using (downloadToken.Register(() => response.Dispose())) {
             response.EnsureSuccessStatusCode();
@@ -137,11 +137,14 @@ namespace Babagan {
     string executable; bool busy;
     internal SetupForm() {
       Text = "安装 Babagan 高质量共享"; ClientSize = new Size(540,330); StartPosition = FormStartPosition.CenterScreen;
+      Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); BackColor = ColorTranslator.FromHtml("#faf9f6");
       Font = new Font("Microsoft YaHei UI", 10); FormBorderStyle = FormBorderStyle.FixedDialog; MaximizeBox = false;
       var heading = new Label { Text = "把高质量共享放到桌面", Location = new Point(28,25), Size = new Size(480,42), Font = new Font(Font.FontFamily,18,FontStyle.Bold) };
       var detail = new Label { Text = "仅发送画面的 Windows 电脑需要安装。\n观看者直接打开普通网页即可。\n\n安装器从 Babagan 下载并校验所需组件，\n安装到当前用户目录并创建桌面快捷方式。\n无需管理员权限；需要已安装 Microsoft Edge。", Location = new Point(30,80), Size = new Size(480,145) };
       status = new Label { Text = "缺少全部依赖时约下载 145 MB；兼容的依赖直接复用。", Location = new Point(30,230), Size = new Size(480,40) };
       install = new Button { Text = "安装并创建快捷方式", Location = new Point(280,280), Size = new Size(230,35) };
+      install.BackColor = ColorTranslator.FromHtml("#617a50"); install.ForeColor = Color.White;
+      install.FlatStyle = FlatStyle.Flat; install.FlatAppearance.BorderSize = 0;
       install.Click += async (_, e) => {
         if(executable != null) { Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true }); Close(); return; }
         bool acquired;
