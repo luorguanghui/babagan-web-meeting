@@ -10,6 +10,7 @@ import {
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { X } from 'lucide-react';
+import { useAndroidAudioRoutes } from '../client/android-audio-routes.js';
 import { readScreenBitrate, saveScreenBitrate } from '../meeting/screen-bitrate-preference.js';
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
@@ -238,6 +239,8 @@ export function MeetingRoomPage({
     if (clientHost?.platform !== 'android') return;
     setClientMicrophoneEnabled(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required' && state.microphoneEnabled);
   }, [clientHost, sessionActive, reconnectState.kind, state.microphoneEnabled]);
+  const nativeAudio = useAndroidAudioRoutes(clientHost, clientInfo?.audioRouting,
+    sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required' && state.connection === 'connected');
   useMeetingExitGuard(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required');
   useMeetingMediaSession(sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required', meetingName || 'Babagan', () => { void leave(); });
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
@@ -1116,6 +1119,7 @@ export function MeetingRoomPage({
     sharedAudioVolume,
     sharedAudioVolumeVisible: Boolean(!screenState.stream && hasActiveScreenShare),
     devices,
+    nativeAudio,
     leaving,
     screenShareAuthorized: hostAuthorized || Boolean(state.screenShareAuthorized),
     screenShareActive: screenState.status === 'sharing',
@@ -1141,8 +1145,8 @@ export function MeetingRoomPage({
     screenShareTurnProvider,
     availableTurnProviders: availableScreenTurnProviders,
     onMicrophoneToggle: () => void controller.setMicrophoneEnabled(!state.microphoneEnabled),
-    onMicrophoneDeviceChange: (deviceId) => void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId),
-    onSpeakerDeviceChange: (deviceId) => void changeSpeaker(deviceId),
+    onMicrophoneDeviceChange: (deviceId) => { if (!isAndroidClient) void controller.setMicrophoneEnabled(state.microphoneEnabled, deviceId); },
+    onSpeakerDeviceChange: (deviceId) => { if (!isAndroidClient) void changeSpeaker(deviceId); },
     onResumeAudio: () => { window.dispatchEvent(new Event('babagan-resume-media')); void viewerP2pRef.current?.resumeProjectAudio(); },
     onCallAudioVolumeChange: (volume) => {
       setCallAudioVolume(volume);

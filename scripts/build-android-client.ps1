@@ -49,7 +49,7 @@ if ($Configuration -eq 'Release' -and $SigningStore) {
         apkSignerSha256 = $fingerprint.Groups[1].Value.ToLowerInvariant()
         source = [ordered]@{
             commit = (& git -C $repo rev-parse HEAD).Trim()
-            branch = (& git -C $repo branch --show-current).Trim()
+            branch = ([string](& git -C $repo branch --show-current)).Trim()
             dirty = (@(& git -C $repo status --porcelain).Count -gt 0)
         }
         builtAt = (Get-Date).ToUniversalTime().ToString('o')

@@ -5,6 +5,7 @@ import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
 import { keepTrackVisibleInPictureInPicture, openScreenPictureInPicture, ScreenPictureInPictureError, type ScreenPictureInPictureSession } from './screen-picture-in-picture.js';
 import './screen-stage.css';
 import { ScreenAudio } from './screen-audio.js';
+import { getClientHost } from '../client/client-host.js';
 
 type StageTrack = Pick<LiveKitTrackAdapter, 'attach' | 'detach'>;
 
@@ -109,8 +110,9 @@ export function ScreenStage({
   const pipSessionRef = useRef<ScreenPictureInPictureSession | null>(null);
   const pipVisibilityRef = useRef(new Map<StageTrack, () => void>());
   const requestGenerationRef = useRef(0);
+  const pipOpeningRef = useRef<AbortController | null>(null);
   const mountedRef = useRef(true);
-  const [pipKind, setPipKind] = useState<'document' | 'video' | null>(null);
+  const [pipKind, setPipKind] = useState<ScreenPictureInPictureSession['kind'] | null>(null);
   const [pipBusy, setPipBusy] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [displayMessage, setDisplayMessage] = useState<string | null>(null);
@@ -123,7 +125,7 @@ export function ScreenStage({
   };
   const syncPipVisibility = useCallback(() => {
     const desiredTracks = new Set<StageTrack>();
-    if (pipSessionRef.current && videoElementRef.current) {
+    if ((pipSessionRef.current || pipOpeningRef.current) && videoElementRef.current) {
       for (const source of [committedRef.current, pendingSourceRef.current]) {
         if (source?.kind === 'track') desiredTracks.add(source.track);
       }
@@ -143,13 +145,15 @@ export function ScreenStage({
     // For an ordinary close, retain the active state until the browser confirms it.
     if (discard || !session) {
       requestGenerationRef.current += 1;
+      pipOpeningRef.current?.abort(); pipOpeningRef.current = null;
       pipSessionRef.current = null;
       syncPipVisibility();
       if (mountedRef.current) { setPipKind(null); setPipBusy(false); }
     } else if (mountedRef.current) setPipBusy(true);
+    const generation = requestGenerationRef.current;
     if (!session) return true;
     try {
-      await session.close();
+      await session.close({ returnToMeeting: !discard });
       if (pipSessionRef.current === session) {
         pipSessionRef.current = null;
         syncPipVisibility();
@@ -160,7 +164,7 @@ export function ScreenStage({
       if (mountedRef.current && !discard) setDisplayMessage(t('screen.pipCloseFailed'));
       return false;
     } finally {
-      if (mountedRef.current) setPipBusy(false);
+      if (mountedRef.current && requestGenerationRef.current === generation) setPipBusy(false);
     }
   }, [syncPipVisibility, t]);
   // Keep the media host mounted even for the empty state so React never tries
@@ -186,27 +190,34 @@ export function ScreenStage({
     const mediaHost = mediaHostRef.current;
     if (!pipAllowed || sourcePending || !video || !home || !mediaHost || pipBusy) return;
     const request = ++requestGenerationRef.current;
+    const opening = new AbortController(); pipOpeningRef.current = opening;
+    syncPipVisibility();
     setPipBusy(true);
     setDisplayMessage(null);
     try {
       const session = await openScreenPictureInPicture({
-        video, home, mediaHost, labels,
+        video, home, mediaHost, labels, signal: opening.signal,
         onClose: () => {
           if (request !== requestGenerationRef.current) return;
+          requestGenerationRef.current += 1;
           pipSessionRef.current = null;
           syncPipVisibility();
           if (mountedRef.current) { setPipKind(null); setPipBusy(false); setDisplayMessage(null); }
         }
       });
-      if (request !== requestGenerationRef.current || !mountedRef.current) { await session.close(); return; }
+      if (request !== requestGenerationRef.current || !mountedRef.current) { await session.close({ returnToMeeting: false }); return; }
       pipSessionRef.current = session;
       syncPipVisibility();
       setPipKind(session.kind);
     } catch (error) {
       if (request !== requestGenerationRef.current || !mountedRef.current) return;
       const reason = error instanceof ScreenPictureInPictureError ? error.reason : 'failed';
-      setDisplayMessage(t(reason === 'unsupported' ? 'screen.pipUnsupported' : reason === 'denied' ? 'screen.pipDenied' : 'screen.pipFailed'));
+      const android = getClientHost()?.platform === 'android';
+      setDisplayMessage(t(reason === 'client-update' ? 'screen.pipClientUpdate'
+        : reason === 'unsupported' ? android ? 'screen.pipAndroidUnsupported' : 'screen.pipUnsupported'
+          : reason === 'denied' ? android ? 'screen.pipAndroidDenied' : 'screen.pipDenied' : 'screen.pipFailed'));
     } finally {
+      if (pipOpeningRef.current === opening) { pipOpeningRef.current = null; syncPipVisibility(); }
       if (request === requestGenerationRef.current && mountedRef.current) setPipBusy(false);
     }
   };
@@ -439,7 +450,7 @@ export function ScreenStage({
         {pipAllowed && <button type="button" className="screen-stage-pip" aria-label={pipKind ? t('screen.pipReturn') : t('screen.pip')} title={pipKind ? t('screen.pipReturn') : t('screen.pip')} aria-pressed={Boolean(pipKind)} disabled={pipBusy || (sourcePending && !pipKind)} onClick={() => { void togglePip(); }}>
           <PictureInPicture2 size={16} aria-hidden="true" /><span>{pipKind ? t('screen.pipReturn') : t('screen.pip')}</span>
         </button>}
-        <button ref={fullscreenButtonRef} type="button" className="screen-stage-fullscreen" aria-label={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} title={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
+        <button ref={fullscreenButtonRef} type="button" className="screen-stage-fullscreen" disabled={pipBusy} aria-label={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} title={isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreen')} onClick={() => { void toggleFullscreen(); }}>
           {isFullscreen ? <Minimize size={16} aria-hidden="true" /> : <Maximize size={16} aria-hidden="true" />}<span>{isFullscreen ? t('screen.exitFullscreen') : t('screen.fullscreenAction')}</span>
         </button>
       </div>

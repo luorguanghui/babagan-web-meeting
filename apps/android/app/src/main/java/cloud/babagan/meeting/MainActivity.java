@@ -17,6 +17,8 @@ public final class MainActivity extends Activity implements ScreenCaptureService
     static final String ORIGIN=UpdateVerifier.ORIGIN;
     private WebView web;
     private WebViewFullscreen fullscreen;
+    private WebViewPictureInPicture pictureInPicture;
+    private CommunicationAudioRouter audioRoutes;
     private JavaScriptReplyProxy reply;
     private ScreenCaptureService capture;
     private boolean bound,ownsActivity;
@@ -27,6 +29,9 @@ public final class MainActivity extends Activity implements ScreenCaptureService
     private JSONObject pendingParams;
     private String consentSession;
     private PermissionRequest microphoneRequest;
+    private String bluetoothPermissionRequest;
+    private long bluetoothPermissionGeneration;
+    private boolean bluetoothPermissionInFlight;
     private UpdateManager updater;
     private final Handler updateTimer=new Handler(Looper.getMainLooper());
     private final Runnable periodicUpdate=new Runnable(){public void run(){if(!visible||updater==null)return;updater.check(null);updateTimer.postDelayed(this,30*60*1000L);}};
@@ -56,7 +61,9 @@ public final class MainActivity extends Activity implements ScreenCaptureService
         content.addView(web,new android.widget.FrameLayout.LayoutParams(android.view.ViewGroup.LayoutParams.MATCH_PARENT,android.view.ViewGroup.LayoutParams.MATCH_PARENT));
         setContentView(content);
         fullscreen=new WebViewFullscreen(this,content);
-        web.setOnApplyWindowInsetsListener((view,insets)->{view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;});
+        pictureInPicture=new WebViewPictureInPicture(this,content,this::send);
+        audioRoutes=new CommunicationAudioRouter(this,()->visible,this::send);
+        web.setOnApplyWindowInsetsListener((view,insets)->{if(pictureInPicture.occupiesWindow())view.setPadding(0,0,0,0);else view.setPadding(insets.getSystemWindowInsetLeft(),insets.getSystemWindowInsetTop(),insets.getSystemWindowInsetRight(),insets.getSystemWindowInsetBottom());return insets;});
         WebSettings settings=web.getSettings();
         settings.setJavaScriptEnabled(true);settings.setDomStorageEnabled(true);settings.setMediaPlaybackRequiresUserGesture(false);
         settings.setAllowFileAccess(false);settings.setAllowContentAccess(false);settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
@@ -84,12 +91,12 @@ public final class MainActivity extends Activity implements ScreenCaptureService
                 if(request.hasGesture()&&("https".equals(scheme)||"mailto".equals(scheme)))try{startActivity(new Intent(Intent.ACTION_VIEW,request.getUrl()));}catch(ActivityNotFoundException ignored){}
                 return true;
             }
-            @Override public void onPageStarted(WebView view,String url,android.graphics.Bitmap icon){if(fullscreen!=null)fullscreen.exit();cancelCapture("navigation");joined=false;microphoneState(false);reply=null;updateBusyState();}
+            @Override public void onPageStarted(WebView view,String url,android.graphics.Bitmap icon){if(pictureInPicture!=null)pictureInPicture.release("navigation");if(fullscreen!=null)fullscreen.exit();cancelCapture("navigation");joined=false;releaseAudioRouting();microphoneState(false);reply=null;updateBusyState();}
             @Override public void onReceivedSslError(WebView view,SslErrorHandler handler,android.net.http.SslError error){handler.cancel();}
         });
         web.setWebChromeClient(new WebChromeClient(){
             @Override public void onShowCustomView(android.view.View view,CustomViewCallback callback){
-                if(fullscreen==null||web==null||!trusted(web.getUrl())||isFinishing()||isDestroyed()){WebViewFullscreen.reject(callback);return;}
+                if(fullscreen==null||web==null||!trusted(web.getUrl())||isFinishing()||isDestroyed()||(pictureInPicture!=null&&pictureInPicture.occupiesWindow())){WebViewFullscreen.reject(callback);return;}
                 try{fullscreen.show(view,callback);}catch(RuntimeException error){android.util.Log.w("Babagan","Could not attach fullscreen view");}
             }
             @Override public void onHideCustomView(){if(fullscreen!=null)fullscreen.exit();}
@@ -120,10 +127,11 @@ public final class MainActivity extends Activity implements ScreenCaptureService
         try{java.net.URI uri=java.net.URI.create(value);return "https".equals(uri.getScheme())&&"meet.babagan.cloud".equals(uri.getHost())&&uri.getRawUserInfo()==null&&(uri.getPort()==-1||uri.getPort()==443);}catch(IllegalArgumentException e){return false;}
     }
     static String entryUrl(String target){return trusted(target)?target:ORIGIN+"/client?clientVersion="+BuildConfig.VERSION_NAME;}
-    private boolean meetingBusy(){return ClientActivityPolicy.busy(joined,gate.current()!=null,ScreenCaptureService.hasActiveCapture())||MicrophoneService.isActive();}
+    private boolean meetingBusy(){return ClientActivityPolicy.busy(joined,gate.current()!=null,ScreenCaptureService.hasActiveCapture())||MicrophoneService.isActive()||(pictureInPicture!=null&&pictureInPicture.occupiesWindow());}
     private void updateBusyState(){if(updater!=null)updater.busyChanged();}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);handleIncoming(intent);}
     private void handleIncoming(Intent intent){
+        if(pictureInPicture!=null&&pictureInPicture.handleReturn(intent))return;
         String target=intent.getDataString();
         if(!trusted(target)||web==null||target.equals(web.getUrl()))return;
         if(meetingBusy()){Toast.makeText(this,"Leave the current meeting before opening another room",Toast.LENGTH_LONG).show();return;}
@@ -146,8 +154,20 @@ public final class MainActivity extends Activity implements ScreenCaptureService
             if(message.getInt("v")!=1||id.isEmpty()||id.length()>128)throw new IllegalArgumentException("Unsupported bridge request");
             JSONObject params=message.optJSONObject("params");if(params==null)params=new JSONObject();
             switch(message.getString("method")){
-                case "client.info":success(id,Json.object("platform","android","appVersion",BuildConfig.VERSION_NAME,"protocol",1,"screenCapture",true,"systemAudio",false,"maxScreenFrameRate",60));break;
-                case "meeting.state":joined=params.getBoolean("joined");if(!joined){microphoneState(false);cancelCapture("meeting-left");}updateBusyState();success(id,Json.object("joined",joined));break;
+                case "client.info":success(id,Json.object("platform","android","appVersion",BuildConfig.VERSION_NAME,"protocol",1,"screenCapture",true,"systemAudio",false,"maxScreenFrameRate",60,"pictureInPicture",pictureInPicture!=null&&pictureInPicture.supported(),"audioRouting",audioRoutes!=null&&audioRoutes.supported()));break;
+                case "meeting.state":joined=params.getBoolean("joined");if(audioRoutes!=null)audioRoutes.meeting(joined);if(!joined){releaseAudioRouting();if(pictureInPicture!=null)pictureInPicture.release("meeting-left");microphoneState(false);cancelCapture("meeting-left");}updateBusyState();success(id,Json.object("joined",joined));break;
+                case "audio.routes":success(id,audioRoutes.snapshot());break;
+                case "audio.select":{
+                    final String requestId=id;audioRoutes.select(params.getString("deviceId"),new CommunicationAudioRouter.Completion(){public void success(JSONObject state){MainActivity.this.success(requestId,state);}public void failure(String code,String message){error(requestId,code,message);}});break;
+                }
+                case "audio.bluetoothPermission":requestBluetoothPermission(id);break;
+                case "pictureInPicture.enter":{
+                    if(!joined||!visible)throw new WebViewPictureInPicture.Failure("denied","Open picture in picture from the foreground meeting");
+                    if(fullscreen!=null)fullscreen.exit();
+                    success(id,pictureInPicture.enter(params.getString("sessionId"),pipDimension(params,"width"),pipDimension(params,"height")));break;
+                }
+                case "pictureInPicture.update":success(id,pictureInPicture.update(params.getString("sessionId"),pipDimension(params,"width"),pipDimension(params,"height")));break;
+                case "pictureInPicture.exit":success(id,pictureInPicture.exit(params.getString("sessionId"),params.optBoolean("returnToMeeting",false)));break;
                 case "microphone.state":boolean enabled=params.getBoolean("enabled");microphoneState(enabled);success(id,Json.object("enabled",enabled));break;
                 case "update.check":final String requestId=id;updater.check(result->success(requestId,result));break;
                 case "capture.start":startCapture(id,params,false);break;
@@ -163,8 +183,22 @@ public final class MainActivity extends Activity implements ScreenCaptureService
                 }
                 default:error(id,"unsupported","Unknown client method");
             }
-        }catch(Exception e){if(id!=null)error(id,"invalid-request",e.getMessage()==null?"Invalid request":e.getMessage());}
+        }catch(Exception e){if(id!=null)error(id,e instanceof WebViewPictureInPicture.Failure?((WebViewPictureInPicture.Failure)e).code:e instanceof CommunicationAudioRouter.Failure?((CommunicationAudioRouter.Failure)e).code:"invalid-request",e.getMessage()==null?"Invalid request":e.getMessage());if(e instanceof CommunicationAudioRouter.Failure&&audioRoutes!=null)audioRoutes.foregroundChanged();}
     }
+
+    private void requestBluetoothPermission(String id){
+        if(!joined||!visible)throw new CommunicationAudioRouter.Failure("denied","Request Bluetooth access from the foreground meeting");
+        if(audioRoutes.bluetoothGranted()){success(id,audioRoutes.snapshot());return;}
+        if(bluetoothPermissionInFlight)throw new CommunicationAudioRouter.Failure("busy","A Bluetooth permission dialog is already open");
+        bluetoothPermissionRequest=id;bluetoothPermissionGeneration=audioRoutes.generation();bluetoothPermissionInFlight=true;
+        try{requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT},32);}catch(RuntimeException failure){bluetoothPermissionRequest=null;bluetoothPermissionInFlight=false;throw failure;}
+    }
+    private void releaseAudioRouting(){
+        if(bluetoothPermissionRequest!=null){error(bluetoothPermissionRequest,"cancelled","The meeting ended before Bluetooth permission completed");bluetoothPermissionRequest=null;}
+        if(audioRoutes!=null)audioRoutes.meeting(false);
+    }
+
+    private static int pipDimension(JSONObject params,String name)throws Exception{Object value=params.get(name);if(!(value instanceof Number))throw new IllegalArgumentException("Invalid PiP dimensions");Number number=(Number)value;int result=number.intValue();if(number.doubleValue()!=result||result<1||result>16384)throw new IllegalArgumentException("Invalid PiP dimensions");return result;}
 
     private void startCapture(String requestId,JSONObject params,boolean test)throws Exception{
         if(!joined&&!test)throw new IllegalStateException("Join a meeting before sharing");
@@ -216,13 +250,15 @@ public final class MainActivity extends Activity implements ScreenCaptureService
     private void error(String id,String code,String message){send(Json.object("v",1,"id",id,"ok",false,"error",Json.object("code",code,"message",message)));}
     private void send(JSONObject message){if(reply!=null&&web!=null&&trusted(web.getUrl())&&WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER))try{reply.postMessage(message.toString());}catch(IllegalStateException ignored){/* The owning document was destroyed during navigation. */}}
 
-    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==30&&microphoneRequest!=null){PermissionRequest pending=microphoneRequest;microphoneRequest=null;if(results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED&&trusted(web.getUrl()))pending.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});else pending.deny();}}
-    @Override protected void onResume(){super.onResume();visible=true;if(microphoneEnabled&&joined&&checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)try{microphoneState(true);}catch(RuntimeException error){Toast.makeText(this,"The microphone could not stay active in the background",Toast.LENGTH_LONG).show();}updateBusyState();updateTimer.removeCallbacks(periodicUpdate);updateTimer.post(periodicUpdate);}
-    @Override protected void onPause(){visible=false;updateTimer.removeCallbacks(periodicUpdate);updateBusyState();super.onPause();}
+    @Override public void onRequestPermissionsResult(int request,String[] permissions,int[] results){super.onRequestPermissionsResult(request,permissions,results);if(request==30&&microphoneRequest!=null){PermissionRequest pending=microphoneRequest;microphoneRequest=null;if(results.length>0&&results[0]==PackageManager.PERMISSION_GRANTED&&trusted(web.getUrl()))pending.grant(new String[]{PermissionRequest.RESOURCE_AUDIO_CAPTURE});else pending.deny();}if(request==32){String id=bluetoothPermissionRequest;bluetoothPermissionRequest=null;bluetoothPermissionInFlight=false;if(audioRoutes!=null){audioRoutes.permissionResult(audioRoutes.bluetoothGranted());if(id!=null){if(joined&&bluetoothPermissionGeneration==audioRoutes.generation()&&web!=null&&trusted(web.getUrl()))success(id,audioRoutes.snapshot());else error(id,"cancelled","The permission request no longer belongs to this meeting");}}}}
+    @Override protected void onResume(){super.onResume();visible=true;if(audioRoutes!=null)audioRoutes.foregroundChanged();if(pictureInPicture!=null)pictureInPicture.resumed();if(microphoneEnabled&&joined&&checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED)try{microphoneState(true);}catch(RuntimeException error){Toast.makeText(this,"The microphone could not stay active in the background",Toast.LENGTH_LONG).show();}updateBusyState();updateTimer.removeCallbacks(periodicUpdate);updateTimer.post(periodicUpdate);}
+    @Override protected void onPause(){visible=false;if(audioRoutes!=null)audioRoutes.foregroundChanged();updateTimer.removeCallbacks(periodicUpdate);updateBusyState();super.onPause();}
+    @Override protected void onStop(){if(pictureInPicture!=null)pictureInPicture.stopped();super.onStop();}
     @Override public void onConfigurationChanged(android.content.res.Configuration configuration){super.onConfigurationChanged(configuration);if(fullscreen!=null)fullscreen.reapply();}
     @Override public void onWindowFocusChanged(boolean focused){super.onWindowFocusChanged(focused);if(focused&&fullscreen!=null)fullscreen.reapply();}
+    @Override public void onPictureInPictureModeChanged(boolean active,android.content.res.Configuration configuration){super.onPictureInPictureModeChanged(active,configuration);if(pictureInPicture!=null)pictureInPicture.modeChanged(active);updateBusyState();}
     private void handleBack(){if(fullscreen!=null&&fullscreen.exit())return;if(web!=null&&web.canGoBack())web.goBack();else if(joined)new AlertDialog.Builder(this).setMessage("Leave the meeting and close Babagan?").setPositiveButton("Leave",(dialog,which)->finish()).setNegativeButton("Stay",null).show();else finish();}
     // API 33+ uses the registered predictive-back callback above; retain this only for API 26–32.
     @android.annotation.SuppressLint("GestureBackNavigation") @Override public void onBackPressed(){handleBack();}
-    @Override protected void onDestroy(){updateTimer.removeCallbacks(periodicUpdate);if(!ownsActivity){super.onDestroy();return;}if(fullscreen!=null)fullscreen.destroy();if(Build.VERSION.SDK_INT>=33&&backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);if(active.get()==this)active.clear();MicrophoneService.disable(this);cancelCapture("app-closed");if(capture!=null)capture.detachListener(this);if(bound)unbindService(connection);if(microphoneRequest!=null)microphoneRequest.deny();if(updater!=null)updater.close();if(web!=null){web.stopLoading();web.destroy();web=null;}super.onDestroy();}
+    @Override protected void onDestroy(){updateTimer.removeCallbacks(periodicUpdate);if(!ownsActivity){super.onDestroy();return;}releaseAudioRouting();if(audioRoutes!=null)audioRoutes.close();if(pictureInPicture!=null)pictureInPicture.destroy();if(fullscreen!=null)fullscreen.destroy();if(Build.VERSION.SDK_INT>=33&&backCallback!=null)getOnBackInvokedDispatcher().unregisterOnBackInvokedCallback(backCallback);if(active.get()==this)active.clear();MicrophoneService.disable(this);cancelCapture("app-closed");if(capture!=null)capture.detachListener(this);if(bound)unbindService(connection);if(microphoneRequest!=null)microphoneRequest.deny();if(updater!=null)updater.close();if(web!=null){web.stopLoading();web.destroy();web=null;}super.onDestroy();}
 }
