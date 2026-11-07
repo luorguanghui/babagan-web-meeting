@@ -12,6 +12,7 @@ import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
 import { CurrentMeetingCard } from '../components/current-meeting-card.js';
 import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, useI18n } from '../i18n/i18n.js';
+import './create-meeting-page.css';
 
 export function CreateMeetingPage() {
   const { t } = useI18n();
@@ -105,7 +106,7 @@ export function CreateMeetingPage() {
     {currentError && <p className="message error" role="alert">{currentError} <button type="button" className="text-button" onClick={() => void loadCurrentMeeting()}>{t('current.retry')}</button></p>}
   </div>;
 
-  return <TaskPageLayout eyebrow={t('create.eyebrow')} title={t('create.heading')} lede={t('create.lede')} context={context}>
+  return <TaskPageLayout className="create-meeting-page" eyebrow={t('create.eyebrow')} title={t('create.heading')} lede={t('create.lede')} context={context}>
     <form aria-label={t('create.submit')} onSubmit={createMeeting} noValidate>
       <label>{t('create.name')}<input aria-label={t('create.name')} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} autoComplete="off" /></label>
       <label>{t('create.adminPassword')}<input aria-label={t('create.adminPassword')} type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} maxLength={256} autoComplete="new-password" /></label>

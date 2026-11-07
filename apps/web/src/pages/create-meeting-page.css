@@ -1,0 +1,34 @@
+/* Match the client workspace palette without changing the shared form layout. */
+.app-root:has(.create-meeting-page), .app-shell:has(.create-meeting-page) {
+  --canvas: #fff;
+  --surface: #fff;
+  --border: #e6e9ee;
+  --text: #24262a;
+  --muted: #6b7078;
+  --accent: #ff922e;
+  --accent-hover: #e97c21;
+  --accent-soft: #fff3e7;
+  --on-accent: #25282d;
+  background: var(--canvas);
+  color: var(--text);
+  color-scheme: light;
+}
+.app-root:has(.create-meeting-page) > .app-bar { background: #fff; border-color: #eceff3; }
+.app-root:has(.create-meeting-page) .app-brand-wordmark { color: #e96711; }
+.app-root:has(.create-meeting-page) .language-selector select { background: #f7f8fa; border-color: var(--border); color: var(--text); }
+.app-root:has(.create-meeting-page) .app-bar-actions > a { color: #b45106; }
+.create-meeting-page { background: var(--canvas); color: var(--text); color-scheme: light; }
+.create-meeting-page .task-page { background: var(--surface); border-color: var(--border); }
+.create-meeting-page .task-context { background: #fff7ee; }
+.create-meeting-page .task-surface { background: var(--surface); }
+.create-meeting-page .eyebrow, .create-meeting-page .text-button, .create-meeting-page a:not(.host-link) { color: #b45106; }
+.create-meeting-page .lede, .create-meeting-page .optional { color: var(--muted); }
+.create-meeting-page input { background: #fff; border-color: #d9dee5; color: var(--text); }
+.create-meeting-page .task-surface > form > button[type='submit'], .create-meeting-page .host-link { background: var(--accent); color: var(--on-accent); }
+.create-meeting-page .task-surface > form > button[type='submit']:hover, .create-meeting-page .host-link:hover { background: var(--accent-hover); }
+.create-meeting-page .secondary { background: #fff; border-color: #d9dee5; color: #414650; }
+.create-meeting-page .secondary:hover { background: var(--accent-soft); }
+.create-meeting-page .current-meeting-card { background: #fff; border-color: var(--border); }
+.create-meeting-page .created-link, .create-meeting-page .admin-end-form { border-color: var(--border); }
+.create-meeting-page output { background: var(--accent-soft); color: var(--text); }
+.create-meeting-page :is(input, button, a, summary):focus-visible { outline-color: #cb5d0b; }

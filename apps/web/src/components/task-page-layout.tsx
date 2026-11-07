@@ -5,16 +5,18 @@ export function TaskPageLayout({
   title,
   lede,
   context,
-  children
+  children,
+  className
 }: {
   eyebrow: string;
   title: string;
   lede: string;
   context?: ReactNode;
   children: ReactNode;
+  className?: string;
 }) {
   const headingId = useId();
-  return <main className="task-page-shell">
+  return <main className={className ? `task-page-shell ${className}` : 'task-page-shell'}>
     <section className="task-page" aria-labelledby={headingId}>
       <aside className="task-context" aria-label={`${title} context`}>
         <p className="eyebrow">{eyebrow}</p>
