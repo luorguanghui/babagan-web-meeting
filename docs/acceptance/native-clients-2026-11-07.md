@@ -35,4 +35,12 @@
 
 ## 发布与实际更新
 
-待补录：清洁提交构建、签名目录校验、下载卷迁移、公网验收、Windows0.1.0→0.1.1实际自动更新。签名私钥始终保留在本地外部目录，不进入Git、APK/EXE或服务器。
+已于2026-11-07发布至 https://meet.babagan.cloud/ 。网页发布提交49eaef017a5476de81f86b1d9d89855f24e8c3e1，静态产物来自91f5a36，两者前端构建输入一致；清洁提交d2ec257构建的Windows/Android0.1.1以签名序号2发布，浏览器共享组件为0.2.2。所有签名私钥始终保留在本地外部目录，不进入Git、APK/EXE或服务器。
+
+首次预检发现既有Compose测试仍要求SFU网关地址为空，与现有生产样例不符；修正为样例中原有地址后，Debian真实Docker Compose回归通过。发布事务只替换web，逐服务配置与容器身份校验确认API、LiveKit、coturn及外层Caddy未变化。旧下载资源完整迁入 `/opt/babagan-web-meeting/var/downloads`，web只读挂载；Node、FFmpeg和微软签名WebView2运行时均固定大小与SHA-256。发布记录和回滚脚本位于 `/opt/babagan-web-meeting/var/releases/update-20261107T095521Z-native-clients-prebuilt/`。
+
+服务器与外网分别校验安装文件、APK、更新签名、静态资源及运行时镜像；外网14项检查通过，稳定清单/catalog禁缓存，缺失下载返回404，COOP/COEP保持。公网证据见 `assets/client-public-release-2026-11-07.json`。
+
+实际使用生产更新器和公网签名清单，从隔离的0.1.0/序号1安装升级至0.1.1/序号2：忙碌阶段下载文件数为0、当前版本不变；空闲阶段下载825906字节ZIP，RSA、SHA-256、回执及真实可执行版本检查通过，helper实际启动/停止通过，激活新版本指针且保留旧版本。未采集桌面，未修改默认用户安装。此阶段原始证据见 `assets/client-windows-update-2026-11-07.json`；其 `fullUiHealthPending` 表示该阶段尚未执行后续GUI启动验收。
+
+后续从隔离安装根启动实际bootstrap，窗口正常加载线上新首页，显示“已是最新版本 v0.1.1”，`current.pendingHealth=false`，旧版目录保留。WebView2使用独立验收profile，默认用户安装元数据及原profile目录未变。GUI证据见 `assets/client-windows-gui-2026-11-07.json`。关闭时自动化检测到用户输入，停止继续关闭并保留测试窗口/helper；未加入测试会议或发起桌面采集，未绕过安全提示。
