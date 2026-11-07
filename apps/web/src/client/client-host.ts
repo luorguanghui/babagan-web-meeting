@@ -4,15 +4,35 @@ import { useSyncExternalStore } from 'react';
 import { NativeClientBridge, detectClientTransport, validClientInfo, type ClientHost, type ClientHostWindow } from './host-bridge.js';
 
 export type UpdateState = 'idle' | 'checking' | 'current' | 'available' | 'downloading' | 'deferred' | 'installing' | 'ready' | 'error';
-export interface ClientSnapshot { host?: ClientHost; info?: ClientHostInfo; joined: boolean; update: UpdateState; }
+export interface ClientUpdateBytes { phase: 'downloading' | 'verifying' | 'installing'; downloadedBytes: number; totalBytes: number; }
+export interface ClientSnapshot { host?: ClientHost; info?: ClientHostInfo; joined: boolean; update: UpdateState; updateProgress?: ClientUpdateBytes; }
 let snapshot: ClientSnapshot = { joined: false, update: 'idle' };
 const listeners = new Set<() => void>();
 let meetingLeases = 0;
 let desiredMicrophoneEnabled = false;
 let sentMicrophoneEnabled: boolean | undefined;
+let updateRevision = -1;
+let updateEvents = 0;
 const updateStates = new Set<UpdateState>(['idle', 'checking', 'current', 'available', 'downloading', 'deferred', 'installing', 'ready', 'error']);
 function normalizeUpdate(value: unknown): UpdateState | undefined { return value === 'downloaded' ? 'ready' : typeof value === 'string' && updateStates.has(value as UpdateState) ? value as UpdateState : undefined; }
 function change(value: Partial<ClientSnapshot>): void { snapshot = { ...snapshot, ...value }; for (const listener of listeners) listener(); }
+function applyUpdate(value: unknown, requestedAt?: number): void {
+  const data = value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : { state: value };
+  const update = normalizeUpdate(data.state ?? data.status);
+  if (!update) return;
+  if (data.updateRevision !== undefined) {
+    if (!Number.isSafeInteger(data.updateRevision) || (data.updateRevision as number) < 0 || (data.updateRevision as number) < updateRevision) return;
+    updateRevision = data.updateRevision as number;
+  } else if (updateRevision >= 0 || (requestedAt !== undefined && requestedAt !== updateEvents)) return;
+  let updateProgress: ClientUpdateBytes | undefined;
+  const { phase, downloadedBytes, totalBytes } = data;
+  if ((update === 'downloading' && (phase === 'downloading' || phase === 'verifying') || update === 'installing' && phase === 'installing')
+    && typeof downloadedBytes === 'number' && Number.isSafeInteger(downloadedBytes) && downloadedBytes >= 0
+    && typeof totalBytes === 'number' && Number.isSafeInteger(totalBytes) && totalBytes > 0 && downloadedBytes <= totalBytes) {
+    updateProgress = { phase, downloadedBytes, totalBytes };
+  }
+  change({ update, updateProgress });
+}
 export function getClientSnapshot(): ClientSnapshot { return snapshot; }
 export function getClientHost(): ClientHost | undefined { return snapshot.host; }
 export function useClientHost(): ClientSnapshot { return useSyncExternalStore(listener => { listeners.add(listener); return () => { listeners.delete(listener); }; }, getClientSnapshot, getClientSnapshot); }
@@ -23,11 +43,12 @@ export function initializeClientHost(target: ClientHostWindow = window): ClientH
   if (!transport) return;
   const host = new NativeClientBridge(transport);
   change({ host });
-  host.subscribe(event => { const update = normalizeUpdate(event.state); if (event.event === 'update.state' && update) change({ update }); });
+  host.subscribe(event => { if (event.event === 'update.state') { updateEvents++; applyUpdate(event); } });
+  const infoRequestedAt = updateEvents;
   void host.request('client.info').then(info => {
     if (!validClientInfo(info, host.platform)) return;
-    const initialUpdate = normalizeUpdate((info as ClientHostInfo & { updateState?: unknown }).updateState);
-    change({ info, ...(initialUpdate ? { update: initialUpdate } : {}) });
+    change({ info });
+    applyUpdate((info as ClientHostInfo & { updateState?: unknown }).updateState, infoRequestedAt);
   }).catch(() => undefined);
   target.addEventListener('pagehide', () => {
     if (snapshot.joined) { sendMicrophoneState(false); change({ joined: false }); void host.request('meeting.state', { joined: false }).catch(() => undefined); }
@@ -71,11 +92,11 @@ export function setClientMicrophoneEnabled(enabled: boolean): void {
 export async function checkClientUpdate(): Promise<void> {
   const host = getClientHost(); if (!host) return;
   if (snapshot.joined) return;
-  change({ update: 'checking' });
+  const requestedAt = updateEvents;
+  if (!['downloading', 'installing'].includes(snapshot.update)) change({ update: 'checking', updateProgress: undefined });
   try {
     const result = await host.request('update.check', undefined, { timeoutMs: 60_000 });
-    const status = result && typeof result === 'object' ? (result as { status?: unknown; state?: unknown }).status ?? (result as { state?: unknown }).state : undefined;
-    const update = normalizeUpdate(status); if (update) change({ update });
+    applyUpdate(result, requestedAt);
   }
   catch { if (snapshot.update === 'checking') change({ update: 'error' }); }
 }

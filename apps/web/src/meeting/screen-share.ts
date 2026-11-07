@@ -9,6 +9,7 @@ import type { P2pShareController, ViewerSessionState } from './p2p-share-control
 import type { Peer } from './p2p-signaling.js';
 import { isNativeCaptureTrack } from './native-capture.js';
 import { abortableCapture, captureAborted, stopCaptureStream } from './capture-abort.js';
+import { isAndroidPlaybackAudioTrack } from '../client/android-capture.js';
 
 export interface ScreenShareQualityPreset {
   width: number;
@@ -367,6 +368,7 @@ class BrowserScreenShareController implements ScreenShareController {
   }
 
   private async verifyOwnAudioRestriction(track: MediaStreamTrack): Promise<boolean> {
+    if (isAndroidPlaybackAudioTrack(track)) return true;
     if (!this.dependencies.supportsOwnAudioRestriction()) return false;
     try {
       await track.applyConstraints({

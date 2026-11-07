@@ -1,6 +1,13 @@
 .client-update-status { display: inline-flex; align-items: center; gap: 6px; font-size: .73rem; color: var(--muted); }
 .client-update-status .client-update-check { padding: 6px; min-height: 32px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); }
 .client-update-status .client-version { font-variant-numeric: tabular-nums; }
+.client-update-progress { display: grid; gap: 7px; width: min(100%, 420px); color: var(--muted); font-size: .8rem; }
+.client-update-progress-label { display: flex; align-items: baseline; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; }
+.client-update-progress-bytes { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.client-update-progress progress { display: block; appearance: auto; accent-color: var(--accent); width: 100%; height: 8px; }
+.client-update-progress-compact { width: 200px; font-size: .7rem; gap: 3px; }
+.client-update-progress-compact .client-update-progress-label > span:first-child { display: none; }
+@media (max-width: 480px) { .client-update-progress-compact { width: 132px; font-size: .65rem; } }
 .client-host-label { color: var(--muted); font-size: .72rem; font-weight: 500; letter-spacing: 0; margin-left: 6px; padding-left: 12px; border-left: 1px solid var(--border); }
 .app-shell-client .app-bar { min-height: 72px; }
 @media (max-width: 680px) { .client-host-label { display: none; } }

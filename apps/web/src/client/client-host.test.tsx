@@ -4,14 +4,14 @@ import type { ClientHostWindow, NativeClientBridge } from './host-bridge.js';
 
 const bridges: NativeClientBridge[] = [];
 afterEach(() => { for (const bridge of bridges.splice(0)) bridge.dispose(); });
-async function harness() {
+async function harness(infoUpdate?: unknown, checkedUpdate: unknown = { status: 'current' }) {
   vi.resetModules();
   const client = await import('./client-host.js');
   const calls: ClientHostRequest[] = [];
   const android = { onmessage: null as ((event: { data: string }) => void) | null, postMessage: (text: string) => {
     const request = JSON.parse(text) as ClientHostRequest; calls.push(request);
-    const result = request.method === 'client.info' ? { platform: 'android', appVersion: '0.3.0', protocol: 1, screenCapture: true, systemAudio: false }
-      : request.method === 'update.check' ? { status: 'current' } : {};
+    const result = request.method === 'client.info' ? { platform: 'android', appVersion: '0.3.0', protocol: 1, screenCapture: true, systemAudio: false, updateState: infoUpdate }
+      : request.method === 'update.check' ? checkedUpdate : {};
     queueMicrotask(() => android.onmessage?.({ data: JSON.stringify({ v: 1, id: request.id, ok: true, result }) }));
   } };
   const target = Object.assign(new EventTarget(), { BabaganAndroid: android }) as unknown as ClientHostWindow;
@@ -69,4 +69,52 @@ it('accepts Android deferred, downloaded and installing update states', async ()
     h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', state }) });
     expect(h.client.getClientSnapshot().update).toBe(expected);
   }
+});
+
+it('retains real bytes and verification phase from native update events', async () => {
+  const h = await harness();
+  h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', state: 'downloading', phase: 'downloading', downloadedBytes: 25, totalBytes: 100, updateRevision: 1 }) });
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'downloading', updateProgress: { phase: 'downloading', downloadedBytes: 25, totalBytes: 100 } });
+  h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', state: 'downloading', phase: 'verifying', downloadedBytes: 100, totalBytes: 100, updateRevision: 2 }) });
+  expect(h.client.getClientSnapshot().updateProgress?.phase).toBe('verifying');
+});
+
+it('restores native update progress on page reload and check responses', async () => {
+  const h = await harness({ state: 'downloading', phase: 'downloading', downloadedBytes: 20, totalBytes: 100, updateRevision: 4 },
+    { state: 'downloading', phase: 'downloading', downloadedBytes: 60, totalBytes: 100, updateRevision: 5 });
+  await Promise.resolve();
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'downloading', updateProgress: { downloadedBytes: 20, totalBytes: 100 } });
+  await h.client.checkClientUpdate();
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'downloading', updateProgress: { downloadedBytes: 60, totalBytes: 100 } });
+});
+
+it('discards queued progress after deferral and after a newer retry starts', async () => {
+  const h = await harness();
+  const emit = (value: object) => h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', ...value }) });
+  emit({ state: 'downloading', phase: 'downloading', downloadedBytes: 80, totalBytes: 100, updateRevision: 8 });
+  emit({ state: 'deferred', updateRevision: 9 });
+  emit({ state: 'downloading', phase: 'downloading', downloadedBytes: 90, totalBytes: 100, updateRevision: 8 });
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'deferred', updateProgress: undefined });
+  emit({ state: 'downloading', phase: 'downloading', downloadedBytes: 0, totalBytes: 100, updateRevision: 10 });
+  emit({ state: 'downloaded', updateRevision: 8 });
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'downloading', updateProgress: { downloadedBytes: 0 } });
+  emit({ state: 'error', updateRevision: 11 });
+  expect(h.client.getClientSnapshot().updateProgress).toBeUndefined();
+});
+
+it.each([
+  [-1, 100], [101, 100], [10, 0], [10, -100], [0.5, 100], [1, Number.MAX_SAFE_INTEGER + 1], ['25', 100], [25, '100'], [null, 100],
+])('never exposes malformed native byte totals (%s / %s)', async (downloadedBytes, totalBytes) => {
+  const h = await harness();
+  h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', state: 'downloading', phase: 'downloading', downloadedBytes, totalBytes }) });
+  expect(h.client.getClientSnapshot().update).toBe('downloading');
+  expect(h.client.getClientSnapshot().updateProgress).toBeUndefined();
+});
+
+it('does not overwrite newer native progress with a stale info or check response', async () => {
+  const h = await harness({ state: 'current', updateRevision: 1 }, { state: 'current', updateRevision: 1 });
+  const check = h.client.checkClientUpdate();
+  h.android.onmessage?.({ data: JSON.stringify({ v: 1, event: 'update.state', state: 'downloading', phase: 'downloading', downloadedBytes: 70, totalBytes: 100, updateRevision: 3 }) });
+  await check;
+  expect(h.client.getClientSnapshot()).toMatchObject({ update: 'downloading', updateProgress: { downloadedBytes: 70 } });
 });

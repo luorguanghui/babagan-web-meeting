@@ -29,7 +29,7 @@ final class UpdateDownloadGate {
             if (busy || closed || active != null) throw new Deferred();
             active = ticket = new Ticket();
         }
-        try { ticket.check(); return work.run(ticket); }
+        try { ticket.check(); T result = work.run(ticket); ticket.check(); return result; }
         finally { synchronized (this) { if (active == ticket) active = null; } }
     }
     void close() { closed = true; setBusy(true); }

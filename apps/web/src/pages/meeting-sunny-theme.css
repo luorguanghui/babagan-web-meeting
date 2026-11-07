@@ -244,7 +244,7 @@
   .meeting-room .screen-stage:not(:fullscreen):not(:-webkit-full-screen):not([data-fullscreen]) { padding-bottom: 0; }
 }
 /* Match the selected large-screen composition without inflating phone chrome. */
-@media (min-width: 1101px) and (min-height: 761px) {
+@media (min-width: 1601px) and (min-height: 901px) and (pointer: fine) {
   .meeting-room .meeting-brand-lockup { font-size: 34px; }
   .meeting-room .meeting-room-title h1 { font-size: 34px; line-height: 1.2; }
   .meeting-room .meeting-room-metadata { line-height: 1.2; }
@@ -259,4 +259,31 @@
   .meeting-room .participant-host-badge { font-size: 14px; }
   .meeting-room .participant-detail { font-size: 15px; }
   .meeting-room .meeting-management > summary { font-size: 20px; }
+}
+/* Tablets need room for the shared content, not desktop-sized branding. */
+@media (max-width: 1600px), (pointer: coarse) {
+  .meeting-room .meeting-topbar { min-height: 68px; padding: 10px 20px; gap: 18px; }
+  .meeting-room .meeting-brand { padding-right: 20px; }
+  .meeting-room .meeting-brand-lockup { font-size: 23px; height: 38px; gap: 8px; }
+  .meeting-room .meeting-brand .meeting-brand-avatar { width: 34px; height: 34px; }
+  .meeting-room .meeting-room-title h1 { font-size: 22px; line-height: 1.25; }
+  .meeting-room .meeting-room-metadata { gap: 12px; }
+  .meeting-room .meeting-duration, .meeting-room .meeting-connection .connection-banner { font-size: 12px; }
+  .meeting-room .meeting-topbar-action { min-height: 44px; font-size: 14px; gap: 7px; }
+  .meeting-room .meeting-topbar-action svg { width: 21px; height: 21px; }
+}
+@media (max-width: 800px), (max-width: 1000px) and (max-height: 500px) {
+  .meeting-room[data-members-expanded] .meeting-members-sidebar { width: min(360px, 100%); }
+  .meeting-room[data-members-expanded] .participant-heading-row { padding-right: 44px; }
+  .meeting-room[data-members-expanded] .meeting-members-close { min-width: 44px; width: 44px; min-height: 44px; top: 12px; right: 12px; }
+  .meeting-room[data-members-expanded] .participant-list { padding-top: 24px; }
+  .meeting-room .meeting-members-sidebar .meeting-management { flex: 0 0 auto; }
+}
+@media (max-width: 520px) {
+  .meeting-room .meeting-topbar { padding: 8px 12px; min-height: 64px; gap: 8px; }
+  .meeting-room .meeting-room-title h1 { font-size: 16px; }
+}
+@media (max-width: 1000px) and (max-height: 500px) {
+  .meeting-room .meeting-topbar { min-height: 52px; padding-block: 4px; }
+  .meeting-room .meeting-room-title h1 { font-size: 16px; }
 }

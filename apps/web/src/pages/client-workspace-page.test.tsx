@@ -1,5 +1,5 @@
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 
@@ -27,6 +27,22 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meetings: [], maxOpenMeetings: 3 })));
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+
+it('places open rooms before invitation entry and gives duplicate names distinct entry contexts', async () => {
+  const rooms = [meeting, { ...meeting, slug: `${slug}2` }, { ...meeting, slug: `${slug}3`, isFull: true }];
+  vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meetings: rooms, maxOpenMeetings: 3 })));
+  show();
+  const cards = await screen.findAllByRole('article', { name: meeting.name });
+  const openRegion = cards[0]!.closest('section')!;
+  const invitation = screen.getByLabelText('Meeting link or ID').closest('form')!;
+  expect(openRegion.compareDocumentPosition(invitation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  const first = within(cards[0]!).getByRole('link');
+  const second = within(cards[1]!).getByRole('link');
+  expect(first).toHaveAccessibleName(`Open meeting: ${meeting.name} · ${slug.slice(-6)}`);
+  expect(second).toHaveAccessibleName(`Open meeting: ${meeting.name} · ${(`${slug}2`).slice(-6)}`);
+  expect(within(cards[2]!).queryByRole('link')).not.toBeInTheDocument();
+  expect(within(cards[2]!).getByRole('button', { name: 'Meeting full' })).toBeDisabled();
+});
 
 it('opens the actual lobby route for a pasted invitation without joining or requesting devices', async () => {
   const getUserMedia = vi.fn(), getDisplayMedia = vi.fn();
@@ -58,7 +74,7 @@ it('offers the validated current meeting without trusting its joinUrl or automat
   show();
   expect(await screen.findByRole('heading', { name: meeting.name })).toBeVisible();
   expect(screen.getByText('Password required')).toBeVisible();
-  const link = screen.getByRole('link', { name: 'Open meeting' });
+  const link = screen.getByRole('link', { name: /^Open meeting:/ });
   expect(link).toHaveAttribute('href', `/m/${slug}`);
   expect(screen.queryByLabelText('Navigation destination')).not.toBeInTheDocument();
   fireEvent.click(link); expect(screen.getByLabelText('Navigation destination')).toHaveTextContent(`/m/${slug}`);
@@ -71,7 +87,7 @@ it('recovers a failed lookup and keeps a full meeting from being entered by the 
   fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
   expect(await screen.findByRole('heading', { name: meeting.name })).toBeVisible();
   expect(screen.getByRole('button', { name: 'Meeting full' })).toBeDisabled();
-  expect(screen.queryByRole('link', { name: 'Open meeting' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: /^Open meeting:/ })).not.toBeInTheDocument();
   expect(request).toHaveBeenCalledTimes(2);
 });
 

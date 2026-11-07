@@ -283,6 +283,10 @@ export function MeetingRoomPage({
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection || isAndroidClient ? 'auto' : 'h264');
   const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection) || isAndroidClient);
   const nativeCaptureEnabledRef = useRef(nativeCaptureEnabled);
+  const [androidSystemAudioEnabled, setAndroidSystemAudioEnabled] = useState(true);
+  const androidSystemAudioRef = useRef(false);
+  androidSystemAudioRef.current = Boolean(clientInfo?.systemAudio && androidSystemAudioEnabled);
+  const [androidAudioUnavailable, setAndroidAudioUnavailable] = useState<'permission-denied' | 'unsupported' | 'unavailable'>();
   const [screenSourceTransport, setScreenSourceTransport] = useState<'p2p' | 'cloudflare-sfu'>('p2p');
   const screenSourceTransportRef = useRef<'p2p' | 'cloudflare-sfu'>('p2p');
   const cfPublisherRef = useRef<CloudflareScreenRecovery | undefined>(undefined);
@@ -407,7 +411,12 @@ export function MeetingRoomPage({
       : meetingApi.verifyParticipantShare(slug),
     releaseGrant: () => meetingApi.releaseOwnShare(slug),
     getDisplayMedia: getDisplayMedia ?? ((constraints, signal) => {
-      if (clientHost?.platform === 'android') return captureAndroidScreen(clientHost, constraints, { signal, maxFrameRate: androidMaxFrameRateRef.current });
+      if (clientHost?.platform === 'android') {
+        setAndroidAudioUnavailable(undefined);
+        return captureAndroidScreen(clientHost, { ...constraints, audio: androidSystemAudioRef.current }, {
+          signal, maxFrameRate: androidMaxFrameRateRef.current, onSystemAudioUnavailable: setAndroidAudioUnavailable
+        });
+      }
       if (nativeCaptureEnabledRef.current && nativeCaptureConnection) return captureNativeScreen(nativeCaptureConnection, constraints, { signal });
       if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return Promise.reject(new ClientHostError('unsupported', 'Browser screen capture is unavailable.'));
       return navigator.mediaDevices.getDisplayMedia(constraints);
@@ -1141,6 +1150,9 @@ export function MeetingRoomPage({
     nativeCapturePlatform: clientHost?.platform,
     nativeCaptureMaxFrameRate: clientInfo?.maxScreenFrameRate,
     nativeCaptureEnabled,
+    systemAudioAvailable: isAndroidClient && Boolean(clientInfo?.systemAudio),
+    systemAudioEnabled: androidSystemAudioEnabled,
+    onSystemAudioChange: isAndroidClient ? setAndroidSystemAudioEnabled : undefined,
     onNativeCaptureChange: (enabled) => { nativeCaptureEnabledRef.current = enabled; setNativeCaptureEnabled(enabled); },
     onScreenEncodingEngineChange: setScreenEncodingEngine,
     screenBitrate,
@@ -1227,7 +1239,8 @@ export function MeetingRoomPage({
       {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
       {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
-      {screenState.audioGuidance && <p role="status">{isAndroidClient ? t('client.androidAudioHint') : localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
+      {androidAudioUnavailable && <p role="status">{t(`client.androidAudio.${androidAudioUnavailable}`)}</p>}
+      {screenState.audioGuidance && !(isAndroidClient && !androidSystemAudioEnabled) && <p role="status">{isAndroidClient ? t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint') : localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
       {browserCaptureUnsupported && <p role="status">{t('client.mobileShareUnsupported')} <a href="/#downloads" target="_blank" rel="noopener noreferrer">{t('client.getAndroid')}</a></p>}
       {audioDecisionPresence.value && <section
         className="system-audio-warning"
@@ -1275,7 +1288,7 @@ export function MeetingRoomPage({
     ><p className="meeting-settings-description">{t('room.settingsDescription')}</p>
       <div className="meeting-general-language"><LanguageSelector /></div>
       <MeetingSettings {...meetingControlsProps} section="general" onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
-      {clientHost && <div className="meeting-client-status"><ClientUpdateStatus />{isAndroidClient && <p>{t('client.androidAudioHint')}</p>}</div>}
+      {clientHost && <div className="meeting-client-status"><ClientUpdateStatus />{isAndroidClient && <p>{t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint')}</p>}</div>}
       <p className="meeting-settings-callout">{t('room.settingsHint')}</p></MeetingDrawer>}
     {displayedPanel === 'more' && <MeetingDrawer
       modal={false}

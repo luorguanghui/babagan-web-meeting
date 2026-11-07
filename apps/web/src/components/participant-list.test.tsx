@@ -6,7 +6,7 @@ afterEach(cleanup);
 it('keeps every participant, including the sixth, in the persistent roster', () => {
   render(<ParticipantList participants={Array.from({ length: 8 }, (_, index) => ({ identity: String(index), name: `Member ${index}`, isLocal: index === 0, microphoneEnabled: index % 2 === 0, isSharing: index === 6 }))} />);
   expect(within(screen.getByRole('list')).getAllByRole('listitem')).toHaveLength(8);
-  expect(screen.getByRole('heading', { name: 'Participants (8)' })).toHaveTextContent('Together online');
+  expect(screen.getByRole('heading', { name: 'Participants (8)' })).toHaveTextContent('Participants');
   expect(screen.getByText('Member 6')).toBeInTheDocument();
   expect(screen.getByText('Sharing screen')).toBeInTheDocument();
 });

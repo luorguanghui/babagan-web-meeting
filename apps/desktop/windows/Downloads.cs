@@ -13,11 +13,37 @@ using Microsoft.Win32;
 
 namespace Babagan {
   internal sealed class RuntimeArtifact { public string url; public string sha256; public long bytes; public string sourceUrl; }
+  internal sealed class DownloadProgress {
+    public readonly long downloadedBytes, totalBytes; public readonly string phase;
+    internal DownloadProgress(long downloaded, long total, string currentPhase) { downloadedBytes = downloaded; totalBytes = total; phase = currentPhase; }
+  }
+  internal sealed class DownloadProgressReporter {
+    readonly long total; readonly Action<DownloadProgress> changed; readonly CancellationToken token;
+    long previousBytes, lastReport = -200; string previousPhase;
+    internal DownloadProgressReporter(long totalBytes, Action<DownloadProgress> callback, CancellationToken cancellation) {
+      if (totalBytes < 1 || totalBytes > 9007199254740991) throw new ArgumentOutOfRangeException("totalBytes");
+      total = totalBytes; changed = callback; token = cancellation;
+    }
+    internal void Report(long bytes, string phase, long elapsedMilliseconds) {
+      token.ThrowIfCancellationRequested();
+      if (bytes < previousBytes || bytes > total || (phase != "downloading" && phase != "verifying")) throw new InvalidDataException("Invalid update progress.");
+      previousBytes = bytes;
+      if (phase == "downloading" && bytes == total) phase = "verifying";
+      if (phase == previousPhase && elapsedMilliseconds - lastReport < 200) return;
+      lastReport = elapsedMilliseconds; previousPhase = phase;
+      if (changed != null) changed(new DownloadProgress(bytes, total, phase));
+    }
+  }
   internal static class Downloads {
-    internal static async Task<string> Get(string url, string hash, long expectedBytes, string cache, IProgress<string> progress, CancellationToken token) {
+    internal static async Task<string> Get(string url, string hash, long expectedBytes, string cache, IProgress<string> progress, CancellationToken token, Action<DownloadProgress> byteProgress = null) {
+      token.ThrowIfCancellationRequested();
       if (!Package.TrustedUrl(url) || hash == null || !System.Text.RegularExpressions.Regex.IsMatch(hash, "^[a-f0-9]{64}$")) throw new InvalidDataException("下载地址或校验值无效。");
       Directory.CreateDirectory(cache); var target = Package.Child(cache, hash + ".bin");
-      if (File.Exists(target)) { try { Package.Verify(target, hash); if (expectedBytes > 0 && new FileInfo(target).Length != expectedBytes) throw new InvalidDataException(); return target; } catch (InvalidDataException) { File.Delete(target); } }
+      if (File.Exists(target)) { try {
+        if (expectedBytes > 0 && new FileInfo(target).Length != expectedBytes) throw new InvalidDataException();
+        if (byteProgress != null && expectedBytes > 0) byteProgress(new DownloadProgress(expectedBytes, expectedBytes, "verifying"));
+        await Task.Run(() => Package.Verify(target, hash), token); token.ThrowIfCancellationRequested(); return target;
+      } catch (InvalidDataException) { File.Delete(target); } }
       var part = Package.Child(cache, hash + "." + Guid.NewGuid().ToString("N") + ".part");
       try {
         ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12;
@@ -26,22 +52,36 @@ namespace Babagan {
         using (var response = await client.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, token)) {
           response.EnsureSuccessStatusCode();
           if (response.Content.Headers.ContentLength > 400000000 || (expectedBytes > 0 && response.Content.Headers.ContentLength.HasValue && response.Content.Headers.ContentLength.Value != expectedBytes)) throw new InvalidDataException("下载文件大小不匹配。");
-          long received = 0; var last = DateTime.MinValue;
           using (var input = await response.Content.ReadAsStreamAsync()) using (var output = new FileStream(part, FileMode.CreateNew, FileAccess.Write)) {
-            var buffer = new byte[65536];
-            while (true) {
-              var pending = input.ReadAsync(buffer, 0, buffer.Length, token);
-              if (await Task.WhenAny(pending, Task.Delay(30000, token)) != pending) { response.Dispose(); try { await pending; } catch {} token.ThrowIfCancellationRequested(); throw new IOException("下载超过30秒没有进展。"); }
-              var count = await pending; if (count == 0) break; received += count;
-              if (received > 400000000 || (expectedBytes > 0 && received > expectedBytes)) throw new InvalidDataException("下载文件超过预期大小。");
-              await output.WriteAsync(buffer, 0, count, token);
-              if ((DateTime.UtcNow - last).TotalMilliseconds > 250) { progress.Report("正在下载并校验组件 · " + received / 1048576 + " MB"); last = DateTime.UtcNow; }
-            }
+            await Copy(input, output, expectedBytes, token, value => {
+              progress.Report("正在下载并校验组件 · " + value.downloadedBytes / 1048576 + " MB");
+              if (byteProgress != null) byteProgress(value);
+            }, response.Dispose);
           }
-          if (expectedBytes > 0 && received != expectedBytes) throw new InvalidDataException("下载文件不完整。");
         }
-        await Task.Run(() => Package.Verify(part, hash), token); File.Move(part, target); return target;
+        await Task.Run(() => Package.Verify(part, hash), token); token.ThrowIfCancellationRequested(); File.Move(part, target); return target;
       } finally { if (File.Exists(part)) File.Delete(part); }
+    }
+    internal static async Task Copy(Stream input, Stream output, long expectedBytes, CancellationToken token, Action<DownloadProgress> progress, Action cancelRead = null) {
+      long received = 0; var clock = Stopwatch.StartNew();
+      var reports = expectedBytes > 0 ? new DownloadProgressReporter(expectedBytes, progress, token) : null;
+      if (reports != null) reports.Report(0, "downloading", 0);
+      var buffer = new byte[65536];
+      while (true) {
+        token.ThrowIfCancellationRequested();
+        var pending = input.ReadAsync(buffer, 0, buffer.Length, token);
+        if (await Task.WhenAny(pending, Task.Delay(30000, token)) != pending) {
+          if (cancelRead != null) cancelRead(); else input.Dispose();
+          try { await pending; } catch {} token.ThrowIfCancellationRequested(); throw new IOException("下载超过30秒没有进展。");
+        }
+        var count = await pending; token.ThrowIfCancellationRequested(); if (count == 0) break;
+        if (count > 400000000 - received || (expectedBytes > 0 && count > expectedBytes - received)) throw new InvalidDataException("下载文件超过预期大小。");
+        await output.WriteAsync(buffer, 0, count, token); received += count;
+        if (reports != null) reports.Report(received, "downloading", clock.ElapsedMilliseconds);
+      }
+      if (expectedBytes > 0 && received != expectedBytes) throw new InvalidDataException("下载文件不完整。");
+      token.ThrowIfCancellationRequested();
+      if (reports != null) reports.Report(received, "verifying", clock.ElapsedMilliseconds);
     }
     internal static async Task<string> Manifest(string url, CancellationToken token) {
       if (!Package.TrustedUrl(url)) throw new InvalidDataException("更新地址无效。");

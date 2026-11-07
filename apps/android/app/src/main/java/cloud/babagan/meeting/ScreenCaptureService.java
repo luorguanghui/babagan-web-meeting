@@ -1,7 +1,9 @@
 package cloud.babagan.meeting;
 
 import android.app.*;
+import android.Manifest;
 import android.content.*;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Point;
 import android.media.projection.MediaProjection;
@@ -9,6 +11,8 @@ import android.os.*;
 import android.view.WindowManager;
 import org.json.JSONObject;
 import org.webrtc.*;
+import org.webrtc.audio.AudioProcessingOptions;
+import org.webrtc.audio.JavaAudioDeviceModule;
 import java.util.*;
 import java.util.concurrent.*;
 
@@ -32,6 +36,10 @@ public final class ScreenCaptureService extends Service {
     private PeerConnection peer;
     private VideoSource source;
     private VideoTrack track;
+    private JavaAudioDeviceModule audioDevice;
+    private PlaybackAudioSession playbackAudio;
+    private AudioSource playbackSource;
+    private AudioTrack playbackTrack;
     private RtpSender screenSender;
     private ScreenCapturerAndroid capturer;
     private SurfaceTextureHelper texture;
@@ -55,12 +63,13 @@ public final class ScreenCaptureService extends Service {
         Intent permission = Build.VERSION.SDK_INT >= 33 ? intent.getParcelableExtra("permission", Intent.class) : intent.getParcelableExtra("permission");
         int width = intent.getIntExtra("width", 1920), height = intent.getIntExtra("height", 1080);
         int rate = intent.getIntExtra("frameRate", 30);
-        rtc.execute(() -> begin(id, permission, width, height, rate, false));
+        boolean audio = intent.getBooleanExtra("audio", false);
+        rtc.execute(() -> begin(id, permission, width, height, rate, false, audio));
         return START_NOT_STICKY;
     }
 
     synchronized void prepare(String id) { sessionId = id; if(!resourcesActive){resourcesActive=true;ACTIVE_CAPTURE_SERVICES.incrementAndGet();} }
-    void beginSynthetic(String id) { prepare(id); rtc.execute(() -> begin(id, null, 640, 360, 15, true)); }
+    void beginSynthetic(String id) { prepare(id); rtc.execute(() -> begin(id, null, 640, 360, 15, true, false)); }
 
     private void createNotification() {
         NotificationManager manager = getSystemService(NotificationManager.class);
@@ -77,12 +86,31 @@ public final class ScreenCaptureService extends Service {
 
     private boolean owns(String id) { return id != null && id.equals(sessionId); }
 
-    private void begin(String id, Intent permission, int maxWidth, int maxHeight, int rate, boolean test) {
+    private void begin(String id, Intent permission, int maxWidth, int maxHeight, int rate, boolean test, boolean requestedAudio) {
         if (!owns(id)) return;
         try {
             PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(this).createInitializationOptions());
             egl = EglBase.create();
+            // Bind the callback to this session, never to a successor's mutable service fields.
+            java.util.concurrent.atomic.AtomicReference<PlaybackAudioSession> audioInput = new java.util.concurrent.atomic.AtomicReference<>();
+            PlaybackAudioSession.Pacer idlePacer = PlaybackAudioSession.realtimePacer();
+            audioDevice = JavaAudioDeviceModule.builder(this)
+                .setInputSampleRate(PlaybackAudioSession.SAMPLE_RATE).setUseStereoInput(true)
+                .setUseHardwareAcousticEchoCanceler(false).setUseHardwareNoiseSuppressor(false)
+                .setAudioRecordErrorCallback(new JavaAudioDeviceModule.AudioRecordErrorCallback() {
+                    public void onWebRtcAudioRecordInitError(String message) { postAudioFailure(id); }
+                    public void onWebRtcAudioRecordStartError(JavaAudioDeviceModule.AudioRecordStartErrorCode code,String message) { postAudioFailure(id); }
+                    public void onWebRtcAudioRecordError(String message) { postAudioFailure(id); }
+                })
+                .setAudioBufferCallback((buffer, format, channels, sampleRate, bytesRead, timestamp) -> {
+                    PlaybackAudioSession input=audioInput.get();
+                    if(input!=null)return input.onBuffer(buffer,format,channels,sampleRate,bytesRead,timestamp);
+                    idlePacer.awaitFrame();buffer.clear();while(buffer.hasRemaining())buffer.put((byte)0);buffer.rewind();return 0;
+                }).createAudioDeviceModule();
+            // Public API in pinned SDK 144.7559.15: callback-only input, no microphone opened.
+            audioDevice.setAudioRecordEnabled(false);
             factory = PeerConnectionFactory.builder()
+                .setAudioDeviceModule(audioDevice)
                 .setVideoEncoderFactory(new DefaultVideoEncoderFactory(egl.getEglBaseContext(), true, true))
                 .setVideoDecoderFactory(new DefaultVideoDecoderFactory(egl.getEglBaseContext())).createPeerConnectionFactory();
             source = factory.createVideoSource(true);
@@ -111,6 +139,30 @@ public final class ScreenCaptureService extends Service {
                 capturer.startCapture(captureWidth, captureHeight, frameRate);
             }
             if (!owns(id)) { cleanup(); return; }
+            playbackAudio = new PlaybackAudioSession(requestedAudio&&!test,Build.VERSION.SDK_INT,
+                checkSelfPermission(Manifest.permission.RECORD_AUDIO)==PackageManager.PERMISSION_GRANTED,
+                // Reuse the ScreenCapturer's projection. Redeeming its consent Intent twice fails on Android 14+.
+                () -> {
+                    if(Build.VERSION.SDK_INT<29)throw new UnsupportedOperationException("Playback audio requires Android 10");
+                    return new AndroidPlaybackRecorder(this,capturer.getMediaProjection());
+                },
+                () -> postAudioFailure(id),PlaybackAudioSession.realtimePacer());
+            audioInput.set(playbackAudio);
+            if(playbackAudio.isActive()) {
+                try {
+                    playbackSource=factory.createAudioSource(new MediaConstraints());
+                    playbackTrack=factory.createAudioTrack("babagan-screen-audio",playbackSource);
+                    if(!playbackTrack.setAudioProcessingOptions(AudioProcessingOptions.raw()).isSuccess())throw new IllegalStateException("Raw playback audio is unavailable");
+                    if(peer.addTrack(playbackTrack,Collections.singletonList("babagan-screen"))==null)throw new IllegalStateException("Playback audio sender is unavailable");
+                } catch(RuntimeException error) {
+                    playbackAudio.close();
+                    if(playbackTrack!=null){playbackTrack.dispose();playbackTrack=null;}
+                    if(playbackSource!=null){playbackSource.dispose();playbackSource=null;}
+                }
+            }
+            final boolean systemAudio=playbackAudio.isActive()&&playbackTrack!=null;
+            final String systemAudioReason=requestedAudio&&!systemAudio?(playbackAudio.unavailableReason()==null?"unavailable":playbackAudio.unavailableReason()):null;
+            if(!owns(id)) { cleanup();return; }
             PeerConnection current = peer;
             current.createOffer(new SimpleSdpObserver() {
                 @Override public void onCreateSuccess(SessionDescription offer) {
@@ -119,7 +171,7 @@ public final class ScreenCaptureService extends Service {
                     current.setLocalDescription(new SimpleSdpObserver() {
                         @Override public void onSetSuccess() {
                             if (!owns(id)) return;
-                            main.post(() -> { Listener sink = listeners.get(); if (sink != null && owns(id)) sink.started(id, Json.object("sessionId",id,"offer",Json.object("type","offer","sdp",configuredOffer.description),"width",captureWidth,"height",captureHeight,"frameRate",frameRate,"systemAudio",false)); });
+                            main.post(() -> { Listener sink = listeners.get(); if (sink != null && owns(id)) sink.started(id, Json.object("sessionId",id,"offer",Json.object("type","offer","sdp",configuredOffer.description),"width",captureWidth,"height",captureHeight,"frameRate",frameRate,"systemAudio",systemAudio,"systemAudioExcludesOwnApp",systemAudio,"systemAudioReason",systemAudioReason)); });
                         }
                         @Override public void onSetFailure(String error) { fail(id, error); }
                     }, configuredOffer);
@@ -127,6 +179,17 @@ public final class ScreenCaptureService extends Service {
                 @Override public void onCreateFailure(String error) { fail(id,error); }
             }, new MediaConstraints());
         } catch (Exception error) { fail(id, error.getMessage() == null ? "Screen capture failed" : error.getMessage()); }
+    }
+
+    private void postAudioFailure(String id) {
+        try { rtc.execute(() -> audioFailed(id)); } catch(RejectedExecutionException ignored) { /* Service already destroyed. */ }
+    }
+    private void audioFailed(String id) {
+        if(!owns(id)||playbackTrack==null)return;
+        // Keep the screen publication alive. The web side stops/removes only its audio track.
+        if(playbackAudio!=null)playbackAudio.close();
+        playbackTrack.setEnabled(false);
+        emit(Json.object("v",1,"event","capture.audio-ended","sessionId",id,"reason","unavailable"));
     }
 
     private void configureSender(boolean negotiated) {
@@ -204,13 +267,18 @@ public final class ScreenCaptureService extends Service {
 
     private void cleanup() {
         if(synthetic!=null){synthetic.shutdownNow();synthetic=null;}
+        // Unblock the callback before peer/factory disposal waits for WebRTC's audio thread.
+        if(playbackAudio!=null){playbackAudio.close();playbackAudio=null;}
         if(capturer!=null){try{capturer.stopCapture();}catch(Exception ignored){}capturer.dispose();capturer=null;}
         if(peer!=null){peer.close();peer.dispose();peer=null;}
+        if(playbackTrack!=null){playbackTrack.dispose();playbackTrack=null;}
+        if(playbackSource!=null){playbackSource.dispose();playbackSource=null;}
         screenSender=null;
         if(track!=null){track.dispose();track=null;}
         if(source!=null){source.dispose();source=null;}
         if(texture!=null){texture.dispose();texture=null;}
         if(factory!=null){factory.dispose();factory=null;}
+        if(audioDevice!=null){audioDevice.release();audioDevice=null;}
         if(egl!=null){egl.release();egl=null;}
         descriptionSet=false;earlyIce.clear();
         synchronized(this){if(sessionId==null&&resourcesActive){resourcesActive=false;ACTIVE_CAPTURE_SERVICES.decrementAndGet();}}

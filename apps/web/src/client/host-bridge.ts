@@ -71,7 +71,7 @@ export class NativeClientBridge implements ClientHost {
       else { const error = value.error as { code: string; message: string }; item.reject(new ClientHostError(error.code, error.message)); }
       return;
     }
-    if (typeof value.event !== 'string' || !['capture.signal', 'capture.ended', 'capture.resized', 'update.state', 'pictureInPicture.state', 'audio.routesChanged'].includes(value.event)) return;
+    if (typeof value.event !== 'string' || !['capture.signal', 'capture.ended', 'capture.audio-ended', 'capture.resized', 'update.state', 'pictureInPicture.state', 'audio.routesChanged'].includes(value.event)) return;
     for (const listener of this.listeners) { try { listener(value as ClientHostEvent); } catch { /* One consumer cannot prevent another from receiving an event. */ } }
   }
 }

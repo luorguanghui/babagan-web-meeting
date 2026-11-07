@@ -115,18 +115,23 @@ namespace Babagan {
         if (request == null || !request.ContainsKey("v") || Convert.ToInt32(request["v"]) != 1 || !request.ContainsKey("id")) throw new InvalidDataException();
         id = request["id"]; if (!(id is string) || ((string)id).Length > 128) throw new InvalidDataException();
         var method = Convert.ToString(request["method"]); object result;
-        if (method == "client.info") result = new { protocol = 1, platform = "windows", appVersion = Package.Version, screenCapture = true, systemAudio = false, autoUpdate = true, updateState = updateState };
+        if (method == "client.info") result = new { protocol = 1, platform = "windows", appVersion = Package.Version, screenCapture = true, systemAudio = false, autoUpdate = true, updateState = updater.State };
         else if (method == "meeting.state") {
           var parameters = request.ContainsKey("params") ? request["params"] as Dictionary<string, object> : null;
           if (parameters == null || parameters.Count != 1 || !parameters.ContainsKey("joined") || !(parameters["joined"] is bool)) throw new InvalidDataException();
           joined = (bool)parameters["joined"]; updater.ActivityChanged(); if (!joined && !helper.CaptureActive && updateState == "available") await updater.Check(cancel.Token); result = new { joined = joined };
-        } else if (method == "update.check") { await updater.Check(cancel.Token); result = new { state = updateState }; }
+        } else if (method == "update.check") { await updater.Check(cancel.Token); result = updater.State; }
         else throw new InvalidDataException();
         Reply(new { v = 1, id = id, ok = true, result = result });
       } catch { if (id != null) Reply(new { v = 1, id = id, ok = false, error = new { code = "unsupported_request", message = "客户端不支持此请求。" } }); }
     }
     void Reply(object value) { if (!closing && initialized && Package.TrustedUrl(web.CoreWebView2.Source)) web.CoreWebView2.PostWebMessageAsJson(Package.Json().Serialize(value)); }
-    void UpdateChanged(string state, string text) { updateState = state; if (closing || IsDisposed) return; status.Text = text; Reply(new { v = 1, @event = "update.state", state = state, message = text }); }
+    void UpdateChanged(string state, string text) {
+      updateState = state; if (closing || IsDisposed) return; status.Text = text;
+      var current = updater.State;
+      Reply(new { v = 1, @event = "update.state", state = current.state, message = current.message, phase = current.phase,
+        downloadedBytes = current.downloadedBytes, totalBytes = current.totalBytes, updateRevision = current.updateRevision });
+    }
     protected override void Dispose(bool disposing) {
       if (disposing && !resourcesDisposed) { resourcesDisposed = true; closing = true; cancel.Cancel(); helper.Dispose(); poll.Dispose(); open.Dispose(); web.Dispose(); cancel.Dispose(); }
       base.Dispose(disposing);

@@ -22,6 +22,18 @@ const baseProps: MeetingControlsProps = {
 
 afterEach(() => { cleanup(); vi.useRealTimers(); });
 
+it('offers explicit Android device audio choice only when supported and locks it during capture', () => {
+  const onChange = vi.fn();
+  const { rerender } = render(<MeetingSettings {...baseProps} section="share" nativeCapturePlatform="android" systemAudioAvailable systemAudioEnabled onSystemAudioChange={onChange} />);
+  const checkbox = screen.getByRole('checkbox', { name: 'Share device sound' });
+  expect(checkbox).toBeChecked();
+  fireEvent.click(checkbox); expect(onChange).toHaveBeenCalledWith(false);
+  rerender(<MeetingSettings {...baseProps} section="share" nativeCapturePlatform="android" systemAudioAvailable systemAudioEnabled screenShareActive onSystemAudioChange={onChange} />);
+  expect(screen.getByRole('checkbox', { name: 'Share device sound' })).toBeDisabled();
+  rerender(<MeetingSettings {...baseProps} section="share" nativeCapturePlatform="android" systemAudioAvailable={false} onSystemAudioChange={onChange} />);
+  expect(screen.queryByRole('checkbox', { name: 'Share device sound' })).not.toBeInTheDocument();
+});
+
 it('makes Android capture limits explicit without offering the Windows/browser capture selector', () => {
   render(<MeetingSettings {...baseProps} section="share" nativeCaptureAvailable nativeCaptureEnabled nativeCapturePlatform="android" />);
   expect(screen.getByText('Android screen capture')).toBeVisible();

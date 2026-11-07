@@ -21,7 +21,7 @@ it('lists three separate workspace links and counts an unavailable room toward t
   expect(screen.getByText('3 / 3 meetings open')).toBeVisible();
   expect(screen.getByRole('button', { name: 'Create meeting' })).toBeDisabled();
   expect(within(screen.getByRole('article', { name: 'Alpha' })).getByRole('button', { name: 'Temporarily unavailable' })).toBeDisabled();
-  expect(screen.getAllByRole('link', { name: 'Open meeting' }).map(link => link.getAttribute('href'))).toEqual(rooms.slice(1).map(room => `/m/${room.slug}`));
+  expect(screen.getAllByRole('link', { name: /^Open meeting:/ }).map(link => link.getAttribute('href'))).toEqual(rooms.slice(1).map(room => `/m/${room.slug}`));
   expect(screen.queryByText('Meeting full')).not.toBeInTheDocument();
 });
 

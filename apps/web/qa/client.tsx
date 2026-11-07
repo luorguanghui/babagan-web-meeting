@@ -10,6 +10,8 @@ import '../src/styles.css';
 const params = new URLSearchParams(location.search);
 const platform = params.get('platform') === 'android' ? 'android' : 'windows';
 const scene = params.get('scene') ?? 'current';
+const progress = params.has('progress') ? Math.min(99, Math.max(0, Number(params.get('progress')) || 0)) : undefined;
+const updateState = progress === undefined ? 'current' : { state: 'downloading', phase: 'downloading', downloadedBytes: progress * 1_000_000, totalBytes: 100_000_000, updateRevision: 1 };
 const slug = 'client-ui-test-meeting-0001';
 const listeners = new Set<(event: { data: unknown }) => void>();
 const transport = {
@@ -17,8 +19,8 @@ const transport = {
   removeEventListener: (_name: string, listener: (event: { data: unknown }) => void) => listeners.delete(listener),
   postMessage: (request: ClientHostRequest) => {
     const result = request.method === 'client.info'
-      ? { platform, appVersion: '0.1.2', protocol: 1, screenCapture: true, maxScreenFrameRate: 60, systemAudio: platform === 'windows', updateState: 'current' }
-      : { state: 'current' };
+      ? { platform, appVersion: '0.1.5', protocol: 1, screenCapture: true, maxScreenFrameRate: 60, systemAudio: true, updateState }
+      : typeof updateState === 'string' ? { state: updateState } : updateState;
     queueMicrotask(() => {
       const reply = { v: 1, id: request.id, ok: true, result };
       if (platform === 'android') android.onmessage?.({ data: JSON.stringify(reply) });

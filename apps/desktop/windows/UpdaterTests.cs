@@ -2,9 +2,19 @@ using System;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Threading;
+using System.Collections.Generic;
+using System.Threading.Tasks;
 
 namespace Babagan {
   internal static class UpdaterTests {
+    sealed class CancelOnWrite : MemoryStream {
+      readonly CancellationTokenSource cancellation;
+      internal CancelOnWrite(CancellationTokenSource source) { cancellation = source; }
+      public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+        Write(buffer, offset, count); cancellation.Cancel(); return Task.FromResult(0);
+      }
+    }
     static int count;
     static void Check(bool valid, string name) { if (!valid) throw new Exception(name); count++; }
     static void Reject(Action action, string name) { bool rejected = false; try { action(); } catch (Exception) { rejected = true; } Check(rejected, name); }
@@ -14,6 +24,33 @@ namespace Babagan {
     }
     static int Main(string[] args) {
       var root = Path.GetFullPath(args[0]); Directory.CreateDirectory(root);
+      var reports = new List<DownloadProgress>();
+      var progress = new DownloadProgressReporter(100, reports.Add, CancellationToken.None);
+      progress.Report(0, "downloading", 0); progress.Report(10, "downloading", 100); progress.Report(25, "downloading", 200);
+      Check(reports.Count == 2 && reports[1].downloadedBytes == 25 && reports[1].totalBytes == 100, "Real byte progress missing or not throttled");
+      progress.Report(100, "verifying", 210);
+      Check(reports.Count == 3 && reports[2].phase == "verifying", "Verification was hidden by download throttle");
+      Reject(() => progress.Report(101, "downloading", 400), "Oversized progress accepted");
+      Reject(() => new DownloadProgressReporter(long.MaxValue, reports.Add, CancellationToken.None), "Unsafe byte total accepted");
+      using (var cancelled = new CancellationTokenSource()) {
+        var stale = new DownloadProgressReporter(100, reports.Add, cancelled.Token); int before = reports.Count;
+        cancelled.Cancel(); Reject(() => stale.Report(50, "downloading", 500), "Cancelled download emitted progress");
+        Check(reports.Count == before, "Late progress escaped cancellation");
+      }
+      using (var input = new MemoryStream(new byte[123])) using (var output = new MemoryStream()) {
+        var transfer = new List<DownloadProgress>();
+        Downloads.Copy(input, output, 123, CancellationToken.None, transfer.Add).GetAwaiter().GetResult();
+        Check(output.Length == 123 && transfer[transfer.Count - 1].downloadedBytes == 123 && transfer[transfer.Count - 1].phase == "verifying", "Downloaded byte count was not reported before verification");
+      }
+      using (var input = new MemoryStream(new byte[124])) using (var output = new MemoryStream())
+        Reject(() => Downloads.Copy(input, output, 123, CancellationToken.None, reports.Add).GetAwaiter().GetResult(), "Copy exceeded signed byte total");
+      using (var input = new MemoryStream(new byte[122])) using (var output = new MemoryStream())
+        Reject(() => Downloads.Copy(input, output, 123, CancellationToken.None, reports.Add).GetAwaiter().GetResult(), "Copy accepted truncated artifact");
+      using (var cancelled = new CancellationTokenSource()) using (var input = new MemoryStream(new byte[123])) using (var output = new CancelOnWrite(cancelled)) {
+        var transfer = new List<DownloadProgress>();
+        Reject(() => Downloads.Copy(input, output, 123, cancelled.Token, transfer.Add).GetAwaiter().GetResult(), "Cancellation during final write returned a complete download");
+        Check(transfer.Count == 1 && transfer[0].downloadedBytes == 0, "Cancellation during final write emitted late verification");
+      }
       using (var rsa = new RSACryptoServiceProvider(2048)) {
         rsa.PersistKeyInCsp = false; var publicKey = rsa.ExportParameters(false);
         var key = new UpdateKey { schema = 1, keyId = "test", algorithm = "RS256", modulusBase64 = Convert.ToBase64String(publicKey.Modulus), exponentBase64 = Convert.ToBase64String(publicKey.Exponent) };
