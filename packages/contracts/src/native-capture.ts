@@ -3,8 +3,14 @@ export const NATIVE_CAPTURE_PROTOCOL = 'babagan-native-v1';
 export const NATIVE_CAPTURE_PACKET_MAGIC = 0x424e4331;
 export const NATIVE_CAPTURE_HEADER_BYTES = 16;
 export const NATIVE_CAPTURE_MAX_PIXELS = 8_294_400;
+export type NativeCaptureSourcePolicy = 'single-active-monitor';
+export interface NativeCaptureSourceProof {
+  kind: 'sole-active-monitor'; activeDisplayCount: 1; outputIndex: 0;
+}
+export interface NativeCaptureStart { frameRate: 30 | 60; sourcePolicy?: NativeCaptureSourcePolicy; }
 export interface NativeCaptureFormat {
   type: 'format'; format: 'I420'; width: number; height: number; frameRate: 30 | 60;
+  source?: NativeCaptureSourceProof;
 }
 export interface NativeCaptureCounters {
   type: 'stats'; capturedFrames: number; sentFrames: number; droppedFrames: number;

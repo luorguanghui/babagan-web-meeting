@@ -33,6 +33,65 @@ async function waitFor(predicate: () => boolean, timeout = 2500): Promise<void> 
 }
 
 describe('loopback capture capability server', () => {
+  it.each([0, 2])('rejects source-policy WebSocket capture with %s displays before spawning', async count => {
+    let spawned = false;
+    const helper = await server({ getActiveDisplayCount: async () => count,
+      spawnProcess: () => { spawned = true; throw new Error('Must not capture'); } });
+    const client = await connect(helper);
+    client.socket.send(JSON.stringify({ type: 'start', frameRate: 60, sourcePolicy: 'single-active-monitor' }));
+    await waitFor(() => client.messages.some(message => JSON.parse(message.data.toString()).type === 'error'));
+    expect(client.messages.map(message => JSON.parse(message.data.toString()))).toContainEqual(expect.objectContaining({ code: 'UNSUPPORTED_SOURCE' }));
+    expect(spawned).toBe(false);
+  });
+  it('rejects unsupported source-policy and injected provenance fields over WebSocket', async () => {
+    let spawned = false;
+    const helper = await server({ spawnProcess: () => { spawned = true; throw new Error('Must not capture'); } });
+    const client = await connect(helper);
+    client.socket.send(JSON.stringify({ type: 'start', frameRate: 60, sourcePolicy: 'any-monitor' }));
+    client.socket.send(JSON.stringify({ type: 'start', frameRate: 60, sourcePolicy: 'single-active-monitor', source: { activeDisplayCount: 1 } }));
+    await waitFor(() => client.messages.length === 2);
+    expect(client.messages.map(message => JSON.parse(message.data.toString()).code)).toEqual(['invalid_control', 'invalid_control']);
+    expect(spawned).toBe(false);
+  });
+  it('provides the checked single-monitor provenance over WebSocket too', async () => {
+    let checks = 0;
+    const helper = await server({ getActiveDisplayCount: async () => { checks++; return 1; }, spawnProcess: () => {
+      expect(checks).toBe(1);
+      return spawn(process.execPath, ['-e', "process.stderr.write('[Parsed_showinfo_7 @ 1] n:0 pts:0 pts_time:0 pos:-1\\n');process.stdout.write('YUV4MPEG2 W4 H2 F120:1 Ip C420mpeg2\\nFRAME\\nabcdefghijkl');"], { windowsHide: true });
+    } });
+    const client = await connect(helper);
+    client.socket.send(JSON.stringify({ type: 'start', frameRate: 60, sourcePolicy: 'single-active-monitor' }));
+    await waitFor(() => client.messages.length > 0);
+    expect(JSON.parse(client.messages[0].data.toString())).toMatchObject({ type: 'format',
+      source: { kind: 'sole-active-monitor', activeDisplayCount: 1, outputIndex: 0 } });
+  });
+  it('preserves capture ownership and its transport while the ordinary desktop is unavailable', async () => {
+    let available = false, count = 0;
+    const events: string[] = [], activity: boolean[] = [];
+    const helper = await server({ getDesktopAvailability: async () => available,
+      onDiagnostic: event => events.push(event.event), onActivity: value => activity.push(value),
+      spawnProcess: () => spawn(process.execPath, ['-e',
+        "process.stderr.write('[Parsed_showinfo_7 @ 1] n:0 pts:0 pts_time:0 pos:-1\\n');process.stdout.write('YUV4MPEG2 W4 H2 F120:1 Ip C420mpeg2\\nFRAME\\nabcdefghijkl');"
+        + (count++ === 0 ? "setTimeout(()=>process.stderr.write('AcquireNextFrame failed: 0x887A0026\\n'),100);" : '')
+        + 'setInterval(()=>{},1000);'
+      ], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) });
+    const first = await connect(helper), second = await connect(helper);
+    first.socket.send(JSON.stringify({ type: 'start', frameRate: 60 }));
+    await waitFor(() => events.includes('paused'));
+    expect(activity).toEqual([true]); expect(first.socket.readyState).toBe(WebSocket.OPEN);
+    second.socket.send(JSON.stringify({ type: 'start', frameRate: 60 }));
+    await waitFor(() => second.messages.length > 0);
+    expect(JSON.parse(second.messages[0].data.toString()).code).toBe('capture_busy');
+    available = true;
+    await waitFor(() => first.messages.filter(message => message.binary).length === 2);
+    expect(first.messages.filter(message => !message.binary).map(message => JSON.parse(message.data.toString()).type))
+      .not.toEqual(expect.arrayContaining(['error', 'stopped']));
+    expect(first.messages.filter(message => !message.binary && JSON.parse(message.data.toString()).type === 'format')).toHaveLength(1);
+    expect(first.messages.filter(message => message.binary).map(message => message.data.readUInt32BE(4))).toEqual([0, 1]);
+    first.socket.send(JSON.stringify({ type: 'stop' }));
+    await waitFor(() => activity.length === 2);
+    expect(activity).toEqual([true, false]); expect(count).toBe(2);
+  });
   it('requires exact origin, path, protocol and unguessable capability before upgrade', async () => {
     const helper = await server();
     expect(helper.token).toMatch(/^[A-Za-z0-9_-]{43}$/);

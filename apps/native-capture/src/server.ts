@@ -16,6 +16,7 @@ export interface NativeCaptureServerOptions {
   idleTimeoutMs?: number;
   statsIntervalMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
+  getDesktopAvailability?: () => Promise<boolean>;
   onDiagnostic?: (event: CaptureDiagnostic) => void;
   onActivity?: (captureActive: boolean) => void;
   parentOwned?: boolean;
@@ -77,13 +78,14 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
     }
     void (async () => {
       try {
-        const frameRate = await readHttpStart(request);
+        const { frameRate, sourcePolicy } = await readHttpStart(request);
         if (response.destroyed || closing) return;
         if (owner) { rejectRequest(409, 'capture_busy', 'A capture is already active. Stop it before starting another.'); return; }
         clearTimeout(idleTimer);
         const sender = new FrameSender(httpFrameTransport(response));
-        const session = createCaptureSession({ ffmpeg, frameRate, spawnProcess: options.spawnProcess,
-          startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount, onDiagnostic: options.onDiagnostic,
+        const session = createCaptureSession({ ffmpeg, frameRate, sourcePolicy, spawnProcess: options.spawnProcess,
+          startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
+          getDesktopAvailability: options.getDesktopAvailability, onDiagnostic: options.onDiagnostic,
           onFormat: (format) => writeHttpFormat(response, format), onFrame: (frame) => sender.send(frame),
           onError: (code, message) => writeHttpError(response, code === 'UNSUPPORTED_SOURCE' ? 422 : 502, code, message)
         });
@@ -158,14 +160,19 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         else send(socket, { type: 'stopped' });
         return;
       }
-      if (control.type !== 'start' || ![30, 60].includes(control.frameRate as number) || Object.keys(control).length !== 2) {
+      const hasSourcePolicy = 'sourcePolicy' in control;
+      if (control.type !== 'start' || ![30, 60].includes(control.frameRate as number)
+        || Object.keys(control).length !== (hasSourcePolicy ? 3 : 2)
+        || (hasSourcePolicy && control.sourcePolicy !== 'single-active-monitor')) {
         send(socket, { type: 'error', code: 'invalid_control', message: 'Start requires frameRate 30 or 60.' }); return;
       }
       if (owner) { send(socket, { type: 'error', code: 'capture_busy', message: 'A capture is already active. Stop it before starting another.' }); return; }
       clearTimeout(idleTimer);
       const sender = new FrameSender(socket);
       const session = createCaptureSession({ ffmpeg, frameRate: control.frameRate as 30 | 60,
-        spawnProcess: options.spawnProcess, startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount, onDiagnostic: options.onDiagnostic,
+        ...(hasSourcePolicy ? { sourcePolicy: 'single-active-monitor' } : {}),
+        spawnProcess: options.spawnProcess, startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
+        getDesktopAvailability: options.getDesktopAvailability, onDiagnostic: options.onDiagnostic,
         onFormat: (format) => send(socket, format), onFrame: (frame) => sender.send(frame),
         onError: (code, message) => send(socket, { type: 'error', code, message })
       });

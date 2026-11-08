@@ -1,12 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { NativeCaptureFormat } from '@meeting/contracts';
+import type { NativeCaptureFormat, NativeCaptureStart } from '@meeting/contracts';
 import type { FrameTransport } from './frame-sender.js';
 
 export class HttpCaptureError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
 
-export async function readHttpStart(request: IncomingMessage): Promise<30 | 60> {
+export async function readHttpStart(request: IncomingMessage): Promise<NativeCaptureStart> {
   const body = await new Promise<Buffer>((resolve, reject) => {
     if (Number(request.headers['content-length'] ?? 0) > 1024) {
       reject(new HttpCaptureError(413, 'invalid_control', 'Native capture controls are limited to 1024 bytes.')); return;
@@ -28,11 +28,15 @@ export async function readHttpStart(request: IncomingMessage): Promise<30 | 60> 
   let control: unknown;
   try { control = JSON.parse(body.toString('utf8')); }
   catch { throw new HttpCaptureError(400, 'invalid_control', 'Expected a JSON frameRate of 30 or 60.'); }
-  if (typeof control !== 'object' || control === null || Array.isArray(control) || Object.keys(control).length !== 1
+  if (typeof control !== 'object' || control === null || Array.isArray(control)
     || !('frameRate' in control) || (control.frameRate !== 30 && control.frameRate !== 60)) {
     throw new HttpCaptureError(400, 'invalid_control', 'Expected a JSON frameRate of 30 or 60.');
   }
-  return control.frameRate;
+  const hasPolicy = 'sourcePolicy' in control;
+  if (Object.keys(control).length !== (hasPolicy ? 2 : 1) || ('sourcePolicy' in control && control.sourcePolicy !== 'single-active-monitor')) {
+    throw new HttpCaptureError(400, 'invalid_control', 'Unsupported native source policy.');
+  }
+  return { frameRate: control.frameRate, ...(hasPolicy ? { sourcePolicy: 'single-active-monitor' } : {}) };
 }
 
 export function writeHttpError(response: ServerResponse, status: number, code: string, message: string): void {

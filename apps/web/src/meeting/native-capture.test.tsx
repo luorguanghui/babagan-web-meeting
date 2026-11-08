@@ -52,6 +52,8 @@ function packet(sequence: number, timestamp = 1_000_001_000) {
   return data;
 }
 const format = JSON.stringify({ type: 'format', format: 'I420', width: 4, height: 2, frameRate: 60 });
+const sourceProof = { kind: 'sole-active-monitor', activeDisplayCount: 1, outputIndex: 0 };
+const attestedFormat = JSON.stringify({ ...JSON.parse(format), source: sourceProof });
 
 function httpStream(parts: Uint8Array[]) {
   const cancel = vi.fn(); let index = 0;
@@ -214,6 +216,93 @@ class FakeFrameWorker extends EventTarget {
 }
 
 describe('native source selection', () => {
+  it.each(['window', 'browser', undefined])('rejects non-monitor picker sources before contacting the helper: %s', async displaySurface => {
+    const selected = selectedScreen(false, 'screen:4:0');
+    selected.video.getSettings = () => ({ displaySurface, deviceId: 'screen:4:0' });
+    const open = vi.fn();
+    await expect(captureNativeScreen(connection, { video: true }, { capture: async () => selected.stream, open })).rejects.toBeInstanceOf(Error);
+    expect(open).not.toHaveBeenCalled(); expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
+  it('does not reuse provenance from a closed native session', async () => {
+    const h = nativeHarness();
+    const first = openNativeVideoTrack(connection, 60, { ...h.deps, sourcePolicy: 'single-active-monitor' });
+    h.socket.open(); h.socket.message(attestedFormat); h.socket.message(packet(1));
+    const track = await first; track.stop();
+    const selected = selectedScreen(false, 'screen:4:0');
+    await expect(captureNativeScreen(connection, { video: true }, { capture: async () => selected.stream, open: async () => track }))
+      .rejects.toBeInstanceOf(Error);
+    expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
+  it('cancels an opaque-monitor request while its provenance is pending and ignores late frames', async () => {
+    const selected = selectedScreen(false, 'screen:4:0'), h = nativeHarness();
+    const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, { capture: async () => selected.stream,
+      open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps }) }).catch(error => error);
+    await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce()); h.socket.open();
+    selected.video.dispatchEvent(new Event('ended'));
+    h.socket.message(attestedFormat); h.socket.message(packet(1));
+    expect(await pending).toMatchObject({ name: 'AbortError' });
+    expect(h.createFrame).not.toHaveBeenCalled(); expect(h.stop).toHaveBeenCalledOnce(); expect(h.socket.close).toHaveBeenCalledOnce();
+  });
+  it.each(['http', 'websocket'])('replaces a document-specific monitor ID only with authenticated provenance (%s)', async transport => {
+    const selected = selectedScreen(true, 'screen:4:0'); const h = nativeHarness();
+    const encoded = new TextEncoder().encode(attestedFormat), bytes = new Uint8Array(4 + encoded.length + 28);
+    new DataView(bytes.buffer).setUint32(0, encoded.length); bytes.set(encoded, 4); bytes.set(new Uint8Array(packet(1)), 4 + encoded.length);
+    const source = httpStream([bytes]); const request = vi.fn(async () => source.response);
+    const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, {
+      capture: async () => selected.stream,
+      open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps,
+        ...(transport === 'http' ? { createSocket: undefined, fetch: request } : {}) })
+    }).catch(error => error);
+    if (transport === 'websocket') {
+      await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce());
+      h.socket.open(); expect(h.socket.send).toHaveBeenCalledWith(JSON.stringify({ type: 'start', frameRate: 60, sourcePolicy: 'single-active-monitor' }));
+      h.socket.message(attestedFormat); h.socket.message(packet(1));
+    }
+    const stream = await pending as MediaStream;
+    expect(stream).toBe(selected.stream);
+    if (transport === 'http') expect(request).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ body: '{"frameRate":60,"sourcePolicy":"single-active-monitor"}' }));
+    expect(stream.getVideoTracks()[0].getSettings()).toMatchObject({ displaySurface: 'monitor', deviceId: 'screen:4:0' });
+    selected.video.dispatchEvent(new Event('ended'));
+    expect(h.stop).toHaveBeenCalledOnce(); expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
+  it.each([undefined, { ...sourceProof, activeDisplayCount: 2 }, { ...sourceProof, outputIndex: 1 }, { ...sourceProof, kind: 'window' }])('stops before allocating or publishing a frame when required provenance is missing or invalid: %j', async source => {
+      const selected = selectedScreen(false, 'document-opaque-id'); const h = nativeHarness();
+      const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, { capture: async () => selected.stream,
+        open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps }) }).catch(error => error);
+      await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce()); h.socket.open();
+      h.socket.message(JSON.stringify({ ...JSON.parse(format), ...(source ? { source } : {}) })); h.socket.message(packet(1));
+      expect(await pending).toBeInstanceOf(Error); expect(h.createFrame).not.toHaveBeenCalled(); expect(h.stop).toHaveBeenCalledOnce(); expect(selected.video.stop).toHaveBeenCalledOnce();
+    });
+  it.each([undefined, { ...sourceProof, activeDisplayCount: 2 }])('also rejects missing or invalid provenance in the HTTP metadata header: %j', async proof => {
+    const selected = selectedScreen(false, 'screen:4:0'), h = nativeHarness();
+    const encoded = new TextEncoder().encode(JSON.stringify({ ...JSON.parse(format), source: proof }));
+    const bytes = new Uint8Array(4 + encoded.length + 28);
+    new DataView(bytes.buffer).setUint32(0, encoded.length); bytes.set(encoded, 4); bytes.set(new Uint8Array(packet(1)), 4 + encoded.length);
+    const response = httpStream([bytes]);
+    await expect(captureNativeScreen(connection, { video: { frameRate: 60 } }, { capture: async () => selected.stream,
+      open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps, createSocket: undefined, fetch: async () => response.response }) }))
+      .rejects.toBeInstanceOf(Error);
+    expect(h.createFrame).not.toHaveBeenCalled(); expect(h.stop).toHaveBeenCalledOnce(); expect(response.cancel).toHaveBeenCalledOnce();
+    expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
+  it('does not retry an old helper rejection with a less restrictive legacy request', async () => {
+    const selected = selectedScreen(false, 'document-opaque-id'), h = nativeHarness();
+    const request = vi.fn<typeof fetch>(async () => new Response(null, { status: 400 }));
+    await expect(captureNativeScreen(connection, { video: { frameRate: 60 } }, { capture: async () => selected.stream,
+      open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps, createSocket: undefined, fetch: request }) })).rejects.toBeInstanceOf(Error);
+    expect(request).toHaveBeenCalledOnce(); expect(JSON.parse(request.mock.calls[0][1]!.body as string).sourcePolicy).toBe('single-active-monitor');
+    expect(h.createFrame).not.toHaveBeenCalled(); expect(h.stop).toHaveBeenCalledOnce(); expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
+  it('reports an old WebSocket helper policy rejection without retrying legacy capture', async () => {
+    const selected = selectedScreen(false, 'screen:4:0'), h = nativeHarness();
+    const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, { capture: async () => selected.stream,
+      open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps }) }).catch(error => error);
+    await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce()); h.socket.open();
+    h.socket.message(JSON.stringify({ type: 'error', code: 'invalid_control' }));
+    expect(await pending).toMatchObject({ code: 'unsupported-source' });
+    expect(h.socket.send.mock.calls.map(([value]) => JSON.parse(value).type)).toEqual(['start', 'stop']);
+    expect(h.createFrame).not.toHaveBeenCalled(); expect(selected.video.stop).toHaveBeenCalledOnce();
+  });
   it('replaces only a verified primary screen video and preserves selected computer audio', async () => {
     const video = Object.assign(new EventTarget(), { kind: 'video', stop: vi.fn(), getSettings: () => ({ displaySurface: 'monitor', deviceId: 'screen:0:0', width: 2560, height: 1440 }) });
     const audio = { kind: 'audio', stop: vi.fn() }; const native = Object.assign(new EventTarget(), { kind: 'video', stop: vi.fn(), getSettings: () => ({ width: 1920, height: 1080 }) });
@@ -224,12 +313,13 @@ describe('native source selection', () => {
     expect(result).toBe(stream); expect(tracks).toEqual([audio, native]); expect(video.stop).not.toHaveBeenCalled(); expect(audio.stop).not.toHaveBeenCalled();
     expect(native.getSettings()).toMatchObject({ displaySurface: 'monitor', deviceId: 'screen:0:0', width: 1920, height: 1080 });
   });
-  it('never captures the primary screen when a different source was selected', async () => {
+  it('never trusts copied getSettings fields as proof for a different source identifier', async () => {
     const video = Object.assign(new EventTarget(), { stop: vi.fn(), getSettings: () => ({ displaySurface: 'monitor', deviceId: 'screen:1:0' }) });
     const stream = { getVideoTracks: () => [video], getTracks: () => [video] } as unknown as MediaStream;
-    const open = vi.fn();
+    const native = Object.assign(new EventTarget(), { stop: vi.fn(), getSettings: () => ({ ...sourceProof, displaySurface: 'monitor' }) });
+    const open = vi.fn(async () => native as unknown as MediaStreamTrack);
     await expect(captureNativeScreen(connection, { video: true }, { capture: async () => stream, open })).rejects.toThrow();
-    expect(open).not.toHaveBeenCalled(); expect(video.stop).toHaveBeenCalledOnce();
+    expect(open).toHaveBeenCalledOnce(); expect(native.stop).toHaveBeenCalledOnce(); expect(video.stop).toHaveBeenCalledOnce();
   });
 
   it.each([false, true])('keeps browser revocation connected after native replacement (audio: %s)', async withAudio => {
@@ -272,9 +362,9 @@ describe('native source selection', () => {
   });
 });
 
-function selectedScreen(withAudio: boolean) {
+function selectedScreen(withAudio: boolean, deviceId = 'screen:0:0') {
   const video = Object.assign(new EventTarget(), { kind: 'video', readyState: 'live', stop: vi.fn(),
-    applyConstraints: vi.fn(async () => {}), getSettings: () => ({ displaySurface: 'monitor', deviceId: 'screen:0:0' }) });
+    applyConstraints: vi.fn(async () => {}), getSettings: (): MediaTrackSettings => ({ displaySurface: 'monitor', deviceId }) });
   const audio = withAudio ? { kind: 'audio', stop: vi.fn() } : undefined;
   const tracks = [video, ...(audio ? [audio] : [])] as unknown as MediaStreamTrack[];
   const stream = { getTracks: () => tracks, getVideoTracks: () => tracks.filter(t => t.kind === 'video'),

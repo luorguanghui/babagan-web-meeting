@@ -1,5 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { describe, expect, it } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
+import { describe, expect, it, vi } from 'vitest';
 import { buildCaptureArguments, createCaptureSession, type CaptureSpawner } from './capture.js';
 import type { TimedFrame } from './timestamps.js';
 
@@ -13,6 +15,36 @@ function fixture(script: string): { spawn: CaptureSpawner; child: () => ChildPro
 const validStream = `process.stderr.write('[Parsed_showinfo_7 @ 1] config in time_base: 1/1000000, frame_rate: 120/1\\n[Parsed_showinfo_7 @ 1] n: 0 pts: 0 pts_time:0 pos:-1\\n'); process.stdout.write('YUV4MPEG2 W4 H2 F120:1 Ip A1:1 C420mpeg2\\nFRAME\\nabcdefghijkl');`;
 
 describe('owned FFmpeg capture session', () => {
+  it.each(['rejected', 'unavailable'] as const)('ignores an idle desktop probe that becomes %s after a new frame restores capture', async outcome => {
+    vi.useFakeTimers();
+    let resolveProbe!: (available: boolean) => void, rejectProbe!: (error: Error) => void;
+    const probe = new Promise<boolean>((resolve, reject) => { resolveProbe = resolve; rejectProbe = reject; });
+    const child = Object.assign(new EventEmitter(), { stdout: new PassThrough(), stderr: new PassThrough(),
+      kill() { queueMicrotask(() => this.emit('close', null)); return true; } }) as unknown as ChildProcessWithoutNullStreams;
+    const errors: string[] = [], frames: number[] = [];
+    const getDesktopAvailability = vi.fn(() => probe);
+    const session = createCaptureSession({ ffmpeg: 'unused', frameRate: 60, getActiveDisplayCount: async () => 1,
+      getDesktopAvailability, spawnProcess: () => child, onFormat() {}, onFrame: frame => frames.push(frame.index), onError: code => errors.push(code) });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      child.stderr.emit('data', Buffer.from('[Parsed_showinfo_7 @ 1] n:0 pts:0 pts_time:0 pos:-1\n'));
+      child.stdout.emit('data', Buffer.from('YUV4MPEG2 W4 H2 F120:1 Ip C420mpeg2\nFRAME\nabcdefghijkl'));
+      await vi.advanceTimersByTimeAsync(5000); expect(getDesktopAvailability).toHaveBeenCalledOnce();
+      child.stderr.emit('data', Buffer.from('[Parsed_showinfo_7 @ 1] n:1 pts:5000000 pts_time:5 pos:-1\n'));
+      child.stdout.emit('data', Buffer.from('FRAME\nabcdefghijkl'));
+      if (outcome === 'rejected') rejectProbe(new Error('Late OS inventory failure')); else resolveProbe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(frames).toEqual([0, 1]); expect(errors).toEqual([]);
+    } finally { session.stop(); resolveProbe(true); await vi.advanceTimersByTimeAsync(0); await session.done; vi.useRealTimers(); }
+  });
+  it('recognizes a chunked prefixed DXGI error without waiting for a stuck process to exit', async () => {
+    const source = fixture(`process.stderr.write('AcquireNextFrame failed: 0x887'); setTimeout(() => process.stderr.write('A0026\\n'), 10); setInterval(()=>{},1000);`);
+    const errors: string[] = [];
+    await createCaptureSession({ ffmpeg: 'unused', frameRate: 60, startupTimeoutMs: 3000,
+      getActiveDisplayCount: async () => 1, spawnProcess: source.spawn,
+      onFormat() {}, onFrame() {}, onError: code => errors.push(code) }).done;
+    expect(errors).toEqual(['capture_access_lost']);
+  });
   it('identifies desktop access loss even when FFmpeg leaves a partial final frame', async () => {
     const source = fixture(validStream + `process.stdout.write('FRAME\\nabc'); process.stderr.write('AcquireNextFrame failed: 887A0026\\n'); process.exitCode=1;`);
     const errors: string[] = [];
@@ -80,11 +112,11 @@ describe('owned FFmpeg capture session', () => {
     }
   });
 
-  it('cancels a pending display check without starting capture afterward', async () => {
+  it.each([undefined, 'single-active-monitor'] as const)('cancels a pending display check without starting capture afterward (policy: %s)', async sourcePolicy => {
     let resolveCount!: (count: number) => void;
     const count = new Promise<number>((resolve) => resolveCount = resolve);
     const source = fixture(validStream);
-    const session = createCaptureSession({ ffmpeg: 'unused', frameRate: 60, getActiveDisplayCount: () => count, spawnProcess: source.spawn,
+    const session = createCaptureSession({ ffmpeg: 'unused', frameRate: 60, sourcePolicy, getActiveDisplayCount: () => count, spawnProcess: source.spawn,
       onFormat() {}, onFrame() {}, onError() {} });
     session.stop();
     resolveCount(1);
