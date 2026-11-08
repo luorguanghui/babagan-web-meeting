@@ -1,5 +1,5 @@
 import { NATIVE_CAPTURE_HEADER_BYTES, NATIVE_CAPTURE_MAX_PIXELS, NATIVE_CAPTURE_PACKET_MAGIC,
-  NATIVE_CAPTURE_PROTOCOL, type NativeCaptureFormat } from '@meeting/contracts';
+  NATIVE_CAPTURE_PROTOCOL, type NativeCaptureFormat, type NativeCaptureSourceProof, type NativeCaptureSourcePolicy, type NativeCaptureStart } from '@meeting/contracts';
 import { abortableCapture, captureAborted, stopCaptureStream } from './capture-abort.js';
 import { NativeWorkerPacer, localNativePacer, type NativePacer } from './worker-pacer.js';
 
@@ -10,6 +10,7 @@ function packetLength(value: unknown): number {
 }
 const nativeTracks = new WeakSet<MediaStreamTrack>();
 const nativePacers = new WeakMap<MediaStreamTrack, NativePacer>();
+const nativeSources = new WeakMap<MediaStreamTrack, NativeCaptureSourceProof>();
 export function isNativeCaptureTrack(track: MediaStreamTrack): boolean { return nativeTracks.has(track); }
 export function registerNativeCaptureTrack(track: MediaStreamTrack): void { nativeTracks.add(track); }
 export function getNativePacingStats(track: MediaStreamTrack) { return nativePacers.get(track)?.stats(); }
@@ -54,6 +55,7 @@ interface NativeVideoDependencies {
   createTrackWriter?: () => { track: MediaStreamTrack; writer: FrameWriter };
   timeOrigin?: number;
   signal?: AbortSignal;
+  sourcePolicy?: NativeCaptureSourcePolicy;
 }
 function createNativeGenerator(): MediaStreamTrack & { writable: WritableStream<VideoFrame> } {
   const Generator = (globalThis as unknown as {
@@ -68,7 +70,16 @@ function parseFormat(message: Record<string, unknown>, frameRate: number): Nativ
     || width < 2 || height < 2 || width % 2 || height % 2 || width * height > NATIVE_CAPTURE_MAX_PIXELS) {
     throw new NativeCaptureError('protocol', 'Native capture returned an invalid video format.');
   }
-  return { type: 'format', format: 'I420', width, height, frameRate: frameRate as 30 | 60 };
+  let source: NativeCaptureSourceProof | undefined;
+  if (message.source !== undefined) {
+    const value = message.source as Partial<NativeCaptureSourceProof> | null;
+    if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== 3
+      || value.kind !== 'sole-active-monitor' || value.activeDisplayCount !== 1 || value.outputIndex !== 0) {
+      throw new NativeCaptureError('protocol', 'Native capture returned invalid source provenance.');
+    }
+    source = { kind: 'sole-active-monitor', activeDisplayCount: 1, outputIndex: 0 };
+  }
+  return { type: 'format', format: 'I420', width, height, frameRate: frameRate as 30 | 60, ...(source ? { source } : {}) };
 }
 
 /** Streaming HTTP avoids the large-message WebSocket receive bottleneck in Edge. */
@@ -84,11 +95,11 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
   }
   send(message: string): void {
     if (this.readyState !== 1) return;
-    const command = JSON.parse(message) as { type: string; frameRate: 30 | 60 };
+    const command = JSON.parse(message) as NativeCaptureStart & { type: string };
     if (command.type === 'stop') { this.close(); return; }
     if (command.type !== 'start' || this.started) return;
     this.started = true;
-    void this.receive(command.frameRate).catch(error => {
+    void this.receive(command).catch(error => {
       if (this.readyState === 3) return;
       this.dispatchEvent(new CustomEvent('error', { detail: error })); this.close();
     });
@@ -109,15 +120,16 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
     }
     return buffer;
   }
-  private async receive(frameRate: 30 | 60): Promise<void> {
+  private async receive({ frameRate, sourcePolicy }: NativeCaptureStart): Promise<void> {
     const response = await this.request(`http://127.0.0.1:${this.connection.port}/frames-http`, {
       method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store', signal: this.abort.signal,
       headers: { Authorization: `Bearer ${this.connection.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ frameRate })
+      body: JSON.stringify({ frameRate, ...(sourcePolicy ? { sourcePolicy } : {}) })
     });
     if (!response.ok || !response.body) {
       void response.body?.cancel().catch(() => undefined);
-      throw new NativeCaptureError(response.status === 422 ? 'unsupported-source' : 'unavailable', 'Native capture request failed.');
+      throw new NativeCaptureError(response.status === 422 || (sourcePolicy && response.status === 400) ? 'unsupported-source' : 'unavailable',
+        sourcePolicy && response.status === 400 ? 'Update the native sharing component to verify this screen selection.' : 'Native capture request failed.');
     }
     this.reader = response.body.getReader({ mode: 'byob' });
     const prefix = new DataView(await this.readExact(4)).getUint32(0);
@@ -144,6 +156,7 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
     const cleanup = (error?: Error, signalEnded = false) => {
       if (closed) return;
       closed = true; clearTimeout(timer); void pacer?.close(); deps.signal?.removeEventListener('abort', abort);
+      if (track) nativeSources.delete(track);
       if (socket?.readyState === 1) { try { socket.send(JSON.stringify({ type: 'stop' })); } catch { /* Already closed. */ } }
       socket?.close(); originalStop?.();
       if (!ready) reject(error ?? unavailable());
@@ -166,7 +179,8 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
           ? deps.createSocket(`ws://127.0.0.1:${connection.port}/frames`, [NATIVE_CAPTURE_PROTOCOL, `auth.${connection.token}`])
           : new NativeHttpChannel(connection, deps.fetch ?? ((input, init) => globalThis.fetch(input, init)));
         socket.binaryType = 'arraybuffer';
-        socket.addEventListener('open', () => { if (!closed) socket!.send(JSON.stringify({ type: 'start', frameRate })); });
+        socket.addEventListener('open', () => { if (!closed) socket!.send(JSON.stringify({ type: 'start', frameRate,
+          ...(deps.sourcePolicy ? { sourcePolicy: deps.sourcePolicy } : {}) })); });
         socket.addEventListener('error', event => cleanup(event instanceof CustomEvent && event.detail instanceof NativeCaptureError
           ? event.detail : unavailable(), true));
         socket.addEventListener('close', () => cleanup(unavailable(), true));
@@ -179,12 +193,16 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
               const message = JSON.parse(event.data) as Record<string, unknown>;
               if (message.type === 'error' || message.type === 'stopped') {
                 cleanup(message.code === 'UNSUPPORTED_SOURCE'
-                  ? new NativeCaptureError('unsupported-source', 'Native capture currently requires one active primary display.') : unavailable(), true);
+                  ? new NativeCaptureError('unsupported-source', 'Native capture currently requires one active primary display.')
+                  : deps.sourcePolicy && message.code === 'invalid_control'
+                    ? new NativeCaptureError('unsupported-source', 'Update the native sharing component to verify this screen selection.') : unavailable(), true);
                 return;
               }
               if (message.type === 'format') {
                 if (format) throw new NativeCaptureError('protocol', 'Native capture unexpectedly changed video format.');
                 format = parseFormat(message, frameRate);
+                if (deps.sourcePolicy && !format.source) throw new NativeCaptureError('unsupported-source', 'Native capture did not verify the selected monitor.');
+                if (format.source) nativeSources.set(track, format.source);
                 const getSettings = track.getSettings?.bind(track);
                 track.getSettings = () => ({ ...getSettings?.(), width: format!.width, height: format!.height,
                   aspectRatio: format!.width / format!.height, frameRate });
@@ -273,20 +291,26 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
     if (deps.signal?.aborted || video?.readyState === 'ended') throw captureAborted();
     deps.signal?.addEventListener('abort', ended, { once: true });
     const settings = video?.getSettings();
-    // FFmpeg's first DXGI output is currently the only supported native source.
-    // Never substitute it for a different/opaque browser source identifier.
-    if (settings?.displaySurface !== 'monitor' || settings.deviceId !== 'screen:0:0') {
-      throw new NativeCaptureError('unsupported-source', 'Native capture currently supports the primary screen only. Select it or use browser capture.');
+    // Device identifiers can vary by document/browser. Only the legacy known
+    // identifier can use an old helper; other monitor selections require the
+    // helper's checked single-display capability, never a screen:* wildcard.
+    if (settings?.displaySurface !== 'monitor') {
+      throw new NativeCaptureError('unsupported-source', 'Native capture requires an entire monitor selected in the browser picker.');
     }
+    const requireSourceProof = settings.deviceId !== 'screen:0:0';
     video.addEventListener('ended', ended, { once: true });
     // Keep browser permission and its Stop sharing action alive without running
     // a second high-cadence capture beside DXGI. This track is never published.
     await abortableCapture(() => video.applyConstraints?.({ frameRate: { ideal: 1, max: 1 } }).catch(() => undefined), abort.signal);
     const requested = typeof constraints.video === 'object' ? constraints.video.frameRate : undefined;
     const rate = typeof requested === 'number' ? requested : typeof requested?.ideal === 'number' ? requested.ideal : 30;
-    const native = await abortableCapture(() => (deps.open ?? openNativeVideoTrack)(connection, rate >= 60 ? 60 : 30, { signal: abort.signal }),
+    const native = await abortableCapture(() => (deps.open ?? openNativeVideoTrack)(connection, rate >= 60 ? 60 : 30,
+      { signal: abort.signal, ...(requireSourceProof ? { sourcePolicy: 'single-active-monitor' } : {}) }),
       abort.signal, track => track.stop());
     if (abort.signal.aborted) { native.stop(); throw new DOMException('Screen selection ended.', 'AbortError'); }
+    if (requireSourceProof && !nativeSources.has(native)) {
+      native.stop(); throw new NativeCaptureError('unsupported-source', 'Native capture did not verify the selected monitor.');
+    }
     const nativeSettings = native.getSettings?.bind(native);
     // Preserve selection provenance for the existing system-audio isolation check.
     // Dimensions remain those of the actual native frames, not the original monitor.

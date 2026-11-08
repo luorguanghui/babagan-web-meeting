@@ -19,6 +19,17 @@ export default tseslint.config(
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
+    files: ['infra/cloudflare-observability/**/*.mjs'],
+    languageOptions: {
+      globals: Object.fromEntries([
+        'URL', 'AbortSignal', 'Request', 'Response', 'Headers', 'TextEncoder',
+        'TextDecoder', 'crypto', 'fetch', 'console', 'setTimeout', 'clearTimeout',
+        'WebSocketPair', 'WebSocketRequestResponsePair'
+      ].map(name => [name, 'readonly']))
+    },
+    rules: { 'no-empty': ['error', { allowEmptyCatch: true }] }
+  },
+  {
     files: ['**/*.{test,spec}.{ts,tsx}'],
     languageOptions: {
       globals: {

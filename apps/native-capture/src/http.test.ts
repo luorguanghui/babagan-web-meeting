@@ -32,9 +32,64 @@ async function startStreaming(server: NativeCaptureServer): Promise<IncomingMess
 }
 
 describe('authenticated HTTP native frame stream', () => {
+  it('does not spawn after an attested HTTP request is aborted during display inventory', async () => {
+    let resolveCount!: (count: number) => void, checked!: () => void, stopped!: () => void, spawned = false;
+    const inventory = new Promise<number>(resolve => { resolveCount = resolve; });
+    const reachedInventory = new Promise<void>(resolve => { checked = resolve; });
+    const reachedStop = new Promise<void>(resolve => { stopped = resolve; });
+    const server = await helper({ getActiveDisplayCount: () => { checked(); return inventory; },
+      onActivity: active => { if (!active) stopped(); },
+      spawnProcess: () => { spawned = true; throw new Error('Must not capture'); } });
+    const req = request({ hostname: '127.0.0.1', port: server.port, path: '/frames-http', method: 'POST', headers: headers(server) });
+    req.on('error', () => {}); req.end('{"frameRate":60,"sourcePolicy":"single-active-monitor"}');
+    await reachedInventory; req.destroy(); await reachedStop; resolveCount(1);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(spawned).toBe(false);
+  });
+  it('attests a single active monitor only after checking it before capture starts', async () => {
+    let checked = false, spawned = false;
+    const server = await helper({ getActiveDisplayCount: async () => { checked = true; return 1; },
+      spawnProcess: () => { expect(checked).toBe(true); spawned = true; return spawn(process.execPath, ['-e', validStream], { windowsHide: true }); } });
+    const result = await call(server, { body: '{"frameRate":60,"sourcePolicy":"single-active-monitor"}' });
+    expect(result.status).toBe(200); expect(spawned).toBe(true);
+    const length = result.body.readUInt32BE(0);
+    expect(JSON.parse(result.body.subarray(4, 4 + length).toString()).source)
+      .toEqual({ kind: 'sole-active-monitor', activeDisplayCount: 1, outputIndex: 0 });
+  });
+  it.each([0, 2])('refuses attested capture with %s active monitors before spawning', async count => {
+    let spawned = false;
+    const server = await helper({ getActiveDisplayCount: async () => count, spawnProcess: () => { spawned = true; throw new Error('Must not capture'); } });
+    expect((await call(server, { body: '{"frameRate":60,"sourcePolicy":"single-active-monitor"}' })).status).toBe(422);
+    expect(spawned).toBe(false);
+  });
+  it('does not accept requested source proof or an unknown policy as evidence', async () => {
+    let spawned = false;
+    const server = await helper({ spawnProcess: () => { spawned = true; throw new Error('Must not capture'); } });
+    for (const body of ['{"frameRate":60,"sourcePolicy":"any-monitor"}', '{"frameRate":60,"source":{"activeDisplayCount":1}}',
+      '{"frameRate":60,"sourcePolicy":"single-active-monitor","source":{"activeDisplayCount":1}}']) {
+      expect((await call(server, { body })).status).toBe(400);
+    }
+    expect(spawned).toBe(false);
+  });
+  it('keeps the HTTP owner and headers while paused and cancels recovery on response abort', async () => {
+    let paused!: () => void, stopped!: () => void, count = 0;
+    const reachedPause = new Promise<void>(resolve => { paused = resolve; });
+    const reachedStop = new Promise<void>(resolve => { stopped = resolve; });
+    const server = await helper({ getDesktopAvailability: async () => false,
+      onDiagnostic: event => { if (event.event === 'paused') paused(); },
+      onActivity: active => { if (!active) stopped(); },
+      spawnProcess: () => { count++; return spawn(process.execPath, ['-e', validStream
+        + "setTimeout(()=>process.stderr.write('Desktop duplication access denied\\n'),100);setInterval(()=>{},1000);"], { windowsHide: true }); } });
+    const response = await startStreaming(server); response.resume();
+    await reachedPause;
+    expect(response.complete).toBe(false); expect(response.statusCode).toBe(200);
+    expect((await call(server)).status).toBe(409);
+    response.destroy(); await reachedStop;
+    expect(count).toBe(1);
+  });
   it('keeps the same authorized HTTP stream alive after DXGI access loss without a second metadata header', async () => {
     let count = 0;
-    const server = await helper({ spawnProcess: () => spawn(process.execPath, ['-e', validStream +
+    const server = await helper({ getDesktopAvailability: async () => true, spawnProcess: () => spawn(process.execPath, ['-e', validStream +
       (count++ === 0 ? "process.stderr.write('AcquireNextFrame failed: 887a0026\\n');process.exitCode=1;" : '')], { windowsHide: true }) });
     const result = await call(server);
     const offset = 4 + result.body.readUInt32BE(0), packets = result.body.subarray(offset);
