@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NATIVE_CAPTURE_PACKET_MAGIC } from '@meeting/contracts';
 import { initializeNativeCaptureConnection, readNativeCaptureConnection, openNativeVideoTrack, captureNativeScreen, getNativePacingStats } from './native-capture.js';
+import { beginNativeDiagnostics, getNativeDiagnosticSnapshot } from './native-diagnostics.js';
 import { createScreenShareController } from './screen-share.js';
 
 const token = 'a'.repeat(43);
@@ -230,6 +231,7 @@ describe('native source selection', () => {
     const open = vi.fn();
     await expect(captureNativeScreen(connection, { video: true }, { capture: async () => stream, open })).rejects.toThrow();
     expect(open).not.toHaveBeenCalled(); expect(video.stop).toHaveBeenCalledOnce();
+    expect(getNativeDiagnosticSnapshot()!.events).toContainEqual(expect.objectContaining({ event: 'failed', code: 'unsupported-source' }));
   });
 
   it.each([false, true])('keeps browser revocation connected after native replacement (audio: %s)', async withAudio => {
@@ -246,6 +248,8 @@ describe('native source selection', () => {
     expect(stream.getVideoTracks()).toEqual([native]);
     expect(stream.getTracks()).not.toContain(selected.video);
     selected.video.dispatchEvent(new Event('ended'));
+    expect(getNativeDiagnosticSnapshot()?.events.map(e => e.event)).toContain('permission_ended');
+    expect(getNativeDiagnosticSnapshot()?.events.map(e => e.event)).not.toContain('track_stop');
     expect(ended).toHaveBeenCalledOnce(); expect(h.socket.close).toHaveBeenCalledOnce();
     native.stop(); native.stop();
     expect(selected.video.stop).toHaveBeenCalledOnce(); expect(h.stop).toHaveBeenCalledOnce();
@@ -282,3 +286,74 @@ function selectedScreen(withAudio: boolean) {
     removeTrack: (track: MediaStreamTrack) => tracks.splice(tracks.indexOf(track), 1), addTrack: (track: MediaStreamTrack) => tracks.push(track) } as unknown as MediaStream;
   return { stream, video, audio };
 }
+
+it('records normal native stop without mislabeling permission revocation', async () => {
+  const selected = selectedScreen(false); const h = nativeHarness();
+  const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, {
+    capture: async () => selected.stream, open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps })
+  });
+  await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce());
+  h.socket.open(); h.socket.message(format); h.socket.message(packet(1));
+  (await pending).getVideoTracks()[0].stop();
+  const events = getNativeDiagnosticSnapshot()!.events.map(e => e.event);
+  expect(events).toContain('track_stop'); expect(events).not.toContain('permission_ended'); expect(events).not.toContain('track_ended');
+});
+
+it('records revocation during native startup and never signals a normal stop', async () => {
+  const selected = selectedScreen(false); const h = nativeHarness();
+  const pending = captureNativeScreen(connection, { video: { frameRate: 60 } }, {
+    capture: async () => selected.stream, open: (config, rate, deps) => openNativeVideoTrack(config, rate, { ...h.deps, ...deps })
+  });
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  await vi.waitFor(() => expect(h.createSocket).toHaveBeenCalledOnce());
+  selected.video.dispatchEvent(new Event('ended')); await rejected;
+  expect(h.stop).toHaveBeenCalledOnce(); expect(h.socket.close).toHaveBeenCalledOnce();
+  expect(getNativeDiagnosticSnapshot()!.events.map(e => e.event)).toContain('permission_ended');
+  expect(getNativeDiagnosticSnapshot()!.events.map(e => e.event)).not.toContain('track_stop');
+});
+it('correlates the HTTP response header without changing the old start request', async () => {
+  const selected = selectedScreen(false); const h = nativeHarness();
+  const encoded = new TextEncoder().encode(format); const bytes = new Uint8Array(4 + encoded.length + 28);
+  new DataView(bytes.buffer).setUint32(0, encoded.length); bytes.set(encoded, 4); bytes.set(new Uint8Array(packet(1)), 4 + encoded.length);
+  const source = httpStream([bytes]); const id = '00000000-0000-4000-8000-000000000000';
+  source.response.headers.set('X-Native-Diagnostic-Id', id);
+  let attempt: import('./native-diagnostics.js').NativeDiagnosticAttempt | undefined;
+  const stream = await captureNativeScreen(connection, { video: { frameRate: 60 } }, {
+    capture: async () => selected.stream, open: (config, rate, deps) => {
+      attempt = deps?.diagnostics;
+      return openNativeVideoTrack(config, rate, { ...h.deps, ...deps, createSocket: undefined, fetch: async url => String(url).endsWith('/diagnostics') ? new Response(null, { status: 403 }) : source.response });
+    }
+  });
+  expect(attempt?.helperId).toBe(id); stream.getVideoTracks()[0].stop();
+});
+it('pins a helper ID before first-frame cancellation when the helper advertises diagnostics', async () => {
+  const h = nativeHarness(); const diagnostics = beginNativeDiagnostics(); const abort = new AbortController();
+  const request = vi.fn(async (url: RequestInfo | URL) => {
+    if (String(url).endsWith('/diagnostics')) return new Response(null, { status: 404, headers: { 'X-Native-Diagnostics-Version': '1' } });
+    return new Promise<Response>(() => {});
+  });
+  const pending = openNativeVideoTrack(connection, 60, { ...h.deps, createSocket: undefined, fetch: request, diagnostics, signal: abort.signal });
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+  expect(diagnostics.helperId).toBe(diagnostics.timeline.id);
+  expect(request.mock.calls[1]).toEqual([expect.stringContaining('/frames-http'), expect.objectContaining({ body: JSON.stringify({ frameRate: 60, diagnosticId: diagnostics.timeline.id }) })]);
+  abort.abort(); await rejected;
+});
+it('does not start capture if permission is revoked during diagnostic negotiation', async () => {
+  const h = nativeHarness(); const abort = new AbortController(); const diagnostics = beginNativeDiagnostics();
+  const request = vi.fn(() => new Promise<Response>(() => {}));
+  const pending = openNativeVideoTrack(connection, 60, { ...h.deps, createSocket: undefined, fetch: request, signal: abort.signal, diagnostics });
+  const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  await vi.waitFor(() => expect(request).toHaveBeenCalledOnce()); abort.abort(); await rejected;
+  await Promise.resolve(); expect(request).toHaveBeenCalledOnce(); expect(h.stop).toHaveBeenCalledOnce();
+});
+it('uses the original HTTP start payload with an old helper and preserves browser-only export', async () => {
+  const h = nativeHarness(); const diagnostics = beginNativeDiagnostics();
+  const encoded = new TextEncoder().encode(format); const bytes = new Uint8Array(4 + encoded.length + 28);
+  new DataView(bytes.buffer).setUint32(0, encoded.length); bytes.set(encoded, 4); bytes.set(new Uint8Array(packet(1)), 4 + encoded.length);
+  const source = httpStream([bytes]);
+  const request = vi.fn(async (url: RequestInfo | URL) => String(url).endsWith('/diagnostics') ? new Response(null, { status: 403 }) : source.response);
+  const track = await openNativeVideoTrack(connection, 60, { ...h.deps, createSocket: undefined, fetch: request, diagnostics });
+  expect(request.mock.calls[1]).toEqual([expect.stringContaining('/frames-http'), expect.objectContaining({ body: '{"frameRate":60}' })]);
+  expect(diagnostics.helperId).toBeUndefined(); expect(diagnostics.timeline.snapshot().events.map(e => e.event)).toContain('native_ready'); track.stop();
+});

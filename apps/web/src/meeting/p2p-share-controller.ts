@@ -1,3 +1,4 @@
+import { nativeTrackDiagnostics, type NativeDiagnosticAttempt } from './native-diagnostics.js';
 import {
   P2P_ICE_DISCONNECT_TIMEOUT_MS,
   P2P_ICE_NEGOTIATION_MAX_MS,
@@ -156,6 +157,8 @@ export function deserializeIceCandidate(raw: string): RTCIceCandidateInit {
 }
 
 interface ViewerSession {
+  diagnostic?: NativeDiagnosticAttempt;
+  diagnosticConnection?: number;
   project?: Pick<ProjectPeerSender, 'setBudget' | 'getStats' | 'close'>;
   projectClose?: Promise<void>;
   projectError?: string;
@@ -490,7 +493,9 @@ class P2pShareControllerImpl implements P2pShareController {
     iceConfiguration: P2pIceServerConfiguration
   ): ViewerSession {
     const pc = this.createPeerConnection(iceConfiguration.iceServers);
+    const diagnostic = nativeTrackDiagnostics(stream.getVideoTracks()[0]);
     const session: ViewerSession = {
+      diagnostic, diagnosticConnection: diagnostic?.nextConnection(),
       identity,
       generation: `share-${Date.now()}-${++this.nextGeneration}`,
       pc,
@@ -537,6 +542,9 @@ class P2pShareControllerImpl implements P2pShareController {
     }
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
     pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
+    pc.onconnectionstatechange = () => { if (!session.pcClosed) session.diagnostic?.record({ event: 'webrtc_state',
+      state: pc.connectionState, stateKind: 'connection', transport: 'p2p', connection: session.diagnosticConnection }); };
+    session.diagnostic?.record({ event: 'webrtc_state', state: pc.iceConnectionState, stateKind: 'ice', transport: 'p2p', connection: session.diagnosticConnection });
     this.sessions.set(identity, session);
     return session;
   }
@@ -595,6 +603,7 @@ class P2pShareControllerImpl implements P2pShareController {
   private handleIceConnectionState(session: ViewerSession): void {
     if (session.state === 'closed' || session.state === 'livekit-fallback') return;
     const state = session.pc.iceConnectionState;
+    session.diagnostic?.record({ event: 'webrtc_state', state, stateKind: 'ice', transport: 'p2p', connection: session.diagnosticConnection });
     if (state === 'connected' || state === 'completed') {
       session.transportConnected = true;
       this.clearDisconnectTimer(session);
@@ -909,6 +918,7 @@ class P2pShareControllerImpl implements P2pShareController {
 
   private fallback(session: ViewerSession): void {
     if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') return;
+    session.diagnostic?.record({ event: 'webrtc_fallback', transport: 'p2p', connection: session.diagnosticConnection });
     if (session.state === 'turn' || session.recoveringTurn) {
       if (session.state === 'negotiating') {
         this.clearNegotiationTimer(session);

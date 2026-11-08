@@ -270,3 +270,13 @@ describe('Cloudflare native screen session', () => {
     expect(api.close).toHaveBeenCalledWith('late'); expect(api.answer).not.toHaveBeenCalled();
   });
 });
+
+import { beginNativeDiagnostics, bindNativeDiagnostics } from './native-diagnostics.js';
+it('records publisher connection loss without copying SDP or member identity', async () => {
+  const diag = beginNativeDiagnostics(); const video = new Track('video'); bindNativeDiagnostics(video as unknown as MediaStreamTrack, diag);
+  const { create, pcs } = setup(); const session = create();
+  await session.publish(new Stream([video]) as unknown as MediaStream, { codec: 'h264', maxBitrate: 8000000, frameRate: 60, degradationPreference: 'maintain-resolution' });
+  pcs[0].connectionState = 'failed'; pcs[0].dispatchEvent(new Event('connectionstatechange'));
+  expect(diag.timeline.snapshot().events).toContainEqual(expect.objectContaining({ event: 'webrtc_state', state: 'failed', transport: 'cloudflare' }));
+  expect(JSON.stringify(diag.timeline.snapshot())).not.toMatch(/publisher|Ada|sdp/); await session.close();
+});

@@ -1,3 +1,4 @@
+import { downloadNativeDiagnostics, nativeTrackDiagnostics } from '../meeting/native-diagnostics.js';
 import {
   RefreshParticipantTokenResponseSchema,
   P2P_ICE_NEGOTIATION_MAX_MS,
@@ -896,6 +897,7 @@ export function MeetingRoomPage({
     const unsubscribe = screenShare.subscribe(setScreenState);
     return () => {
       unsubscribe();
+      nativeTrackDiagnostics(screenShare.getState().stream?.getVideoTracks()[0])?.record({ event: 'page_cleanup' });
       void screenShare.stop();
     };
   }, [screenShare]);
@@ -919,6 +921,7 @@ export function MeetingRoomPage({
   }, [onTerminal, reconnectState]);
 
   async function leave() {
+    nativeTrackDiagnostics(screenShare.getState().stream?.getVideoTracks()[0])?.record({ event: 'leave' });
     setSessionActive(false);
     stopRecovery();
     setLeaving(true);
@@ -944,7 +947,10 @@ export function MeetingRoomPage({
   async function toggleScreenShare() {
     setNotice(undefined);
     try {
-      if (screenState.status === 'sharing') await screenShare.stop();
+      if (screenState.status === 'sharing') {
+        nativeTrackDiagnostics(screenShare.getState().stream?.getVideoTracks()[0])?.record({ event: 'user_stop' });
+        await screenShare.stop();
+      }
       else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'cloudflare-sfu' ? 'browser' : screenEncodingEngine);
     } catch (error) {
       if (error instanceof ClientHostError) setNotice(t(error.code === 'unsupported' ? 'client.mobileShareUnsupported' : 'client.captureFailed'));
@@ -1111,6 +1117,10 @@ export function MeetingRoomPage({
     };
   }, [controller, hasActiveScreenShare, screenTransportMode, screenState.status, viewerP2pState, viewerTransportPreference]);
 
+  useEffect(() => {
+    nativeTrackDiagnostics(screenState.stream?.getVideoTracks()[0])?.record({ event: 'meeting_state', state: state.connection });
+  }, [screenState.stream, state.connection]);
+
   const meetingControlsProps: MeetingControlsProps = {
     connection: state.connection,
     microphoneEnabled: state.microphoneEnabled,
@@ -1138,6 +1148,7 @@ export function MeetingRoomPage({
     nativeCapturePlatform: clientHost?.platform,
     nativeCaptureMaxFrameRate: clientInfo?.maxScreenFrameRate,
     nativeCaptureEnabled,
+    onExportNativeDiagnostics: nativeCaptureConnection ? () => downloadNativeDiagnostics(nativeCaptureConnection) : undefined,
     onNativeCaptureChange: (enabled) => { nativeCaptureEnabledRef.current = enabled; setNativeCaptureEnabled(enabled); },
     onScreenEncodingEngineChange: setScreenEncodingEngine,
     screenBitrate,

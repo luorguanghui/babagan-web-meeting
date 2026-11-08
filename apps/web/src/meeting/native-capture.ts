@@ -3,6 +3,8 @@ import { NATIVE_CAPTURE_HEADER_BYTES, NATIVE_CAPTURE_MAX_PIXELS, NATIVE_CAPTURE_
 import { abortableCapture, captureAborted, stopCaptureStream } from './capture-abort.js';
 import { NativeWorkerPacer, localNativePacer, type NativePacer } from './worker-pacer.js';
 
+import { beginNativeDiagnostics, bindNativeDiagnostics, prepareNativeDiagnosticId, type NativeDiagnosticAttempt } from './native-diagnostics.js';
+
 const storageKey = 'babagan.native-capture';
 const arrayBufferLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')!.get!;
 function packetLength(value: unknown): number {
@@ -48,6 +50,7 @@ export class NativeCaptureError extends Error {
 interface FrameWriter { write(frame: VideoFrame): Promise<unknown>; close(): Promise<unknown>; }
 interface NativeFrameChannel extends EventTarget { binaryType: string; readyState: number; send(message: string): void; close(): void; }
 interface NativeVideoDependencies {
+  diagnostics?: NativeDiagnosticAttempt;
   createSocket?: (url: string, protocols: string[]) => NativeFrameChannel;
   fetch?: typeof fetch;
   createFrame?: (bytes: Uint8Array<ArrayBuffer>, init: VideoFrameBufferInit) => VideoFrame;
@@ -78,7 +81,7 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
   private started = false;
   private readonly abort = new AbortController();
   private reader?: ReadableStreamBYOBReader;
-  constructor(private readonly connection: NativeCaptureConnection, private readonly request: typeof fetch) {
+  constructor(private readonly connection: NativeCaptureConnection, private readonly request: typeof fetch, private readonly diagnostics?: NativeDiagnosticAttempt) {
     super();
     queueMicrotask(() => { if (this.readyState === 0) { this.readyState = 1; this.dispatchEvent(new Event('open')); } });
   }
@@ -110,11 +113,14 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
     return buffer;
   }
   private async receive(frameRate: 30 | 60): Promise<void> {
+    const diagnosticId = this.diagnostics ? await prepareNativeDiagnosticId(this.connection, this.diagnostics, this.request, this.abort.signal) : undefined;
+    if (this.readyState !== 1) return;
     const response = await this.request(`http://127.0.0.1:${this.connection.port}/frames-http`, {
       method: 'POST', mode: 'cors', credentials: 'omit', cache: 'no-store', signal: this.abort.signal,
       headers: { Authorization: `Bearer ${this.connection.token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ frameRate })
+      body: JSON.stringify({ frameRate, ...(diagnosticId ? { diagnosticId } : {}) })
     });
+    this.diagnostics?.setHelperId(response.headers.get('X-Native-Diagnostic-Id'));
     if (!response.ok || !response.body) {
       void response.body?.cancel().catch(() => undefined);
       throw new NativeCaptureError(response.status === 422 ? 'unsupported-source' : 'unavailable', 'Native capture request failed.');
@@ -141,35 +147,38 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
     let format: NativeCaptureFormat | undefined;
     let sequence = -1, timestamp = -Infinity;
     const unavailable = () => new NativeCaptureError('unavailable', 'Reopen the native meeting launcher and allow local network access.');
+    const diagnostic = deps.diagnostics?.record ?? (() => {});
     const cleanup = (error?: Error, signalEnded = false) => {
       if (closed) return;
       closed = true; clearTimeout(timer); void pacer?.close(); deps.signal?.removeEventListener('abort', abort);
       if (socket?.readyState === 1) { try { socket.send(JSON.stringify({ type: 'stop' })); } catch { /* Already closed. */ } }
       socket?.close(); originalStop?.();
       if (!ready) reject(error ?? unavailable());
+      if (signalEnded && ready) diagnostic({ event: 'track_ended' });
       if (signalEnded && ready) track.dispatchEvent(new Event('ended'));
     };
     const abort = () => cleanup(new DOMException('Native screen selection ended.', 'AbortError'), true);
-    const timer = setTimeout(() => cleanup(unavailable()), 15_000);
+    const timer = setTimeout(() => { diagnostic({ event: 'native_error', code: 'capture_timeout' }); cleanup(unavailable()); }, 15_000);
     const delivery = { frameRate,
-      delivered: () => { if (!closed && !ready) { ready = true; clearTimeout(timer); resolve(track); } },
-      fail: (error: unknown) => cleanup(new NativeCaptureError('unavailable',
-        `Native frame delivery failed: ${error instanceof Error ? error.message : String(error)}`), true) };
+      delivered: () => { if (!closed && !ready) { ready = true; diagnostic({ event: 'native_ready' }); clearTimeout(timer); resolve(track); } },
+      fail: (error: unknown) => { diagnostic({ event: 'delivery_failed' }); cleanup(new NativeCaptureError('unavailable',
+        `Native frame delivery failed: ${error instanceof Error ? error.message : String(error)}`), true); } };
     if (deps.signal?.aborted) { abort(); return; }
     deps.signal?.addEventListener('abort', abort, { once: true });
     const connect = () => {
       if (closed) return;
       nativeTracks.add(track); nativePacers.set(track, pacer!);
-      track.stop = () => cleanup();
+      if (deps.diagnostics) bindNativeDiagnostics(track, deps.diagnostics);
+      track.stop = () => { if (!closed) diagnostic({ event: 'track_stop' }); cleanup(); };
       try {
         socket = deps.createSocket
           ? deps.createSocket(`ws://127.0.0.1:${connection.port}/frames`, [NATIVE_CAPTURE_PROTOCOL, `auth.${connection.token}`])
-          : new NativeHttpChannel(connection, deps.fetch ?? ((input, init) => globalThis.fetch(input, init)));
+          : new NativeHttpChannel(connection, deps.fetch ?? ((input, init) => globalThis.fetch(input, init)), deps.diagnostics);
         socket.binaryType = 'arraybuffer';
-        socket.addEventListener('open', () => { if (!closed) socket!.send(JSON.stringify({ type: 'start', frameRate })); });
-        socket.addEventListener('error', event => cleanup(event instanceof CustomEvent && event.detail instanceof NativeCaptureError
-          ? event.detail : unavailable(), true));
-        socket.addEventListener('close', () => cleanup(unavailable(), true));
+        socket.addEventListener('open', () => { if (!closed) diagnostic({ event: 'native_open' }); if (!closed) socket!.send(JSON.stringify({ type: 'start', frameRate })); });
+        socket.addEventListener('error', event => { if (closed) return; diagnostic({ event: 'native_error' }); cleanup(event instanceof CustomEvent && event.detail instanceof NativeCaptureError
+          ? event.detail : unavailable(), true); });
+        socket.addEventListener('close', () => { if (closed) return; diagnostic({ event: 'native_closed' }); cleanup(unavailable(), true); });
         socket.addEventListener('message', rawEvent => {
           const event = rawEvent as MessageEvent;
           if (closed) return;
@@ -178,6 +187,7 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
               if (event.data.length > 4096) throw new NativeCaptureError('protocol', 'Native capture control message is too large.');
               const message = JSON.parse(event.data) as Record<string, unknown>;
               if (message.type === 'error' || message.type === 'stopped') {
+                diagnostic({ event: 'native_error', code: message.code });
                 cleanup(message.code === 'UNSUPPORTED_SOURCE'
                   ? new NativeCaptureError('unsupported-source', 'Native capture currently requires one active primary display.') : unavailable(), true);
                 return;
@@ -208,7 +218,7 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
               colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }
             });
             pacer!.push(frame);
-          } catch (error) { cleanup(error instanceof Error ? error : unavailable(), true); }
+          } catch (error) { diagnostic({ event: 'protocol_error' }); cleanup(error instanceof Error ? error : unavailable(), true); }
         });
       } catch (error) { cleanup(error instanceof Error ? error : unavailable()); }
     };
@@ -255,23 +265,45 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
   open?: typeof openNativeVideoTrack;
   signal?: AbortSignal;
 } = {}): Promise<MediaStream> {
+  const diagnostics = beginNativeDiagnostics();
+  diagnostics.record({ event: 'permission_requested' });
   // The standard picker preserves deliberate screen/audio selection and permission.
   const stream = await abortableCapture(() => (deps.capture ?? (options => navigator.mediaDevices.getDisplayMedia(options)))(constraints),
-    deps.signal, stopCaptureStream);
+    deps.signal, stopCaptureStream).catch(error => {
+      diagnostics.record({ event: deps.signal?.aborted ? 'capture_cancelled' : error instanceof DOMException && error.name === 'NotAllowedError' ? 'permission_denied' : 'native_error' });
+      throw error;
+    });
+  diagnostics.record({ event: 'permission_granted' });
   const video = stream.getVideoTracks()[0];
   const abort = new AbortController();
-  const ended = () => abort.abort();
+  const ended = () => { diagnostics.record({ event: 'permission_ended' }); abort.abort(); };
+  const cancelled = () => { diagnostics.record({ event: 'capture_cancelled' }); abort.abort(); };
+  const muted = () => diagnostics.record({ event: 'permission_muted' });
+  const unmuted = () => diagnostics.record({ event: 'permission_unmuted' });
+  let display = '';
+  const observeDisplay = () => {
+    const width = screen.width, height = screen.height, dpr = devicePixelRatio;
+    const next = `${width}/${height}/${dpr}`;
+    if (next !== display) { display = next; diagnostics.record({ event: 'display_observation', width, height, dpr }); }
+  };
+  observeDisplay();
+  window.addEventListener('resize', observeDisplay);
+  screen.orientation?.addEventListener('change', observeDisplay);
   let sentinelReleased = false;
   const releaseSentinel = () => {
     if (sentinelReleased) return;
     sentinelReleased = true;
     video?.removeEventListener('ended', ended);
-    deps.signal?.removeEventListener('abort', ended);
+    deps.signal?.removeEventListener('abort', cancelled);
+    video?.removeEventListener('mute', muted); video?.removeEventListener('unmute', unmuted);
+    window.removeEventListener('resize', observeDisplay); screen.orientation?.removeEventListener('change', observeDisplay);
     video?.stop();
   };
   try {
-    if (deps.signal?.aborted || video?.readyState === 'ended') throw captureAborted();
-    deps.signal?.addEventListener('abort', ended, { once: true });
+    if (deps.signal?.aborted || video?.readyState === 'ended') {
+      diagnostics.record({ event: deps.signal?.aborted ? 'capture_cancelled' : 'permission_ended' }); throw captureAborted();
+    }
+    deps.signal?.addEventListener('abort', cancelled, { once: true });
     const settings = video?.getSettings();
     // FFmpeg's first DXGI output is currently the only supported native source.
     // Never substitute it for a different/opaque browser source identifier.
@@ -279,14 +311,16 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
       throw new NativeCaptureError('unsupported-source', 'Native capture currently supports the primary screen only. Select it or use browser capture.');
     }
     video.addEventListener('ended', ended, { once: true });
+    video.addEventListener('mute', muted); video.addEventListener('unmute', unmuted);
     // Keep browser permission and its Stop sharing action alive without running
     // a second high-cadence capture beside DXGI. This track is never published.
     await abortableCapture(() => video.applyConstraints?.({ frameRate: { ideal: 1, max: 1 } }).catch(() => undefined), abort.signal);
     const requested = typeof constraints.video === 'object' ? constraints.video.frameRate : undefined;
     const rate = typeof requested === 'number' ? requested : typeof requested?.ideal === 'number' ? requested.ideal : 30;
-    const native = await abortableCapture(() => (deps.open ?? openNativeVideoTrack)(connection, rate >= 60 ? 60 : 30, { signal: abort.signal }),
+    const native = await abortableCapture(() => (deps.open ?? openNativeVideoTrack)(connection, rate >= 60 ? 60 : 30, { signal: abort.signal, diagnostics }),
       abort.signal, track => track.stop());
     if (abort.signal.aborted) { native.stop(); throw new DOMException('Screen selection ended.', 'AbortError'); }
+    bindNativeDiagnostics(native, diagnostics);
     const nativeSettings = native.getSettings?.bind(native);
     // Preserve selection provenance for the existing system-audio isolation check.
     // Dimensions remain those of the actual native frames, not the original monitor.
@@ -303,6 +337,7 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
     stream.removeTrack(video); stream.addTrack(native);
     return stream;
   } catch (error) {
+    if (!abort.signal.aborted && !deps.signal?.aborted) diagnostics.record({ event: 'failed', code: error instanceof NativeCaptureError ? error.code : undefined });
     abort.abort();
     releaseSentinel();
     for (const track of stream.getTracks()) if (track !== video) track.stop();

@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
+import type { DiagnosticEvent } from '@meeting/contracts';
 import { buildCaptureArguments, createCaptureSession, type CaptureSpawner } from './capture.js';
 import type { TimedFrame } from './timestamps.js';
 
@@ -34,18 +35,21 @@ describe('owned FFmpeg capture session', () => {
   });
 
   it('stops only its owned capture process promptly', async () => {
+    const events: DiagnosticEvent[] = [];
     const source = fixture(validStream + 'setInterval(()=>{}, 1000);');
     let frameReady!: () => void;
     const ready = new Promise<void>((resolve) => frameReady = resolve);
     const errors: string[] = [];
     const session = createCaptureSession({ ffmpeg: 'unused', frameRate: 30, getActiveDisplayCount: async () => 1, spawnProcess: source.spawn,
-      onFormat() {}, onFrame: () => frameReady(), onError: (code) => errors.push(code) });
+      onDiagnostic: e => events.push(e), onFormat() {}, onFrame: () => frameReady(), onError: (code) => errors.push(code) });
     await Promise.race([ready, session.done]);
     session.stop();
     await session.done;
     expect(source.child()).toBeDefined();
     expect(source.child()!.signalCode !== null || source.child()!.exitCode !== null).toBe(true);
     expect(errors).toEqual([]);
+    expect(events).toContainEqual(expect.objectContaining({ event: 'process_exit', expectedStop: true }));
+    expect(events.map(e => e.event)).not.toContain('capture_error');
   });
 
   it('kills a stalled startup and reports a bounded error', async () => {
@@ -101,3 +105,12 @@ describe('owned FFmpeg capture session', () => {
     expect(args30[args30.indexOf('-i') + 1]).toBe('ddagrab=framerate=60:output_idx=0:draw_mouse=1:dup_frames=0');
   });
 });
+
+it.each([['process.exitCode=7;', 7, null], ["process.kill(process.pid, 'SIGTERM');", null, 'SIGTERM'], ['', 0, null]] as const)('records process completion without raw stderr (%s)', async (ending, exitCode, signal) => {
+    const events: unknown[] = [];
+    await createCaptureSession({ ffmpeg: 'unused', frameRate: 60, getActiveDisplayCount: async () => 1,
+      spawnProcess: fixture(validStream + "process.stderr.write('secret-token C:/private/path\\n');" + ending).spawn,
+      onFormat() {}, onFrame() {}, onError() {}, onDiagnostic: e => events.push(e) }).done;
+    expect(events).toContainEqual(expect.objectContaining({ event: 'process_exit', exitCode, signal, expectedStop: false }));
+    expect(JSON.stringify(events)).not.toMatch(/secret-token|private/);
+  });

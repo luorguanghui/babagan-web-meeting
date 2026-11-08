@@ -1,0 +1,15 @@
+# Native fault timeline design
+
+Goal: distinguish the first observable cause of native screen-share interruption without claiming that DXGI caused unobserved real-game failures. Local implementation only; no PR, push, installer release, production access or real games.
+
+Audit at main 3709546: capture.ts collapses several DXGI signatures into capture_access_lost, discards exit code/signal, and treats a framed zero exit as completion. Recovery emits failed then stopped, so stopped alone does not mean user intent. HTTP destroys an established stream on error; browser sees unavailable/ended. Permission sentinel ended, frame delivery failure and transport closure converge on generated track ended. P2P ICE failure initiates fallback; Cloudflare connection loss initiates reconnect; neither proves local capture failure.
+
+Approaches: launcher-only logging cannot explain browser authorization and network causes. Raw unified logs risk secrets and unbounded output. Chosen implementation: small allowlisted event rings on helper and browser, joined by a negotiated random capture ID, with HTTP response-header correlation as fallback, explicitly exported as JSON in sharing settings. No telemetry upload or frame instrumentation per frame.
+
+Limits: 256 events per timeline, helper retains four attempts for 30 minutes after completion/last event, preserving quiet active attempts, browser retains latest attempt until reload/new attempt. Record wall-clock start and monotonic offsets separately; never infer exact cross-process order solely from wall clocks. Include truncation and helper-unavailable status. No raw stderr/errors, pixels, audio, URLs, paths, device names, identities, tokens, SDP, ICE or arbitrary strings. Diagnostic endpoint uses existing loopback/origin/bearer boundary and bounded bodies; older helper gives browser-only export. Keep current recovery and permission semantics.
+
+Instrumentation: display validation and safe DXGI signature evidence, spawn/error/close, first frame, recovery lifecycle; browser permission/mute/ended/cancel vs intentional stop, local channel and delivery errors, generated track end; sender ICE/connection states and meeting connection state. Screen dimensions/DPR observations are hints only, not OS display notifications.
+
+Validation: reuse Vitest, real Node subprocess fixtures and loopback HTTP, browser fake tracks. Verify abnormal exit, timeout/exhaustion, repeated recovery, permission ended during startup and sharing, normal stop, cleanup races, endpoint auth, bounded retention, export correlation and privacy. Actual Windows driver/mode/fullscreen/UAC/HDR/browser reasons remain manual follow-up.
+
+Compatibility ruling: a bounded (750ms) authorized capability probe allows the browser to supply its UUID to new helpers before first-frame headers. Old helpers receive their unchanged start payload; a valid HTTP response header can also supply a helper ID. This avoids losing correlation on startup timeout/revocation without changing the existing structured error/status behavior. Browser/helper IDs may be equal or different.

@@ -1,3 +1,4 @@
+import { nativeTrackDiagnostics, type NativeDiagnosticAttempt } from './native-diagnostics.js';
 import { CloudflareSfuSessionResponseSchema, type CloudflareSfuPublication, type CloudflareSfuSessionResponse } from '@meeting/contracts';
 import { apiNoContent, apiRequest } from '../api/client.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
@@ -12,6 +13,8 @@ export interface CloudflareScreenApi {
   close(sessionId: string): Promise<void>;
 }
 export class CloudflareScreenSession {
+  private diagnostic?: NativeDiagnosticAttempt;
+  private diagnosticConnection?: number;
   private pc?: RTCPeerConnection;
   private sessionId?: string;
   private epoch = 0;
@@ -31,6 +34,8 @@ export class CloudflareScreenSession {
     onError?(error: Error): void;
   }) { }
   publish(stream: MediaStream, options: ScreenSharePublishOptions, preference: BrowserEncodingPreference = 'hardware'): Promise<void> {
+    this.diagnostic = nativeTrackDiagnostics(stream.getVideoTracks()[0]);
+    this.diagnosticConnection = this.diagnostic?.nextConnection();
     return this.negotiate(async (epoch) => {
       const pc = await this.create(epoch);
       if (!pc)
@@ -161,6 +166,7 @@ export class CloudflareScreenSession {
     };
     pc.addEventListener('connectionstatechange', () => {
       if (!this.current(epoch)) return;
+      this.diagnostic?.record({ event: 'webrtc_state', state: pc.connectionState, stateKind: 'connection', transport: 'cloudflare', connection: this.diagnosticConnection });
       if (pc.connectionState === 'disconnected') {
         this.disconnectTimer ??= setTimeout(reportLoss, 2000);
       } else {
@@ -169,6 +175,7 @@ export class CloudflareScreenSession {
         if (pc.connectionState === 'failed') reportLoss();
       }
     });
+    this.diagnostic?.record({ event: 'webrtc_state', state: pc.connectionState, stateKind: 'connection', transport: 'cloudflare', connection: this.diagnosticConnection });
     return pc;
   }
   private negotiate(operation: (epoch: number) => Promise<void>): Promise<void> {

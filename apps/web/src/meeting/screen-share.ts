@@ -1,3 +1,4 @@
+import { nativeTrackDiagnostics } from './native-diagnostics.js';
 import {
   P2P_SCREEN_BITRATES,
   type P2pScreenBitrate,
@@ -197,7 +198,7 @@ class BrowserScreenShareController implements ScreenShareController {
       assertCaptureLive();
       this.activeStream = stream;
       this.stopTracks = stopTracks;
-      const onEnded = () => { if (this.startGen === myGen) void this.stop(); };
+      const onEnded = () => { if (this.startGen === myGen) { nativeTrackDiagnostics(videoTrack)?.record({ event: 'share_track_ended' }); void this.stop(); } };
       videoTrack.addEventListener('ended', onEnded, { once: true });
       this.endedCleanup = () => videoTrack.removeEventListener('ended', onEnded);
       const displaySurface = videoTrack.getSettings?.().displaySurface;
@@ -322,6 +323,7 @@ class BrowserScreenShareController implements ScreenShareController {
     // barrier without making Leave wait on an unbounded network request.
     if (this.stopPromise) return this.stoppingStartup ? undefined : this.stopPromise;
     const stream = this.activeStream ?? this.state.stream;
+    nativeTrackDiagnostics(stream?.getVideoTracks()[0])?.record({ event: 'share_stop' });
     const abort = this.startAbort;
     const cancelCapture = () => {
       this.endedCleanup?.(); this.endedCleanup = undefined;

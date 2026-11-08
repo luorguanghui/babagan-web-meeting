@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import type { NativeCaptureFormat } from '@meeting/contracts';
+import { sanitizeDiagnosticEvent, type DiagnosticEvent, type NativeCaptureFormat } from '@meeting/contracts';
 import { FrameClock, type TimedFrame } from './timestamps.js';
 import { Y4mParser } from './y4m.js';
 
@@ -11,6 +11,7 @@ export interface CaptureOptions {
   startupTimeoutMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
   outputSize?: { width: number; height: number };
+  onDiagnostic?: (event: DiagnosticEvent) => void;
   onFormat(format: NativeCaptureFormat): void;
   onFrame(frame: TimedFrame): void;
   onError(code: string, message: string): void;
@@ -52,6 +53,12 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
   let hadFrame = false;
   let stderrTail = '';
   let accessLost = false;
+  let evidence: DiagnosticEvent['evidence'] = 'unknown';
+  let requestedStop = false;
+  const diagnostic = (value: unknown) => {
+    const event = sanitizeDiagnosticEvent(value);
+    try { if (event) options.onDiagnostic?.(event); } catch { /* Diagnostics cannot interrupt capture. */ }
+  };
   let killDeadline: ReturnType<typeof setTimeout> | undefined;
   let resolveDone!: () => void;
   const done = new Promise<void>((resolve) => resolveDone = resolve);
@@ -62,7 +69,8 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
     clearTimeout(killDeadline);
     resolveDone();
   };
-  const stop = () => {
+  const stop = (requested = true) => {
+    requestedStop ||= requested;
     if (stopped || finished) return;
     stopped = true;
     clearTimeout(deadline);
@@ -73,11 +81,13 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
   };
   const fail = (code: string, message: string) => {
     if (stopped || finished) return;
+    diagnostic({ event: 'capture_error', code, evidence });
     options.onError(code, message);
-    stop();
+    stop(false);
   };
   const clock = new FrameClock((frame) => {
     if (stopped) return;
+    if (!hadFrame) diagnostic({ event: 'first_frame' });
     hadFrame = true;
     clearTimeout(deadline);
     options.onFrame(frame);
@@ -91,11 +101,13 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
     try {
       const count = await (options.getActiveDisplayCount ?? getActiveWindowsDisplayCount)();
       if (stopped || finished) return;
+      diagnostic({ event: 'display_check', displayCount: count });
       if (count !== 1) {
         fail('UNSUPPORTED_SOURCE', 'Native capture currently requires exactly one active display. Use the browser screen-sharing mode for other layouts.');
         return;
       }
     } catch {
+      diagnostic({ event: 'display_check', code: 'UNSUPPORTED_SOURCE' });
       fail('UNSUPPORTED_SOURCE', 'Unable to verify the desktop mapping. Native capture was not started.');
       return;
     }
@@ -104,6 +116,7 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
         stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true, shell: false
       }));
       child = spawnProcess(options.ffmpeg, buildCaptureArguments(options.frameRate, options.outputSize));
+      child.once('spawn', () => diagnostic({ event: 'process_started' }));
       child.stdout.on('data', (chunk: Buffer) => {
         if (stopped) return;
         try { parser.push(chunk); }
@@ -115,11 +128,17 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
         // log raw stderr (paths), retry arbitrary corruption, or evade revocation.
         stderrTail = (stderrTail + chunk.toString('utf8')).slice(-4096);
         accessLost ||= /\b(?:887a0026|887a0005|887a0007|80070005)\b|DXGI_ERROR_(?:ACCESS_LOST|DEVICE_REMOVED|DEVICE_RESET)|Desktop duplication access denied|Output parameters changed!/i.test(stderrTail);
+        if (/887a0026|DXGI_ERROR_ACCESS_LOST/i.test(stderrTail)) evidence = 'access_lost';
+        else if (/887a0005|DXGI_ERROR_DEVICE_REMOVED/i.test(stderrTail)) evidence = 'device_removed';
+        else if (/887a0007|DXGI_ERROR_DEVICE_RESET/i.test(stderrTail)) evidence = 'device_reset';
+        else if (/80070005|Desktop duplication access denied/i.test(stderrTail)) evidence = 'access_denied';
+        else if (/Output parameters changed!/i.test(stderrTail)) evidence = 'output_changed';
         try { clock.pushStderr(chunk); }
         catch { fail('capture_stream', 'Native capture returned invalid or unsynchronized frame timestamps.'); }
       });
       child.on('error', () => { fail('capture_launch', 'Unable to launch FFmpeg. Check the configured FFmpeg executable.'); complete(); });
-      child.on('close', (code) => {
+      child.on('close', (code, signal) => {
+        diagnostic({ event: 'process_exit', exitCode: code, signal, hadFrame, expectedStop: requestedStop, evidence });
         if (!stopped) {
           if (accessLost) fail('capture_access_lost', 'Desktop capture access changed.');
         }
@@ -128,6 +147,7 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
           catch { fail('capture_stream', 'Native capture ended with an incomplete video stream.'); }
           if (!stopped && (code !== 0 || !hadFrame)) fail('capture_exit', 'FFmpeg stopped before capture completed. Check DXGI desktop access and FFmpeg support.');
         }
+        if (!stopped) diagnostic({ event: 'completed', code: 'capture_eof' });
         complete();
       });
     } catch {

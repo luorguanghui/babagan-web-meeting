@@ -1964,3 +1964,15 @@ describe('Opus SDP configuration for high-fidelity screen audio', () => {
     expect(modified).toBe(sdp);
   });
 });
+
+import { beginNativeDiagnostics, bindNativeDiagnostics } from './native-diagnostics.js';
+it('records sender ICE failure and fallback without treating them as local capture termination', async () => {
+  const diag = beginNativeDiagnostics(); const track = makeTrack('video'); bindNativeDiagnostics(track, diag);
+  const stream = { getVideoTracks: () => [track], getAudioTracks: () => [] } as unknown as MediaStream;
+  const { controller } = makeHarness(); await controller.start(stream, shareOptions, [viewers[0]]);
+  FakeRTCPeerConnection.instances[0].setIceConnectionState('failed');
+  expect(diag.timeline.snapshot().events).toContainEqual(expect.objectContaining({ event: 'webrtc_state', state: 'failed', transport: 'p2p' }));
+  expect(diag.timeline.snapshot().events).toContainEqual(expect.objectContaining({ event: 'webrtc_fallback' }));
+  expect(diag.timeline.snapshot().events.map(e => e.event)).not.toContain('track_ended');
+  expect(JSON.stringify(diag.timeline.snapshot())).not.toContain('viewer-1'); await controller.stop();
+});

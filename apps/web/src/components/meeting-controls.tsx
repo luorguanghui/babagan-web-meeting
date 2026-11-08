@@ -49,6 +49,7 @@ export interface MeetingControlsProps {
   nativeCapturePlatform?: 'windows' | 'android';
   nativeCaptureMaxFrameRate?: 30 | 60;
   nativeCaptureEnabled?: boolean;
+  onExportNativeDiagnostics?: () => Promise<void>;
   onNativeCaptureChange?: (enabled: boolean) => void;
   screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
   onScreenSourceTransportChange?: (transport: 'p2p' | 'cloudflare-sfu') => void;
@@ -238,6 +239,7 @@ export interface MeetingSettingsProps extends MeetingControlsProps {
 export function MeetingSettings(props: MeetingSettingsProps) {
   const { t } = useI18n();
   const section = props.section ?? 'all';
+  const [exportState, setExportState] = useState<'idle' | 'busy' | 'done' | 'error'>('idle');
   const [selectedMicrophone, setSelectedMicrophone] = useState('');
   const [selectedSpeaker, setSelectedSpeaker] = useState('');
   const audioHeadingId = useId();
@@ -280,6 +282,14 @@ export function MeetingSettings(props: MeetingSettingsProps) {
     <section className="meeting-settings-section" aria-label={t('controls.screenQuality')}>
       <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>
       <div className="meeting-settings-section-grid">
+        {props.onExportNativeDiagnostics && <div className="meeting-settings-field-wide">
+          <button type="button" disabled={exportState === 'busy'} onClick={() => {
+            setExportState('busy');
+            void props.onExportNativeDiagnostics!().then(() => setExportState('done'), () => setExportState('error'));
+          }}>{t('native.exportDiagnostic')}</button>
+          <p className="meeting-settings-share-hint">{t('native.exportDiagnosticHint')}</p>
+          {exportState !== 'idle' && <p role="status">{t(`native.exportDiagnostic.${exportState}`)}</p>}
+        </div>}
         {!props.nativeCaptureAvailable && <a className="meeting-settings-field-wide" href="/native" target="_blank" rel="noopener noreferrer">{t('native.downloadNav')}</a>}
         {props.nativeCapturePlatform === 'android' && <div className="meeting-settings-field-wide"><strong>{t('client.androidCapture')}</strong>{props.nativeCaptureMaxFrameRate !== 60 && <p className="meeting-settings-share-hint">{t('client.androidCaptureHint')}</p>}<p className="meeting-settings-share-hint">{t('client.androidAudioHint')}</p></div>}
         {props.nativeCaptureAvailable && props.nativeCapturePlatform !== 'android' && <label className="meeting-settings-field-wide">{t('native.captureLabel')}<select aria-label={t('native.captureLabel')}

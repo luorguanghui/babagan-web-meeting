@@ -1,12 +1,12 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import type { NativeCaptureFormat } from '@meeting/contracts';
+import { isDiagnosticId, type NativeCaptureFormat } from '@meeting/contracts';
 import type { FrameTransport } from './frame-sender.js';
 
 export class HttpCaptureError extends Error {
   constructor(readonly status: number, readonly code: string, message: string) { super(message); }
 }
 
-export async function readHttpStart(request: IncomingMessage): Promise<30 | 60> {
+export async function readHttpControl(request: IncomingMessage): Promise<unknown> {
   const body = await new Promise<Buffer>((resolve, reject) => {
     if (Number(request.headers['content-length'] ?? 0) > 1024) {
       reject(new HttpCaptureError(413, 'invalid_control', 'Native capture controls are limited to 1024 bytes.')); return;
@@ -28,11 +28,16 @@ export async function readHttpStart(request: IncomingMessage): Promise<30 | 60> 
   let control: unknown;
   try { control = JSON.parse(body.toString('utf8')); }
   catch { throw new HttpCaptureError(400, 'invalid_control', 'Expected a JSON frameRate of 30 or 60.'); }
-  if (typeof control !== 'object' || control === null || Array.isArray(control) || Object.keys(control).length !== 1
+  return control;
+}
+export async function readHttpStart(request: IncomingMessage): Promise<{ frameRate: 30 | 60; diagnosticId?: string }> {
+  const control = await readHttpControl(request);
+  if (typeof control !== 'object' || control === null || Array.isArray(control) || Object.keys(control).some(key => !['frameRate', 'diagnosticId'].includes(key))
+    || ('diagnosticId' in control && !isDiagnosticId(control.diagnosticId))
     || !('frameRate' in control) || (control.frameRate !== 30 && control.frameRate !== 60)) {
     throw new HttpCaptureError(400, 'invalid_control', 'Expected a JSON frameRate of 30 or 60.');
   }
-  return control.frameRate;
+  return { frameRate: control.frameRate, ...('diagnosticId' in control ? { diagnosticId: control.diagnosticId as string } : {}) };
 }
 
 export function writeHttpError(response: ServerResponse, status: number, code: string, message: string): void {
