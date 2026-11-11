@@ -641,6 +641,13 @@ class ApiEnvironmentGuardTests(unittest.TestCase):
                    ['PATH=/usr/local/bin:/usr/bin', 'NODE_ENV=development', 'SECRET=image-value'],
                    ['PATH=/usr/local/bin:/usr/bin', 'NODE_ENV=production', 'SECRET=part=one=two'])
 
+    def test_decodes_compose_json_dollar_escaping_without_accepting_real_drift(self):
+        environment = {'ADMIN_PASSWORD_HASH': '$$argon2id$$example', 'LITERAL': '$$$$price'}
+        self.check(environment, ['IMAGE_DEFAULT=$$unchanged'],
+                   ['ADMIN_PASSWORD_HASH=$argon2id$example', 'LITERAL=$$price', 'IMAGE_DEFAULT=$$unchanged'])
+        with self.assertRaisesRegex(RuntimeError, 'LITERAL'):
+            self.check({'LITERAL': '$$$$price'}, [], ['LITERAL=$price'])
+
     def test_explicit_null_unsets_the_image_default_and_bare_container_entry_is_not_a_value(self):
         self.check({'REMOVED': None, 'EMPTY': ''}, ['REMOVED=old-secret', 'EMPTY=image-default', 'INHERITED=keep'],
                    ['REMOVED', 'EMPTY=', 'INHERITED=keep'])

@@ -203,7 +203,8 @@ def require_api_environment(selected, compose, containers):
             raise RuntimeError('Invalid rendered API environment metadata')
         # Compose passes null as a bare key, suppressing the image default.
         # Preserve that marker: absent, explicitly unset and empty differ.
-        expected[key] = value
+        # Compose config doubles literal dollars so its output can be loaded again.
+        expected[key] = value.replace('$$', '$') if value is not None else None
     actual = docker_environment(api['Config'].get('Env'))
     missing = object()
     changed = sorted(key for key in expected.keys() | actual.keys()
