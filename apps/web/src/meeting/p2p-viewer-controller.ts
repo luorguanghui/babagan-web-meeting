@@ -9,6 +9,7 @@ import { ProjectPeerReceiver } from './software-media/peer-receiver.js';
 import type { ProjectStats } from './software-media/encoder.js';
 
 import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
+import type { ScreenQualitySource } from './screen-share-quality.js';
 import { configureOpusSdp, deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
 export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
@@ -277,6 +278,19 @@ export class P2pViewerController {
     const session = this.session;
     if (session === undefined || session.pcClosed || this.closed) return undefined;
     return session.pc.getStats();
+  }
+
+  async getQualitySource(): Promise<ScreenQualitySource | undefined> {
+    const session = this.session;
+    if (!session || session.pcClosed || this.closed) return undefined;
+    const report = await session.pc.getStats().catch(() => undefined);
+    if (session !== this.session || session.pcClosed || this.closed) return undefined;
+    const state = this.state;
+    return {
+      key: session.pc, transport: state === 'p2p' || state === 'turn' ? state : 'negotiating',
+      turnProvider: state === 'turn' ? session.turnProvider : undefined,
+      report, project: session.project?.getStats()
+    };
   }
 
   /** Identity of the current P2P sharer, if a session was ever established. */

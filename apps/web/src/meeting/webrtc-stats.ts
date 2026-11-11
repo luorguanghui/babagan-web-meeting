@@ -12,6 +12,10 @@ interface VideoFrameCounters {
   totalDecodeTime?: number;
   totalAssemblyTime?: number;
   framesAssembledFromMultiplePackets?: number;
+  qpSum?: number;
+  frames?: number;
+  jitterBufferDelay?: number;
+  jitterBufferEmittedCount?: number;
 }
 
 export interface WebRtcMediaStats {
@@ -27,6 +31,10 @@ export interface WebRtcMediaStats {
   powerEfficientEncoder?: boolean;
   sentFramesPerSecond?: number;
   receivedFramesPerSecond?: number;
+  encodedFramesPerSecond?: number;
+  decodedFramesPerSecond?: number;
+  averageIntervalQp?: number;
+  totalFreezesMs?: number;
   /** Averages over the latest stats interval, not the entire session. */
   averageDecodeTimeMs?: number;
   averageAssemblyTimeMs?: number;
@@ -45,6 +53,7 @@ export interface WebRtcMediaStats {
   roundTripTimeMs?: number;
   jitterMs?: number;
   averageJitterBufferDelayMs?: number;
+  averageIntervalJitterBufferDelayMs?: number;
   availableOutgoingBitrateMbps?: number;
   /** Encoder-reported instantaneous target; distinct from the RTC estimate. */
   encoderTargetBitrateMbps?: number;
@@ -62,11 +71,13 @@ export interface WebRtcStatsSnapshot {
   sampledAt: number;
   sender?: WebRtcMediaStats;
   receiver?: WebRtcMediaStats;
+  connection?: WebRtcMediaStats;
   counters: {
     outbound?: { bytes: number; timestamp: number };
     inbound?: { bytes: number; timestamp: number };
     outboundFrames?: VideoFrameCounters;
     inboundFrames?: VideoFrameCounters;
+    sourceFrames?: VideoFrameCounters;
   };
 }
 
@@ -91,7 +102,9 @@ export function summarizeWebRtcStats(
   const byId = new Map(entries.filter((value) => value.id).map((value) => [value.id!, value]));
   const outbound = entries.find((value) => value.type === 'outbound-rtp' && mediaKind(value) === 'video');
   const inbound = entries.find((value) => value.type === 'inbound-rtp' && mediaKind(value) === 'video');
-  const remoteInbound = entries.find((value) => value.type === 'remote-inbound-rtp' && mediaKind(value) === 'video');
+  const remoteInbound = byId.get(stringValue(outbound?.remoteId) ?? '')
+    ?? entries.find((value) => value.type === 'remote-inbound-rtp' && mediaKind(value) === 'video'
+      && (value.localId === undefined || value.localId === outbound?.id));
   const transport = entries.find((value) => value.type === 'transport');
   const selectedCandidatePairId = stringValue(transport?.selectedCandidatePairId);
   const candidatePair = (selectedCandidatePairId === undefined
@@ -101,6 +114,13 @@ export function summarizeWebRtcStats(
   const localCandidate = typeof candidatePair?.localCandidateId === 'string'
     ? byId.get(candidatePair.localCandidateId)
     : undefined;
+  const connection: WebRtcMediaStats | undefined = candidatePair && compact({
+    roundTripTimeMs: secondsToMilliseconds(candidatePair.currentRoundTripTime),
+    packetsDiscardedOnSend: numberValue(candidatePair.packetsDiscardedOnSend),
+    selectedCandidateType: stringValue(localCandidate?.candidateType),
+    relayProtocol: stringValue(localCandidate?.relayProtocol),
+    availableOutgoingBitrateMbps: toMbps(candidatePair.availableOutgoingBitrate)
+  });
   const counters: WebRtcStatsSnapshot['counters'] = {};
 
   let sender: WebRtcMediaStats | undefined;
@@ -113,20 +133,29 @@ export function summarizeWebRtcStats(
     const sourceId = stringValue(outbound.mediaSourceId);
     const source = sourceId ? byId.get(sourceId)
       : entries.find((value) => value.type === 'media-source' && mediaKind(value) === 'video');
+    const sourceFrames = source && frameCounters(source, numberValue(source.timestamp) ?? timestamp);
+    if (sourceFrames) counters.sourceFrames = sourceFrames;
+    const encodedDelta = frameDelta(frames, previous?.counters.outboundFrames, 'framesEncoded');
+    const qpDelta = frameDelta(frames, previous?.counters.outboundFrames, 'qpSum');
     sender = compact({
+      ...connection,
       codec: codecName(byId.get(stringValue(outbound.codecId) ?? '')),
       codecProfile: h264Profile(byId.get(stringValue(outbound.codecId) ?? '')),
       width: numberValue(outbound.frameWidth),
       height: numberValue(outbound.frameHeight),
       framesPerSecond: numberValue(outbound.framesPerSecond),
-      sourceFramesPerSecond: numberValue(source?.framesPerSecond),
+      sourceFramesPerSecond: (sourceFrames && frameRate(sourceFrames, previous?.counters.sourceFrames, 'frames'))
+        ?? numberValue(source?.framesPerSecond),
+      encodedFramesPerSecond: frameRate(frames, previous?.counters.outboundFrames, 'framesEncoded'),
+      averageIntervalQp: encodedDelta && qpDelta !== undefined ? round(qpDelta / encodedDelta, 2) : undefined,
       averageIntervalEncodeTimeMs: intervalMilliseconds(frames, previous?.counters.outboundFrames,
         'totalEncodeTime', 'framesEncoded'),
       encoderImplementation: stringValue(outbound.encoderImplementation),
       powerEfficientEncoder: typeof outbound.powerEfficientEncoder === 'boolean'
         ? outbound.powerEfficientEncoder : undefined,
       sentFramesPerSecond: frameRate(frames, previous?.counters.outboundFrames, 'framesSent'),
-      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.outbound),
+      bitrateMbps: bitrate(bytes, timestamp,
+        !previous?.counters.outboundFrames || sameCounter(frames, previous.counters.outboundFrames) ? previous?.counters.outbound : undefined),
       framesEncoded: numberValue(outbound.framesEncoded),
       framesSent: numberValue(outbound.framesSent),
       averageEncodeTimeMs: averageMilliseconds(outbound.totalEncodeTime, outbound.framesEncoded),
@@ -136,11 +165,7 @@ export function summarizeWebRtcStats(
       roundTripTimeMs: secondsToMilliseconds(remoteInbound?.roundTripTime ?? candidatePair?.currentRoundTripTime),
       // The encoder's own instantaneous target, kept separate from the RTC estimate.
       encoderTargetBitrateMbps: toMbps(outbound.targetBitrate),
-      packetsDiscardedOnSend: numberValue(candidatePair?.packetsDiscardedOnSend),
-      selectedCandidateType: stringValue(localCandidate?.candidateType),
       selectedCandidateUrl: stringValue(localCandidate?.url),
-      relayProtocol: stringValue(localCandidate?.relayProtocol),
-      availableOutgoingBitrateMbps: toMbps(candidatePair?.availableOutgoingBitrate),
       nackCount: numberValue(outbound.nackCount),
       pliCount: numberValue(outbound.pliCount),
       firCount: numberValue(outbound.firCount),
@@ -156,12 +181,15 @@ export function summarizeWebRtcStats(
     const frames = frameCounters(inbound, timestamp);
     counters.inboundFrames = frames;
     receiver = compact({
+      ...connection,
       codec: codecName(byId.get(stringValue(inbound.codecId) ?? '')),
       codecProfile: h264Profile(byId.get(stringValue(inbound.codecId) ?? '')),
       width: numberValue(inbound.frameWidth),
       height: numberValue(inbound.frameHeight),
       framesPerSecond: numberValue(inbound.framesPerSecond),
       receivedFramesPerSecond: frameRate(frames, previous?.counters.inboundFrames, 'framesReceived'),
+      decodedFramesPerSecond: frameRate(frames, previous?.counters.inboundFrames, 'framesDecoded'),
+      totalFreezesMs: secondsToMilliseconds(inbound.totalFreezesDuration),
       averageDecodeTimeMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
         'totalDecodeTime', 'framesDecoded'),
       averageAssemblyTimeMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
@@ -169,15 +197,17 @@ export function summarizeWebRtcStats(
       decoderImplementation: stringValue(inbound.decoderImplementation),
       powerEfficientDecoder: typeof inbound.powerEfficientDecoder === 'boolean'
         ? inbound.powerEfficientDecoder : undefined,
-      bitrateMbps: bitrate(bytes, timestamp, previous?.counters.inbound),
+      bitrateMbps: bitrate(bytes, timestamp,
+        !previous?.counters.inboundFrames || sameCounter(frames, previous.counters.inboundFrames) ? previous?.counters.inbound : undefined),
       framesDecoded: numberValue(inbound.framesDecoded),
       framesDropped: numberValue(inbound.framesDropped),
       freezeCount: numberValue(inbound.freezeCount),
       packetsLost: numberValue(inbound.packetsLost),
       packetsReceived: numberValue(inbound.packetsReceived),
-      roundTripTimeMs: secondsToMilliseconds(candidatePair?.currentRoundTripTime),
       jitterMs: secondsToMilliseconds(inbound.jitter),
       averageJitterBufferDelayMs: averageMilliseconds(inbound.jitterBufferDelay, inbound.jitterBufferEmittedCount),
+      averageIntervalJitterBufferDelayMs: intervalMilliseconds(frames, previous?.counters.inboundFrames,
+        'jitterBufferDelay', 'jitterBufferEmittedCount'),
       nackCount: numberValue(inbound.nackCount),
       pliCount: numberValue(inbound.pliCount),
       firCount: numberValue(inbound.firCount),
@@ -185,7 +215,14 @@ export function summarizeWebRtcStats(
     });
   }
 
-  return { sampledAt, ...(sender ? { sender } : {}), ...(receiver ? { receiver } : {}), counters };
+  return { sampledAt, ...(sender ? { sender } : {}), ...(receiver ? { receiver } : {}),
+    ...(connection ? { connection } : {}), counters };
+}
+
+export function hasScreenVideoStats(report: RTCStatsReport, type: 'outbound-rtp' | 'inbound-rtp'): boolean {
+  let found = false;
+  report.forEach((value: StatsRecord) => { if (value.type === type && mediaKind(value) === 'video') found = true; });
+  return found;
 }
 
 function mediaKind(value: StatsRecord): unknown {
@@ -202,33 +239,41 @@ function frameCounters(value: StatsRecord, timestamp: number): VideoFrameCounter
     framesDecoded: numberValue(value.framesDecoded),
     totalDecodeTime: numberValue(value.totalDecodeTime),
     totalAssemblyTime: numberValue(value.totalAssemblyTime),
-    framesAssembledFromMultiplePackets: numberValue(value.framesAssembledFromMultiplePackets)
+    framesAssembledFromMultiplePackets: numberValue(value.framesAssembledFromMultiplePackets),
+    qpSum: numberValue(value.qpSum),
+    frames: numberValue(value.frames),
+    jitterBufferDelay: numberValue(value.jitterBufferDelay),
+    jitterBufferEmittedCount: numberValue(value.jitterBufferEmittedCount)
   };
 }
 
 type FrameCounterKey = Exclude<keyof VideoFrameCounters, 'id' | 'ssrc' | 'timestamp'>;
 
+export function sameCounter(current: VideoFrameCounters | undefined, previous: VideoFrameCounters | undefined): boolean {
+  return Boolean(current && previous && current.timestamp > previous.timestamp
+    && current.id === previous.id && current.ssrc === previous.ssrc);
+}
+
 function frameDelta(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
   key: FrameCounterKey): number | undefined {
   // A replacement stream must establish its own baseline, even if a new PC
   // reuses the same stats id and its counters happen to be larger.
-  if (!previous || current.timestamp <= previous.timestamp
-    || current.id !== previous.id || current.ssrc !== previous.ssrc) return undefined;
+  if (!previous || !sameCounter(current, previous)) return undefined;
   const value = current[key];
   const before = previous[key];
   return value === undefined || before === undefined || value < before ? undefined : value - before;
 }
 
 function frameRate(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
-  key: 'framesSent' | 'framesReceived'): number | undefined {
+  key: 'framesSent' | 'framesReceived' | 'framesEncoded' | 'framesDecoded' | 'frames'): number | undefined {
   const count = frameDelta(current, previous, key);
   return count === undefined || !previous ? undefined
     : round(count * 1_000 / (current.timestamp - previous.timestamp), 1);
 }
 
 function intervalMilliseconds(current: VideoFrameCounters, previous: VideoFrameCounters | undefined,
-  total: 'totalEncodeTime' | 'totalDecodeTime' | 'totalAssemblyTime',
-  count: 'framesEncoded' | 'framesDecoded' | 'framesAssembledFromMultiplePackets'): number | undefined {
+  total: 'totalEncodeTime' | 'totalDecodeTime' | 'totalAssemblyTime' | 'jitterBufferDelay',
+  count: 'framesEncoded' | 'framesDecoded' | 'framesAssembledFromMultiplePackets' | 'jitterBufferEmittedCount'): number | undefined {
   return averageMilliseconds(frameDelta(current, previous, total), frameDelta(current, previous, count));
 }
 

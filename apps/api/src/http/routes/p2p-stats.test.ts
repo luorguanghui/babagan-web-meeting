@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { buildApp } from '../../app.js';
 import type { AppConfig } from '../../config.js';
@@ -131,6 +131,53 @@ describe('anonymous P2P quality stats endpoint', () => {
     expect(response.statusCode, response.body).toBe(204);
     const statsEvents = fixture.auditEvents().filter((event) => event.event_type === 'p2p_stats_report');
     expect(statsEvents).toHaveLength(1);
+  });
+});
+
+describe('screen-share quality uploads', () => {
+  let fixture: StatsFixture;
+  const payload = {
+    version: 1, traceId: 'a'.repeat(32), sourceKey: 'b'.repeat(32), role: 'viewer',
+    sequence: 0, final: false, samples: [{ at: 1, mode: 'p2p', links: [
+      { link: 1, transport: 'p2p', rtc: { receivedFps: 53, decodedFps: 52, freezes: 1 } }
+    ] }]
+  };
+
+  beforeEach(async () => { fixture = await createFixture(); });
+  afterEach(async () => { vi.restoreAllMocks(); await fixture.close(); });
+
+  it('authenticates and writes an allowlisted log to the existing log sink', async () => {
+    const log = vi.spyOn(fixture.app.log, 'info');
+    const { slug } = await fixture.createMeeting();
+    const url = `/api/v1/meetings/${slug}/screen-share-quality`;
+    const origin = config.publicBaseUrl.origin;
+    const joined = await fixture.join(slug, 'Ada');
+    const cookie = cookiePair(joined.headers['set-cookie']);
+    const unauthorized = await fixture.app.inject({ method: 'POST', url, headers: { origin }, payload });
+    expect(unauthorized.statusCode).toBe(401);
+    const invalid = await fixture.app.inject({ method: 'POST', url, headers: { origin, cookie },
+      payload: { ...payload, samples: [{ ...payload.samples[0], candidateUrl: 'turn:example.org' }] }
+    });
+    expect(invalid.statusCode).toBe(400);
+    const accepted = await fixture.app.inject({ method: 'POST', url, headers: { origin, cookie }, payload });
+    expect(accepted.statusCode, accepted.body).toBe(204);
+    const rows = log.mock.calls.filter(([row]) => typeof row === 'object' && row !== null
+      && 'event' in row && row.event === 'screen_share_quality');
+    expect(rows).toEqual([[{
+      event: 'screen_share_quality', meetingKey: expect.stringMatching(/^[a-f0-9]{32}$/), ...payload
+    }, 'Screen share quality']]);
+    expect(JSON.stringify(rows)).not.toContain(slug);
+  });
+
+  it('rejects a final batch once its participant session is revoked', async () => {
+    const { slug } = await fixture.createMeeting();
+    const joined = await fixture.join(slug, 'Ada');
+    const headers = { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin };
+    const leave = await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${slug}/leave`, headers });
+    expect(leave.statusCode).toBe(204);
+    const final = await fixture.app.inject({ method: 'POST', url: `/api/v1/meetings/${slug}/screen-share-quality`,
+      headers, payload: { ...payload, final: true } });
+    expect(final.statusCode).toBe(401);
   });
 });
 

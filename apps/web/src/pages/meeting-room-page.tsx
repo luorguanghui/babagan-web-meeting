@@ -57,6 +57,7 @@ import {
   HybridScreenSharePublisher,
   screenShareDefaultQuality,
   type ScreenShareBitrate,
+  type ScreenSharePublishOptions,
   type ScreenShareState,
   type UnrestrictedSystemAudioChoice
 } from '../meeting/screen-share.js';
@@ -81,8 +82,9 @@ import {
 import { useMeetingRoom } from '../meeting/use-meeting-room.js';
 import { useMeetingExitGuard } from '../meeting/use-meeting-exit-guard.js';
 import { useMeetingMediaSession } from '../meeting/use-meeting-media-session.js';
-import { summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
+import { hasScreenVideoStats, summarizeWebRtcStats, type WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 import type { ProjectStats } from '../meeting/software-media/encoder.js';
+import { ScreenShareQualityRecorder, type ScreenQualitySource } from '../meeting/screen-share-quality.js';
 import {
   readViewerTransportPreference,
   saveViewerTransportPreference,
@@ -299,6 +301,9 @@ export function MeetingRoomPage({
   const [screenBitrate, setScreenBitrate] = useState<ScreenShareBitrate>(() => readScreenBitrate());
   const [screenQuality, setScreenQuality] = useState<ScreenShareQuality>(nativeCaptureConnection && !isAndroidClient ? 'motion' : screenShareDefaultQuality);
   const [screenState, setScreenState] = useState<ScreenShareState>({ status: 'idle' });
+  const screenQualityRecorder = useRef<ScreenShareQualityRecorder | undefined>(undefined);
+  const screenPlaybackRef = useRef<HTMLVideoElement>(null);
+  const screenPublishOptions = useRef<ScreenSharePublishOptions | undefined>(undefined);
   const screenShareRef = useRef<ReturnType<typeof createScreenShareController> | undefined>(undefined);
   const [viewerCount, setViewerCount] = useState(0);
   const [viewerTransportPreference, setViewerTransportPreference] = useState<ViewerTransportPreference>(() =>
@@ -427,6 +432,7 @@ export function MeetingRoomPage({
     publisher: {
       publish: async (stream, options) => {
         options = { ...options, encodingPreference: browserEncodingPreferenceRef.current };
+        screenPublishOptions.current = options;
         if (screenSourceTransportRef.current === 'cloudflare-sfu') {
           cfRelayRef.current = new CloudflareTurnFallback({ stream, options,
             createController: () => {
@@ -472,6 +478,7 @@ export function MeetingRoomPage({
         await hybrid.publish(stream, options);
       },
       release: async (stream) => {
+        screenPublishOptions.current = undefined;
         const cfSession = cfPublisherRef.current; cfPublisherRef.current = undefined;
         const relay = cfRelayRef.current; cfRelayRef.current = undefined;
         cfRef.current.reset();
@@ -931,11 +938,15 @@ export function MeetingRoomPage({
   }, [onTerminal, reconnectState]);
 
   async function leave() {
+    const finalQualityUpload = screenQualityRecorder.current?.finish();
     setSessionActive(false);
     stopRecovery();
     setLeaving(true);
     const screenShareStopped = screenShare.stop();
     try {
+      if (finalQualityUpload) {
+        await Promise.race([finalQualityUpload, new Promise<void>(resolve => window.setTimeout(resolve, 250))]);
+      }
       await leaveMeeting(slug);
     } catch {
       setNotice(t('room.leaveUnconfirmed'));
@@ -1039,6 +1050,26 @@ export function MeetingRoomPage({
     participants: state.participants, peers: viewerRosterRef.current
   });
   const sharerName = activeSharer.name;
+  const qualitySender = screenState.status === 'sharing' && Boolean(screenState.stream);
+  const negotiatingSharer = viewerP2pState === 'negotiating'
+    ? viewerP2pRef.current?.getSharerIdentity() ?? viewerSharerIdentityRef.current : undefined;
+  const qualityOwner = sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required'
+    ? activeSharer.identity ?? cf.sourceIdentity ?? negotiatingSharer : undefined;
+  const awaitingSfuFrame = !qualitySender && Boolean(p2pViewerStream && cf.stream && cfReadyStream !== cf.stream);
+  const qualityMode = awaitingSfuFrame ? deriveViewerScreenTransportMode(viewerP2pState)
+    : !hasActiveScreenShare && cf.sourceIdentity ? 'cloudflare-sfu' : screenTransportMode;
+  useEffect(() => {
+    if (!qualityOwner || !globalThis.crypto?.subtle || !globalThis.crypto.randomUUID) return;
+    const recorder = ScreenShareQualityRecorder.start(slug, qualityOwner, qualitySender ? 'sender' : 'viewer', clientInfo);
+    screenQualityRecorder.current = recorder;
+    const onPageHide = (event: PageTransitionEvent) => { if (!event.persisted) void recorder.finish(); };
+    window.addEventListener('pagehide', onPageHide);
+    return () => {
+      window.removeEventListener('pagehide', onPageHide);
+      screenQualityRecorder.current = undefined;
+      void recorder.finish();
+    };
+  }, [slug, qualityOwner, qualitySender, clientInfo]);
   const displayParticipants = state.participants.map(participant => ({
     ...participant,
     isSharing: hasActiveScreenShare && activeSharer.identity
@@ -1070,49 +1101,80 @@ export function MeetingRoomPage({
   }, [cf.publication, cf.stream, cf.recovering, controller, livekitViewerTrack, p2pViewerStream, screenState.stream, viewerP2pState]);
 
   useEffect(() => {
-    if (!hasActiveScreenShare) {
+    if (!hasActiveScreenShare && !qualityOwner) {
       setScreenStats(undefined);
       setProjectReceiverStats(undefined);
       setEncodingDiagnostics(new Map());
       return;
     }
     let cancelled = false;
+    let pending = false;
     let previous: WebRtcStatsSnapshot | undefined;
-    const activeReports = async (): Promise<RTCStatsReport[]> => {
-      if (screenTransportMode === 'cloudflare-sfu') {
-        const report = await (cfPublisherRef.current ?? cfRef.current.viewer.current)?.getStatsReport();
-        return report ? [report] : [];
+    const peerSources = async (): Promise<ScreenQualitySource[]> => {
+      const share = p2pShareRef.current;
+      if (!share) return [];
+      if (share.getQualitySources) return share.getQualitySources();
+      const report = (await share.getStatsReports()).find(report => hasScreenVideoStats(report, 'outbound-rtp'));
+      return report ? [{ key: share, transport: 'negotiating', report }] : [];
+    };
+    const liveKitSources = async (): Promise<ScreenQualitySource[]> => {
+      const key = qualitySender ? sfuStreamRef.current ?? controller : stageTrack ?? controller;
+      const reports = await controller.getScreenShareStatsReports?.() ?? [];
+      const report = reports.find(report => hasScreenVideoStats(report, qualitySender ? 'outbound-rtp' : 'inbound-rtp'));
+      return report ? [{ key, transport: 'sfu', report }] : [];
+    };
+    const activeSources = async (): Promise<ScreenQualitySource[]> => {
+      if (qualityMode === 'cloudflare-sfu' || (!qualitySender && cf.sourceIdentity)) {
+        const session = cfPublisherRef.current ?? cfRef.current.viewer.current;
+        const [source, relay] = await Promise.all([
+          session?.getQualitySource(),
+          qualitySender ? peerSources() : viewerP2pRef.current?.getQualitySource().then(source => source ? [source] : [])
+        ]);
+        const sfu = source ? [source] : [];
+        const peers = relay ?? [];
+        return qualityMode === 'cloudflare-sfu' ? [...sfu, ...peers] : [...peers, ...sfu];
       }
-      if (screenState.status === 'sharing') {
-        const reports = await p2pShareRef.current?.getStatsReports();
-        if (reports && reports.length > 0) return reports;
-      } else if (viewerP2pState === 'negotiating'
-        || viewerP2pState === 'p2p'
-        || viewerP2pState === 'turn') {
-        const report = await viewerP2pRef.current?.getStatsReport();
-        if (report) return [report];
-        return [];
+      if (qualitySender) {
+        const [peers, sfu] = await Promise.all([peerSources(), sfuStreamRef.current ? liveKitSources() : []]);
+        if (peers.length || sfu.length) return [...peers, ...sfu];
+        return liveKitSources();
       }
-      if (screenState.status !== 'sharing' && viewerTransportPreference !== 'sfu') return [];
-      return controller.getScreenShareStatsReports
-        ? controller.getScreenShareStatsReports()
-        : [];
+      if (viewerP2pState === 'negotiating' || viewerP2pState === 'p2p' || viewerP2pState === 'turn') {
+        const source = await viewerP2pRef.current?.getQualitySource();
+        return source ? [source] : [];
+      }
+      return viewerTransportPreference === 'sfu' ? liveKitSources() : [];
     };
     const sample = async () => {
+      if (pending) return;
+      pending = true;
+      const recorder = screenQualityRecorder.current;
+      const at = Date.now();
       try {
-        const reports = await activeReports();
+        const links = await activeSources().catch(() => []);
         if (cancelled) return;
-        previous = summarizeWebRtcStats(reports, previous);
+        const reports = links.flatMap(source => source.report ? [source.report] : []);
+        previous = summarizeWebRtcStats(reports, previous, at);
         setScreenStats(previous);
-        setProjectReceiverStats(viewerP2pRef.current?.getProjectStats());
+        setProjectReceiverStats(qualitySender ? undefined
+          : links.find(source => source.project)?.project ?? viewerP2pRef.current?.getProjectStats());
         setEncodingDiagnostics(new Map(
-          screenState.status === 'sharing'
-            ? p2pShareRef.current?.getEncodingDiagnostics?.() ?? []
-            : []
+          qualitySender ? p2pShareRef.current?.getEncodingDiagnostics?.(links) ?? [] : []
         ));
         p2pStats.observeQuality(previous);
+        if (recorder && recorder === screenQualityRecorder.current) {
+          const track = qualitySender ? screenState.stream?.getVideoTracks()[0] : undefined;
+          recorder.sample({ at, mode: qualityMode, links,
+            recovering: qualitySender ? cf.publisherRecovering : cf.recovering,
+            capture: track ? { track, options: screenPublishOptions.current, android: isAndroidClient,
+              constraint: screenState.captureConstraint } : undefined,
+            playback: screenPlaybackRef.current
+          });
+        }
       } catch {
         // Statistics are diagnostic only and must never interrupt the meeting.
+      } finally {
+        pending = false;
       }
     };
     void sample();
@@ -1121,7 +1183,8 @@ export function MeetingRoomPage({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [controller, hasActiveScreenShare, screenTransportMode, screenState.status, viewerP2pState, viewerTransportPreference]);
+  }, [controller, hasActiveScreenShare, qualityOwner, qualitySender, qualityMode, screenState.stream, screenState.captureConstraint,
+    viewerP2pState, viewerTransportPreference, stageTrack, cf.sourceIdentity, cf.publisherRecovering, cf.recovering, isAndroidClient, p2pStats]);
 
   const meetingControlsProps: MeetingControlsProps = {
     connection: state.connection,
@@ -1262,6 +1325,7 @@ export function MeetingRoomPage({
       <div className="meeting-stage-column">
         <section className="meeting-stage-shell">
           <ScreenStage
+            playbackRef={screenPlaybackRef}
             stream={stageStream}
             track={stageTrack}
             audioTrack={stageAudioTrack}

@@ -511,6 +511,20 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 - 每周检查五服务健康、CPU/内存/磁盘/OOM、证书、TURN allocation、备份和 P2P 直连/中继/SFU 回退标签。
 - 2 GiB 主机必须保留 1.1 GiB MemAvailable 门槛；日志不得记录 Token、密码、SDP 敏感标识或媒体内容，备份和发布记录不得放进 Web 目录。
 
+### 屏幕共享掉帧日志
+
+共享期间，发送端和观看端约每秒采样，积累 8 条样本后上传。停止共享或离开时会尝试上传尚未发送的样本，房间会话失效后停止接收。API 写入 `screen_share_quality` 结构化日志，随 API 容器日志按大小轮转（每文件 10 MiB，最多 3 个文件）。前后端应一起更新。
+
+```bash
+sudo docker logs --since 30m babagan-meeting-api-1 2>&1 | grep -F '"event":"screen_share_quality"'
+```
+
+用 `meetingKey` 和 `sourceKey` 找到同一房间的同一个共享者，再按样本 `at`（Unix 毫秒）对齐发送端和观看端。`traceId` 标识某一端的一次采集，`sequence` 是该端的批次序号，`link` 区分连接。浏览器缺失的指标或重建连接后的首个差分样本会省略。
+
+- 先比较 `requestedFps`、`configuredFps` 和实测 `sourceFps`。静止画面可能自然降帧。Windows 原生采集还提供输入、提交、刷新帧率以及队列丢帧。
+- 再比较编码、发送、接收、解码和播放帧率。发送端的播放帧率来自本地预览。编码下降时可对照实际发送参数、目标码率、量化参数和单帧编码耗时。
+- 发送正常时对照接收丢包、抖动、冻结时长及播放丢帧，并检查当时是否处于后台或线路恢复中。网络字段在浏览器提供对应计数时才出现。
+
 ## 8. DNS 切换与恢复
 
 从旧源站迁移到新主机时，只改三条业务记录的目标 IP，代理状态保持不变：

@@ -26,7 +26,7 @@
 
 ## 文件位置与更新
 
-安装目录：`%LOCALAPPDATA%/Babagan/NativeShare`；专用 Edge 配置：`%LOCALAPPDATA%/Babagan/MeetingEdge`。日常 Edge 配置与默认浏览器不变。启动器运行时在托盘显示；后台采集组件空闲 30 分钟自动退出。
+安装目录：`%LOCALAPPDATA%/Babagan/NativeShare`；专用 Edge 配置：`%LOCALAPPDATA%/Babagan/MeetingEdge`。日常 Edge 配置与默认浏览器不变。启动器运行时在托盘显示。后台采集组件空闲 30 分钟会自动退出，已打开的专用 Edge 仍可继续观看和通话。再次使用本机采集时，从桌面快捷方式打开新的会议页面。
 
 更新时先停止共享、退出托盘组件，再运行新版安装器。安装器将新版放在独立版本目录，最后更新桌面和开始菜单快捷方式。旧版本目录保留，已安装依赖直接复用，不重复下载或解压。下载新增的依赖存放在 NativeShare/runtime，共享给后续版本；归档按校验值缓存。runtime.json 保存实际使用的依赖路径。
 

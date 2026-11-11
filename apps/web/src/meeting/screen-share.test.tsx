@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { ComponentType } from 'react';
+import { webcrypto } from 'node:crypto';
 
 import { HostMenu } from '../components/host-menu.js';
 import { MeetingControls, MeetingSettings } from '../components/meeting-controls.js';
@@ -2590,6 +2591,35 @@ describe('P2P-first screen sharing in the room', () => {
     } finally { rendered.unmount(); vi.useRealTimers(); }
   });
 
+});
+
+describe('screen share quality in the room', () => {
+  it('uploads the final sample of a short share without opening the diagnostics panel', async () => {
+    vi.stubGlobal('crypto', webcrypto);
+    const uploads: RequestInit[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith('/screen-share-quality') && init) uploads.push(init);
+      if (path.endsWith('/screen-sfu')) return Response.json({ available: false, publication: null });
+      if (path.includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+      return new Response(null, { status: 204 });
+    }));
+    const { stream } = displayStream({ audio: false });
+    const signaling = fakeSignalingClient();
+    renderP2pRoom({ createSignalingClient: signaling.factory,
+      shareControllerFactory: fakeShareControllerFactory, getDisplayMedia: async () => stream });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Share screen' })).toBeEnabled());
+    expect(uploads).toEqual([]);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Share screen' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Stop sharing screen' }));
+    await waitFor(() => expect(uploads).toHaveLength(1));
+    expect(uploads[0]).toMatchObject({ method: 'POST', keepalive: true, credentials: 'include' });
+    expect(JSON.parse(String(uploads[0].body))).toMatchObject({
+      role: 'sender', final: true, samples: [{ capture: { source: 'browser', requestedFps: 30 } }]
+    });
+    expect(String(uploads[0].body)).not.toContain('participant-1');
+  });
 });
 
 describe('private P2P quality stats in the room', () => {

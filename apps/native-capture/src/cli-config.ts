@@ -33,8 +33,8 @@ export function edgeLaunchArguments(profileDirectory: string, launchUrl: string)
   ];
 }
 
-/** Edge is the visible application, unlike the console-free capture helper. */
-export const edgeSpawnOptions = { windowsHide: false, shell: false, detached: false, stdio: 'ignore' as const };
+/** Keep visible Edge outside the helper's Windows job so idle shutdown cannot close it. */
+export const edgeSpawnOptions = { windowsHide: false, shell: false, detached: true, stdio: 'ignore' as const };
 
 export function assertDdagrabCapabilities(help: string): void {
   if (!/^Filter ddagrab\s*$/m.test(help) || !/^\s+dup_frames\s+<boolean>\s/m.test(help)) {

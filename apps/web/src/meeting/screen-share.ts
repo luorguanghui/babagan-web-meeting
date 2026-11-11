@@ -60,12 +60,14 @@ export const sfuScreenShareBitrates = [10_000_000, 13_000_000, 15_000_000] as co
 export const sfuScreenShareFallbackBitrate = 10_000_000;
 
 export type ScreenShareStatus = 'idle' | 'starting' | 'sharing' | 'stopping';
+export type ScreenCaptureConstraintResult = 'applied' | 'fallback' | 'failed';
 export type UnrestrictedSystemAudioChoice = 'share-audio' | 'video-only' | 'cancel';
 
 export interface ScreenShareState {
   status: ScreenShareStatus;
   stream?: MediaStream;
   audioGuidance?: string;
+  captureConstraint?: ScreenCaptureConstraintResult;
 }
 
 export interface ScreenSharePublisher {
@@ -251,16 +253,19 @@ class BrowserScreenShareController implements ScreenShareController {
         ? Math.round(sourceWidth / sourceScale) : portrait ? settings.height : settings.width;
       const maximumHeight = sourceScale && sourceHeight
         ? Math.round(sourceHeight / sourceScale) : portrait ? settings.width : settings.height;
+      let captureConstraint: ScreenCaptureConstraintResult | undefined;
       if (typeof videoTrack.applyConstraints === 'function' && !isNativeCaptureTrack(videoTrack)) {
         const compatibleConstraints = {
           width: { max: maximumWidth }, height: { max: maximumHeight },
           frameRate: { ideal: settings.frameRate }
         };
         const sixtyFps = settings.frameRate === 60;
-        await abortableCapture(() => videoTrack.applyConstraints(sixtyFps
+        captureConstraint = await abortableCapture(() => videoTrack.applyConstraints(sixtyFps
           ? { ...compatibleConstraints, frameRate: { min: 60, ideal: 60, max: 60 } }
-          : compatibleConstraints).catch(async () => {
-          if (sixtyFps && !signal.aborted) await videoTrack.applyConstraints(compatibleConstraints).catch(() => undefined);
+          : compatibleConstraints).then(() => 'applied' as const).catch(async () => {
+          if (!sixtyFps || signal.aborted) return 'failed' as const;
+          return videoTrack.applyConstraints(compatibleConstraints)
+            .then(() => 'fallback' as const).catch(() => 'failed' as const);
         }), signal);
       }
       assertCaptureLive();
@@ -290,6 +295,7 @@ class BrowserScreenShareController implements ScreenShareController {
       this.update({
         status: 'sharing',
         stream,
+        ...(captureConstraint ? { captureConstraint } : {}),
         audioGuidance: shareAudioGuidance
           ?? (stream.getAudioTracks().length === 0 ? audioGuidance : undefined)
       });

@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type CSSProperties, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Maximize, Minimize, MonitorUp, PictureInPicture2 } from 'lucide-react';
 import { useI18n } from '../i18n/i18n.js';
 import type { LiveKitTrackAdapter } from '../meeting/room-controller.js';
@@ -68,6 +68,7 @@ export function ScreenStage({
   sourcePending = false,
   waitForVideoFrame = false,
   onSourceReady,
+  playbackRef,
   sharedAudioVolume = 1,
   independentAudio = false,
   children
@@ -88,6 +89,7 @@ export function ScreenStage({
   waitForVideoFrame?: boolean;
   /** Called after the selected source renders its first media event or a bounded LiveKit handover is forced. */
   onSourceReady?: () => void;
+  playbackRef?: RefObject<HTMLVideoElement | null>;
   /** Receiver-controlled shared-audio volume from 0 (muted) to 1 (original level). */
   sharedAudioVolume?: number;
   /** Receivers use an audio-only player so background video suspension cannot pause sound. */
@@ -101,7 +103,8 @@ export function ScreenStage({
   const fullscreenButtonRef = useRef<HTMLButtonElement>(null);
   const fullscreenExitRef = useRef<HTMLButtonElement>(null);
   const previousFullscreenRef = useRef(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const videoRef = playbackRef ?? localVideoRef;
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const committedRef = useRef<StageSource>(null);
   const pendingSourceRef = useRef<StageSource>(null);

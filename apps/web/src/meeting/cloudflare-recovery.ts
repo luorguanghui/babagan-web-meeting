@@ -4,7 +4,8 @@ import type { CloudflareScreenSession } from './cloudflare-sfu.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
 import type { BrowserEncodingPreference } from './browser-video-encoding.js';
 
-type Session = Pick<CloudflareScreenSession, 'publish' | 'subscribe' | 'close' | 'getStatsReport'>;
+type Session = Pick<CloudflareScreenSession, 'publish' | 'subscribe' | 'close' | 'getStatsReport'>
+  & Partial<Pick<CloudflareScreenSession, 'getQualitySource'>>;
 export function isTerminalCloudflareError(error: unknown): boolean {
   return error instanceof ApiRequestError && [401, 403, 404, 410].includes(error.status);
 }
@@ -49,6 +50,14 @@ export class CloudflareScreenRecovery {
   }
   getStatsReport(): Promise<RTCStatsReport | undefined> {
     return this.session?.getStatsReport() ?? Promise.resolve(undefined);
+  }
+  async getQualitySource() {
+    const session = this.session;
+    if (!session) return undefined;
+    const source = session.getQualitySource
+      ? await session.getQualitySource()
+      : { key: session, transport: 'cloudflare-sfu' as const, report: await session.getStatsReport() };
+    return session === this.session ? source : undefined;
   }
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;

@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { edgeLaunchArguments, edgeSpawnOptions, parseCliArgs, runCli, assertDdagrabCapabilities } from './cli.js';
 
@@ -17,9 +19,35 @@ async function statusFile() {
 }
 
 describe('native capture launcher configuration', () => {
-  it('opens Edge as a visible GUI without allocating a detached console', () => {
-    expect(edgeSpawnOptions).toMatchObject({ windowsHide: false, detached: false, shell: false, stdio: 'ignore' });
+  it('opens Edge as a visible GUI', () => {
+    expect(edgeSpawnOptions).toMatchObject({ windowsHide: false, shell: false, stdio: 'ignore' });
   });
+
+  it.skipIf(process.platform !== 'win32')('keeps the launched process alive after the helper exits', async () => {
+    const marker = await statusFile();
+    const childProgram = `
+      const fs = require('node:fs');
+      const parent = Number(process.argv[1]);
+      const deadline = setTimeout(() => process.exit(1), 5000);
+      const poll = setInterval(() => {
+        try { process.kill(parent, 0); }
+        catch {
+          clearInterval(poll);
+          clearTimeout(deadline);
+          setTimeout(() => fs.writeFileSync(process.argv[2], 'alive'), 100);
+        }
+      }, 25);
+    `;
+    const launcher = `
+      const { spawn } = require('node:child_process');
+      const child = spawn(process.execPath, ['-e', ${JSON.stringify(childProgram)}, String(process.pid), process.argv[1]],
+        ${JSON.stringify(edgeSpawnOptions)});
+      child.once('spawn', () => child.unref());
+      child.once('error', error => { throw error; });
+    `;
+    await promisify(execFile)(process.execPath, ['-e', launcher, marker], { windowsHide: true, timeout: 8000 });
+    await vi.waitFor(async () => expect(await readFile(marker, 'utf8')).toBe('alive'), { timeout: 2500 });
+  }, 12000);
   it('requires a ddagrab build that can disable its own duplicate-frame fallback', () => {
     const legacy = 'Filter ddagrab\n  Grab Windows Desktop images\nddagrab AVOptions:\n  framerate <video_rate> ..FV....... set video frame rate\n';
     expect(() => assertDdagrabCapabilities(legacy)).toThrow(/dup_frames/);

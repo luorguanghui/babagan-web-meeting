@@ -26,6 +26,7 @@ import {
 import type { Peer } from './p2p-signaling.js';
 import { ProjectPeerSender } from './software-media/peer-sender.js';
 import type { ProjectStats } from './software-media/encoder.js';
+import { readScreenSenderEncoding, type ScreenQualitySource } from './screen-share-quality.js';
 
 export type ViewerSessionState = 'negotiating' | 'p2p' | 'turn' | 'livekit-fallback' | 'closed';
 
@@ -76,10 +77,11 @@ export interface P2pShareController {
   stop(): Promise<void>;   // 关闭全部 PC，广播 bye
   getViewerStates(): ReadonlyMap<string, ViewerSessionState>;
   getViewerTurnProviders?(): ReadonlyMap<string, P2pTurnProvider>;
-  getEncodingDiagnostics?(): ReadonlyMap<string, P2pEncodingDiagnostics>;
+  getEncodingDiagnostics?(sampled?: readonly ScreenQualitySource[]): ReadonlyMap<string, P2pEncodingDiagnostics>;
 
   refreshIceServers?(configuration: P2pIceServerConfiguration): void;
   getStatsReports(): Promise<RTCStatsReport[]>;
+  getQualitySources?(): Promise<ScreenQualitySource[]>;
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void;
 }
 
@@ -405,13 +407,14 @@ class P2pShareControllerImpl implements P2pShareController {
     return snapshot;
   }
 
-  getEncodingDiagnostics(): ReadonlyMap<string, P2pEncodingDiagnostics> {
+  getEncodingDiagnostics(sampled?: readonly ScreenQualitySource[]): ReadonlyMap<string, P2pEncodingDiagnostics> {
     const snapshot = new Map<string, P2pEncodingDiagnostics>();
     for (const [identity, session] of this.sessions) {
       if (session.pcClosed || session.state === 'closed' || session.state === 'livekit-fallback') continue;
       const sourceScale = computeResolutionScale(session.videoSender?.track?.getSettings?.() ?? {}) ?? 1;
+      const project = sampled?.find(source => source.key === session.pc)?.project ?? session.project?.getStats();
       snapshot.set(identity, {
-        ...(session.project ? { project: session.project.getStats() } : {}),
+        ...(project ? { project } : {}),
         profileTargetBitrateBps: this.activeOptions?.maxBitrate
           ?? session.options.maxBitrate,
         transportBitrateCapBps: session.options.maxBitrate,
@@ -441,6 +444,19 @@ class P2pShareControllerImpl implements P2pShareController {
   async getStatsReports(): Promise<RTCStatsReport[]> {
     const active = [...this.sessions.values()].filter((session) => !session.pcClosed);
     return Promise.all(active.map((session) => session.pc.getStats()));
+  }
+
+  async getQualitySources(): Promise<ScreenQualitySource[]> {
+    const active = [...this.sessions.values()].filter(session => !session.pcClosed
+      && session.state !== 'closed' && session.state !== 'livekit-fallback');
+    return Promise.all(active.map(async session => ({
+      key: session.pc,
+      transport: session.state === 'p2p' || session.state === 'turn' ? session.state : 'negotiating',
+      turnProvider: session.state === 'turn' ? session.turnProvider : undefined,
+      report: await session.pc.getStats().catch(() => undefined),
+      encoding: readScreenSenderEncoding(session.videoSender),
+      project: session.project?.getStats()
+    })));
   }
 
   subscribe(listener: (states: ReadonlyMap<string, ViewerSessionState>) => void): () => void {

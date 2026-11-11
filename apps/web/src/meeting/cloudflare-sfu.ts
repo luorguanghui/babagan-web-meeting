@@ -4,6 +4,7 @@ import type { ScreenSharePublishOptions } from './screen-share.js';
 import { applyBrowserVideoCodecPreference, nativeHardwareAv1Encoding, type BrowserEncodingPreference } from './browser-video-encoding.js';
 import { withNativeScreenBitrateHints } from './native-screen-sdp.js';
 import { computeResolutionScale } from './screen-resolution.js';
+import { readScreenSenderEncoding, type ScreenQualitySource } from './screen-share-quality.js';
 export interface CloudflareScreenApi {
   publish(body: unknown): Promise<CloudflareSfuSessionResponse>;
   ready(sessionId: string): Promise<void>;
@@ -131,6 +132,14 @@ export class CloudflareScreenSession {
     });
   }
   async getStatsReport(): Promise<RTCStatsReport | undefined> { return this.pc?.getStats(); }
+  async getQualitySource(): Promise<ScreenQualitySource | undefined> {
+    const pc = this.pc;
+    if (!pc) return undefined;
+    const report = await pc.getStats().catch(() => undefined);
+    if (pc !== this.pc) return undefined;
+    const sender = pc.getSenders?.().find(value => value.track?.kind === 'video');
+    return { key: pc, transport: 'cloudflare-sfu', report, encoding: readScreenSenderEncoding(sender) };
+  }
   async close(): Promise<void> {
     this.epoch++;
     clearTimeout(this.disconnectTimer);

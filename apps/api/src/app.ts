@@ -9,6 +9,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { CloudflareSfuClient } from './services/cloudflare-sfu-client.js';
 import { CloudflareSfuService } from './services/cloudflare-sfu.js';
 import { registerScreenSfuRoutes } from './http/routes/screen-sfu.js';
+import { registerScreenShareQualityRoutes } from './http/routes/screen-share-quality.js';
 import type { AppConfig } from './config.js';
 import { registerErrorHandler } from './http/error-handler.js';
 import { registerStrictOriginValidation } from './http/origin.js';
@@ -71,6 +72,7 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
   registerMeetingRoutes(app, appDependencies);
   registerParticipantRoutes(app, appDependencies);
   registerP2pStatsRoutes(app, appDependencies);
+  registerScreenShareQualityRoutes(app, appDependencies);
   registerIceServersRoutes(app, dependencies);
   registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p, screenSfu);
   registerP2pSignalingRoute(app, appDependencies);
