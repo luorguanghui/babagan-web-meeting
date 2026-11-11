@@ -1,5 +1,6 @@
 import { NATIVE_CAPTURE_HEADER_BYTES, NATIVE_CAPTURE_MAX_PIXELS, NATIVE_CAPTURE_PACKET_MAGIC,
-  NATIVE_CAPTURE_PROTOCOL, type NativeCaptureFormat, type NativeCaptureSourceProof, type NativeCaptureSourcePolicy, type NativeCaptureStart } from '@meeting/contracts';
+  NATIVE_CAPTURE_PROTOCOL, type NativeCaptureCounters, type NativeCaptureFormat, type NativeCaptureSourceProof,
+  type NativeCaptureSourcePolicy, type NativeCaptureStart } from '@meeting/contracts';
 import { abortableCapture, captureAborted, stopCaptureStream } from './capture-abort.js';
 import { NativeWorkerPacer, localNativePacer, type NativePacer } from './worker-pacer.js';
 
@@ -9,11 +10,16 @@ function packetLength(value: unknown): number {
   try { return arrayBufferLength.call(value) as number; } catch { return -1; }
 }
 const nativeTracks = new WeakSet<MediaStreamTrack>();
-const nativePacers = new WeakMap<MediaStreamTrack, NativePacer>();
+const nativePacing = new WeakMap<MediaStreamTrack, { pacer: NativePacer; channel?: NativeHttpChannel }>();
 const nativeSources = new WeakMap<MediaStreamTrack, NativeCaptureSourceProof>();
 export function isNativeCaptureTrack(track: MediaStreamTrack): boolean { return nativeTracks.has(track); }
 export function registerNativeCaptureTrack(track: MediaStreamTrack): void { nativeTracks.add(track); }
-export function getNativePacingStats(track: MediaStreamTrack) { return nativePacers.get(track)?.stats(); }
+export function getNativePacingStats(track: MediaStreamTrack) {
+  const state = nativePacing.get(track);
+  if (!state) return undefined;
+  const pipeline = state.channel?.getDiagnostics();
+  return { ...state.pacer.stats(), ...(pipeline ? { pipeline } : {}) };
+}
 export interface NativeCaptureConnection { port: number; token: string; }
 function validConnection(value: unknown): value is NativeCaptureConnection {
   if (!value || typeof value !== 'object') return false;
@@ -79,7 +85,24 @@ function parseFormat(message: Record<string, unknown>, frameRate: number): Nativ
     }
     source = { kind: 'sole-active-monitor', activeDisplayCount: 1, outputIndex: 0 };
   }
-  return { type: 'format', format: 'I420', width, height, frameRate: frameRate as 30 | 60, ...(source ? { source } : {}) };
+  const statsId = typeof message.statsId === 'string' && /^[a-f0-9]{32}$/.test(message.statsId) ? message.statsId : undefined;
+  return { type: 'format', format: 'I420', width, height, frameRate: frameRate as 30 | 60,
+    ...(source ? { source } : {}), ...(statsId ? { statsId } : {}) };
+}
+
+function readCaptureDiagnostics(value: unknown): { at: number; counters: NativeCaptureCounters } | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const row = value as Record<string, unknown>;
+  const count = (key: string) => {
+    const number = row[key];
+    return typeof number === 'number' && Number.isSafeInteger(number) && number >= 0 ? number : undefined;
+  };
+  const { at } = row;
+  const capturedFrames = count('capturedFrames'), sentFrames = count('sentFrames'), droppedFrames = count('droppedFrames');
+  if (row.type !== 'stats' || typeof at !== 'number' || !Number.isFinite(at) || at < 0
+    || capturedFrames === undefined || sentFrames === undefined || droppedFrames === undefined) return undefined;
+  return { at, counters: { type: 'stats', capturedFrames, sentFrames, droppedFrames,
+    dxgiFrames: count('dxgiFrames'), filteredFrames: count('filteredFrames'), contentChangedFrames: count('contentChangedFrames') } };
 }
 
 /** Streaming HTTP avoids the large-message WebSocket receive bottleneck in Edge. */
@@ -89,6 +112,10 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
   private started = false;
   private readonly abort = new AbortController();
   private reader?: ReadableStreamBYOBReader;
+  private statsId?: string;
+  private statsPending = false;
+  private statsRequestedAt = -Infinity;
+  private diagnostics?: { at: number; counters: NativeCaptureCounters };
   constructor(private readonly connection: NativeCaptureConnection, private readonly request: typeof fetch) {
     super();
     queueMicrotask(() => { if (this.readyState === 0) { this.readyState = 1; this.dispatchEvent(new Event('open')); } });
@@ -110,6 +137,29 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
     void this.reader?.cancel().catch(() => undefined);
     this.dispatchEvent(new Event('close'));
   }
+  getDiagnostics() {
+    const now = performance.now();
+    if (this.statsId && this.readyState === 1 && !this.statsPending && now - this.statsRequestedAt >= 800) {
+      this.statsRequestedAt = now;
+      this.statsPending = true;
+      void this.readDiagnostics(this.statsId).finally(() => { this.statsPending = false; });
+    }
+    return this.diagnostics;
+  }
+
+  private async readDiagnostics(id: string): Promise<void> {
+    try {
+      const response = await this.request(`http://127.0.0.1:${this.connection.port}/capture-stats/${id}`, {
+        method: 'GET', mode: 'cors', credentials: 'omit', cache: 'no-store',
+        signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(750)]),
+        headers: { Authorization: `Bearer ${this.connection.token}` }
+      });
+      if (!response.ok) { void response.body?.cancel().catch(() => undefined); return; }
+      const diagnostics = readCaptureDiagnostics(await response.json());
+      if (diagnostics && this.readyState === 1) this.diagnostics = diagnostics;
+    } catch { /* A diagnostics error must not interrupt capture. */ }
+  }
+
   private async readExact(length: number): Promise<ArrayBuffer> {
     let buffer = new ArrayBuffer(length), offset = 0;
     while (offset < length) {
@@ -136,6 +186,8 @@ class NativeHttpChannel extends EventTarget implements NativeFrameChannel {
     if (prefix < 1 || prefix > 4096) throw new NativeCaptureError('protocol', 'Native capture metadata is invalid.');
     const message = JSON.parse(new TextDecoder().decode(await this.readExact(prefix))) as Record<string, unknown>;
     const format = parseFormat(message, frameRate);
+    this.statsId = format.statsId;
+    this.getDiagnostics();
     this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify(format) }));
     const packetLength = NATIVE_CAPTURE_HEADER_BYTES + format.width * format.height * 3 / 2;
     while (this.readyState === 1) {
@@ -172,12 +224,13 @@ export function openNativeVideoTrack(connection: NativeCaptureConnection, frameR
     deps.signal?.addEventListener('abort', abort, { once: true });
     const connect = () => {
       if (closed) return;
-      nativeTracks.add(track); nativePacers.set(track, pacer!);
+      nativeTracks.add(track);
       track.stop = () => cleanup();
       try {
         socket = deps.createSocket
           ? deps.createSocket(`ws://127.0.0.1:${connection.port}/frames`, [NATIVE_CAPTURE_PROTOCOL, `auth.${connection.token}`])
           : new NativeHttpChannel(connection, deps.fetch ?? ((input, init) => globalThis.fetch(input, init)));
+        nativePacing.set(track, { pacer: pacer!, channel: socket instanceof NativeHttpChannel ? socket : undefined });
         socket.binaryType = 'arraybuffer';
         socket.addEventListener('open', () => { if (!closed) socket!.send(JSON.stringify({ type: 'start', frameRate,
           ...(deps.sourcePolicy ? { sourcePolicy: deps.sourcePolicy } : {}) })); });

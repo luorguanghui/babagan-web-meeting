@@ -521,7 +521,8 @@ sudo docker logs --since 30m babagan-meeting-api-1 2>&1 | grep -F '"event":"scre
 
 用 `meetingKey` 和 `sourceKey` 找到同一房间的同一个共享者，再按样本 `at`（Unix 毫秒）对齐发送端和观看端。`traceId` 标识某一端的一次采集，`sequence` 是该端的批次序号，`link` 区分连接。浏览器缺失的指标或重建连接后的首个差分样本会省略。
 
-- 先比较 `requestedFps`、`configuredFps` 和实测 `sourceFps`。静止画面可能自然降帧。Windows 原生采集还提供输入、提交、刷新帧率以及队列丢帧。
+- 先比较 `requestedFps`、`configuredFps` 和实测 `sourceFps`。静止画面可能自然降帧。Windows 原生采集还提供浏览器收到、提交、保活帧率和队列丢帧。
+- Windows 采集组件 0.2.5 增加 `capture.native.pipeline`。按 `dxgiFps`（进入 FFmpeg 滤镜链）、`filteredFps`（筛帧后）、`helperFps`（组件从 FFmpeg 读取）、`loopbackSentFps`（本机写出完成）的顺序比较各段。用 `contentChangedFps` 看筛帧后实际变化的画面数，用 `loopbackDroppedFrames` 查本机传输丢帧。帧率和丢帧量对应 `intervalMs` 所示的采样时长。
 - 再比较编码、发送、接收、解码和播放帧率。发送端的播放帧率来自本地预览。编码下降时可对照实际发送参数、目标码率、量化参数和单帧编码耗时。
 - 发送正常时对照接收丢包、抖动、冻结时长及播放丢帧，并检查当时是否处于后台或线路恢复中。网络字段在浏览器提供对应计数时才出现。
 

@@ -22,7 +22,9 @@
 
 如果仍退出共享，托盘“查看诊断日志”打开 `%LOCALAPPDATA%/Babagan/NativeShare/logs`。日志只记录启动、恢复、退出等事件，不记录画面或连接令牌。浏览器授权轨道本身结束时，仍然尊重浏览器停止行为，不会绕过授权继续采集。
 
-无新画面时最多每秒一次保活，单独计为 refreshFrames，不作为真实采集帧或运动 60fps。
+组件 0.2.5 起，会议质量日志可记录 DXGI、FFmpeg 筛帧后、组件读入和本机写出的帧数，以及本机传输丢帧和实际画面变化。发送端需安装新版组件并刷新会议网页。
+
+FFmpeg 的重复补帧默认关闭。无新画面时最多每秒一次保活，单独计为 refreshFrames，不作为真实采集帧或运动 60fps。
 
 ## 文件位置与更新
 
@@ -34,6 +36,6 @@
 
 ## 构建和发布
 
-Windows 构建机运行 `pwsh -File scripts/build-native-installer.ps1`，再运行 `node scripts/prepare-native-download.mjs`。准备脚本验证安装器与两份运行依赖的固定 SHA-256，生成网页静态下载资源。随后构建网页并按网页发布流程部署；API、音视频服务器无需变更。依赖清单、来源、许可证和原始归档一并保留在下载目录。
+Windows 构建机运行 `pwsh -File scripts/build-native-installer.ps1`，再运行 `node scripts/prepare-native-download.mjs`。准备脚本验证安装器与两份运行依赖的固定 SHA-256，生成网页静态下载资源。随后按网页发布流程部署。若新增质量日志字段，先更新或同时更新 API。依赖清单、来源、许可证和原始归档一并保留在下载目录。
 
 当前安装器尚未使用受信任的发布者数字签名。Windows 下载后首次运行可能显示 SmartScreen 提示，请核对本站来源和 SHA-256 后自行判断。图标与产品名不能替代代码签名，自签名证书也不能让其它电脑自动信任。

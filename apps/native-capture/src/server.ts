@@ -55,23 +55,35 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
       response.once('finish', () => request.destroy());
       writeHttpError(response, status, code, message);
     };
-    if (closing || request.url !== '/frames-http' || request.headers.origin !== origin) {
+    const statsId = /^\/capture-stats\/([a-f0-9]{32})$/.exec(request.url ?? '')?.[1];
+    if (closing || (request.url !== '/frames-http' && !statsId) || request.headers.origin !== origin) {
       rejectRequest(403, 'unauthorized', 'Native capture request is not authorized.'); return;
     }
     response.setHeader('Access-Control-Allow-Origin', origin);
     response.setHeader('Vary', 'Origin');
+    const method = statsId ? 'GET' : 'POST';
+    const allowedHeaders = statsId ? 'authorization' : 'authorization,content-type';
     if (request.method === 'OPTIONS') {
       const headers = (request.headers['access-control-request-headers'] ?? '').toLowerCase().split(',').map((header) => header.trim()).sort();
-      if (request.headers['access-control-request-method'] !== 'POST' || headers.join(',') !== 'authorization,content-type') {
+      if (request.headers['access-control-request-method'] !== method || headers.join(',') !== allowedHeaders) {
         rejectRequest(403, 'unauthorized', 'Native capture preflight is not allowed.'); return;
       }
-      response.writeHead(204, { 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Allow-Headers': 'authorization, content-type',
+      response.writeHead(204, { 'Access-Control-Allow-Methods': method, 'Access-Control-Allow-Headers': headers.join(', '),
         'Vary': 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers', 'Cache-Control': 'no-store' });
       response.end(); return;
     }
     const supplied = Buffer.from(request.headers.authorization ?? '');
-    if (request.method !== 'POST' || supplied.length !== bearer.length || !timingSafeEqual(supplied, bearer)) {
+    if (request.method !== method || supplied.length !== bearer.length || !timingSafeEqual(supplied, bearer)) {
       rejectRequest(403, 'unauthorized', 'Native capture request is not authorized.'); return;
+    }
+    if (statsId) {
+      const stats = owner?.httpStats;
+      if (stats?.id !== statsId || stats.response.destroyed || stats.response.writableEnded) {
+        writeHttpError(response, 404, 'capture_inactive', 'Native capture statistics are no longer available.'); return;
+      }
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+      response.end(JSON.stringify({ ...stats.sender.stats(), at: performance.now() }));
+      return;
     }
     if (!/^application\/json(?:;\s*charset=utf-8)?$/i.test(request.headers['content-type'] ?? '')) {
       rejectRequest(415, 'invalid_control', 'Native capture requires application/json.'); return;
@@ -83,13 +95,15 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         if (owner) { rejectRequest(409, 'capture_busy', 'A capture is already active. Stop it before starting another.'); return; }
         clearTimeout(idleTimer);
         const sender = new FrameSender(httpFrameTransport(response));
+        const id = randomBytes(16).toString('hex');
         const session = createCaptureSession({ ffmpeg, frameRate, sourcePolicy, spawnProcess: options.spawnProcess,
           startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
           getDesktopAvailability: options.getDesktopAvailability, onDiagnostic: options.onDiagnostic,
-          onFormat: (format) => writeHttpFormat(response, format), onFrame: (frame) => sender.send(frame),
+          onFormat: (format) => writeHttpFormat(response, { ...format, statsId: id }),
+          onCaptureFrame: (stage) => sender.observeCaptureFrame(stage), onFrame: (frame) => sender.send(frame),
           onError: (code, message) => writeHttpError(response, code === 'UNSUPPORTED_SOURCE' ? 422 : 502, code, message)
         });
-        owner = { connection: response, session };
+        owner = { connection: response, session, httpStats: { id, response, sender } };
         options.onActivity?.(true);
         response.once('close', () => session.stop());
         response.once('error', () => session.stop());
@@ -109,7 +123,8 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
   http.keepAliveTimeout = 1000;
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1024, perMessageDeflate: false,
     handleProtocols: () => NATIVE_CAPTURE_PROTOCOL });
-  let owner: { connection: WebSocket | ServerResponse; session: CaptureSession } | undefined;
+  let owner: { connection: WebSocket | ServerResponse; session: CaptureSession;
+    httpStats?: { id: string; response: ServerResponse; sender: FrameSender } } | undefined;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let closing = false;
   let resolveClosed!: () => void;
@@ -173,7 +188,8 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         ...(hasSourcePolicy ? { sourcePolicy: 'single-active-monitor' } : {}),
         spawnProcess: options.spawnProcess, startupTimeoutMs: options.startupTimeoutMs, getActiveDisplayCount: options.getActiveDisplayCount,
         getDesktopAvailability: options.getDesktopAvailability, onDiagnostic: options.onDiagnostic,
-        onFormat: (format) => send(socket, format), onFrame: (frame) => sender.send(frame),
+        onFormat: (format) => send(socket, format),
+        onCaptureFrame: (stage) => sender.observeCaptureFrame(stage), onFrame: (frame) => sender.send(frame),
         onError: (code, message) => send(socket, { type: 'error', code, message })
       });
       owner = { connection: socket, session };

@@ -77,7 +77,11 @@ const CaptureSchema = Type.Object({
   native: Type.Optional(Type.Object({
     receivedFps: optionalNumber(), submittedFps: optionalNumber(), refreshFps: optionalNumber(),
     droppedFrames: optionalNumber(), queuedFrames: number(), inFlightFrames: number(),
-    mode: textEnum('local', 'worker'), scheduler: textEnum('atomics', 'timer')
+    mode: textEnum('local', 'worker'), scheduler: textEnum('atomics', 'timer'),
+    pipeline: Type.Optional(Type.Object({
+      intervalMs: number(), dxgiFps: optionalNumber(), filteredFps: optionalNumber(), helperFps: optionalNumber(),
+      contentChangedFps: optionalNumber(), loopbackSentFps: optionalNumber(), loopbackDroppedFrames: optionalNumber()
+    }, { additionalProperties: false }))
   }, { additionalProperties: false }))
 }, { additionalProperties: false });
 

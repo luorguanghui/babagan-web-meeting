@@ -1,6 +1,6 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { NativeCaptureFormat, NativeCaptureSourcePolicy, NativeCaptureSourceProof } from '@meeting/contracts';
-import { FrameClock, type TimedFrame } from './timestamps.js';
+import { FrameClock, type CaptureFrameStage, type TimedFrame } from './timestamps.js';
 import { Y4mParser } from './y4m.js';
 
 export type CaptureSpawner = (executable: string, args: string[]) => ChildProcessWithoutNullStreams;
@@ -14,6 +14,7 @@ export interface CaptureOptions {
   sourcePolicy?: NativeCaptureSourcePolicy;
   outputSize?: { width: number; height: number };
   onFormat(format: NativeCaptureFormat): void;
+  onCaptureFrame?(stage: CaptureFrameStage): void;
   onFrame(frame: TimedFrame): void;
   onError(code: string, message: string): void;
 }
@@ -85,8 +86,8 @@ export function buildCaptureArguments(frameRate: 30 | 60, outputSize?: { width: 
   return [
     '-hide_banner', '-nostdin', '-nostats', '-loglevel', 'info', '-filter_threads', '2',
     '-f', 'lavfi', '-i', `ddagrab=framerate=${frameRate * 2}:output_idx=0:draw_mouse=1:dup_frames=0`,
-    // Select actual input samples at the target cadence, including static content; never synthesize CFR/fps frames.
-    '-vf', `hwdownload,format=bgra,${resize},format=yuv420p,select='${selection}',showinfo=checksum=0`,
+    // Count DXGI frames on the hardware surface, then keep the existing cadence and timestamp pairing.
+    '-vf', `showinfo@capture_input=checksum=0,hwdownload,format=bgra,${resize},format=yuv420p,select='${selection}',showinfo=checksum=0`,
     '-an', '-pix_fmt', 'yuv420p', '-color_range', 'tv', '-colorspace', 'bt709',
     '-color_primaries', 'bt709', '-color_trc', 'bt709', '-fps_mode', 'passthrough',
     '-f', 'yuv4mpegpipe', 'pipe:1'
@@ -152,7 +153,7 @@ export function createCaptureSession(options: CaptureOptions): CaptureSession {
     desktopWatch ??= setInterval(() => void checkIdleDesktop(), 5000);
     clearTimeout(deadline);
     options.onFrame(frame);
-  });
+  }, Date.now, options.onCaptureFrame);
   const parser = new Y4mParser({
     onFormat: ({ width, height }) => options.onFormat({ type: 'format', format: 'I420', width, height, frameRate: options.frameRate,
       ...(verifiedSource ? { source: verifiedSource } : {}) }),

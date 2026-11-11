@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
 import { request, type IncomingMessage } from 'node:http';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket } from 'ws';
 import { createNativeCaptureServer, type NativeCaptureServer, type NativeCaptureServerOptions } from './server.js';
 
@@ -124,6 +124,42 @@ describe('authenticated HTTP native frame stream', () => {
     expect(spawned).toBe(false);
   });
 
+  it('reports separate capture and loopback counts only for the authorized live HTTP stream', async () => {
+    const source = "process.stderr.write('[showinfo@capture_input @ 1] n:0 pts:0 pts_time:0\\n[showinfo@capture_input @ 1] n:1 pts:1 pts_time:0.008333\\n');";
+    const server = await helper({ spawnProcess: () => spawn(process.execPath, ['-e', source + validStream +
+      'setInterval(()=>{},1000);'], { windowsHide: true }) });
+    const response = await startStreaming(server);
+    const chunks: Buffer[] = [];
+    response.on('data', chunk => chunks.push(chunk));
+    let statsId: string | undefined;
+    await vi.waitFor(() => {
+      const data = Buffer.concat(chunks);
+      expect(data.length).toBeGreaterThan(4);
+      const length = data.readUInt32BE(0);
+      expect(data.length).toBeGreaterThanOrEqual(4 + length);
+      statsId = JSON.parse(data.subarray(4, 4 + length).toString()).statsId;
+      expect(statsId).toMatch(/^[a-f0-9]{32}$/);
+    });
+    const query = { path: `/capture-stats/${statsId}`, method: 'GET', body: '' };
+    await vi.waitFor(async () => {
+      const result = await call(server, query);
+      expect(result.status).toBe(200);
+      expect(JSON.parse(result.body.toString())).toMatchObject({
+        type: 'stats', at: expect.any(Number), dxgiFrames: 2, filteredFrames: 1, capturedFrames: 1, sentFrames: 1,
+        droppedFrames: 0, contentChangedFrames: 1
+      });
+    });
+    const preflight = await call(server, { ...query, method: 'OPTIONS', headers: {
+      Origin: server.origin, 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'authorization'
+    } });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers['access-control-allow-methods']).toBe('GET');
+    expect((await call(server, { ...query, headers: { Origin: server.origin } })).status).toBe(403);
+    expect((await call(server, { ...query, path: '/capture-stats/' + 'a'.repeat(32) })).status).toBe(404);
+    response.destroy();
+    await vi.waitFor(async () => expect((await call(server, query)).status).toBe(404));
+  });
+
   it('writes bounded format metadata followed by the existing timestamped I420 packet layout', async () => {
     const server = await helper({ spawnProcess: () => spawn(process.execPath, ['-e', validStream], { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }) });
     const result = await call(server);
@@ -132,7 +168,9 @@ describe('authenticated HTTP native frame stream', () => {
     expect(result.headers['access-control-allow-origin']).toBe(server.origin);
     const length = result.body.readUInt32BE(0);
     expect(length).toBeLessThanOrEqual(4096);
-    expect(JSON.parse(result.body.subarray(4, 4 + length).toString())).toEqual({ type: 'format', format: 'I420', width: 4, height: 2, frameRate: 60 });
+    expect(JSON.parse(result.body.subarray(4, 4 + length).toString())).toMatchObject({
+      type: 'format', format: 'I420', width: 4, height: 2, frameRate: 60, statsId: expect.stringMatching(/^[a-f0-9]{32}$/)
+    });
     const packet = result.body.subarray(4 + length);
     expect(packet.length).toBe(28);
     expect(packet.readUInt32BE(0)).toBe(0x424e4331);

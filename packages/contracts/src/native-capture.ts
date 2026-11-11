@@ -11,9 +11,13 @@ export interface NativeCaptureStart { frameRate: 30 | 60; sourcePolicy?: NativeC
 export interface NativeCaptureFormat {
   type: 'format'; format: 'I420'; width: number; height: number; frameRate: 30 | 60;
   source?: NativeCaptureSourceProof;
+  /** Present only when the helper serves per-capture HTTP diagnostics. */
+  statsId?: string;
 }
 export interface NativeCaptureCounters {
   type: 'stats'; capturedFrames: number; sentFrames: number; droppedFrames: number;
+  dxgiFrames?: number;
+  filteredFrames?: number;
   /** Actual pixel changes, distinct from periodically sampled unchanged desktop frames. */
   contentChangedFrames?: number;
 }

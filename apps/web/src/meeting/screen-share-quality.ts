@@ -165,7 +165,8 @@ export class ScreenShareQualityRecorder {
         refreshFps: rate(stats.refreshFrames, previous?.stats.refreshFrames, duration),
         droppedFrames: delta(stats.droppedFrames, previous?.stats.droppedFrames),
         queuedFrames: stats.queuedFrames, inFlightFrames: stats.inFlightFrames,
-        mode: stats.mode, scheduler: stats.scheduler
+        mode: stats.mode, scheduler: stats.scheduler,
+        pipeline: readNativePipeline(stats.pipeline, previous?.stats.pipeline)
       }
     };
   }
@@ -184,6 +185,22 @@ export class ScreenShareQualityRecorder {
       paused: element.paused, readyState: element.readyState
     };
   }
+}
+
+function readNativePipeline(current: NativeStats['pipeline'], previous: NativeStats['pipeline']) {
+  if (!current || !previous || current.at <= previous.at) return undefined;
+  const intervalMs = current.at - previous.at;
+  const { counters: now } = current;
+  const { counters: before } = previous;
+  return {
+    intervalMs: Math.round(intervalMs),
+    dxgiFps: rate(now.dxgiFrames, before.dxgiFrames, intervalMs),
+    filteredFps: rate(now.filteredFrames, before.filteredFrames, intervalMs),
+    helperFps: rate(now.capturedFrames, before.capturedFrames, intervalMs),
+    contentChangedFps: rate(now.contentChangedFrames, before.contentChangedFrames, intervalMs),
+    loopbackSentFps: rate(now.sentFrames, before.sentFrames, intervalMs),
+    loopbackDroppedFrames: delta(now.droppedFrames, before.droppedFrames)
+  };
 }
 
 function readRtcQuality(role: Role, snapshot?: WebRtcStatsSnapshot, previous?: WebRtcStatsSnapshot): ScreenShareRtcQuality | undefined {

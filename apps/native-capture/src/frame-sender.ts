@@ -1,5 +1,5 @@
 import { NATIVE_CAPTURE_HEADER_BYTES, NATIVE_CAPTURE_PACKET_MAGIC, type NativeCaptureCounters } from '@meeting/contracts';
-import type { TimedFrame } from './timestamps.js';
+import type { CaptureFrameStage, TimedFrame } from './timestamps.js';
 export interface FrameTransport {
   readonly readyState: number;
   readonly bufferedAmount: number;
@@ -11,8 +11,13 @@ export class FrameSender {
   private droppedFrames = 0;
   private contentChangedFrames = 0;
   private pendingFrames = 0;
+  private readonly captureCounts: Partial<Record<CaptureFrameStage, number>> = {};
   private previousFrame: Buffer | undefined;
   constructor(private readonly transport: FrameTransport) {}
+
+  observeCaptureFrame(stage: CaptureFrameStage): void {
+    this.captureCounts[stage] = (this.captureCounts[stage] ?? 0) + 1;
+  }
 
   send({ frame, index, captureUs }: TimedFrame): void {
     this.capturedFrames++;
@@ -48,6 +53,8 @@ export class FrameSender {
 
   stats(): NativeCaptureCounters {
     return { type: 'stats', capturedFrames: this.capturedFrames, sentFrames: this.sentFrames,
-      droppedFrames: this.droppedFrames, contentChangedFrames: this.contentChangedFrames };
+      droppedFrames: this.droppedFrames, contentChangedFrames: this.contentChangedFrames,
+      ...(this.captureCounts.dxgi !== undefined ? { dxgiFrames: this.captureCounts.dxgi } : {}),
+      ...(this.captureCounts.filtered !== undefined ? { filteredFrames: this.captureCounts.filtered } : {}) };
   }
 }

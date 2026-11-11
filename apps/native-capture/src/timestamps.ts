@@ -1,4 +1,5 @@
 export interface TimedFrame { frame: Buffer; index: number; captureUs: number }
+export type CaptureFrameStage = 'dxgi' | 'filtered';
 export class FrameClock {
   private readonly frames = new Map<number, Buffer>();
   private readonly timestamps = new Map<number, number>();
@@ -11,7 +12,8 @@ export class FrameClock {
   private epochUs: number | undefined;
   private timeBase: number | undefined;
 
-  constructor(private readonly onFrame: (frame: TimedFrame) => void, private readonly now: () => number = Date.now) {}
+  constructor(private readonly onFrame: (frame: TimedFrame) => void, private readonly now: () => number = Date.now,
+    private readonly onCaptureFrame?: (stage: CaptureFrameStage) => void) {}
 
   pushFrame(frame: Buffer, index: number): void {
     if (index !== this.frameIndex++) throw new Error('Frame synchronization lost');
@@ -33,6 +35,10 @@ export class FrameClock {
       offset++;
       const line = this.stderrLine.toString('utf8', 0, this.stderrLength);
       this.stderrLength = 0;
+      if (/^\[showinfo@capture_input @ [^\]]+\]\s+n:\s*\d+\s+pts:/.test(line)) {
+        this.onCaptureFrame?.('dxgi');
+        continue;
+      }
       const base = /\[Parsed_showinfo_\d+ @ [^\]]+\] config in time_base:\s*(\d+)\/(\d+)/.exec(line);
       if (base) {
         const numerator = Number(base[1]);
@@ -51,6 +57,7 @@ export class FrameClock {
       }
       this.previousPts = ptsUs;
       this.timestamps.set(index, ptsUs);
+      this.onCaptureFrame?.('filtered');
       this.pair();
     }
   }

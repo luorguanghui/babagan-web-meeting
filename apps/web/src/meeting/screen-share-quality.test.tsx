@@ -1,4 +1,6 @@
-import type { ScreenShareQualityReport } from '@meeting/contracts';
+import { ScreenShareQualityReportSchema, type ScreenShareQualityReport } from '@meeting/contracts';
+import { Value } from '@sinclair/typebox/value';
+import * as nativeCapture from './native-capture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { ScreenShareQualityRecorder } from './screen-share-quality.js';
 
@@ -32,6 +34,33 @@ describe('screen sharing quality uploads', () => {
     recorder.sample({ at: 3000, mode: 'p2p', links: [] });
     recorder.finish();
     expect(upload).toHaveBeenCalledTimes(1);
+  });
+
+  it('uploads the native stages using the helper counter interval and omits unchanged snapshots', async () => {
+    const upload = vi.fn<(body: ScreenShareQualityReport) => Promise<void>>().mockResolvedValue(undefined);
+    const recorder = new ScreenShareQualityRecorder('room', 'sender', Promise.resolve('a'.repeat(32)), upload);
+    const track = { muted: false, getSettings: () => ({ frameRate: 60 }) } as unknown as MediaStreamTrack;
+    const pacing = { receivedFrames: 60, submittedFrames: 60, refreshFrames: 0, droppedFrames: 0,
+      queuedFrames: 0, inFlightFrames: 0, mode: 'worker', scheduler: 'atomics' } as const;
+    const first = { at: 500, counters: { type: 'stats', dxgiFrames: 80, filteredFrames: 64, capturedFrames: 63,
+      sentFrames: 60, droppedFrames: 3, contentChangedFrames: 59 } } as const;
+    const second = { at: 1500, counters: { type: 'stats', dxgiFrames: 180, filteredFrames: 114, capturedFrames: 111,
+      sentFrames: 103, droppedFrames: 8, contentChangedFrames: 99 } } as const;
+    const stats = vi.spyOn(nativeCapture, 'getNativePacingStats')
+      .mockReturnValueOnce({ ...pacing, pipeline: first })
+      .mockReturnValue({ ...pacing, receivedFrames: 103, pipeline: second });
+    try {
+      for (const at of [1000, 2100, 3100]) recorder.sample({ at, mode: 'p2p', links: [], capture: { track, android: false } });
+      await recorder.finish();
+      const body = upload.mock.calls[0]?.[0];
+      expect(Value.Check(ScreenShareQualityReportSchema, JSON.parse(JSON.stringify(body)))).toBe(true);
+      expect(body?.samples[0].capture?.native?.pipeline).toBeUndefined();
+      expect(body?.samples[1].capture?.native?.pipeline).toEqual({
+        intervalMs: 1000, dxgiFps: 100, filteredFps: 50, helperFps: 48, contentChangedFps: 40,
+        loopbackSentFps: 43, loopbackDroppedFrames: 5
+      });
+      expect(body?.samples[2].capture?.native?.pipeline).toBeUndefined();
+    } finally { stats.mockRestore(); }
   });
 
   it('measures viewer buffering, decoding and playback over the sample interval', async () => {

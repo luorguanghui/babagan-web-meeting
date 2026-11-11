@@ -85,6 +85,26 @@ describe('native HTTP frame channel', () => {
     expect(h.writes[0].timestamp).toBe(1000); track.stop();
     expect(source.cancel).toHaveBeenCalledOnce();
   });
+  it('reads counters with the stream capability when the helper advertises diagnostics', async () => {
+    const statsId = 'b'.repeat(32);
+    const encoded = new TextEncoder().encode(JSON.stringify({ ...JSON.parse(format), statsId }));
+    const bytes = new Uint8Array(4 + encoded.length + 28);
+    new DataView(bytes.buffer).setUint32(0, encoded.length);
+    bytes.set(encoded, 4); bytes.set(new Uint8Array(packet(1)), 4 + encoded.length);
+    const source = httpStream([bytes]); const h = nativeHarness();
+    const counters = { type: 'stats', dxgiFrames: 120, filteredFrames: 60, capturedFrames: 60,
+      sentFrames: 58, droppedFrames: 2, contentChangedFrames: 55 };
+    const request = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(source.response).mockResolvedValueOnce(Response.json({ ...counters, at: 1234, ignored: token }));
+    const track = await openNativeVideoTrack(connection, 60, { ...h.deps, createSocket: undefined, fetch: request });
+    expect(request).toHaveBeenCalledWith(`http://127.0.0.1:25191/capture-stats/${statsId}`, expect.objectContaining({
+      method: 'GET', credentials: 'omit', headers: { Authorization: `Bearer ${token}` }
+    }));
+    expect(getNativePacingStats(track)?.pipeline).toEqual({ at: 1234, counters });
+    expect(request).toHaveBeenCalledTimes(2);
+    track.stop();
+    expect(source.cancel).toHaveBeenCalledOnce();
+  });
   it('rejects oversized metadata before allocating a frame buffer', async () => {
     const prefix = new Uint8Array(4); new DataView(prefix.buffer).setUint32(0, 0xffffffff);
     const source = httpStream([prefix]); const h = nativeHarness();
