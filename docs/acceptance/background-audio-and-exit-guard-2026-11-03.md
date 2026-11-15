@@ -25,4 +25,16 @@
 
 桌面 Edge 测试先关闭调试器的前台模拟后，通过 CDP 读到真实 `visibilityState=hidden`，测试音频进度达到 98.052 秒，`paused=false`、`muted=false`，独立播放器含一条音频轨道、零条视频轨道。该证据仅为桌面后台测试，不是实体安卓锁屏证明。关闭确认目前由 beforeunload 取消事件的自动化回归验证，未声明已目视验收所有浏览器的原生弹窗。
 
-后续原生浏览器检查因 Computer Use 无法可靠确认 Windows 当前浏览器 URL，被安全检查终止。本轮保留本地发布包并提交 GitHub，新功能尚未通过服务器终端激活；线上当前仍为前一轮 `dc07f55`。
+后续原生浏览器检查因 Computer Use 无法可靠确认 Windows 当前浏览器 URL，被安全检查终止。在该次检查结束时，发布包与代码已准备完毕，生产网页仍运行前一轮 `dc07f55`。
+
+## 实际部署完成
+
+2026-11-03 02:27:26（香港时间），按用户追加的部署指令成功激活 `5012ef1a06575a1a8b9ae7e960e415a576b422f3`。本次只替换 web；API 继续运行 `dc07f55`，其余媒体与代理容器身份未改变。
+
+上线前确认无进行中的会议，核验包摘要、源码祖先关系及 38 个静态产物，完成数据库备份和回滚准备。上线后五服务健康，公网首页、存活及就绪接口均 200，Cloudflare SFU API 冒烟通过，发布事务无 pending 遗留。
+
+公网入口 `/assets/index-eo6lSdbi.js` 的 SHA-256 为 `6a396f6dca23ea093386472a8ac5d3d95bae403526e94900bf8ee767a955ac89`，与本地发布包一致。
+
+服务器记录与回滚入口：`/opt/babagan-web-meeting/var/releases/update-20261102T182654Z-background-audio-prebuilt/`，其中 `rollback.sh` 可恢复之前的 web 镜像。完整本地证据见 `output/background-audio-deploy-20261103/release-record.json`、`public-verification.json` 和 `deployment-success.jpg`。
+
+该次上线后，手机与电脑端需刷新页面后重新入会。实体安卓的锁屏与省电策略仍待现场验收。

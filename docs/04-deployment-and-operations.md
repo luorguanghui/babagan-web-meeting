@@ -52,7 +52,10 @@ deploy.sh 要求 Debian 12 或 Debian 13、至少约 1.1 GiB 可用内存和至�
 sudo docker compose --env-file "$APP_DIR/infra/.env.production" -f "$APP_DIR/infra/docker-compose.yml" stop
 sync
 echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+awk '/MemAvailable:/ {print $2 " KiB available"}' /proc/meminfo
 ~~~
+
+预检实际要求 `MemAvailable >= 1153434 KiB`。先确认没有需要保留的运行中会议，再停止服务或释放缓存；不要修改脚本门槛来跳过资源检查。
 
 ### 2.1 DNS、Cloudflare、安全组和 UFW
 
@@ -90,7 +93,27 @@ git status --short
 git rev-parse HEAD
 ~~~
 
-远端不可达时，在本地生成经校验的 Git bundle：
+远端不可达时，在本地从**包含完整目标提交和历史**的仓库生成经校验的 Git bundle。新服务器没有基线时，使用完整 bundle，并在空目录验证它没有缺失的 prerequisite；增量 bundle 只适用于目标机器已有完整且可信的基线提交。
+
+~~~bash
+git bundle create "babagan-release.bundle" '<发布分支>'
+sha256sum "babagan-release.bundle"
+mkdir -p /tmp/babagan-bundle-verify && git -C /tmp/babagan-bundle-verify init
+git -C /tmp/babagan-bundle-verify bundle verify "$(pwd)/babagan-release.bundle"
+~~~
+
+将 bundle 传到目标服务器后，对照本地 SHA-256 核验，再从 bundle 克隆到空目录，检查目标提交和工作树。上传途径例如阿里云 Workbench 文件管理；如果浏览器扩展提示缺少文件 URL 权限，需要在扩展设置中启用后重试。不要上传生产 env 或秘密。
+
+~~~bash
+sha256sum /受保护上传目录/babagan-release.bundle
+git clone /受保护上传目录/babagan-release.bundle "$APP_DIR"
+git -C "$APP_DIR" checkout --detach "$RELEASE_SHA"
+git -C "$APP_DIR" remote set-url origin "$REPO_URL"
+test "$(git -C "$APP_DIR" rev-parse HEAD)" = "$RELEASE_SHA"
+git -C "$APP_DIR" status --short
+~~~
+
+目标服务器已经具有可信基线时，也可生成增量 bundle：
 
 ~~~bash
 # OLD_SHA 是服务器当前已验证的基线 SHA
@@ -111,6 +134,8 @@ git status --short
 ~~~
 
 工作树不得有未解释的源码修改；受保护运行时文件应由 .gitignore 忽略。
+
+本次迁移中 GitHub 的 Git 克隆超时，但固定提交的 GitHub codeload 压缩包可访问。实际操作以本地可信仓库的 Git tree 哈希核对解压内容，并恢复相同提交对象后导入含修复的增量 bundle；仅下载源码压缩包不会自动保留提交历史或版本来源，不能把它当作已验证的 Git checkout。无法核对 tree、提交对象与 bundle prerequisite 时，使用完整 bundle。
 
 ## 3. 从零部署 Debian 12 / Debian 13
 
@@ -134,12 +159,16 @@ sudo docker version
 sudo docker compose version
 ~~~
 
-旧 standalone babagan-coturn.service 不应与 Compose coturn 并存：
+本次 Debian 12 服务器访问 Docker 官方下载站时连接被重置，使用了阿里云 Docker CE 镜像。若需使用镜像，先从可信渠道独立核对下载的 Docker 签名密钥指纹，再将 apt 源指向 `https://mirrors.aliyun.com/docker-ce/linux/debian`，保留 `signed-by` 签名校验；不要因网络问题关闭 TLS 或包签名校验。Debian 默认源中的 `docker.io` 不一定提供所需的 Compose v2 插件，安装完成后以 `docker compose version` 验证。
+
+容器镜像无法从 Docker Hub 拉取时，可在生产 env 的 `NODE_IMAGE`、`CADDY_IMAGE`、`LIVEKIT_IMAGE`、`COTURN_IMAGE` 中使用可用的镜像代理地址，但必须保留示例中各镜像原有的完整 digest。本次使用了 `m.daocloud.io/docker.io/` 前缀。阿里云主机还可将 `ALPINE_MIRROR` 设为 `http://mirrors.cloud.aliyuncs.com/alpine`，使用内网源下载 Alpine 软件包；软件包签名校验仍应保持启用。`NPM_REGISTRY` 保持可信、可用的注册表。
+
+先检查旧 standalone coturn 服务是否存在；只有确认其与本项目容器服务冲突时才停用：
 
 ~~~bash
-sudo systemctl disable --now babagan-coturn.service
 systemctl is-active babagan-coturn.service || true
 systemctl is-enabled babagan-coturn.service || true
+# 确认存在且可停用后：sudo systemctl disable --now babagan-coturn.service
 ~~~
 
 ### 3.2 生产环境和秘密
@@ -156,7 +185,7 @@ sudoedit infra/.env.production
 
 `LIVEKIT_URL` 是浏览器客户端使用的 WSS 基地址，例如 `wss://meet.babagan.cloud` 或 `wss://rtc.babagan.cloud`。客户端会自行追加 `/rtc`，不要将同源基地址填成 `wss://meet.babagan.cloud/rtc`，否则真实入会会请求重复路径。部署冒烟使用的直接 WebSocket 探测地址 `wss://meet.babagan.cloud/rtc` 与这个客户端基地址用途不同。上线后还要在真实浏览器静音入会，确认列表至少包含本地参会者、麦克风按钮可用；单次 WebSocket 握手不能证明完整入会正常。
 
-如需 Cloudflare SFU，在受保护的生产 env 中成对配置 `CLOUDFLARE_SFU_APP_ID` 与 `CLOUDFLARE_SFU_APP_SECRET`。这里的秘密是 SFU 应用 App Secret，不是旧 Cloudflare TURN Key token，也不是 Cloudflare 用户 API token。App Secret 只由 API 后端读取，不发送到浏览器、Git 或日志。没有这对配置时 Cloudflare SFU 入口显示未配置。
+如需 Cloudflare SFU，可在受保护的生产 env 中成对配置 `CLOUDFLARE_SFU_APP_ID` 与 `CLOUDFLARE_SFU_APP_SECRET`，或按下文配置已有 Worker 网关。这里的秘密是 SFU 应用 App Secret，不是旧 Cloudflare TURN Key token，也不是 Cloudflare 用户 API token。App Secret 只由 API 后端读取，不发送到浏览器、Git 或日志。直连凭据和 Worker 网关均未配置时，Cloudflare SFU 入口显示未配置。
 
 共享者在共享前选择 Cloudflare SFU 后，只发送一份屏幕视频与可选电脑声音；所有观看者从同一发布订阅，语音仍使用 LiveKit。P2P/服务器 TURN 与显式 LiveKit SFU 保留，Cloudflare TURN 不再可选。旧 `babagan.screen-turn-provider=cloudflare` 缓存会回退自动/coturn；升级时从当前 env 移除所有 `CLOUDFLARE_TURN_*`，设置 `P2P_TURN_PROVIDER=coturn`，先保留 mode-600 的 env 备份。不要删除 Cloudflare 账户中现有 TURN 应用。
 
@@ -167,6 +196,8 @@ Cloudflare SFU 默认由服务器直连 `https://rtc.live.cloudflare.com/v1` 发
 服务器 coturn 是唯一 TURN 提供方，界面不再显示提供方选择框；观看者仍可选择 TURN 接收路径。停止共享后，客户端等待旧发布和共享权限释放完成才允许下一次捕获，期间显示“正在停止共享”。SFU 上游操作按成员串行，不同观看者可并发协商；失效发布立即撤出发现目录，失败的轨道关闭仍保留后台清理。客户端会话请求最多等待 45 秒，以覆盖两次各 10 秒的上游调用及失败清理，不能把超时自动当成未分配成功并盲重试。
 
 清理已拥有的 SFU 会话时，明确的 HTTP `410` 且 `errorCode=session_error` 表示旧会话已关闭或过期，应退役本地清理记录以允许再次共享；不能因此重试旧会话。其他响应、未确认结果和网络失败继续保留清理状态，不把权限或鉴权错误当作关闭成功。
+
+本次修复后，已进入 `closing` 的旧会话不再占用五个活动会话名额，后台仍会重试关闭；单个会议待清理会话达到 20 个时，新分配会返回清理进行中的 503，以限制上游资源堆积。同一成员同一角色的旧会话若尚未清理完成，替换连接仍需等待。`Cloudflare SFU: Meeting is full` 在此路径上由项目服务器的活动会话计数触发，不能仅凭提示认定是 Cloudflare 临时凭证过期时间造成。
 
 LIVEKIT_NODE_IP/TURN_EXTERNAL_IP 必须等于 TARGET_IP；P2P_TURN_SECRET/TURN_SHARED_SECRET 必须相同且至少32字符；镜像保持示例中的批准 digest。Compose 的 edge 网段为 `172.30.0.0/16`、backend 网段为 `172.31.0.0/16`，现有内部服务和防火墙边界保持原配置。
 服务器生成随机值，不要把结果贴到聊天或 Git：
@@ -183,7 +214,13 @@ sudo stat -c '%a %n' infra/.env.production
 
 ~~~bash
 cd "$APP_DIR"
-sudo docker build --pull -f apps/api/Dockerfile -t babagan-meeting-api:bootstrap .
+NODE_IMAGE=$(sudo sed -n 's/^NODE_IMAGE=//p' infra/.env.production)
+ALPINE_MIRROR=$(sudo sed -n 's/^ALPINE_MIRROR=//p' infra/.env.production)
+NPM_REGISTRY=$(sudo sed -n 's/^NPM_REGISTRY=//p' infra/.env.production)
+test -n "$NODE_IMAGE" && test -n "$ALPINE_MIRROR" && test -n "$NPM_REGISTRY"
+sudo docker build --pull --build-arg "NODE_IMAGE=$NODE_IMAGE" \
+  --build-arg "ALPINE_MIRROR=$ALPINE_MIRROR" --build-arg "NPM_REGISTRY=$NPM_REGISTRY" \
+  -f apps/api/Dockerfile -t babagan-meeting-api:bootstrap .
 sudo install -m 600 /dev/null /root/babagan-secrets/admin-password
 sudoedit /root/babagan-secrets/admin-password
 ~~~
@@ -202,15 +239,21 @@ sudoedit infra/.env.production
 sudo rm -f /root/babagan-secrets/admin-password
 ~~~
 
-将哈希填入 ADMIN_PASSWORD_HASH；明文密码不得进入 env、shell 历史或文档。
+将哈希填入 `ADMIN_PASSWORD_HASH`，在 Compose env 文件中用单引号包住完整 Argon2id 哈希，避免其中的 `$` 被插值；明文密码不得进入 env、shell 历史或文档。API Dockerfile 使用固定 Node 镜像内的 `/usr/local` 头文件编译原生模块，避免 `node-gyp` 在访问 Node 头文件下载站超时时失败。更换 Node 镜像时应先确认对应头文件与运行时版本匹配。
+
+本次服务器还验证了另一种准备哈希的方法：安装 Debian 的 `python3-argon2`，由管理员在终端隐藏输入密码，使用 Argon2id、`memory_cost=65536`、`time_cost=3`、`parallelism=1` 生成并验证哈希，再写入 mode-600 生产 env，并移除临时明文文件。无论采用哪种方法，都不要把密码放进命令行参数、日志或聊天记录。
 
 ### 3.4 Caddy 证书和 coturn 权限
 
-coturn 从 Caddy 数据卷读取 turn.babagan.cloud 证书。首次部署先只启动 Caddy，等待证书，再启动完整栈：
+coturn 从 Caddy 数据卷读取 `turn.babagan.cloud` 证书。首次部署先只启动 Caddy；从旧服务器迁移时，须在约定的停机窗口把三条 DNS-only 记录切到新服务器，让 ACME 验证到达新 Caddy。确认解析后等待签发，再启动完整栈。原站可能在 DNS 缓存过期前继续收到请求；新站在完整栈启动前也可能返回 502。
 
 ~~~bash
 cd "$APP_DIR"
 sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml up -d --no-deps caddy
+# 此时完成 DNS 切换，并分别确认三个名称已解析到 TARGET_IP。
+for host in "$PUBLIC_HOST" "$RTC_HOST" "$TURN_HOST"; do
+  getent ahostsv4 "$host" | awk '{print $1}' | sort -u
+done
 CADDY_DATA=$(sudo docker volume inspect --format '{{.Mountpoint}}' babagan-meeting_caddy-data)
 TURN_CERT_DIR="$CADDY_DATA/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.babagan.cloud"
 for attempt in $(seq 1 90); do
@@ -219,21 +262,90 @@ for attempt in $(seq 1 90); do
 done
 sudo test -s "$TURN_CERT_DIR/turn.babagan.cloud.crt"
 sudo test -s "$TURN_CERT_DIR/turn.babagan.cloud.key"
-sudo find "$CADDY_DATA/caddy/certificates" -type d -exec chmod o+x {} +
-sudo chmod o+r "$TURN_CERT_DIR/turn.babagan.cloud.crt" "$TURN_CERT_DIR/turn.babagan.cloud.key"
-sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml stop caddy
-sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml rm -f caddy
 ~~~
 
-预启动 Caddy 会创建 Compose network。edge 网段固定为 `172.30.0.0/16`，`host.docker.internal` 使用 edge 网关 `172.30.0.1`；只允许 edge bridge 访问宿主机 7880：
+对以非 root 用户运行的 coturn，按容器实际组 ID 限制证书权限。以下命令只给该组遍历所需目录和读取 TURN 证书的权限；其他站点私钥不应改为所有用户可读。`COTURN_IMAGE` 必须取自已核验的生产配置。
+
+~~~bash
+(
+set -eu
+COTURN_IMAGE=$(sudo sed -n 's/^COTURN_IMAGE=//p' infra/.env.production)
+test -n "$COTURN_IMAGE"
+COTURN_GROUP=$(sudo docker run --rm --network none --entrypoint id "$COTURN_IMAGE" -g)
+for dir in "$CADDY_DATA" "$CADDY_DATA/caddy" "$CADDY_DATA/caddy/certificates" \
+  "$CADDY_DATA/caddy/certificates/acme-v02.api.letsencrypt.org-directory" "$TURN_CERT_DIR"; do
+  sudo chgrp "$COTURN_GROUP" "$dir"
+  sudo chmod g+x "$dir"
+done
+sudo chgrp "$COTURN_GROUP" "$TURN_CERT_DIR/turn.babagan.cloud.crt" "$TURN_CERT_DIR/turn.babagan.cloud.key"
+sudo chmod 640 "$TURN_CERT_DIR/turn.babagan.cloud.crt" "$TURN_CERT_DIR/turn.babagan.cloud.key"
+sudo docker run --rm --network none -v babagan-meeting_caddy-data:/caddy-data:ro \
+  --entrypoint sh "$COTURN_IMAGE" -c \
+  'test -r /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.babagan.cloud/turn.babagan.cloud.crt && test -r /caddy-data/caddy/certificates/acme-v02.api.letsencrypt.org-directory/turn.babagan.cloud/turn.babagan.cloud.key && echo TURN_CERT_READABLE'
+sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml stop caddy
+sudo docker compose --env-file infra/.env.production -f infra/docker-compose.yml rm -f caddy
+)
+~~~
+
+预启动 Caddy 会创建 Compose network；某些 Compose 版本也会提前创建空的 `babagan-meeting_api-data` 卷，即使没有启动 API。`deploy.sh --bootstrap-empty` 要求此卷不存在。先确认没有其他部署、更新或进程操作该卷；只有在确认这是本次预启动创建、没有 release/pending 记录、卷归属项目、没有容器引用且目录完全为空时，才能移除这个空卷；任何条件不满足都应停止检查，不能删除已有数据库或 Caddy 证书卷。
+
+~~~bash
+sudo docker info >/dev/null || { echo 'Docker 不可用；停止并检查。' >&2; exit 1; }
+if sudo docker volume inspect babagan-meeting_api-data >/dev/null 2>&1; then
+  if (
+    set -u
+    test ! -e "$APP_DIR/var/releases/current-release.env" || exit 1
+    test ! -L "$APP_DIR/var/releases/current-release.env" || exit 1
+    test ! -e "$APP_DIR/var/releases/current-update.json" || exit 1
+    test ! -L "$APP_DIR/var/releases/current-update.json" || exit 1
+    test ! -e "$APP_DIR/var/releases/pending-release.env" || exit 1
+    test ! -L "$APP_DIR/var/releases/pending-release.env" || exit 1
+    test ! -e "$APP_DIR/var/releases/update-pending.json" || exit 1
+    test ! -L "$APP_DIR/var/releases/update-pending.json" || exit 1
+    API_DATA=$(sudo docker volume inspect --format '{{.Mountpoint}}' babagan-meeting_api-data) || exit 1
+    API_PROJECT=$(sudo docker volume inspect --format '{{index .Labels "com.docker.compose.project"}}' babagan-meeting_api-data) || exit 1
+    DOCKER_ROOT=$(sudo docker info --format '{{.DockerRootDir}}') || exit 1
+    test "$API_PROJECT" = babagan-meeting || exit 1
+    test ! -L "$API_DATA" || exit 1
+    API_RESOLVED=$(sudo realpath -e "$API_DATA") || exit 1
+    EXPECTED_DATA=$(sudo realpath -e "$DOCKER_ROOT/volumes/babagan-meeting_api-data/_data") || exit 1
+    test "$API_RESOLVED" = "$EXPECTED_DATA" || exit 1
+    API_ENTRY=$(sudo find "$API_DATA" -mindepth 1 -maxdepth 1 -print -quit) || exit 1
+    API_USERS=$(sudo docker ps -aq --filter volume=babagan-meeting_api-data) || exit 1
+    test -z "$API_ENTRY" && test -z "$API_USERS" || exit 1
+  ); then
+    sudo docker volume rm babagan-meeting_api-data
+  else
+    echo '空卷条件不成立；停止并检查，不能删除该卷。' >&2
+    exit 1
+  fi
+fi
+~~~
+
+edge 网段固定为 `172.30.0.0/16`，`host.docker.internal` 使用 edge 网关 `172.30.0.1`；只允许 edge bridge 访问宿主机 7880。Docker 未显式设置 bridge 名称时，Linux 接口名通常是网络 ID 前 12 位加 `br-`，应实际核对：
 
 ~~~bash
 EDGE_BRIDGE=$(sudo docker network inspect --format '{{index .Options "com.docker.network.bridge.name"}}' babagan-meeting_edge)
 EDGE_SUBNET=$(sudo docker network inspect --format '{{(index .IPAM.Config 0).Subnet}}' babagan-meeting_edge)
+if [ -z "$EDGE_BRIDGE" ]; then
+  EDGE_ID=$(sudo docker network inspect --format '{{.Id}}' babagan-meeting_edge)
+  EDGE_BRIDGE="br-${EDGE_ID:0:12}"
+fi
+test "$EDGE_SUBNET" = 172.30.0.0/16
+ip link show "$EDGE_BRIDGE"
 sudo ufw allow in on "$EDGE_BRIDGE" from "$EDGE_SUBNET" to any port 7880 proto tcp comment 'babagan-livekit-internal'
 ~~~
 
-证书续期后重复权限检查，并执行 docker compose restart coturn，验证 5349/TCP。
+网络被重建时重新核对接口名和 UFW 规则。证书续期后需重新设置 coturn 读取权限并重启 coturn，验证 5349/TCP；重启可能短暂影响正在使用 TURN 的连接。本次新服务器已安装 `/usr/local/sbin/babagan-coturn-tls.py` 和 `babagan-coturn-tls.timer`，每小时检查证书变化、修正组权限并在证书改变时重启 coturn。该维护脚本目前是服务器上的运维文件，不属于仓库中的通用安装器；在其他新服务器上不要假定定时器已经存在，需自行部署并验证等效机制。
+
+~~~bash
+sudo systemctl is-enabled babagan-coturn-tls.timer
+sudo systemctl is-active babagan-coturn-tls.timer
+sudo systemctl show babagan-coturn-tls.service -p Result --value
+(set -o pipefail; echo | openssl s_client -connect turn.babagan.cloud:5349 \
+  -servername turn.babagan.cloud -verify_hostname turn.babagan.cloud \
+  -verify_return_error -CApath /etc/ssl/certs 2>/dev/null | openssl x509 -noout -subject -dates)
+~~~
 
 ### 3.5 证据、Token 和首次发布
 
@@ -502,7 +614,7 @@ sudo bash scripts/restore.sh "$APP_DIR/var/backups/meetings-<UTC>.sqlite" "$APP_
 
 ## 7. 日常运维和安全
 
-- Caddy 续期 turn 证书后，重复 3.4 节读取权限检查，重启 coturn 并验证 5349/TCP。
+- 检查 3.4 节的 TURN 证书续期同步任务；若当前服务器没有自动任务，续期后需按该节人工检查权限、重启 coturn 并验证 5349/TCP。
 - P2P_TURN_SECRET与TURN_SHARED_SECRET必须相同且至少32字符，TTL固定600；P2P TURN只使用coturn。Cloudflare SFU App Secret不得进入Git、浏览器或日志。
 - 共享传输方式在共享前选择，进行中不允许切换；Cloudflare SFU应明确显示为SFU，不能显示为Cloudflare TURN或在失败后暗中增加P2P编码。
 - Cache-Control: no-store 是认证 ICE 响应的验收条件。
@@ -536,12 +648,22 @@ sudo docker logs --since 30m babagan-meeting-api-1 2>&1 | grep -F '"event":"scre
 
 建议顺序：
 
-1. 先在新主机完成部署、证书、健康、默认 coturn smoke。
-2. 若Cloudflare SFU已配置，确认直连鉴权smoke及真实发布／订阅媒体。
-3. 最后切换 `meet`、`rtc`、`turn` 三条 A 记录到新公网 IP，并分别核对代理状态未改变。
-4. 在新主机重复 `getent ahostsv4 "$PUBLIC_HOST" "$RTC_HOST" "$TURN_HOST"`，确认解析结果已更新。
+1. 先在新主机准备并核验源码、镜像、生产配置与防火墙，记录原三条 A 记录及代理状态；确认当前会议已结束并选择停机窗口。
+2. 按 3.4 节预启动 Caddy，然后将 `meet`、`rtc`、`turn` 三条 A 记录切到新公网 IP，保持 DNS only。确认三条记录均已更新，并分别通过 `getent ahostsv4` 等方式检查解析；DNS 缓存可能使不同客户端暂时看到不同目标。
+3. 等待新 Caddy 取得证书，核对 TURN 证书权限；按 3.4 节处理预启动可能产生的空 API 卷，然后执行首次发布与健康检查。
+4. 确认 HTTPS、coturn 和 RTC 冒烟；若配置 Cloudflare SFU，检查当前直连或 Worker 网关的鉴权与已认证能力接口。最后由用户在真实会议中验收语音、屏幕共享和多人反复进出。
 
 若切换后发现 Caddy、TURN 或 LiveKit 不可用，只回退这三条业务 DNS 记录的原始 IP 与代理状态；不要删除现有 Cloudflare TURN 应用，也不要把长期凭据导出到 Git 或聊天。
+
+### 8.1 2026-11-01 新服务器迁移记录
+
+本次在 Debian 12、2 vCPU、2 GiB、40 GiB 的新服务器上采用空数据库首次部署；旧服务器会议数据和管理员密码没有迁移。生产目录为 `/opt/babagan-web-meeting`，发布提交为 `26ad7620f48bfa96dacf981f502bd5e73aed144f`。三个业务域名均保持 DNS only，`p2p` Worker 未迁移或修改；Cloudflare SFU 控制请求使用已有 Worker 网关。按用户要求保留原有公网 SSH 策略。
+
+部署过程使用阿里云 Docker CE 和 Alpine 内网镜像、固定 digest 的容器镜像代理，以及 GitHub codeload 加经校验的增量 bundle。Caddy 预启动产生的 API 卷经确认为空且没有引用后移除；TURN 证书使用 coturn 容器组读取权限，并部署了本机证书同步定时器。
+
+首次发布记录显示五服务健康、HTTPS 和 RTC WebSocket 冒烟通过，Cloudflare SFU 鉴权和已认证能力检查通过；这不等于已完成真实多人音视频或反复进出验收。管理员密码由用户在服务器终端隐藏输入、生成并验证 Argon2id 哈希，临时明文文件已移除。
+
+当时发布的提交 `26ad762` 后续已合入 GitHub `main`。`scripts/update.sh` 仍会检查目标版本是否包含服务器当前运行的发布提交。
 
 ## 9. 项目 WASM 屏幕编码资源
 
