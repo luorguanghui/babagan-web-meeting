@@ -2,9 +2,11 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, rmdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import { promisify } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { edgeLaunchArguments, edgeSpawnOptions, parseCliArgs, runCli, assertDdagrabCapabilities } from './cli.js';
+import * as cliConfig from './cli-config.js';
 
 const temporaryDirectories: string[] = [];
 afterEach(async () => {
@@ -66,6 +68,36 @@ describe('native capture launcher configuration', () => {
     expect(parseCliArgs([], { BABAGAN_FFMPEG: 'C:\\tools\\ffmpeg.exe' }).ffmpeg).toBe('C:\\tools\\ffmpeg.exe');
     expect(parseCliArgs(['--ffmpeg', 'C:\\Program Files\\ffmpeg.exe', '--no-open', '--origin', 'http://127.0.0.1:5173'], { BABAGAN_FFMPEG: 'ignored' }))
       .toMatchObject({ ffmpeg: 'C:\\Program Files\\ffmpeg.exe', openBrowser: false, origin: 'http://127.0.0.1:5173' });
+  });
+  it('leaves the tray helper parent-owned by default and preserves an explicit CLI idle limit', () => {
+    expect(parseCliArgs(['--managed'], {}).idleTimeoutMs).toBeUndefined();
+    expect(parseCliArgs(['--idle-timeout-ms', '120', '--managed'], {}).idleTimeoutMs).toBe(120);
+    expect(parseCliArgs(['--idle-timeout-ms', '120'], {}).idleTimeoutMs).toBe(120);
+  });
+
+  it.skipIf(process.platform !== 'win32')('keeps the tray listener available after the CLI idle deadline and closes on parent EOF', async () => {
+    const path = await statusFile();
+    const parent = new PassThrough();
+    vi.spyOn(process, 'stdin', 'get').mockReturnValue(parent as unknown as typeof process.stdin);
+    vi.spyOn(cliConfig, 'verifyFfmpeg').mockResolvedValue(undefined);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const running = runCli(['--managed', '--no-open', '--status-file', path]);
+    let port = 0;
+    try {
+      await vi.waitFor(async () => {
+        const status = JSON.parse(await readFile(path, 'utf8')) as { state: string; port: number };
+        expect(status.state).toBe('ready');
+        port = status.port;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_800_001);
+      expect((await fetch(`http://127.0.0.1:${port}/`)).status).toBe(403);
+    } finally {
+      parent.end();
+      try { await running; }
+      finally { vi.useRealTimers(); }
+    }
+    await expect(fetch(`http://127.0.0.1:${port}/`)).rejects.toThrow();
   });
   it.each([['--ffmpeg'], ['--origin', 'https://example.test/path'], ['--origin', 'http://example.test'], ['--unknown'], ['--idle-timeout-ms', '-1'], ['--idle-timeout-ms', 'NaN']])('rejects invalid configuration %s', (...args) => {
     expect(() => parseCliArgs(args, {})).toThrow();

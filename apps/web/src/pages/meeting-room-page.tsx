@@ -288,6 +288,7 @@ export function MeetingRoomPage({
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection || isAndroidClient ? 'auto' : 'h264');
   const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection) || isAndroidClient);
   const nativeCaptureEnabledRef = useRef(nativeCaptureEnabled);
+  const [nativeBrowserFallback, setNativeBrowserFallback] = useState(false);
   const [androidSystemAudioEnabled, setAndroidSystemAudioEnabled] = useState(true);
   const androidSystemAudioRef = useRef(false);
   androidSystemAudioRef.current = Boolean(clientInfo?.systemAudio && androidSystemAudioEnabled);
@@ -429,7 +430,16 @@ export function MeetingRoomPage({
           signal, maxFrameRate: androidMaxFrameRateRef.current, onSystemAudioUnavailable: setAndroidAudioUnavailable
         });
       }
-      if (nativeCaptureEnabledRef.current && nativeCaptureConnection) return captureNativeScreen(nativeCaptureConnection, constraints, { signal });
+      if (nativeCaptureEnabledRef.current && nativeCaptureConnection) {
+        return captureNativeScreen(nativeCaptureConnection, constraints, {
+          signal,
+          onBrowserFallback: () => {
+            nativeCaptureEnabledRef.current = false;
+            setNativeCaptureEnabled(false);
+            setNativeBrowserFallback(true);
+          }
+        });
+      }
       if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return Promise.reject(new ClientHostError('unsupported', 'Browser screen capture is unavailable.'));
       return navigator.mediaDevices.getDisplayMedia(constraints);
     }),
@@ -983,6 +993,7 @@ export function MeetingRoomPage({
   async function toggleScreenShare() {
     setNotice(undefined);
     moq.clearPublisherError();
+    setNativeBrowserFallback(false);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
       else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'p2p' ? screenEncodingEngine : 'browser');
@@ -1379,6 +1390,7 @@ export function MeetingRoomPage({
         : !moq.stream && <p role="status">{t('controls.moqConnecting')}</p>)}
       {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
+      {nativeBrowserFallback && !notice && <p role="status">{t('native.browserFallback')}</p>}
       {androidAudioUnavailable && <p role="status">{t(`client.androidAudio.${androidAudioUnavailable}`)}</p>}
       {screenState.audioGuidance && !(isAndroidClient && !androidSystemAudioEnabled) && <p role="status">{isAndroidClient ? t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint') : localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
       {browserCaptureUnsupported && <p role="status">{t('client.mobileShareUnsupported')} <a href="/#downloads" target="_blank" rel="noopener noreferrer">{t('client.getAndroid')}</a></p>}

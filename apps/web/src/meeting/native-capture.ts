@@ -325,6 +325,7 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
   capture?: (options: DisplayMediaStreamOptions) => Promise<MediaStream>;
   open?: typeof openNativeVideoTrack;
   signal?: AbortSignal;
+  onBrowserFallback?: () => void;
 } = {}): Promise<MediaStream> {
   // The standard picker preserves deliberate screen/audio selection and permission.
   const stream = await abortableCapture(() => (deps.capture ?? (options => navigator.mediaDevices.getDisplayMedia(options)))(constraints),
@@ -333,11 +334,14 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
   const abort = new AbortController();
   const ended = () => abort.abort();
   let sentinelReleased = false;
+  const detachSentinel = () => {
+    video?.removeEventListener('ended', ended);
+    deps.signal?.removeEventListener('abort', ended);
+  };
   const releaseSentinel = () => {
     if (sentinelReleased) return;
     sentinelReleased = true;
-    video?.removeEventListener('ended', ended);
-    deps.signal?.removeEventListener('abort', ended);
+    detachSentinel();
     video?.stop();
   };
   try {
@@ -352,6 +356,7 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
     }
     const requireSourceProof = settings.deviceId !== 'screen:0:0';
     video.addEventListener('ended', ended, { once: true });
+    const browserConstraints = deps.onBrowserFallback ? video.getConstraints?.() ?? {} : undefined;
     // Keep browser permission and its Stop sharing action alive without running
     // a second high-cadence capture beside DXGI. This track is never published.
     await abortableCapture(() => video.applyConstraints?.({ frameRate: { ideal: 1, max: 1 } }).catch(() => undefined), abort.signal);
@@ -359,7 +364,16 @@ export async function captureNativeScreen(connection: NativeCaptureConnection, c
     const rate = typeof requested === 'number' ? requested : typeof requested?.ideal === 'number' ? requested.ideal : 30;
     const native = await abortableCapture(() => (deps.open ?? openNativeVideoTrack)(connection, rate >= 60 ? 60 : 30,
       { signal: abort.signal, ...(requireSourceProof ? { sourcePolicy: 'single-active-monitor' } : {}) }),
-      abort.signal, track => track.stop());
+      abort.signal, track => track.stop()).catch(async error => {
+      if (!deps.onBrowserFallback || !(error instanceof NativeCaptureError) || error.code !== 'unavailable' || abort.signal.aborted) throw error;
+      await abortableCapture(() => video.applyConstraints?.(browserConstraints).catch(() => undefined), abort.signal);
+      if (abort.signal.aborted || video.readyState === 'ended') throw captureAborted();
+      detachSentinel();
+      abort.abort();
+      deps.onBrowserFallback();
+      return undefined;
+    });
+    if (!native) return stream;
     if (abort.signal.aborted) { native.stop(); throw new DOMException('Screen selection ended.', 'AbortError'); }
     if (requireSourceProof && !nativeSources.has(native)) {
       native.stop(); throw new NativeCaptureError('unsupported-source', 'Native capture did not verify the selected monitor.');

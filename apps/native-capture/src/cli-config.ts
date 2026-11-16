@@ -1,9 +1,9 @@
 import { execFile } from 'node:child_process';
 import { validateOrigin } from './server.js';
 
-export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; idleTimeoutMs: number; help: boolean; statusFile?: string; managed?: boolean }
+export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; idleTimeoutMs?: number; help: boolean; statusFile?: string; managed?: boolean }
 export function parseCliArgs(args: string[], env: NodeJS.ProcessEnv = process.env): CliOptions {
-  const options: CliOptions = { ffmpeg: env.BABAGAN_FFMPEG ?? 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true, idleTimeoutMs: 1_800_000, help: false };
+  const options: CliOptions = { ffmpeg: env.BABAGAN_FFMPEG ?? 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true, help: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--no-open') { options.openBrowser = false; continue; }
@@ -19,7 +19,9 @@ export function parseCliArgs(args: string[], env: NodeJS.ProcessEnv = process.en
     if (arg === '--status-file') options.statusFile = value;
   }
   validateOrigin(options.origin);
-  if (!Number.isSafeInteger(options.idleTimeoutMs) || options.idleTimeoutMs < 1 || options.idleTimeoutMs > 2_147_483_647) throw new Error('Invalid idle timeout.');
+  if (!options.managed) options.idleTimeoutMs ??= 1_800_000;
+  const idleTimeout = options.idleTimeoutMs;
+  if (idleTimeout !== undefined && (!Number.isSafeInteger(idleTimeout) || idleTimeout < 1 || idleTimeout > 2_147_483_647)) throw new Error('Invalid idle timeout.');
   if (!options.ffmpeg || options.ffmpeg.includes('\0')) throw new Error('Invalid FFmpeg executable.');
   return options;
 }
