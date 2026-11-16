@@ -14,7 +14,6 @@ it('uses only the parent pipe for readiness and reports activity until parent EO
       closed, close: async () => { close(); } };
   } });
   await vi.waitFor(() => expect(text).toContain('"ready"'));
-  expect(serverOptions?.parentOwned).toBe(true);
   serverOptions?.onActivity?.(true); serverOptions?.onActivity?.(false); input.end(); await run;
   expect(text.trim().split('\n').map(line => JSON.parse(line).type)).toEqual(['ready','activity','activity','stopped']);
   expect(text.match(/nativeCapture/g)).toHaveLength(1);

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { once } from 'node:events';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { WebSocket, type RawData } from 'ws';
 import { createNativeCaptureServer, type NativeCaptureServer } from './server.js';
 
@@ -12,7 +12,7 @@ afterEach(async () => {
 });
 
 async function server(options: Parameters<typeof createNativeCaptureServer>[0] = {}) {
-  const helper = await createNativeCaptureServer({ idleTimeoutMs: 10_000, getActiveDisplayCount: async () => 1, ...options });
+  const helper = await createNativeCaptureServer({ getActiveDisplayCount: async () => 1, ...options });
   servers.push(helper);
   return helper;
 }
@@ -158,10 +158,22 @@ describe('loopback capture capability server', () => {
     expect(second.messages.filter(({ data }) => JSON.parse(data.toString()).code === 'capture_busy')).toHaveLength(1);
   });
 
-  it('exits when idle and rejects unsafe configuration before listening', async () => {
+  it('rejects unsafe configuration before listening', async () => {
     await expect(createNativeCaptureServer({ origin: 'https://meet.babagan.cloud/path' })).rejects.toThrow(/origin/i);
     await expect(createNativeCaptureServer({ origin: 'http://public.example' })).rejects.toThrow(/origin/i);
-    const helper = await server({ idleTimeoutMs: 30 });
-    await helper.closed;
+  });
+
+  it('accepts a connection after 30 minutes without a capture and shuts down on explicit close', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const helper = await createNativeCaptureServer();
+      servers.push(helper);
+      await vi.advanceTimersByTimeAsync(1_800_001);
+      await expect(connect(helper)).resolves.toHaveProperty('socket');
+      await helper.close();
+      await expect(connect(helper)).rejects.toThrow();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

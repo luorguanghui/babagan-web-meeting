@@ -64,24 +64,24 @@ describe('native capture launcher configuration', () => {
     expect(status.message).toMatch(/--ffmpeg.*BABAGAN_FFMPEG/);
   });
   it('resolves explicit executable before environment and PATH while keeping capture opt in', () => {
-    expect(parseCliArgs([], {})).toMatchObject({ ffmpeg: 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true, idleTimeoutMs: 1_800_000 });
+    expect(parseCliArgs([], {})).toMatchObject({ ffmpeg: 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true });
     expect(parseCliArgs([], { BABAGAN_FFMPEG: 'C:\\tools\\ffmpeg.exe' }).ffmpeg).toBe('C:\\tools\\ffmpeg.exe');
     expect(parseCliArgs(['--ffmpeg', 'C:\\Program Files\\ffmpeg.exe', '--no-open', '--origin', 'http://127.0.0.1:5173'], { BABAGAN_FFMPEG: 'ignored' }))
       .toMatchObject({ ffmpeg: 'C:\\Program Files\\ffmpeg.exe', openBrowser: false, origin: 'http://127.0.0.1:5173' });
   });
-  it('leaves the tray helper parent-owned by default and preserves an explicit CLI idle limit', () => {
-    expect(parseCliArgs(['--managed'], {}).idleTimeoutMs).toBeUndefined();
-    expect(parseCliArgs(['--idle-timeout-ms', '120', '--managed'], {}).idleTimeoutMs).toBe(120);
-    expect(parseCliArgs(['--idle-timeout-ms', '120'], {}).idleTimeoutMs).toBe(120);
+  it('accepts old CLI idle timeout arguments without retaining an idle deadline', () => {
+    expect(parseCliArgs([], {})).not.toHaveProperty('idleTimeoutMs');
+    expect(parseCliArgs(['--idle-timeout-ms', '120', '--managed'], {})).not.toHaveProperty('idleTimeoutMs');
+    expect(parseCliArgs(['--idle-timeout-ms', '120'], {})).not.toHaveProperty('idleTimeoutMs');
   });
 
-  it.skipIf(process.platform !== 'win32')('keeps the tray listener available after the CLI idle deadline and closes on parent EOF', async () => {
+  it.skipIf(process.platform !== 'win32')('keeps the tray listener available with a legacy idle argument and closes on parent EOF', async () => {
     const path = await statusFile();
     const parent = new PassThrough();
     vi.spyOn(process, 'stdin', 'get').mockReturnValue(parent as unknown as typeof process.stdin);
     vi.spyOn(cliConfig, 'verifyFfmpeg').mockResolvedValue(undefined);
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
-    const running = runCli(['--managed', '--no-open', '--status-file', path]);
+    const running = runCli(['--managed', '--no-open', '--status-file', path, '--idle-timeout-ms', '500']);
     let port = 0;
     try {
       await vi.waitFor(async () => {
@@ -129,18 +129,21 @@ describe('native capture launcher configuration', () => {
     const path = await statusFile();
     const messages: unknown[][] = [];
     vi.spyOn(console, 'log').mockImplementation((...args) => messages.push(args));
-    const running = runCli(['--status-file', path, '--ffmpeg', process.env.BABAGAN_TEST_FFMPEG!, '--no-open', '--idle-timeout-ms', '500']).catch((error: unknown) => error);
-    let status: Record<string, unknown> | undefined;
-    const deadline = Date.now() + 3000;
-    while (!status && Date.now() < deadline) {
-      try { status = JSON.parse(await readFile(path, 'utf8')); }
-      catch { await new Promise((resolve) => setTimeout(resolve, 10)); }
+    const parent = new PassThrough();
+    vi.spyOn(process, 'stdin', 'get').mockReturnValue(parent as unknown as typeof process.stdin);
+    const running = runCli(['--managed', '--status-file', path, '--ffmpeg', process.env.BABAGAN_TEST_FFMPEG!, '--no-open']).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(async () => {
+        const status = JSON.parse(await readFile(path, 'utf8')) as { port: number };
+        expect(status).toMatchObject({ version: 1, state: 'ready', pid: process.pid });
+        expect(Object.keys(status).sort()).toEqual(['origin', 'pid', 'port', 'state', 'version']);
+        const response = await fetch(`http://127.0.0.1:${status.port}/`);
+        expect(response.status).toBe(403);
+      }, { timeout: 3000 });
+    } finally {
+      parent.end();
+      expect(await running).toBeUndefined();
     }
-    expect(status).toMatchObject({ version: 1, state: 'ready', pid: process.pid });
-    expect(Object.keys(status!).sort()).toEqual(['origin', 'pid', 'port', 'state', 'version']);
-    const response = await fetch(`http://127.0.0.1:${status!.port}/`);
-    expect(response.status).toBe(403);
-    expect(await running).toBeUndefined();
     expect(JSON.stringify(messages)).not.toContain('#nativeCapture');
   });
 

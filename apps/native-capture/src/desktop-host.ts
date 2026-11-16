@@ -32,7 +32,7 @@ export async function runDesktopHost(args: string[], deps: {
   try {
     await (deps.verify ?? verifyFfmpeg)(options.ffmpeg);
     if (ended || input.readableEnded || input.destroyed) return;
-    helper = await (deps.createServer ?? createNativeCaptureServer)({ ffmpeg: options.ffmpeg, origin: options.origin, parentOwned: true,
+    helper = await (deps.createServer ?? createNativeCaptureServer)({ ffmpeg: options.ffmpeg, origin: options.origin,
       onActivity: captureActive => emit({ type: 'activity', captureActive }),
       onDiagnostic: event => emit({ type: 'diagnostic', ...event }) });
     if (ended) { await helper.close(); return; }

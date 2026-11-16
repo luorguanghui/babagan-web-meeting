@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { validateOrigin } from './server.js';
 
-export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; idleTimeoutMs?: number; help: boolean; statusFile?: string; managed?: boolean }
+export interface CliOptions { ffmpeg: string; origin: string; openBrowser: boolean; edge?: string; help: boolean; statusFile?: string; managed?: boolean }
 export function parseCliArgs(args: string[], env: NodeJS.ProcessEnv = process.env): CliOptions {
   const options: CliOptions = { ffmpeg: env.BABAGAN_FFMPEG ?? 'ffmpeg', origin: 'https://meet.babagan.cloud', openBrowser: true, help: false };
   for (let i = 0; i < args.length; i++) {
@@ -15,13 +15,14 @@ export function parseCliArgs(args: string[], env: NodeJS.ProcessEnv = process.en
     if (arg === '--ffmpeg') options.ffmpeg = value;
     if (arg === '--origin') options.origin = value;
     if (arg === '--edge') options.edge = value;
-    if (arg === '--idle-timeout-ms') options.idleTimeoutMs = Number(value);
+    if (arg === '--idle-timeout-ms') {
+      // Older launcher scripts still pass this argument. It no longer affects lifetime.
+      const legacyTimeout = Number(value);
+      if (!Number.isSafeInteger(legacyTimeout) || legacyTimeout < 1 || legacyTimeout > 2_147_483_647) throw new Error('Invalid idle timeout.');
+    }
     if (arg === '--status-file') options.statusFile = value;
   }
   validateOrigin(options.origin);
-  if (!options.managed) options.idleTimeoutMs ??= 1_800_000;
-  const idleTimeout = options.idleTimeoutMs;
-  if (idleTimeout !== undefined && (!Number.isSafeInteger(idleTimeout) || idleTimeout < 1 || idleTimeout > 2_147_483_647)) throw new Error('Invalid idle timeout.');
   if (!options.ffmpeg || options.ffmpeg.includes('\0')) throw new Error('Invalid FFmpeg executable.');
   return options;
 }
@@ -35,7 +36,7 @@ export function edgeLaunchArguments(profileDirectory: string, launchUrl: string)
   ];
 }
 
-/** Keep visible Edge outside the helper's Windows job so idle shutdown cannot close it. */
+/** Keep visible Edge outside the helper's Windows job so helper shutdown cannot close it. */
 export const edgeSpawnOptions = { windowsHide: false, shell: false, detached: true, stdio: 'ignore' as const };
 
 export function assertDdagrabCapabilities(help: string): void {

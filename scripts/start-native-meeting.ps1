@@ -5,7 +5,8 @@ param(
   [string] $Origin = 'https://meet.babagan.cloud',
   [switch] $NoOpen,
   [ValidateRange(1, 120)] [int] $StartupTimeoutSeconds = 15,
-  [ValidateRange(100, 2147483647)] [int] $IdleTimeoutMs = 1800000
+  # Accepted for older commands. The helper no longer exits when idle.
+  [ValidateRange(100, 2147483647)] [int] $IdleTimeoutMs
 )
 
 $ErrorActionPreference = 'Stop'
@@ -36,8 +37,6 @@ $startInfo.ArgumentList.Add('--status-file')
 $startInfo.ArgumentList.Add($statusPath)
 $startInfo.ArgumentList.Add('--origin')
 $startInfo.ArgumentList.Add($Origin)
-$startInfo.ArgumentList.Add('--idle-timeout-ms')
-$startInfo.ArgumentList.Add([string]$IdleTimeoutMs)
 if ($Ffmpeg) {
   $startInfo.ArgumentList.Add('--ffmpeg')
   $startInfo.ArgumentList.Add($Ffmpeg)
@@ -68,7 +67,7 @@ try {
         throw 'Native helper returned an invalid readiness status.'
       }
       if ($helperProcess.HasExited) { throw 'Native helper exited before startup completed.' }
-      Write-Host "Native meeting helper ready (PID $($helperProcess.Id), 127.0.0.1:$($status.port)). It exits after its idle timeout."
+      Write-Host "Native meeting helper ready (PID $($helperProcess.Id), 127.0.0.1:$($status.port)). It remains available until stopped."
       $ready = $true
       break
     }

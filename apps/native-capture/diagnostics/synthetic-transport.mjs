@@ -46,7 +46,7 @@ async function timestampedParser() {
 
 async function websocket(paced) {
   const helper = await createNativeCaptureServer({ ffmpeg, origin: 'http://127.0.0.1:5188', getActiveDisplayCount: async () => 1,
-    spawnProcess: spawnSynthetic(paced), statsIntervalMs: 100, idleTimeoutMs: 10_000 });
+    spawnProcess: spawnSynthetic(paced), statsIntervalMs: 100 });
   const client = new WebSocket(`ws://127.0.0.1:${helper.port}/frames`, ['babagan-native-v1', `auth.${helper.token}`], { origin: helper.origin });
   let frames = 0;
   let first = 0;

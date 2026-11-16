@@ -32,7 +32,6 @@ export async function runCli(args: string[]): Promise<void> {
         '  --edge <executable>     Optional installed Edge executable\n' +
         '  --origin <origin>       Exact allowed HTTPS origin; localhost HTTP for development\n' +
         '  --no-open               Start helper without launching Edge\n' +
-        '  --idle-timeout-ms <ms>   Exit after idle time (standalone default 1800000)\n' +
         '  --status-file <path>    One-time, token-free launcher startup status');
       return;
     }
@@ -40,9 +39,7 @@ export async function runCli(args: string[]): Promise<void> {
     await verifyFfmpeg(options.ffmpeg);
     const edge = options.openBrowser ? findEdge(options.edge) : undefined;
     if (edge && !process.env.LOCALAPPDATA) throw new Error('LOCALAPPDATA is required for the isolated meeting profile.');
-    // Without an explicit idle limit, the tray's control pipe owns the helper lifetime.
-    const lifetime = options.idleTimeoutMs === undefined ? { parentOwned: true } : { idleTimeoutMs: options.idleTimeoutMs };
-    const helper = await createNativeCaptureServer({ ffmpeg: options.ffmpeg, origin: options.origin, ...lifetime,
+    const helper = await createNativeCaptureServer({ ffmpeg: options.ffmpeg, origin: options.origin,
       onDiagnostic: event => { if (options.managed) console.log(JSON.stringify({ time: new Date().toISOString(), ...event })); } });
     const shutdown = () => { void helper.close(); };
     process.once('SIGINT', shutdown);
