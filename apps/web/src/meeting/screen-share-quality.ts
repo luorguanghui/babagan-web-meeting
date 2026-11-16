@@ -1,5 +1,6 @@
 import {
   SCREEN_SHARE_QUALITY_BATCH_SIZE,
+  SCREEN_SHARE_QUALITY_BODY_LIMIT,
   SCREEN_SHARE_QUALITY_MAX_LINKS,
   type ClientHostInfo,
   type ScreenShareEncoding,
@@ -10,6 +11,7 @@ import {
 } from '@meeting/contracts';
 import { apiNoContent, ApiRequestError } from '../api/client.js';
 import { getNativePacingStats, isNativeCaptureTrack } from './native-capture.js';
+import { readScreenIceQuality, type ScreenIceSource } from './screen-ice-diagnostics.js';
 import type { ScreenCaptureConstraintResult, ScreenSharePublishOptions } from './screen-share.js';
 import type { ProjectStats } from './software-media/encoder.js';
 import { sameCounter, summarizeWebRtcStats, type WebRtcStatsSnapshot } from './webrtc-stats.js';
@@ -24,6 +26,7 @@ export interface ScreenQualitySource {
   key: object;
   transport: Transport;
   report?: RTCStatsReport;
+  ice?: ScreenIceSource;
   turnProvider?: ScreenShareQualityLink['turnProvider'];
   encoding?: ScreenShareEncoding;
   project?: ProjectStats;
@@ -108,12 +111,12 @@ export class ScreenShareQualityRecorder {
     this.retry = undefined;
     if (!retry) this.samples = [];
     if (!final) this.sending = true;
-    return this.sourceKey.then(sourceKey => this.upload({
+    return this.sourceKey.then(sourceKey => this.upload(fitQualityReport({
       version: 1, sourceKey, traceId: this.traceId, role: this.role, final, ...batch,
       browser: browserVersion(navigator.userAgent),
       client: this.client && /^\d{1,5}(\.\d{1,5}){1,3}$/.test(this.client.appVersion)
         ? `${this.client.platform}/${this.client.appVersion}` : undefined
-    })).catch(error => {
+    }))).catch(error => {
       if (error instanceof ApiRequestError && [400, 401, 403, 404, 410, 413].includes(error.status)) {
         this.unavailable = true;
       } else if (!this.finished) {
@@ -134,6 +137,7 @@ export class ScreenShareQualityRecorder {
     this.connections.set(source.key, entry);
     const { transport, turnProvider, encoding, project } = source;
     return { link: entry.link, transport, turnProvider, encoding,
+      ice: source.ice && readScreenIceQuality(source.ice, source.report, transport),
       rtc: readRtcQuality(this.role, snapshot, previous),
       project: project && {
         codec: project.codec, width: project.width, height: project.height,
@@ -185,6 +189,15 @@ export class ScreenShareQualityRecorder {
       paused: element.paused, readyState: element.readyState
     };
   }
+}
+
+function fitQualityReport(report: ScreenShareQualityReport): ScreenShareQualityReport {
+  const encoder = new TextEncoder();
+  // Keep the latest samples if the optional diagnostics push the batch over the API body limit.
+  while (report.samples.length > 1 && encoder.encode(JSON.stringify(report)).byteLength > SCREEN_SHARE_QUALITY_BODY_LIMIT) {
+    report = { ...report, samples: report.samples.slice(1) };
+  }
+  return report;
 }
 
 function readNativePipeline(current: NativeStats['pipeline'], previous: NativeStats['pipeline']) {

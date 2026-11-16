@@ -1,8 +1,9 @@
-import { ScreenShareQualityReportSchema, type ScreenShareQualityReport } from '@meeting/contracts';
+import { SCREEN_SHARE_QUALITY_BODY_LIMIT, ScreenShareQualityReportSchema, type ScreenShareQualityReport } from '@meeting/contracts';
 import { Value } from '@sinclair/typebox/value';
 import * as nativeCapture from './native-capture.js';
 import { describe, expect, it, vi } from 'vitest';
 import { ScreenShareQualityRecorder } from './screen-share-quality.js';
+import { emptyStats } from './software-media/encoder.js';
 
 function report(timestamp: number, frames: number, qpSum: number): RTCStatsReport {
   return new Map([
@@ -89,6 +90,78 @@ describe('screen sharing quality uploads', () => {
       playback: { renderedFps: 17, droppedFrames: 3 }
     });
     expect(JSON.stringify(body)).not.toContain('turn:private');
+  });
+
+  it('uploads both selected ICE types and only aggregate direct-check evidence', async () => {
+    const upload = vi.fn<(body: ScreenShareQualityReport) => Promise<void>>().mockResolvedValue(undefined);
+    const recorder = new ScreenShareQualityRecorder('room', 'viewer', Promise.resolve('a'.repeat(32)), upload);
+    const report = new Map([
+      ['transport', { id: 'transport', type: 'transport', selectedCandidatePairId: 'relay-pair' }],
+      ['relay-pair', { id: 'relay-pair', type: 'candidate-pair', state: 'succeeded',
+        localCandidateId: 'local', remoteCandidateId: 'remote-relay', requestsSent: 40, responsesReceived: 39 }],
+      ['direct-pair', { id: 'direct-pair', type: 'candidate-pair', state: 'failed',
+        localCandidateId: 'local', remoteCandidateId: 'remote-direct', requestsSent: 7, responsesReceived: 0 }],
+      ['local', { id: 'local', type: 'local-candidate', candidateType: 'srflx', address: '192.0.2.1', port: 12345 }],
+      ['remote-relay', { id: 'remote-relay', type: 'remote-candidate', candidateType: 'relay', url: 'turn:private' }],
+      ['remote-direct', { id: 'remote-direct', type: 'remote-candidate', candidateType: 'host', usernameFragment: 'private-ufrag' }]
+    ]) as unknown as RTCStatsReport;
+    const ice = { requestedPolicy: 'all', appliedPolicy: 'all', policyReason: 'default', state: 'connected',
+      gatheringState: 'complete', ageMs: 750, attemptReason: 'initial',
+      localCandidateErrors: 2, remoteCandidateErrors: 1 } as const;
+    recorder.sample({ at: 1000, mode: 'turn', links: [{ key: {}, transport: 'turn', report, ice }] });
+
+    await recorder.finish();
+    const body = upload.mock.calls[0]?.[0];
+    expect(body?.samples[0].links[0].ice).toEqual({
+      ...ice, selectedReason: 'relay-pair', localCandidateType: 'srflx', remoteCandidateType: 'relay',
+      localDirectCandidates: 1, remoteDirectCandidates: 1, directChecksSent: 7, directResponsesReceived: 0
+    });
+    expect(Value.Check(ScreenShareQualityReportSchema, JSON.parse(JSON.stringify(body)))).toBe(true);
+    expect(JSON.stringify(body)).not.toMatch(/192\.0\.2\.1|12345|turn:private|private-ufrag|candidateId/i);
+  });
+
+  it('keeps a very large diagnostic batch within the upload limit and retains the latest ICE sample', async () => {
+    const upload = vi.fn<(body: ScreenShareQualityReport) => Promise<void>>().mockResolvedValue(undefined);
+    const recorder = new ScreenShareQualityRecorder('room', 'viewer', Promise.resolve('a'.repeat(32)), upload);
+    const keys = Array.from({ length: 5 }, () => ({}));
+    const wide = 0.0000012345678901234567;
+    const big = 123_456_789_012_345;
+    const ice = { requestedPolicy: 'all', appliedPolicy: 'all', policyReason: 'default', state: 'connected',
+      gatheringState: 'complete', ageMs: 86_400_000, attemptReason: 'negotiation-timeout',
+      lastRetryReason: 'media-stalled', lastRetryAgoMs: 86_400_000,
+      localCandidateErrors: 65_535, remoteCandidateErrors: 65_535 } as const;
+    const project = { ...emptyStats(), width: big, height: big, rawFps: wide, encodedFps: wide,
+      decodedFps: wide, renderedFps: wide, encodeMs: wide, sentBps: big,
+      queueDrops: big, expiredDrops: big, droppedFrames: big };
+    const encoding = { maxBitrate: big, maxFramerate: wide, scaleResolutionDownBy: wide,
+      degradationPreference: 'maintain-resolution' } as const;
+    for (let index = 1; index <= 8; index++) {
+      const cumulative = big * index;
+      const report = new Map([
+        ['video', { id: 'video', type: 'inbound-rtp', timestamp: index * 70, kind: 'video', codecId: 'codec',
+          frameWidth: big, frameHeight: big, framesPerSecond: wide, framesReceived: cumulative,
+          framesDecoded: cumulative, framesDropped: cumulative, framesAssembledFromMultiplePackets: cumulative,
+          bytesReceived: cumulative, totalDecodeTime: cumulative, totalAssemblyTime: cumulative,
+          freezeCount: cumulative, totalFreezesDuration: 1000 * index, packetsLost: cumulative, packetsReceived: cumulative, jitter: wide,
+          jitterBufferDelay: cumulative, jitterBufferEmittedCount: cumulative, powerEfficientDecoder: true,
+          nackCount: cumulative, pliCount: cumulative, firCount: cumulative, retransmittedBytesReceived: cumulative }],
+        ['codec', { id: 'codec', type: 'codec', mimeType: 'video/H264', sdpFmtpLine: 'profile-level-id=640028' }],
+        ['pair', { id: 'pair', type: 'candidate-pair', selected: true, state: 'succeeded', currentRoundTripTime: wide,
+          localCandidateId: 'local', remoteCandidateId: 'remote', availableOutgoingBitrate: big }],
+        ['local', { id: 'local', type: 'local-candidate', candidateType: 'relay', relayProtocol: 'udp' }],
+        ['remote', { id: 'remote', type: 'remote-candidate', candidateType: 'srflx' }]
+      ]) as unknown as RTCStatsReport;
+      recorder.sample({ at: index * 1000, mode: 'turn', links: keys.map(key => ({ key, transport: 'turn',
+        turnProvider: 'coturn', ice, project, encoding, report })) });
+    }
+    await vi.waitFor(() => expect(upload).toHaveBeenCalledOnce());
+    const body = upload.mock.calls[0][0];
+    expect(new TextEncoder().encode(JSON.stringify(body)).byteLength).toBeLessThanOrEqual(SCREEN_SHARE_QUALITY_BODY_LIMIT);
+    expect(body.samples.at(-1)).toMatchObject({ at: 8000, links: [
+      { ice: { localCandidateType: 'relay' } }, { ice: { localCandidateType: 'relay' } },
+      { ice: { localCandidateType: 'relay' } }, { ice: { localCandidateType: 'relay' } },
+      { ice: { localCandidateType: 'relay' } }
+    ] });
   });
 
   it('retries a transiently failed batch with the original sequence while still sampling', async () => {

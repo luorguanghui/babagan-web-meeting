@@ -54,10 +54,40 @@ const ProjectQualitySchema = Type.Object({
   sentBps: optionalNumber(), queueDrops: number(), expiredDrops: number(), droppedFrames: number()
 }, { additionalProperties: false });
 
+export const SCREEN_SHARE_ICE_COUNTER_MAX = 65_535;
+export const SCREEN_SHARE_ICE_AGE_MAX_MS = 86_400_000;
+const iceCounter = () => Type.Optional(Type.Integer({ minimum: 0, maximum: SCREEN_SHARE_ICE_COUNTER_MAX }));
+const iceAge = () => Type.Integer({ minimum: 0, maximum: SCREEN_SHARE_ICE_AGE_MAX_MS });
+const icePolicy = textEnum('all', 'relay');
+const iceCandidate = textEnum('host', 'srflx', 'prflx', 'relay');
+const iceRetryReason = textEnum('manual', 'settings', 'direct-probe', 'media-stalled', 'media-quality',
+  'negotiation-timeout', 'description-error', 'ice-disconnected', 'ice-failed');
+const IceQualitySchema = Type.Object({
+  requestedPolicy: icePolicy,
+  appliedPolicy: icePolicy,
+  policyReason: textEnum('default', 'viewer-turn', 'cloudflare-recovery'),
+  state: Type.Optional(textEnum('new', 'checking', 'connected', 'completed', 'disconnected', 'failed', 'closed')),
+  gatheringState: Type.Optional(textEnum('new', 'gathering', 'complete')),
+  ageMs: iceAge(),
+  attemptReason: Type.Union([textEnum('initial', 'remote-offer', 'viewer-request', 'encoder-recovery'), iceRetryReason]),
+  lastRetryReason: Type.Optional(iceRetryReason),
+  lastRetryAgoMs: Type.Optional(iceAge()),
+  selectedReason: textEnum('direct-pair', 'relay-pair', 'relay-policy', 'unknown'),
+  localCandidateType: Type.Optional(iceCandidate),
+  remoteCandidateType: Type.Optional(iceCandidate),
+  localDirectCandidates: iceCounter(),
+  remoteDirectCandidates: iceCounter(),
+  directChecksSent: iceCounter(),
+  directResponsesReceived: iceCounter(),
+  localCandidateErrors: iceCounter(),
+  remoteCandidateErrors: iceCounter()
+}, { additionalProperties: false });
+
 const LinkSchema = Type.Object({
   link: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
   transport: textEnum('p2p', 'turn', 'sfu', 'cloudflare-sfu', 'negotiating'),
   turnProvider: Type.Optional(textEnum('coturn', 'cloudflare')),
+  ice: Type.Optional(IceQualitySchema),
   rtc: Type.Optional(RtcQualitySchema),
   encoding: Type.Optional(EncodingSchema),
   project: Type.Optional(ProjectQualitySchema)
@@ -88,7 +118,7 @@ const CaptureSchema = Type.Object({
 export const SCREEN_SHARE_QUALITY_MAX_LINKS = 5;
 const SampleSchema = Type.Object({
   at: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-  mode: textEnum('p2p', 'turn', 'sfu', 'cloudflare-sfu', 'negotiating', 'mixed', 'waiting'),
+  mode: textEnum('p2p', 'turn', 'sfu', 'cloudflare-sfu', 'cloudflare-moq', 'negotiating', 'mixed', 'waiting'),
   hidden: Type.Optional(Type.Boolean()),
   recovering: Type.Optional(Type.Boolean()),
   capture: Type.Optional(CaptureSchema),
@@ -118,3 +148,4 @@ export type ScreenShareQualitySample = Static<typeof SampleSchema>;
 export type ScreenShareQualityLink = Static<typeof LinkSchema>;
 export type ScreenShareEncoding = Static<typeof EncodingSchema>;
 export type ScreenShareRtcQuality = Static<typeof RtcQualitySchema>;
+export type ScreenShareIceQuality = Static<typeof IceQualitySchema>;
