@@ -12,6 +12,7 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { CloudflareMoqService } from '../../services/cloudflare-moq.js';
 import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { AppConfig } from '../../config.js';
 import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
@@ -31,6 +32,7 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
   screenSfu: CloudflareSfuService;
+  screenMoq: CloudflareMoqService;
 }): void {
   app.post('/api/v1/meetings', {
     schema: { body: CreateMeetingRequestSchema, response: { 201: CreateMeetingResponseSchema } },
@@ -110,7 +112,10 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     // so `share-gone` is only announced when the kicked peer was the sharer.
     const wasSharer = dependencies.participants.getShareIdentity(value) === body.participantIdentity;
     await dependencies.hosts.kickParticipant(hostSession(request, dependencies.hosts, value), value, body.participantIdentity);
-    await dependencies.screenSfu.closeParticipant(value, body.participantIdentity);
+    await Promise.all([
+      dependencies.screenMoq.closeParticipant(value, body.participantIdentity),
+      dependencies.screenSfu.closeParticipant(value, body.participantIdentity)
+    ]);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
@@ -130,14 +135,14 @@ export function registerMeetingRoutes(app: FastifyInstance, dependencies: {
     // `share-gone` is only announced when the lock is actually released.
     const wasSharing = dependencies.participants.getShareIdentity(value) !== null;
     await dependencies.hosts.revokeShare(hostSession(request, dependencies.hosts, value), value);
-    await dependencies.screenSfu.reconcile(value);
+    await Promise.all([dependencies.screenMoq.reconcile(value), dependencies.screenSfu.reconcile(value)]);
     if (wasSharing) dependencies.p2p.broadcastShareGone(value);
     return reply.status(204).send();
   });
 
   async function closeMeetingTransports(value: string): Promise<void> {
-    try { await dependencies.screenSfu.closeMeeting(value); }
-    catch { app.log.error({}, 'Screen SFU cleanup failed for a room'); }
+    try { await Promise.all([dependencies.screenMoq.closeMeeting(value), dependencies.screenSfu.closeMeeting(value)]); }
+    catch { app.log.error({}, 'Screen transport cleanup failed for a room'); }
     finally { dependencies.p2p.closeRoom(value, 'meeting ended'); }
   }
 }

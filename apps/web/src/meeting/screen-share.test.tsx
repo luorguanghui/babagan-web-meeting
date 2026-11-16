@@ -1211,6 +1211,28 @@ describe('controlled browser screen sharing', () => {
     expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
   });
 
+  it('cancels an in-flight publisher before waiting for it to release', async () => {
+    const { stream } = displayStream({ audio: false });
+    const pending = deferred<void>();
+    const publish = vi.fn(() => pending.promise);
+    const cancelPendingPublish = vi.fn(() => pending.resolve());
+    const release = vi.fn(async () => {});
+    const controller = createScreenShareController({
+      requestGrant: async () => {},
+      releaseGrant: async () => {},
+      getDisplayMedia: async () => stream,
+      publisher: { publish, cancelPendingPublish, release }
+    });
+
+    const starting = controller.start();
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    const stopping = controller.stop();
+    expect(cancelPendingPublish).toHaveBeenCalledOnce();
+    await Promise.all([starting, stopping]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(controller.getState().status).toBe('idle');
+  });
+
   it('does not resurrect a superseded start when its grant resolves late', async () => {
     const grant1 = deferred<void>();
     const grant2 = deferred<void>();
@@ -2286,7 +2308,7 @@ describe('P2P-first screen sharing in the room', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 503 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(configuration), { status: 200 }))
       .mockImplementation(async () => new Response('{}', { status: 401 }));
-    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(new Response(JSON.stringify({ available: false, publication: null }))) : fetchIce(input));
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).includes('/ice-servers') ? fetchIce(input) : Promise.resolve(Response.json({ available: false, publication: null })));
     const signaling = fakeSignalingClient();
     const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });
@@ -2577,7 +2599,7 @@ describe('P2P-first screen sharing in the room', () => {
   it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {
     vi.useFakeTimers();
     const fetchIce = vi.fn(async () => new Response('{}', { status }));
-    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(Response.json({ available: false, publication: null })) : fetchIce());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).includes('/ice-servers') ? fetchIce() : Promise.resolve(Response.json({ available: false, publication: null })));
     const signaling = fakeSignalingClient();
     const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });

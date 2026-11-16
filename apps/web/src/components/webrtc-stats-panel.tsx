@@ -10,6 +10,7 @@ import { describeH264Profile } from '../meeting/h264-profile.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   'cloudflare-sfu': 'screenTransport.cloudflareSfu',
+  'cloudflare-moq': 'screenTransport.cloudflareMoq',
   p2p: 'screenTransport.p2p',
   turn: 'screenTransport.turn',
   sfu: 'screenTransport.sfu',

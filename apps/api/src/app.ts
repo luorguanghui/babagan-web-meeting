@@ -6,6 +6,9 @@ import rateLimit from '@fastify/rate-limit';
 import websocket from '@fastify/websocket';
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import { CloudflareMoqClient } from './services/cloudflare-moq-client.js';
+import { CloudflareMoqService } from './services/cloudflare-moq.js';
+import { registerScreenMoqRoutes } from './http/routes/screen-moq.js';
 import { CloudflareSfuClient } from './services/cloudflare-sfu-client.js';
 import { CloudflareSfuService } from './services/cloudflare-sfu.js';
 import { registerScreenSfuRoutes } from './http/routes/screen-sfu.js';
@@ -22,6 +25,7 @@ import { registerParticipantRoutes } from './http/routes/participants.js';
 import { registerP2pSignalingRoute } from './http/routes/p2p-signaling.js';
 import type { MediaService } from './livekit/media-service.js';
 import type { WebhookHandler } from './livekit/webhook-handler.js';
+import type { MoqRelayJournal } from './repositories/sqlite-moq-relay-journal.js';
 import { P2pRoomRegistry } from './p2p/room-registry.js';
 import type { HostApplicationService } from './services/host-application-service.js';
 import type { MeetingService } from './services/meeting-service.js';
@@ -37,6 +41,7 @@ export interface AppDependencies {
   /** Shared P2P room registry; created per-app when not provided. */
   p2p?: P2pRoomRegistry;
   screenSfu?: CloudflareSfuService;
+  screenMoqJournal?: MoqRelayJournal;
 }
 
 export async function buildApp(dependencies: AppDependencies): Promise<FastifyInstance> {
@@ -66,15 +71,22 @@ export async function buildApp(dependencies: AppDependencies): Promise<FastifyIn
     api: dependencies.config.cloudflareSfuGatewayUrl || (dependencies.config.cloudflareSfuAppId && dependencies.config.cloudflareSfuAppSecret)
       ? new CloudflareSfuClient({ appId: dependencies.config.cloudflareSfuAppId, appSecret: dependencies.config.cloudflareSfuAppSecret, gatewayUrl: dependencies.config.cloudflareSfuGatewayUrl, gatewayToken: dependencies.config.cloudflareSfuGatewayToken }) : undefined
   });
-  app.addHook('onClose', async () => { await screenSfu.close(); });
-  const appDependencies = { ...dependencies, p2p, screenSfu };
+  const { cloudflareMoqAccountId: accountId, cloudflareMoqApiToken: apiToken } = dependencies.config;
+  const screenMoq = new CloudflareMoqService({
+    journal: dependencies.screenMoqJournal,
+    participants: dependencies.participants,
+    api: accountId && apiToken ? new CloudflareMoqClient({ accountId, apiToken }) : undefined
+  });
+  app.addHook('onClose', async () => { await Promise.all([screenSfu.close(), screenMoq.close()]); });
+  const appDependencies = { ...dependencies, p2p, screenSfu, screenMoq };
+  registerScreenMoqRoutes(app, appDependencies);
   registerScreenSfuRoutes(app, appDependencies);
   registerMeetingRoutes(app, appDependencies);
   registerParticipantRoutes(app, appDependencies);
   registerP2pStatsRoutes(app, appDependencies);
   registerScreenShareQualityRoutes(app, appDependencies);
   registerIceServersRoutes(app, dependencies);
-  registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p, screenSfu);
+  registerLiveKitWebhookRoute(app, dependencies.webhooks, p2p, screenSfu, screenMoq);
   registerP2pSignalingRoute(app, appDependencies);
   registerHealthRoutes(app, dependencies);
   await app.ready();

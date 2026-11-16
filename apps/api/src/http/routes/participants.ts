@@ -7,6 +7,7 @@ import {
 import { Type } from '@sinclair/typebox';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 
+import type { CloudflareMoqService } from '../../services/cloudflare-moq.js';
 import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { P2pRoomRegistry } from '../../p2p/room-registry.js';
 import type { MeetingService } from '../../services/meeting-service.js';
@@ -27,6 +28,7 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
   participants: ParticipantApplicationService;
   p2p: P2pRoomRegistry;
   screenSfu: CloudflareSfuService;
+  screenMoq: CloudflareMoqService;
 }): void {
   app.post('/api/v1/meetings/:slug/join', {
     schema: { params: SlugParamsSchema, body: JoinMeetingRequestSchema, response: { 200: JoinMeetingResponseSchema } },
@@ -61,7 +63,10 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     // read the holder first so `share-gone` is only announced in that case.
     const wasSharer = dependencies.participants.getShareIdentity(value) === participant.identity;
     await dependencies.meetings.leaveMeeting(value, participant.identity);
-    await dependencies.screenSfu.closeParticipant(value, participant.identity);
+    await Promise.all([
+      dependencies.screenMoq.closeParticipant(value, participant.identity),
+      dependencies.screenSfu.closeParticipant(value, participant.identity)
+    ]);
     if (wasSharer) dependencies.p2p.broadcastShareGone(value);
     // Revocation rejects further room use, but retain the bounded cookie for
     // final stats and to avoid a late leave response deleting a newer rejoin.
@@ -74,8 +79,13 @@ export function registerParticipantRoutes(app: FastifyInstance, dependencies: {
     // Stop the publication while retaining the host's grant for the next start.
     const wasSharer = dependencies.participants.getShareIdentity(value) === active.identity;
     await dependencies.hosts.releaseParticipantShare(value, active.identity);
-    if (wasSharer) await dependencies.screenSfu.closeParticipant(value, active.identity);
-    if (wasSharer) dependencies.p2p.broadcastShareGone(value);
+    if (wasSharer) {
+      await Promise.all([
+        dependencies.screenMoq.closeParticipant(value, active.identity),
+        dependencies.screenSfu.closeParticipant(value, active.identity)
+      ]);
+      dependencies.p2p.broadcastShareGone(value);
+    }
     return reply.status(204).send();
   });
 

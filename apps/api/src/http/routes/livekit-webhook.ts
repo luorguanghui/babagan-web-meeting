@@ -1,3 +1,4 @@
+import type { CloudflareMoqService } from '../../services/cloudflare-moq.js';
 import type { CloudflareSfuService } from '../../services/cloudflare-sfu.js';
 import type { FastifyInstance } from 'fastify';
 
@@ -8,7 +9,8 @@ export function registerLiveKitWebhookRoute(
   app: FastifyInstance,
   webhooks: WebhookHandler,
   p2p: P2pRoomRegistry,
-  screenSfu?: CloudflareSfuService
+  screenSfu?: CloudflareSfuService,
+  screenMoq?: CloudflareMoqService
 ): void {
   app.addContentTypeParser('application/webhook+json', { parseAs: 'buffer' }, (_request, body, done) => {
     done(null, body);
@@ -18,10 +20,11 @@ export function registerLiveKitWebhookRoute(
     if (!(body instanceof Uint8Array)) throw new Error('Expected raw webhook body');
     const result = await webhooks.handle(body, request.headers.authorization);
     if (result.participantLeft) {
-      await screenSfu?.closeParticipant(result.participantLeft.slug, result.participantLeft.identity);
+      const { slug, identity } = result.participantLeft;
+      await Promise.all([screenMoq?.reconcile(slug), screenSfu?.closeParticipant(slug, identity)]);
     }
     if (result.shareGone) {
-      await screenSfu?.reconcile(result.shareGone.slug);
+      await Promise.all([screenMoq?.reconcile(result.shareGone.slug), screenSfu?.reconcile(result.shareGone.slug)]);
       p2p.broadcastShareGone(result.shareGone.slug, result.shareGone.reason);
     }
     return reply.status(204).send();

@@ -19,6 +19,7 @@ interface MeetingRow {
   password_hash: string | null;
   status: MeetingStatus;
   share_identity: string | null;
+  share_grant_generation: number;
   created_at: number;
   expires_at: number;
   empty_since: number | null;
@@ -327,6 +328,7 @@ function toMeetingRecord(row: MeetingRow): MeetingRecord {
     passwordHash: row.password_hash,
     status: row.status,
     shareIdentity: row.share_identity,
+    shareGrantGeneration: row.share_grant_generation,
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     emptySince: row.empty_since,

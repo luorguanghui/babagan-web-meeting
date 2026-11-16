@@ -8,6 +8,7 @@ import { AndroidAudioSettings } from '../client/android-audio-settings.js';
 import type { AndroidAudioControls } from '../client/android-audio-routes.js';
 import type { MeetingConnectionState } from '../meeting/room-controller.js';
 import type { ScreenShareTurnProviderPreference } from '../meeting/screen-turn-provider-preference.js';
+import type { ScreenSourceTransport } from '../meeting/screen-transport-mode.js';
 import type { ViewerTransportPreference } from '../meeting/viewer-transport-preference.js';
 import {
   recommendP2pBitrate,
@@ -55,9 +56,10 @@ export interface MeetingControlsProps {
   systemAudioEnabled?: boolean;
   onSystemAudioChange?: (enabled: boolean) => void;
   onNativeCaptureChange?: (enabled: boolean) => void;
-  screenSourceTransport?: 'p2p' | 'cloudflare-sfu';
-  onScreenSourceTransportChange?: (transport: 'p2p' | 'cloudflare-sfu') => void;
+  screenSourceTransport?: ScreenSourceTransport;
+  onScreenSourceTransportChange?: (transport: ScreenSourceTransport) => void;
   cloudflareSfuAvailable?: boolean;
+  cloudflareMoqAvailable?: boolean;
   browserEncodingPreference?: 'hardware' | 'compatible';
   onBrowserEncodingPreferenceChange?: (value: 'hardware' | 'compatible') => void;
   onScreenEncodingEngineChange?: (value: 'project' | 'browser') => void;
@@ -268,6 +270,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
   const sharingHeadingId = useId();
   const qualityDescriptionId = useId();
   const quality = props.screenQuality ?? screenShareDefaultQuality;
+  const singleUpload = props.screenSourceTransport === 'cloudflare-sfu' || props.screenSourceTransport === 'cloudflare-moq';
   const microphoneDevices = props.devices.filter((device) => device.kind === 'audioinput');
   const speakerDevices = props.devices.filter((device) => device.kind === 'audiooutput');
   const screenShareProviderDisabled = Boolean(props.screenShareActive || props.screenShareBusy);
@@ -313,7 +316,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
         </select>{props.nativeCaptureEnabled && <span>{t('native.primaryHint')}</span>}</label>}
         <label className="meeting-settings-field-wide">{t('controls.screenQuality')}<select aria-label={t('controls.screenQuality')} aria-describedby={qualityDescriptionId} value={quality} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenQualityChange?.(event.target.value as ScreenShareQuality)}>
           <option value="flow">{t('controls.flowShort')}</option><option value="standard">{t('controls.standardShort')}</option><option value="motion" disabled={props.nativeCapturePlatform === 'android' && props.nativeCaptureMaxFrameRate !== 60}>{t('controls.motionShort')}</option><option value="detail60" disabled={props.nativeCapturePlatform === 'android' && props.nativeCaptureMaxFrameRate !== 60}>{t('controls.detail60Short')}</option>
-        </select><span id={qualityDescriptionId}>{(props.screenSourceTransport === 'cloudflare-sfu' || (props.screenEncodingEngine ?? 'browser') === 'browser') ? `${t(`controls.${quality}Short`)} · ${t('controls.browserQualityHint')}` : t(`controls.${quality}`)}</span></label>
+        </select><span id={qualityDescriptionId}>{(singleUpload || (props.screenEncodingEngine ?? 'browser') === 'browser') ? `${t(`controls.${quality}Short`)} · ${t('controls.browserQualityHint')}` : t(`controls.${quality}`)}</span></label>
       </div>
       {screenShareProviderDisabled && <p className="meeting-settings-share-hint">{t('controls.sharingSettingsLocked')}</p>}
     </section>
@@ -324,21 +327,22 @@ export function MeetingSettings(props: MeetingSettingsProps) {
     <section className="meeting-settings-section" data-section="sharing" aria-labelledby={sharingHeadingId}>
       <h3 className="meeting-settings-section-heading" id={sharingHeadingId}>{t('controls.startingShare')}</h3>
       <div className="meeting-settings-section-grid">
-        {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as 'p2p' | 'cloudflare-sfu')}>
+        {props.onScreenSourceTransportChange && <label>{t('controls.screenSourceTransport')}<select aria-label={t('controls.screenSourceTransport')} value={props.screenSourceTransport ?? 'p2p'} disabled={screenShareProviderDisabled} onChange={event => props.onScreenSourceTransportChange?.(event.target.value as ScreenSourceTransport)}>
           <option value="p2p">{t('controls.screenSourceP2p')}</option><option value="cloudflare-sfu" disabled={props.cloudflareSfuAvailable === false}>{t('controls.screenSourceCloudflare')}</option>
-        </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}</label>}
+          {props.cloudflareMoqAvailable !== undefined && <option value="cloudflare-moq" disabled={!props.cloudflareMoqAvailable}>{t('screenTransport.cloudflareMoq')}</option>}
+        </select>{props.cloudflareSfuAvailable === false && <span>{t('controls.cloudflareSfuUnavailable')}</span>}{props.screenSourceTransport === 'cloudflare-sfu' && <span>{t('controls.cloudflareSfuEncodingHint')}</span>}{props.cloudflareMoqAvailable === false && <span>{t('controls.moqUnavailable')}</span>}</label>}
         <label>{t('controls.screenCodec')}<select aria-label={t('controls.screenCodec')} value={props.screenCodec ?? 'h264'} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenCodecChange?.(event.target.value as ScreenShareCodec)}>
           <option value="h264">{t('controls.codecH264')}</option><option value="auto">{t('controls.codecAuto')}</option><option value="vp8">{t('controls.codecVp8')}</option>
         </select></label>
-        <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={props.screenSourceTransport === 'cloudflare-sfu' ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={props.screenSourceTransport === 'cloudflare-sfu' || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
+        <label>{t('controls.encodingEngine')}<select aria-label={t('controls.encodingEngine')} value={singleUpload ? 'browser' : props.screenEncodingEngine ?? 'browser'} disabled={singleUpload || props.screenShareActive || props.screenShareBusy} onChange={event => props.onScreenEncodingEngineChange?.(event.target.value as 'project' | 'browser')}>
           <option value="browser">{t('controls.browserEncoding')}</option><option value="project">{t('controls.projectEncoding')}</option>
         </select></label>
-        {(props.screenSourceTransport === 'cloudflare-sfu' || (props.screenEncodingEngine ?? 'browser') === 'browser') && (props.screenCodec ?? 'h264') === 'h264' && <label>{t('controls.browserEncodingPreference')}<select aria-label={t('controls.browserEncodingPreference')} value={props.browserEncodingPreference ?? 'hardware'} disabled={props.screenShareActive || props.screenShareBusy} onChange={event => props.onBrowserEncodingPreferenceChange?.(event.target.value as 'hardware' | 'compatible')}>
+        {props.screenSourceTransport !== 'cloudflare-moq' && (singleUpload || (props.screenEncodingEngine ?? 'browser') === 'browser') && (props.screenCodec ?? 'h264') === 'h264' && <label>{t('controls.browserEncodingPreference')}<select aria-label={t('controls.browserEncodingPreference')} value={props.browserEncodingPreference ?? 'hardware'} disabled={props.screenShareActive || props.screenShareBusy} onChange={event => props.onBrowserEncodingPreferenceChange?.(event.target.value as 'hardware' | 'compatible')}>
           <option value="hardware">{t('controls.browserHardware')}</option><option value="compatible">{t('controls.browserCompatible')}</option>
         </select><span>{t('controls.browserHardwareHint')}</span></label>}
         <label className="meeting-settings-field-wide">{t('controls.screenBitrate')}<select aria-label={t('controls.screenBitrate')} value={props.screenBitrate ?? screenShareDefaultBitrate} disabled={props.screenShareActive || props.screenShareBusy} onChange={(event) => props.onScreenBitrateChange?.(Number(event.target.value) as ScreenShareBitrate)}>
           {screenShareBitrates.map((bitrate) => <option key={bitrate} value={bitrate}>{bitrate / 1_000_000} Mbps</option>)}
-        </select><span className="meeting-controls-hint">{props.screenSourceTransport === 'cloudflare-sfu'
+        </select><span className="meeting-controls-hint">{singleUpload
           ? t('controls.sfuBitrateHint')
           : t('controls.p2pHint', { count: props.screenViewerCount ?? 0, bitrate: recommendP2pBitrate(props.screenViewerCount ?? 0, quality) / 1_000_000 })}</span><span>{t('native.capHint')}</span></label>
       </div>
