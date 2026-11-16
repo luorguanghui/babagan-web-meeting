@@ -44,7 +44,7 @@ const helper = await createNativeCaptureServer({
 // await helper.close(); // terminate only this helper's capture and connections
 ```
 
-The service binds a random port on `127.0.0.1` only. The launcher passes the capability in `/#nativeCapture=1.<port>.<token>`, keeping it out of URL requests and referrers. There is no wildcard CORS or unauthenticated capture route.
+The service listens only on `127.0.0.1`. The Windows launcher and desktop host prefer port `6851` and let the system allocate another port if binding `6851` fails because it is occupied or reserved. Direct factory calls and CLI launches with `--no-open` use a system-assigned port by default. The launcher passes the bound port and a new per-process capability in `/#nativeCapture=1.<port>.<token>`, keeping the capability out of URL requests and referrers. After restarting the helper, open the meeting from the launcher again to get the new capability. There is no wildcard CORS or unauthenticated capture route.
 
 The browser uses `POST /frames-http` with the exact configured `Origin`, `Authorization: Bearer <token>`, `Content-Type: application/json`, and body `{"frameRate":60}` (or 30). Preflight permits only POST and the two required headers for the exact origin; it never permits credentials or a wildcard origin. The response is `application/octet-stream`: a four-byte big-endian metadata length (maximum 4096), that many UTF-8 JSON bytes containing `NativeCaptureFormat`, then fixed-size packets containing the shared 16-byte header plus I420 pixels. No control JSON is inserted into the binary body. A fetch BYOB reader can fill each packet buffer directly. Aborting the fetch or cancelling its reader stops the owned capture.
 

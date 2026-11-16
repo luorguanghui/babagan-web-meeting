@@ -3,7 +3,7 @@ import { existsSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createNativeCaptureServer } from './server.js';
+import { createNativeCaptureServer, PREFERRED_NATIVE_CAPTURE_PORT } from './server.js';
 import { parseCliArgs, verifyFfmpeg, edgeLaunchArguments, edgeSpawnOptions } from './cli-config.js';
 export { parseCliArgs, verifyFfmpeg, edgeLaunchArguments, edgeSpawnOptions, assertDdagrabCapabilities, type CliOptions } from './cli-config.js';
 
@@ -40,6 +40,7 @@ export async function runCli(args: string[]): Promise<void> {
     const edge = options.openBrowser ? findEdge(options.edge) : undefined;
     if (edge && !process.env.LOCALAPPDATA) throw new Error('LOCALAPPDATA is required for the isolated meeting profile.');
     const helper = await createNativeCaptureServer({ ffmpeg: options.ffmpeg, origin: options.origin,
+      preferredPort: options.openBrowser ? PREFERRED_NATIVE_CAPTURE_PORT : undefined,
       onDiagnostic: event => { if (options.managed) console.log(JSON.stringify({ time: new Date().toISOString(), ...event })); } });
     const shutdown = () => { void helper.close(); };
     process.once('SIGINT', shutdown);
@@ -72,6 +73,7 @@ export async function runCli(args: string[]): Promise<void> {
       await openBrowser();
       if (options.statusFile) await writeStartupStatus(options.statusFile, { version: 1, state: 'ready', pid: process.pid, port: helper.port, origin: helper.origin });
       reportedReady = true;
+      if (options.managed) console.log(JSON.stringify({ time: new Date().toISOString(), event: 'helper_ready', port: helper.port }));
       if (!options.statusFile) console.log(`Native capture helper ready on 127.0.0.1:${helper.port}. Capture starts only after an explicit screen-share action.`);
       await helper.closed;
     } finally {

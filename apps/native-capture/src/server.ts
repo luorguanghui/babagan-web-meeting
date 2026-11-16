@@ -8,9 +8,12 @@ import { FrameSender } from './frame-sender.js';
 import { sendControl as send } from './control-sender.js';
 import { HttpCaptureError, httpFrameTransport, readHttpStart, writeHttpError, writeHttpFormat } from './http-stream.js';
 
+export const PREFERRED_NATIVE_CAPTURE_PORT = 6851;
+
 export interface NativeCaptureServerOptions {
   ffmpeg?: string;
   origin?: string;
+  preferredPort?: number;
   spawnProcess?: CaptureSpawner;
   startupTimeoutMs?: number;
   statsIntervalMs?: number;
@@ -192,10 +195,21 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
       });
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    http.once('error', reject);
-    http.listen(0, '127.0.0.1', () => { http.off('error', reject); resolve(); });
+  const listen = (port: number) => new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => { http.off('listening', onListening); reject(error); };
+    const onListening = () => { http.off('error', onError); resolve(); };
+    http.listen(port, '127.0.0.1');
+    http.once('error', onError);
+    http.once('listening', onListening);
   });
+  const preferredPort = options.preferredPort ?? 0;
+  try {
+    await listen(preferredPort);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!preferredPort || (code !== 'EADDRINUSE' && code !== 'EACCES')) throw error;
+    await listen(0);
+  }
   const address = http.address();
   if (!address || typeof address === 'string') throw new Error('Unable to bind loopback capture server');
   return { port: address.port, token, origin, launchUrl: `${origin}/#nativeCapture=1.${address.port}.${token}`, closed, close };

@@ -33,6 +33,20 @@ async function waitFor(predicate: () => boolean, timeout = 2500): Promise<void> 
 }
 
 describe('loopback capture capability server', () => {
+  it('reuses the preferred port after it is released and advertises a fallback while it is occupied', async () => {
+    const previous = await server();
+    const preferredPort = previous.port;
+    const fallback = await server({ preferredPort });
+    expect(fallback.port).not.toBe(preferredPort);
+    expect(fallback.launchUrl).toBe(`${fallback.origin}/#nativeCapture=1.${fallback.port}.${fallback.token}`);
+
+    await previous.close();
+    const restarted = await server({ preferredPort });
+    expect(restarted.port).toBe(preferredPort);
+    expect(restarted.launchUrl).toBe(`${restarted.origin}/#nativeCapture=1.${preferredPort}.${restarted.token}`);
+    expect(restarted.token).not.toBe(previous.token);
+  });
+
   it.each([0, 2])('rejects source-policy WebSocket capture with %s displays before spawning', async count => {
     let spawned = false;
     const helper = await server({ getActiveDisplayCount: async () => count,
