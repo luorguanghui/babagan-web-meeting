@@ -89,6 +89,7 @@ export interface MeetingControlsProps {
   moreButtonRef?: RefObject<HTMLButtonElement | null>;
   includeSettings?: boolean;
   onOpenDiagnostics?: () => void;
+  diagnosticsLabel?: string;
   onLeave: () => void;
 }
 
@@ -301,7 +302,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
       </div>
     </section>}
     {section === 'general' && receivingSettings}
-    {section === 'general' && props.onOpenDiagnostics && <button className="meeting-settings-diagnostics secondary" type="button" onClick={props.onOpenDiagnostics}><Activity aria-hidden="true" size={17} />{t('controls.webrtcData')}</button>}
+    {section === 'general' && props.onOpenDiagnostics && <button className="meeting-settings-diagnostics secondary" type="button" onClick={props.onOpenDiagnostics}><Activity aria-hidden="true" size={17} />{props.diagnosticsLabel ?? t('controls.webrtcData')}</button>}
     {(section === 'all' || section === 'share') && <>
     <section className="meeting-settings-section" aria-label={t('controls.screenQuality')}>
       <h3 className="meeting-settings-section-heading">{t('controls.screenQuality')}</h3>

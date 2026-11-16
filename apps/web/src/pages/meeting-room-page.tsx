@@ -69,6 +69,7 @@ import { ClientHostError } from '../client/host-bridge.js';
 import { ClientUpdateStatus } from '../client/client-update-status.js';
 import { useCloudflareScreen } from '../meeting/use-cloudflare-screen.js';
 import { useScreenMoq } from '../meeting/use-screen-moq.js';
+import { summarizeMoqStats, type MoqStatsSample, type MoqStatsSnapshot } from '../meeting/screen-moq-stats.js';
 import type { CloudflareScreenRecovery } from '../meeting/cloudflare-recovery.js';
 import { CloudflareTurnFallback } from '../meeting/cloudflare-turn-fallback.js';
 import {
@@ -328,6 +329,7 @@ export function MeetingRoomPage({
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
+  const [moqStats, setMoqStats] = useState<MoqStatsSnapshot>();
   const [projectReceiverStats, setProjectReceiverStats] = useState<ProjectStats>();
   const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
@@ -354,7 +356,7 @@ export function MeetingRoomPage({
   const cf = useCloudflareScreen(slug, join.participantIdentity, fetchCfIce);
   const moq = useScreenMoq(slug, join.participantIdentity,
     sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required');
-  const { publish: publishMoq, stop: stopMoq } = moq;
+  const { publish: publishMoq, stop: stopMoq, getStatsSession: getMoqStatsSession } = moq;
   const [cfReadyStream, setCfReadyStream] = useState<MediaStream>();
   const cfRef = useRef(cf); cfRef.current = cf;
   const authorizationChanged = useCallback((authorized: boolean) => {
@@ -1046,6 +1048,7 @@ export function MeetingRoomPage({
   const stageMuted = Boolean(screenState.stream) || (!moq.stream && !cf.stream && p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
   const moqSharing = screenState.stream ? screenSourceTransport === 'cloudflare-moq' : Boolean(moq.remote);
+  const statsTitle = t(moqSharing ? 'controls.moqData' : 'controls.webrtcData');
   const screenTransportMode: ScreenTransportMode = moqSharing ? 'cloudflare-moq'
     : (screenState.stream && screenSourceTransport === 'cloudflare-sfu') || (cf.sourceIdentity && stageStream !== p2pViewerStream)
     ? 'cloudflare-sfu' : screenState.stream
@@ -1205,6 +1208,55 @@ export function MeetingRoomPage({
   }, [controller, hasActiveScreenShare, qualityOwner, qualitySender, qualityMode, screenState.stream, screenState.captureConstraint,
     viewerP2pState, viewerTransportPreference, stageTrack, cf.sourceIdentity, cf.publisherRecovering, cf.recovering, isAndroidClient, p2pStats]);
 
+  useEffect(() => {
+    setMoqStats(undefined);
+    if (!moqSharing || displayedPanel !== 'stats') return;
+    const role = qualitySender ? 'sender' : 'viewer';
+    let cancelled = false;
+    let sampling = false;
+    let previous: MoqStatsSample | undefined;
+    const sample = async () => {
+      if (sampling) return;
+      const session = getMoqStatsSession(role);
+      if (!session?.readStats) {
+        previous = undefined;
+        setMoqStats(undefined);
+        return;
+      }
+      sampling = true;
+      try {
+        const media = await session.readStats();
+        if (cancelled || getMoqStatsSession(role) !== session) return;
+        const video = screenPlaybackRef.current;
+        const playbackQuality = role === 'viewer' && moq.stream && video?.srcObject === moq.stream
+          ? video.getVideoPlaybackQuality?.() : undefined;
+        const current: MoqStatsSample = {
+          session, at: performance.now(), media,
+          playback: playbackQuality && moq.stream ? {
+            stream: moq.stream,
+            frames: Math.max(0, playbackQuality.totalVideoFrames - playbackQuality.droppedVideoFrames),
+            dropped: playbackQuality.droppedVideoFrames
+          } : undefined
+        };
+        setMoqStats(summarizeMoqStats(role, current, previous));
+        previous = current;
+      } catch {
+        if (!cancelled && getMoqStatsSession(role) === session) {
+          previous = undefined;
+          setMoqStats(undefined);
+        }
+      } finally {
+        sampling = false;
+      }
+    };
+    void sample();
+    const timer = window.setInterval(() => void sample(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [displayedPanel, getMoqStatsSession, moq.stream, moq.publisherRecovering, moqSharing, qualitySender]);
+
   const meetingControlsProps: MeetingControlsProps = {
     connection: state.connection,
     microphoneEnabled: state.microphoneEnabled,
@@ -1308,7 +1360,7 @@ export function MeetingRoomPage({
       participantButtonRef={participantButtonRef}
       settingsButtonRef={settingsButtonRef}
       statsButtonRef={statsButtonRef}
-      statsLabel={t('controls.webrtcData')}
+      statsLabel={statsTitle}
       statsVisibleLabel={t('controls.connectionInfo')}
       onStats={() => { statsOpenerRef.current = statsButtonRef; openMeetingPanel('stats'); }}
       activePanel={meetingPanel ?? (membersExpanded ? 'participants' : null)}
@@ -1376,7 +1428,7 @@ export function MeetingRoomPage({
       returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
     ><p className="meeting-settings-description">{t('room.settingsDescription')}</p>
       <div className="meeting-general-language"><LanguageSelector /></div>
-      <MeetingSettings {...meetingControlsProps} section="general" onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
+      <MeetingSettings {...meetingControlsProps} section="general" diagnosticsLabel={statsTitle} onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
       {clientHost && <div className="meeting-client-status"><ClientUpdateStatus />{isAndroidClient && <p>{t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint')}</p>}</div>}
       <p className="meeting-settings-callout">{t('room.settingsHint')}</p></MeetingDrawer>}
     {displayedPanel === 'more' && <MeetingDrawer
@@ -1390,13 +1442,13 @@ export function MeetingRoomPage({
       { action: 'participants', label: t('participants.label') },
       { action: 'audio-devices', label: t('controls.audioDevices') },
       { action: 'screen-settings', label: t('controls.screenSettings') },
-      { action: 'webrtc-stats', label: t('controls.webrtcData') },
+      { action: 'webrtc-stats', label: statsTitle },
       { action: 'leave', label: t('controls.leave') }
     ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
     {displayedPanel === 'stats' && <MeetingDrawer
       modal={false}
       exiting={panelPresence.exiting}
-      title={t('controls.webrtcData')}
+      title={statsTitle}
       closeLabel={t('controls.closePanel')}
       backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
       onBack={displayedPanelParent === 'more' ? backToMore : undefined}
@@ -1404,8 +1456,9 @@ export function MeetingRoomPage({
       returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : statsOpenerRef.current}
     ><WebRtcStatsPanel
       embedded
-      active={hasActiveScreenShare}
+      active={hasActiveScreenShare || moqSharing}
       snapshot={screenStats}
+      moqStats={moqStats}
       encodingDiagnostics={screenState.status === 'sharing' ? encodingDiagnostics : undefined}
       requestedCodec={screenCodec}
       projectReceiver={projectReceiverStats}

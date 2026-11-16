@@ -4,6 +4,7 @@ import * as Watch from '@moq/watch';
 import { Signal, type Getter } from '@moq/signals';
 import { computeResolutionScale } from './screen-resolution.js';
 import type { MoqMediaSession } from './screen-moq.js';
+import type { MoqMediaReading } from './screen-moq-stats.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
 
 export { supportsMoqPublisher, supportsMoqSubscriber } from './screen-moq-support.js';
@@ -86,12 +87,27 @@ async function connect(grant: MediaGrant, session: MediaSession, origin: Origin.
   void transport.closed.then(session.close, session.close);
   await session.until(transport.ready);
   if (!('protocol' in transport) || transport.protocol !== PROTOCOL) throw new Error('MoQ protocol unavailable');
+  const protocol = transport.protocol;
   const peer = await session.until(Connection.connect({
     url: new URL(url.origin), transport, signal: session.signal,
     ...(role === 'publish' ? { publish: origin.consume() } : { consume: origin })
   }).then(value => session.own(value)));
   void peer.closed.then(session.close, session.close);
-  return peer;
+  return { peer, protocol } as const;
+}
+
+async function relayReading(peer: Awaited<ReturnType<typeof Connection.connect>>): Promise<Partial<MoqMediaReading>> {
+  try {
+    const { rtt, bytesSent, bytesReceived } = await peer.stats();
+    return {
+      relayRttMs: rtt,
+      transportBytesSent: bytesSent,
+      transportBytesReceived: bytesReceived
+    };
+  } catch {
+    // A browser may expose no transport counters or refuse stats after closing.
+    return {};
+  }
 }
 
 function cloneTrack(session: MediaSession, source: MediaStreamTrack): MediaStreamTrack {
@@ -108,7 +124,7 @@ export async function openMoqPublisher(
     const videoSource = stream.getVideoTracks()[0];
     if (!videoSource) throw new Error('Missing screen video track');
     const origin = session.own(new Origin.Producer());
-    await connect(grant, session, origin, 'publish');
+    const { peer, protocol } = await connect(grant, session, origin, 'publish');
     session.signal.throwIfAborted();
     const announce = new Signal(false);
     const broadcast = session.own(new Publish.Broadcast({
@@ -128,19 +144,38 @@ export async function openMoqPublisher(
     }));
     const catalogs: Array<Getter<unknown>> = [encoder.out.catalog];
     const audioSource = stream.getAudioTracks()[0];
+    let audioEncoder: Publish.Audio.Encoder | undefined;
     if (audioSource) {
       const audioTrack = cloneTrack(session, audioSource) as Publish.Audio.StreamTrack;
       const audioCapture = session.own(new Publish.Audio.Capture({
         source: { track: audioTrack, kind: 'music' }, enabled: true
       }));
-      const audioEncoder = session.own(new Publish.Audio.Encoder('audio/system', {
+      audioEncoder = session.own(new Publish.Audio.Encoder('audio/system', {
         broadcast, capture: audioCapture, enabled: true, codec: { mime: 'opus', bitrate: 128_000 }
       }));
       catalogs.push(audioEncoder.out.catalog);
     }
     await Promise.all(catalogs.map(catalog => waitForValue(session, catalog)));
     announce.set(true);
-    return session;
+    return {
+      close: session.close, closed: session.closed,
+      async readStats(): Promise<MoqMediaReading> {
+        const catalog = encoder.out.catalog.peek();
+        const resolved = encoder.out.resolved.peek();
+        const video = encoder.out.stats.peek();
+        return {
+          codec: catalog?.codec ?? resolved?.codec,
+          width: catalog?.codedWidth ?? resolved?.width,
+          height: catalog?.codedHeight ?? resolved?.height,
+          frameCount: video.frames,
+          videoBytes: video.bytes,
+          audioBytes: audioEncoder?.out.stats.peek().bytes,
+          hasAudio: Boolean(audioEncoder),
+          ...await relayReading(peer),
+          protocol
+        };
+      }
+    };
   }, 'MoQ screen sharing could not start.');
 }
 
@@ -185,7 +220,7 @@ function attachSystemAudio(session: MediaSession, root: Getter<AudioNode | undef
 export async function openMoqSubscriber(grant: MediaGrant, signal: AbortSignal): Promise<MoqMediaSession & { stream: MediaStream }> {
   return openSession(signal, async session => {
     const origin = session.own(new Origin.Producer());
-    const peer = await connect(grant, session, origin, 'subscribe');
+    const { peer, protocol } = await connect(grant, session, origin, 'subscribe');
     const canvas = document.createElement('canvas');
     const stream = canvas.captureStream();
     session.add(() => stream.getVideoTracks().forEach(track => track.stop()));
@@ -197,6 +232,25 @@ export async function openMoqSubscriber(grant: MediaGrant, signal: AbortSignal):
     // decoded audio into that same MediaStream without sending sound to speakers twice.
     attachSystemAudio(session, player.audio.out.root, stream);
     await waitForValue(session, player.renderer.out.frame);
-    return { close: session.close, closed: session.closed, stream };
+    return {
+      close: session.close, closed: session.closed, stream,
+      async readStats(): Promise<MoqMediaReading> {
+        const config = player.video.source.out.config.peek();
+        const display = player.video.out.display.peek();
+        const video = player.video.out.stats.peek();
+        return {
+          codec: config?.codec,
+          width: display?.width ?? config?.codedWidth,
+          height: display?.height ?? config?.codedHeight,
+          // The SDK increments this count as frames are submitted to WebCodecs.
+          frameCount: video?.frameCount,
+          videoBytes: video?.bytesReceived,
+          audioBytes: player.audio.out.stats.peek()?.bytesReceived,
+          hasAudio: player.audio.source.out.config.peek() !== undefined,
+          ...await relayReading(peer),
+          protocol
+        };
+      }
+    };
   }, 'MoQ screen sharing could not be played.');
 }

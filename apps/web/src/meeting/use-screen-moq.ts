@@ -16,6 +16,7 @@ export function useScreenMoq(slug: string, identity: string, enabled: boolean) {
   const [available, setAvailable] = useState(false);
   const [publication, setPublication] = useState<ScreenMoqPublication | null>(null);
   const [source, setSource] = useState<{ shareId: string; stream: MediaStream }>();
+  const viewerMedia = useRef<MoqMediaSession | undefined>(undefined);
   const [viewerError, setViewerError] = useState<ViewerError>();
   const [publisherFailed, setPublisherFailed] = useState(false);
   const [publisherRecovering, setPublisherRecovering] = useState(false);
@@ -80,12 +81,18 @@ export function useScreenMoq(slug: string, identity: string, enabled: boolean) {
     let media: MoqMediaSession | undefined;
     let timer: ReturnType<typeof setTimeout>;
     let retryMs = 2_000;
+    const closeMedia = () => {
+      if (viewerMedia.current === media) viewerMedia.current = undefined;
+      media?.close();
+      media = undefined;
+    };
     const connect = async () => {
       const loaded = await import('./screen-moq-media.js');
       const connection = await api.subscribe(shareId, signal);
       const session = await loaded.openMoqSubscriber(connection, signal);
       if (signal.aborted) { session.close(); return; }
       media = session;
+      viewerMedia.current = session;
       retryMs = 2_000;
       setSource({ shareId, stream: session.stream });
       setViewerError(undefined);
@@ -95,8 +102,7 @@ export function useScreenMoq(slug: string, identity: string, enabled: boolean) {
     const subscribe = () => {
       void connect().catch(error => {
         if (signal.aborted) return;
-        media?.close();
-        media = undefined;
+        closeMedia();
         setSource(undefined);
         setViewerError('connection');
         if (error instanceof ApiRequestError && [401, 403, 404, 410].includes(error.status)) return;
@@ -108,7 +114,7 @@ export function useScreenMoq(slug: string, identity: string, enabled: boolean) {
     return () => {
       lifetime.abort();
       clearTimeout(timer);
-      media?.close();
+      closeMedia();
     };
   }, [api, shareId]);
 
@@ -149,11 +155,14 @@ export function useScreenMoq(slug: string, identity: string, enabled: boolean) {
   }, [api]);
 
   const clearPublisherError = useCallback(() => setPublisherFailed(false), []);
+  const getStatsSession = useCallback((role: 'sender' | 'viewer') =>
+    role === 'sender' ? publisher.current?.getStatsSession() : viewerMedia.current, []);
   return {
     publishAvailable: available && supportsMoqPublisher(),
     remote,
     stream: source?.shareId === shareId ? source?.stream : undefined,
     viewerError,
+    getStatsSession,
     publisherFailed,
     publisherRecovering,
     clearPublisherError,

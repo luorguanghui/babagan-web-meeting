@@ -2615,6 +2615,41 @@ describe('P2P-first screen sharing in the room', () => {
 
 });
 
+it('opens the MoQ diagnostics drawer with live statistics from the current viewer', async () => {
+  const { stream } = displayStream({ audio: false });
+  const readStats = vi.fn(async () => ({ protocol: 'moqt-18' as const, codec: 'avc1.42001f', width: 1280, height: 720, relayRttMs: 35 }));
+  const subscriber = vi.fn(async () => ({ stream, readStats, close: vi.fn(), closed: new Promise<void>(() => {}) }));
+  vi.doMock('./screen-moq-media.js', () => ({ openMoqSubscriber: subscriber }));
+  vi.spyOn(await import('./screen-moq-support.js'), 'supportsMoqSubscriber').mockReturnValue(true);
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+    if (path.endsWith('/screen-moq/subscribe')) return Response.json({
+      shareId: 'moq-active', namespace: 'test.hang', url: 'https://relay.example.test/test-token'
+    });
+    if (path.endsWith('/screen-moq')) return Response.json({
+      available: true, publication: { shareId: 'moq-active', sharerIdentity: 'sharer-1', sharerName: 'Ben', namespace: 'test.hang' }
+    });
+    return Response.json({ available: false, publication: null });
+  }));
+  const rendered = renderP2pRoom({ createSignalingClient: fakeSignalingClient().factory });
+  try {
+    await waitFor(() => expect(subscriber).toHaveBeenCalledOnce());
+    expect(readStats).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'MoQ data' }));
+
+    const diagnostics = await screen.findByRole('dialog', { name: 'MoQ data' });
+    expect(await within(diagnostics).findByText('35 ms')).toBeVisible();
+    expect(within(diagnostics).getByText('1280×720')).toBeVisible();
+    expect(within(diagnostics).getByText('moqt-18')).toBeVisible();
+  } finally {
+    rendered.unmount();
+    vi.doUnmock('./screen-moq-media.js');
+  }
+});
+
 describe('screen share quality in the room', () => {
   it('uploads the final sample of a short share without opening the diagnostics panel', async () => {
     vi.stubGlobal('crypto', webcrypto);

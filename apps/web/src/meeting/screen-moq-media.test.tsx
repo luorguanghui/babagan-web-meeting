@@ -3,11 +3,22 @@ import { Connection } from '@moq/net';
 import { openMoqPublisher, openMoqSubscriber } from './screen-moq-media.js';
 import type { ScreenSharePublishOptions } from './screen-share.js';
 
-const { playerFrames, playerAudio, encoderCatalog, audioCatalog, closedResources } = vi.hoisted(() => ({
+const {
+  playerFrames, playerAudio, decoderVideo, decoderAudio, videoConfig, audioConfig, videoDisplay,
+  encoderCatalog, encoderStats, encoderResolved, audioCatalog, audioStats, closedResources
+} = vi.hoisted(() => ({
   playerFrames: { peek: vi.fn(), subscribe: vi.fn() },
   playerAudio: { peek: vi.fn(), subscribe: vi.fn() },
+  decoderVideo: { peek: vi.fn() },
+  decoderAudio: { peek: vi.fn() },
+  videoConfig: { peek: vi.fn() },
+  audioConfig: { peek: vi.fn() },
+  videoDisplay: { peek: vi.fn() },
   encoderCatalog: { peek: vi.fn(), subscribe: vi.fn() },
+  encoderStats: { peek: vi.fn() },
+  encoderResolved: { peek: vi.fn() },
   audioCatalog: { peek: vi.fn(), subscribe: vi.fn() },
+  audioStats: { peek: vi.fn() },
   closedResources: vi.fn()
 }));
 
@@ -17,14 +28,15 @@ vi.mock('@moq/net', async importOriginal => {
 });
 vi.mock('@moq/publish', () => {
   class Resource { close = closedResources; }
-  class VideoEncoder extends Resource { out = { catalog: encoderCatalog }; }
-  class AudioEncoder extends Resource { out = { catalog: audioCatalog }; }
+  class VideoEncoder extends Resource { out = { catalog: encoderCatalog, stats: encoderStats, resolved: encoderResolved }; }
+  class AudioEncoder extends Resource { out = { catalog: audioCatalog, stats: audioStats }; }
   return { Broadcast: Resource, Video: { Capture: Resource, Encoder: VideoEncoder }, Audio: { Capture: Resource, Encoder: AudioEncoder } };
 });
 vi.mock('@moq/watch', () => ({
   Player: class {
     renderer = { out: { frame: playerFrames } };
-    audio = { out: { root: playerAudio } };
+    video = { out: { display: videoDisplay, stats: decoderVideo }, source: { out: { config: videoConfig } } };
+    audio = { out: { root: playerAudio, stats: decoderAudio }, source: { out: { config: audioConfig } } };
     close = closedResources;
   }
 }));
@@ -56,18 +68,24 @@ class TestWebTransport {
 
 let peer: ReturnType<typeof Promise.withResolvers<null>>;
 let peerClose: ReturnType<typeof vi.fn>;
+let peerStats: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   peer = Promise.withResolvers<null>();
   peerClose = vi.fn();
+  peerStats = vi.fn(async () => ({}));
   encoderCatalog.peek.mockReturnValue({ codec: 'avc1.640028' });
   audioCatalog.peek.mockReturnValue({ codec: 'opus' });
-  vi.mocked(Connection.connect).mockResolvedValue({ close: peerClose, closed: peer.promise } as unknown as Awaited<ReturnType<typeof Connection.connect>>);
+  playerAudio.subscribe.mockReturnValue(vi.fn());
+  vi.mocked(Connection.connect).mockResolvedValue({
+    close: peerClose, closed: peer.promise, stats: peerStats
+  } as unknown as Awaited<ReturnType<typeof Connection.connect>>);
   vi.stubGlobal('WebTransport', TestWebTransport);
 });
 
 afterEach(() => {
+  Reflect.deleteProperty(HTMLCanvasElement.prototype, 'captureStream');
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -96,6 +114,42 @@ describe('MoQ browser media sessions', () => {
     await expect(openMoqPublisher(grant, stream(video.original), options, new AbortController().signal)).rejects.toThrow(/^MoQ screen sharing could not start\.$/);
     expect(TestWebTransport.last.close).toHaveBeenCalledOnce();
     expect(video.original.stop).not.toHaveBeenCalled();
+  });
+
+  it('reads cumulative encoded media counters and the negotiated relay statistics', async () => {
+    encoderCatalog.peek.mockReturnValue({ codec: 'avc1.640028', codedWidth: 1600, codedHeight: 900 });
+    encoderStats.peek.mockReturnValue({ frames: 21, bytes: 23_456 });
+    audioStats.peek.mockReturnValue({ bytes: 543 });
+    peerStats.mockResolvedValue({ rtt: 18.5, bytesSent: 24_200, bytesReceived: 65 });
+    const session = await openMoqPublisher(grant, stream(mediaTrack('video').original, mediaTrack('audio').original),
+      options, new AbortController().signal);
+    expect(await session.readStats?.()).toEqual({
+      protocol: 'moqt-18', codec: 'avc1.640028', width: 1600, height: 900,
+      frameCount: 21, videoBytes: 23_456, audioBytes: 543, hasAudio: true,
+      relayRttMs: 18.5, transportBytesSent: 24_200, transportBytesReceived: 65
+    });
+    encoderStats.peek.mockReturnValue({ frames: 29, bytes: 26_491 });
+    expect(await session.readStats?.()).toMatchObject({ frameCount: 29, videoBytes: 26_491 });
+    session.close();
+  });
+
+  it('reads viewer media counters when transport statistics are unavailable', async () => {
+    playerFrames.peek.mockReturnValue({ timestamp: 100 });
+    decoderVideo.peek.mockReturnValue({ frameCount: 38, bytesReceived: 30_245 });
+    decoderAudio.peek.mockReturnValue({ bytesReceived: 777 });
+    videoConfig.peek.mockReturnValue({ codec: 'vp8', codedWidth: 1920, codedHeight: 1088 });
+    videoDisplay.peek.mockReturnValue({ width: 1920, height: 1080 });
+    audioConfig.peek.mockReturnValue({ codec: 'opus' });
+    peerStats.mockRejectedValue(new Error('transport stats unavailable ' + grant.url));
+    Object.defineProperty(HTMLCanvasElement.prototype, 'captureStream', {
+      configurable: true, value: () => ({ getVideoTracks: () => [] })
+    });
+    const session = await openMoqSubscriber(grant, new AbortController().signal);
+    expect(await session.readStats?.()).toEqual({
+      protocol: 'moqt-18', codec: 'vp8', width: 1920, height: 1080,
+      frameCount: 38, videoBytes: 30_245, audioBytes: 777, hasAudio: true
+    });
+    session.close();
   });
 
   it('does not report publication ready without a supported encoder and live input frame', async () => {

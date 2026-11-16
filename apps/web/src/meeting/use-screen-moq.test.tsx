@@ -22,7 +22,8 @@ afterEach(() => {
 it('subscribes to a ready remote share and closes the media when it is withdrawn', async () => {
   const stream = {} as MediaStream;
   const close = vi.fn();
-  vi.mocked(openMoqSubscriber).mockResolvedValue({ stream, close, closed: new Promise(() => {}) });
+  const session = { stream, close, closed: new Promise<void>(() => {}) };
+  vi.mocked(openMoqSubscriber).mockResolvedValue(session);
   let activePublication: typeof publication | null = publication;
   const fetcher = vi.fn(async (input: RequestInfo | URL) => String(input).endsWith('/subscribe')
     ? Response.json(grant)
@@ -32,6 +33,7 @@ it('subscribes to a ready remote share and closes the media when it is withdrawn
   const { result } = renderHook(() => useScreenMoq('room', 'viewer', true));
   await waitFor(() => expect(result.current.stream).toBe(stream));
   expect(result.current.remote).toEqual(publication);
+  expect(result.current.getStatsSession('viewer')).toBe(session);
   expect(result.current.publishAvailable).toEqual(true);
   expect(openMoqSubscriber).toHaveBeenCalledExactlyOnceWith(grant, expect.any(AbortSignal));
   expect(fetcher.mock.calls.map(([url]) => url)).toEqual([
@@ -41,6 +43,7 @@ it('subscribes to a ready remote share and closes the media when it is withdrawn
   activePublication = null;
   await waitFor(() => expect(result.current.stream).toBeUndefined(), { timeout: 4_000 });
   expect(close).toHaveBeenCalledOnce();
+  expect(result.current.getStatsSession('viewer')).toBeUndefined();
 });
 
 it('re-publishes once after a relay failure without asking for screen capture again', async () => {

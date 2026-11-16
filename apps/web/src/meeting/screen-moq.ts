@@ -1,9 +1,11 @@
 import type { ScreenMoqConnectionResponse } from '@meeting/contracts';
 import type { ScreenSharePublishOptions } from './screen-share.js';
+import type { MoqMediaReading } from './screen-moq-stats.js';
 
 export interface MoqMediaSession {
   close(): void;
   closed: Promise<void>;
+  readStats?(): Promise<MoqMediaReading>;
 }
 
 type OpenPublisher = (
@@ -59,6 +61,10 @@ export class MoqScreenPublisher {
       await this.close();
       throw error;
     }
+  }
+
+  getStatsSession(): MoqMediaSession | undefined {
+    return this.media;
   }
 
   close(): Promise<void> {
