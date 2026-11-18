@@ -696,6 +696,12 @@ class CloudflareSfuComposeMigrationTests(unittest.TestCase):
         self.assertIsNone(environment['CLOUDFLARE_TURN_HTTPS_PROXY'])
         self.assertEqual(override['services']['web'], {'image': 'candidate-web'})
 
+    def test_api_override_passes_only_moq_environment_references(self):
+        override = json.loads(updater.candidate_override({'api': 'candidate-api'}))
+        environment = override['services']['api']['environment']
+        for key in ('CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN'):
+            self.assertEqual(environment[key], '${' + key + ':-}')
+
     def test_web_only_override_does_not_reconfigure_api(self):
         override = json.loads(updater.candidate_override({'web': 'candidate-web'}))
         self.assertEqual(override, {'services': {'web': {'image': 'candidate-web'}}})

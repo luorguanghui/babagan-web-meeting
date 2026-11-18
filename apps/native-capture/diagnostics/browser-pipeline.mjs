@@ -18,7 +18,7 @@ const bitrate=Number(process.argv.find(a=>a.startsWith('--bitrate='))?.slice(10)
 if(!Number.isSafeInteger(bitrate)||bitrate<1000000||bitrate>40000000)throw new Error('Invalid test bitrate');
 if(process.argv.includes('--helper')){
  let resetInjected=false;
- const helper=await createNativeCaptureServer({ffmpeg,origin,idleTimeoutMs:300000,getActiveDisplayCount:async()=>1,
+ const helper=await createNativeCaptureServer({ffmpeg,origin,getActiveDisplayCount:async()=>1,
   spawnProcess:(exe,args)=>{const actual=[...args],input=actual.indexOf('-i');actual[input+1]=steps?"color=black:size=1920x1080:rate=120[bg];testsrc2=size=1920x1080:rate=120[fg];[bg][fg]overlay=shortest=1:enable='gte(mod(t,30),8)'":'testsrc2=size=1920x1080:rate=120';actual.splice(input,0,'-re');const vf=actual.indexOf('-vf')+1;actual[vf]=actual[vf].replace('hwdownload,format=bgra,','');if(idleGap)actual[vf]=actual[vf].replace('showinfo=checksum=0',"select='eq(n,0)+gte(t,35)',showinfo=checksum=0");const capture=spawn(exe,actual,{windowsHide:true,stdio:['pipe','pipe','pipe']});if(resetTest&&!resetInjected){resetInjected=true;setTimeout(()=>{capture.stderr.emit('data',Buffer.from('AcquireNextFrame failed: 887a0026\n'));capture.kill();},15000).unref();}return capture;}});
  process.send?.({port:helper.port,token:helper.token});const stop=()=>void helper.close().then(()=>process.exit(0));process.once('message',stop);process.once('disconnect',stop);process.once('SIGTERM',stop);
 }else{

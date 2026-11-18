@@ -3,6 +3,7 @@ import type { P2pTurnProvider, ScreenShareCodec } from '@meeting/contracts';
 import { type MessageKey, useI18n } from '../i18n/i18n.js';
 import type { P2pEncodingDiagnostics } from '../meeting/p2p-share-controller.js';
 import type { ScreenTransportMode, ScreenTurnProvider } from '../meeting/screen-transport-mode.js';
+import type { MoqStatsSnapshot } from '../meeting/screen-moq-stats.js';
 import type { WebRtcMediaStats, WebRtcStatsSnapshot } from '../meeting/webrtc-stats.js';
 import { ProjectMediaSection } from '../meeting/software-media/project-stats.js';
 import type { ProjectStats } from '../meeting/software-media/encoder.js';
@@ -10,6 +11,7 @@ import { describeH264Profile } from '../meeting/h264-profile.js';
 
 const modeKeys: Record<ScreenTransportMode, MessageKey> = {
   'cloudflare-sfu': 'screenTransport.cloudflareSfu',
+  'cloudflare-moq': 'screenTransport.cloudflareMoq',
   p2p: 'screenTransport.p2p',
   turn: 'screenTransport.turn',
   sfu: 'screenTransport.sfu',
@@ -24,6 +26,7 @@ const turnProviderKeys: Record<ScreenTurnProvider, MessageKey> = {
 
 export function WebRtcStatsPanel({
   snapshot,
+  moqStats,
   requestedCodec,
   mode = 'sfu',
   turnProvider,
@@ -34,6 +37,7 @@ export function WebRtcStatsPanel({
   active = true
 }: {
   snapshot?: WebRtcStatsSnapshot;
+  moqStats?: MoqStatsSnapshot;
   requestedCodec: ScreenShareCodec;
   mode?: ScreenTransportMode;
   turnProvider?: P2pTurnProvider | 'mixed';
@@ -49,11 +53,12 @@ export function WebRtcStatsPanel({
     : modeKeys[mode];
   const hasMediaStats = Boolean(snapshot?.sender || snapshot?.receiver || projectReceiver);
   const hasEncodingDiagnostics = (encodingDiagnostics?.size ?? 0) > 0;
+  const isMoq = mode === 'cloudflare-moq';
   const heading = <>
-      <span>{t('stats.heading')}</span>
+      <span>{t(isMoq ? 'stats.moq.heading' : 'stats.heading')}</span>
       <span className="webrtc-transport-badge" data-mode={mode} aria-live="polite">{t(transportKey)}</span>
     </>;
-  const content = <>
+  const content = isMoq ? <MoqStatsContent stats={moqStats} active={active} /> : <>
     <p className="webrtc-stats-note">{t('stats.requestedCodec')}: {requestedCodec === 'auto' ? t('controls.codecAuto') : requestedCodec.toUpperCase()}</p>
     {!hasMediaStats && !hasEncodingDiagnostics
       ? <p>{t(active ? 'stats.collecting' : 'stats.noData')}</p>
@@ -72,6 +77,43 @@ export function WebRtcStatsPanel({
     <summary>{heading}</summary>
     {content}
   </details>;
+}
+
+function MoqStatsContent({ stats, active }: {
+  stats?: MoqStatsSnapshot;
+  active: boolean;
+}) {
+  const { t } = useI18n();
+  if (!stats) return <p>{t(active ? 'stats.collecting' : 'stats.noData')}</p>;
+
+  const sender = stats.role === 'sender';
+  const rows: Array<[string, string | undefined]> = [
+    [t('stats.moq.protocol'), stats.protocol],
+    [t('stats.moq.codec'), stats.codec],
+    [t('stats.resolution'), stats.width && stats.height ? `${stats.width}×${stats.height}` : undefined],
+    [t(sender ? 'stats.encodedFps' : 'stats.moq.receivedFps'), moqValue(stats.frameRate, 'fps')],
+    [t('stats.moq.renderedFps'), sender ? undefined : moqValue(stats.renderedFps, 'fps')],
+    [t('stats.droppedFrames'), sender ? undefined : moqValue(stats.droppedFrames)],
+    [t(sender ? 'stats.moq.encodedVideo' : 'stats.moq.receivedVideo'), moqValue(stats.videoMbps, 'Mbps')],
+    [t(sender ? 'stats.moq.encodedAudio' : 'stats.moq.receivedAudio'), moqValue(stats.audioMbps, 'Mbps')],
+    [t('stats.moq.sharedAudio'), stats.hasAudio === undefined ? undefined : t(stats.hasAudio ? 'stats.yes' : 'stats.no')],
+    [t(sender ? 'stats.moq.relayUpload' : 'stats.moq.relayDownload'), moqValue(stats.relayMbps, 'Mbps')],
+    [t('stats.moq.relayRtt'), moqValue(stats.relayRttMs, 'ms')]
+  ];
+  return <div className="webrtc-stats-grid">
+    <section>
+      <h3>{t(sender ? 'stats.sender' : 'stats.receiver')}</h3>
+      <dl>{rows.filter(([, value]) => value !== undefined).map(([label, value]) => <div key={label}>
+        <dt>{label}</dt><dd>{value}</dd>
+      </div>)}</dl>
+    </section>
+  </div>;
+}
+
+function moqValue(value?: number, suffix?: string): string | undefined {
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  const formatted = String(Number(value.toFixed(2)));
+  return suffix ? `${formatted} ${suffix}` : formatted;
 }
 
 function StatsSection({ title, stats, sender = false }: { title: string; stats: WebRtcMediaStats; sender?: boolean }) {

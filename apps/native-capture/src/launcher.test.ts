@@ -25,6 +25,15 @@ function launch(args: string[], env: NodeJS.ProcessEnv = process.env) {
   });
 }
 
+function stopLaunchedHelper(output: string): void {
+  const match = /Native meeting helper ready \(PID ([1-9][0-9]*),/.exec(output);
+  if (!match) return;
+  try { process.kill(Number(match[1])); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+  }
+}
+
 describe.skipIf(process.platform !== 'win32')('native PowerShell startup handshake', () => {
   it('fails visibly for an invalid FFmpeg executable without claiming readiness', async () => {
     const result = await launch(['-Ffmpeg', join(tmpdir(), 'missing-native-ffmpeg.exe'), '-NoOpen']);
@@ -37,10 +46,12 @@ describe.skipIf(process.platform !== 'win32')('native PowerShell startup handsha
   it.skipIf(!process.env.BABAGAN_TEST_FFMPEG)('reports ready after a validated no-open launch and removes the status file', async () => {
     const directory = await mkdtemp(join(tmpdir(), 'babagan-launcher-status-')); directories.push(directory);
     const result = await launch(['-Ffmpeg', process.env.BABAGAN_TEST_FFMPEG!, '-NoOpen', '-IdleTimeoutMs', '500'], { ...process.env, TEMP: directory, TMP: directory });
-    expect(result.code).toBe(0);
-    expect(result.output).toMatch(/Native meeting helper ready/);
-    expect(result.output).not.toContain('#nativeCapture');
-    expect(await readdir(join(directory, 'BabaganNativeCapture'))).toEqual([]);
+    try {
+      expect(result.code).toBe(0);
+      expect(result.output).toMatch(/Native meeting helper ready/);
+      expect(result.output).not.toContain('#nativeCapture');
+      expect(await readdir(join(directory, 'BabaganNativeCapture'))).toEqual([]);
+    } finally { stopLaunchedHelper(result.output); }
   });
 
   it('bounds a stalled startup and terminates only its owned helper process', async () => {
@@ -61,7 +72,9 @@ describe.skipIf(process.platform !== 'win32')('native PowerShell startup handsha
         windowsHide: true, timeout: 10_000, env: { ...process.env, PATH: (process.env.PATH ?? '').split(';').filter((entry) => !/powershell/i.test(entry)).join(';') }
       }, (error, stdout, stderr) => resolve({ code: error ? error.code ?? 1 : 0, output: stdout + stderr }));
     });
-    expect(result.code).toBe(0);
-    expect(result.output).toMatch(/Native meeting helper ready/);
+    try {
+      expect(result.code).toBe(0);
+      expect(result.output).toMatch(/Native meeting helper ready/);
+    } finally { stopLaunchedHelper(result.output); }
   });
 });

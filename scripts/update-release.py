@@ -564,13 +564,14 @@ def _perform_update(options, app, env_file, state, progress):
 def candidate_override(images):
     services = {name: {'image': image} for name, image in images.items()}
     if 'api' in services:
-        # Installed Compose overlays can predate SFU support. Migrate only
-        # the retired TURN settings and current server-only SFU credentials.
+        # Older Compose overlays may lack current server-only media settings.
         environment = {'P2P_TURN_PROVIDER': 'coturn'}
         for name in ('KEY_ID', 'API_TOKEN', 'TTL_SECONDS', 'CONNECT_IPS', 'HTTPS_PROXY'):
             environment['CLOUDFLARE_TURN_' + name] = None
         for name in ('APP_ID', 'APP_SECRET', 'GATEWAY_URL'):
             key = 'CLOUDFLARE_SFU_' + name
+            environment[key] = '${' + key + ':-}'
+        for key in ('CLOUDFLARE_MOQ_ACCOUNT_ID', 'CLOUDFLARE_MOQ_API_TOKEN'):
             environment[key] = '${' + key + ':-}'
         services['api']['environment'] = environment
     return json.dumps({'services': services}, indent=2) + '\n'

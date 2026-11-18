@@ -10,7 +10,7 @@ const clients: WebSocket[] = [];
 const validStream = "process.stderr.write('[Parsed_showinfo_1 @ 1] n:0 pts:0 pts_time:0 pos:-1\\n');process.stdout.write('YUV4MPEG2 W4 H2 F60:1 Ip C420mpeg2\\nFRAME\\nabcdefghijkl');";
 afterEach(async () => { clients.splice(0).forEach((client) => client.terminate()); await Promise.all(servers.splice(0).map((server) => server.close())); });
 async function helper(options: NativeCaptureServerOptions = {}) {
-  const server = await createNativeCaptureServer({ idleTimeoutMs: 10_000, getActiveDisplayCount: async () => 1, ...options });
+  const server = await createNativeCaptureServer({ getActiveDisplayCount: async () => 1, ...options });
   servers.push(server); return server;
 }
 function headers(server: NativeCaptureServer) { return { Origin: server.origin, Authorization: `Bearer ${server.token}`, 'Content-Type': 'application/json' }; }

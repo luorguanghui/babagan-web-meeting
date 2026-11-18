@@ -179,6 +179,23 @@ describe('screen-share quality uploads', () => {
       headers, payload: { ...payload, final: true } });
     expect(final.statusCode).toBe(401);
   });
+
+  it('accepts allowlisted ICE details and rejects extra or out-of-range ICE fields', async () => {
+    const { slug } = await fixture.createMeeting();
+    const joined = await fixture.join(slug, 'Ada');
+    const url = `/api/v1/meetings/${slug}/screen-share-quality`;
+    const headers = { cookie: cookiePair(joined.headers['set-cookie']), origin: config.publicBaseUrl.origin };
+    const ice = { requestedPolicy: 'all', appliedPolicy: 'relay', policyReason: 'viewer-turn',
+      state: 'connected', ageMs: 2_000, attemptReason: 'initial', selectedReason: 'relay-pair',
+      localCandidateType: 'relay', remoteCandidateType: 'host', directChecksSent: 0 };
+    const post = (details: Record<string, unknown>) => fixture.app.inject({ method: 'POST', url, headers,
+      payload: { ...payload, samples: [{ ...payload.samples[0], mode: 'turn',
+        links: [{ ...payload.samples[0].links[0], transport: 'turn', ice: details }] }] } });
+
+    expect((await post(ice)).statusCode).toBe(204);
+    expect((await post({ ...ice, remoteAddress: '192.0.2.1' })).statusCode).toBe(400);
+    expect((await post({ ...ice, directChecksSent: 65536 })).statusCode).toBe(400);
+  });
 });
 
 interface StatsFixture {

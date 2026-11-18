@@ -211,6 +211,13 @@ describe('p2p viewer controller', () => {
     expect(onFallback).not.toHaveBeenCalled();
     expect(onFallbackRequested).not.toHaveBeenCalled();
     expect(controller.getState()).not.toBe('livekit');
+    expect(await controller.getQualitySource()).toMatchObject({
+      ice: { state: 'failed', lastRetryReason: 'ice-failed', lastRetryAgoMs: 0 }
+    });
+    await controller.acceptOffer('sharer-1', 'new-offer');
+    expect(await controller.getQualitySource()).toMatchObject({
+      ice: { state: 'new', attemptReason: 'remote-offer', lastRetryReason: 'ice-failed' }
+    });
   });
   it('retries unanswered peer recovery once per negotiation window and stops on close', async () => {
     const { controller, signaling } = makeHarness();
@@ -338,6 +345,8 @@ describe('p2p viewer controller', () => {
     expect(controller.getState()).toBe('turn');
     await vi.advanceTimersByTimeAsync(P2P_ICE_NEGOTIATION_MAX_MS);
     expect(signaling.sendRetry).toHaveBeenCalledTimes(policy === 'all' ? 1 : 0);
+    const quality = await controller.getQualitySource();
+    expect(quality?.ice?.lastRetryReason).toBe(policy === 'all' ? 'direct-probe' : undefined);
     controller.close();
   });
 
@@ -609,6 +618,14 @@ describe('p2p viewer controller', () => {
     await vi.advanceTimersByTimeAsync(1_000);
 
     expect(controller.getState()).toBe('turn');
+    expect(await controller.getQualitySource()).toMatchObject({ transport: 'turn', ice: {
+      requestedPolicy: 'all', appliedPolicy: 'relay', policyReason: 'viewer-turn',
+      attemptReason: 'initial', lastRetryReason: 'settings', ageMs: 1_000, lastRetryAgoMs: 1_000
+    } });
+    await controller.acceptOffer('sharer-1', 'new-offer');
+    expect(await controller.getQualitySource()).toMatchObject({ transport: 'negotiating', ice: {
+      requestedPolicy: 'all', appliedPolicy: 'all', policyReason: 'default', attemptReason: 'remote-offer', ageMs: 0
+    } });
   });
 
   it('retains a candidate that arrives immediately before its offer', async () => {
@@ -645,6 +662,7 @@ describe('p2p viewer controller', () => {
     await controller.acceptOffer('sharer-1', 'offer-sdp');
     controller.requestRetry();
     expect(signaling.sendRetry).toHaveBeenCalledWith('sharer-1');
+    expect((await controller.getQualitySource())?.ice?.lastRetryReason).toBe('manual');
 
     controller.close();
     controller.requestRetry();
@@ -715,6 +733,7 @@ describe('p2p viewer controller', () => {
     await vi.advanceTimersByTimeAsync(P2P_ICE_DISCONNECT_TIMEOUT_MS);
 
     expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect((await controller.getQualitySource())?.ice?.lastRetryReason).toBe('ice-disconnected');
     expect(controller.getState()).toBe('turn');
     expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
     expect(onFallback).not.toHaveBeenCalled();
@@ -740,6 +759,7 @@ describe('p2p viewer controller', () => {
     }
 
     expect(signaling.sendRetry).toHaveBeenCalledExactlyOnceWith('sharer-1');
+    expect((await controller.getQualitySource())?.ice?.lastRetryReason).toBe('media-stalled');
     expect(controller.getState()).toBe('turn');
     expect(signaling.sendBye).not.toHaveBeenCalledWith('sharer-1', 'fallback');
     expect(onFallback).not.toHaveBeenCalled();

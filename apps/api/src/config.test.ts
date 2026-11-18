@@ -132,3 +132,14 @@ describe('loadConfig', () => {
     expect(() => loadConfig(validEnv({ P2P_TURN_TTL_SECONDS: '600.5' }))).toThrow(/integer/);
   });
 });
+
+describe('Cloudflare MoQ configuration', () => {
+  it('enables MoQ only with both server credentials', () => {
+    expect(loadConfig(validEnv()).cloudflareMoqAccountId).toBeUndefined();
+    expect(loadConfig(validEnv({
+      CLOUDFLARE_MOQ_ACCOUNT_ID: 'account-id',
+      CLOUDFLARE_MOQ_API_TOKEN: 'management-secret'
+    }))).toMatchObject({ cloudflareMoqAccountId: 'account-id', cloudflareMoqApiToken: 'management-secret' });
+    expect(() => loadConfig(validEnv({ CLOUDFLARE_MOQ_API_TOKEN: 'management-secret' }))).toThrow(/both/);
+  });
+});

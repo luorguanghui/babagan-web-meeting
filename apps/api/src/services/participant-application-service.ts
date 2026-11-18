@@ -74,6 +74,11 @@ export class ParticipantApplicationService {
     return this.dependencies.repository.findBySlug(slug)?.shareIdentity ?? null;
   }
 
+  getShareGrantGeneration(slug: string, identity: string): number | null {
+    const meeting = this.dependencies.repository.findBySlug(slug);
+    return meeting?.shareIdentity === identity ? meeting.shareGrantGeneration : null;
+  }
+
   isParticipantActive(session: ActiveParticipantSession, slug: string): boolean {
     try { this.authorize(session, slug); return true; } catch { return false; }
   }

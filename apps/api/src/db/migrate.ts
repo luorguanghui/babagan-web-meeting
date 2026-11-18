@@ -14,6 +14,10 @@ const migrations = [
   {
     name: '003_three_open_meetings.sql',
     sql: readFileSync(new URL('./migrations/003_three_open_meetings.sql', import.meta.url), 'utf8')
+  },
+  {
+    name: '004_screen_moq.sql',
+    sql: readFileSync(new URL('./migrations/004_screen_moq.sql', import.meta.url), 'utf8')
   }
 ] as const;
 

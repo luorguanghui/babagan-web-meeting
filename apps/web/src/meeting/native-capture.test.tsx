@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NATIVE_CAPTURE_PACKET_MAGIC } from '@meeting/contracts';
-import { initializeNativeCaptureConnection, readNativeCaptureConnection, openNativeVideoTrack, captureNativeScreen, getNativePacingStats } from './native-capture.js';
+import { initializeNativeCaptureConnection, readNativeCaptureConnection, openNativeVideoTrack, captureNativeScreen, getNativePacingStats, NativeCaptureError } from './native-capture.js';
 import { createScreenShareController } from './screen-share.js';
 
 const token = 'a'.repeat(43);
@@ -243,6 +243,65 @@ describe('native source selection', () => {
     await expect(captureNativeScreen(connection, { video: true }, { capture: async () => selected.stream, open })).rejects.toBeInstanceOf(Error);
     expect(open).not.toHaveBeenCalled(); expect(selected.video.stop).toHaveBeenCalledOnce();
   });
+  it('keeps the authorized browser video and audio when the local assistant is offline', async () => {
+    const selected = selectedScreen(true);
+    const originalConstraints = { frameRate: { ideal: 60 }, width: { max: 1920 } };
+    Object.assign(selected.video, { getConstraints: () => originalConstraints });
+    const onBrowserFallback = vi.fn();
+    const open = vi.fn(async () => { throw new NativeCaptureError('unavailable', 'Connection refused.'); });
+
+    const stream = await captureNativeScreen(connection, { video: { frameRate: 60 }, audio: true }, {
+      capture: async () => selected.stream, open, onBrowserFallback
+    });
+
+    expect(stream).toBe(selected.stream);
+    expect(stream.getVideoTracks()).toEqual([selected.video]);
+    expect(stream.getAudioTracks()).toEqual([selected.audio]);
+    expect(selected.video.applyConstraints).toHaveBeenNthCalledWith(1, { frameRate: { ideal: 1, max: 1 } });
+    expect(selected.video.applyConstraints).toHaveBeenNthCalledWith(2, originalConstraints);
+    expect(selected.video.stop).not.toHaveBeenCalled();
+    expect(selected.audio?.stop).not.toHaveBeenCalled();
+    expect(onBrowserFallback).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('honors stopping at browser capture restoration (restoration settled: %s)', async settled => {
+    const selected = selectedScreen(true);
+    const abort = new AbortController();
+    const restoring = Promise.withResolvers<void>();
+    const onBrowserFallback = vi.fn();
+    selected.video.applyConstraints.mockResolvedValueOnce(undefined).mockReturnValueOnce(restoring.promise);
+    const pending = captureNativeScreen(connection, { video: true }, {
+      capture: async () => selected.stream, signal: abort.signal, onBrowserFallback,
+      open: async () => { throw new NativeCaptureError('unavailable', 'Connection refused.'); }
+    }).catch(error => error);
+
+    await vi.waitFor(() => expect(selected.video.applyConstraints).toHaveBeenCalledTimes(2), { timeout: 400 });
+    if (settled) {
+      restoring.resolve();
+      // Abort after the restoration promise settles and before the fallback continues.
+      queueMicrotask(() => queueMicrotask(() => abort.abort()));
+    } else {
+      abort.abort();
+    }
+    expect(await pending).toMatchObject({ name: 'AbortError' });
+    expect(selected.video.stop).toHaveBeenCalledOnce();
+    expect(selected.audio?.stop).toHaveBeenCalledOnce();
+    expect(onBrowserFallback).not.toHaveBeenCalled();
+    restoring.resolve();
+  });
+
+  it.each(['protocol', 'unsupported-source'] as const)('preserves the %s error even when fallback is enabled', async code => {
+    const selected = selectedScreen(true);
+    const onBrowserFallback = vi.fn();
+    await expect(captureNativeScreen(connection, { video: true }, {
+      capture: async () => selected.stream, onBrowserFallback,
+      open: async () => { throw new NativeCaptureError(code, 'Invalid native capture.'); }
+    })).rejects.toMatchObject({ code });
+    expect(onBrowserFallback).not.toHaveBeenCalled();
+    expect(selected.video.stop).toHaveBeenCalledOnce();
+    expect(selected.audio?.stop).toHaveBeenCalledOnce();
+  });
+
   it('does not reuse provenance from a closed native session', async () => {
     const h = nativeHarness();
     const first = openNativeVideoTrack(connection, 60, { ...h.deps, sourcePolicy: 'single-active-monitor' });

@@ -68,6 +68,8 @@ import { captureAndroidScreen } from '../client/android-capture.js';
 import { ClientHostError } from '../client/host-bridge.js';
 import { ClientUpdateStatus } from '../client/client-update-status.js';
 import { useCloudflareScreen } from '../meeting/use-cloudflare-screen.js';
+import { useScreenMoq } from '../meeting/use-screen-moq.js';
+import { summarizeMoqStats, type MoqStatsSample, type MoqStatsSnapshot } from '../meeting/screen-moq-stats.js';
 import type { CloudflareScreenRecovery } from '../meeting/cloudflare-recovery.js';
 import { CloudflareTurnFallback } from '../meeting/cloudflare-turn-fallback.js';
 import {
@@ -76,6 +78,7 @@ import {
   deriveSharerTurnProvider,
   deriveViewerTurnProvider,
   deriveViewerScreenTransportMode,
+  type ScreenSourceTransport,
   type ScreenTransportMode,
   type ScreenTurnProvider
 } from '../meeting/screen-transport-mode.js';
@@ -130,7 +133,7 @@ export interface MeetingRoomApi {
 type HostAuthorizationState = 'unknown' | 'authorized' | 'unauthorized';
 type RequestedIceTurnProvider = 'auto' | P2pTurnProvider;
 const transportModeKeys: Record<ScreenTransportMode, MessageKey> = {
-  'cloudflare-sfu': 'screenTransport.cloudflareSfu', p2p: 'screenTransport.p2p', turn: 'screenTransport.turn', sfu: 'screenTransport.sfu', mixed: 'screenTransport.mixed',
+  'cloudflare-sfu': 'screenTransport.cloudflareSfu', 'cloudflare-moq': 'screenTransport.cloudflareMoq', p2p: 'screenTransport.p2p', turn: 'screenTransport.turn', sfu: 'screenTransport.sfu', mixed: 'screenTransport.mixed',
   negotiating: 'screenTransport.negotiating', waiting: 'screenTransport.waiting'
 };
 const turnProviderKeys: Record<ScreenTurnProvider, MessageKey> = {
@@ -285,12 +288,13 @@ export function MeetingRoomPage({
   const [screenCodec, setScreenCodec] = useState<ScreenShareCodec>(nativeCaptureConnection || isAndroidClient ? 'auto' : 'h264');
   const [nativeCaptureEnabled, setNativeCaptureEnabled] = useState(Boolean(nativeCaptureConnection) || isAndroidClient);
   const nativeCaptureEnabledRef = useRef(nativeCaptureEnabled);
+  const [nativeBrowserFallback, setNativeBrowserFallback] = useState(false);
   const [androidSystemAudioEnabled, setAndroidSystemAudioEnabled] = useState(true);
   const androidSystemAudioRef = useRef(false);
   androidSystemAudioRef.current = Boolean(clientInfo?.systemAudio && androidSystemAudioEnabled);
   const [androidAudioUnavailable, setAndroidAudioUnavailable] = useState<'permission-denied' | 'unsupported' | 'unavailable'>();
-  const [screenSourceTransport, setScreenSourceTransport] = useState<'p2p' | 'cloudflare-sfu'>('p2p');
-  const screenSourceTransportRef = useRef<'p2p' | 'cloudflare-sfu'>('p2p');
+  const [screenSourceTransport, setScreenSourceTransport] = useState<ScreenSourceTransport>('p2p');
+  const screenSourceTransportRef = useRef<ScreenSourceTransport>('p2p');
   const cfPublisherRef = useRef<CloudflareScreenRecovery | undefined>(undefined);
   const cfRelayRef = useRef<CloudflareTurnFallback | undefined>(undefined);
   const cfRelayRequestedRef = useRef(false);
@@ -326,6 +330,7 @@ export function MeetingRoomPage({
   const hybridShareRef = useRef<HybridScreenSharePublisher | undefined>(undefined);
   const sfuStreamRef = useRef<MediaStream | undefined>(undefined);
   const [screenStats, setScreenStats] = useState<WebRtcStatsSnapshot>();
+  const [moqStats, setMoqStats] = useState<MoqStatsSnapshot>();
   const [projectReceiverStats, setProjectReceiverStats] = useState<ProjectStats>();
   const [encodingDiagnostics, setEncodingDiagnostics] = useState<ReadonlyMap<string, P2pEncodingDiagnostics>>(() => new Map());
   const [systemAudioDecision, setSystemAudioDecision] = useState<{ displaySurface: string }>();
@@ -350,6 +355,9 @@ export function MeetingRoomPage({
   }, [slug]);
   const fetchCfIce = useCallback(async () => (await requestMeetingIceServers('coturn')).iceServers, [requestMeetingIceServers]);
   const cf = useCloudflareScreen(slug, join.participantIdentity, fetchCfIce);
+  const moq = useScreenMoq(slug, join.participantIdentity,
+    sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required');
+  const { publish: publishMoq, stop: stopMoq, getStatsSession: getMoqStatsSession } = moq;
   const [cfReadyStream, setCfReadyStream] = useState<MediaStream>();
   const cfRef = useRef(cf); cfRef.current = cf;
   const authorizationChanged = useCallback((authorized: boolean) => {
@@ -398,7 +406,7 @@ export function MeetingRoomPage({
           if (relayOnly && cfRelayRef.current !== relayOwner) throw new Error('Temporary screen relay stopped.');
           return configuration;
         },
-        ...(relayOnly ? { createPeerConnection: (iceServers: RTCIceServer[]) => new RTCPeerConnection({ iceServers, iceTransportPolicy: 'relay' }) } : {}),
+        ...(relayOnly ? { iceTransportPolicy: 'relay', icePolicyReason: 'cloudflare-recovery' } : {}),
         ...deps
       });
     }
@@ -422,7 +430,16 @@ export function MeetingRoomPage({
           signal, maxFrameRate: androidMaxFrameRateRef.current, onSystemAudioUnavailable: setAndroidAudioUnavailable
         });
       }
-      if (nativeCaptureEnabledRef.current && nativeCaptureConnection) return captureNativeScreen(nativeCaptureConnection, constraints, { signal });
+      if (nativeCaptureEnabledRef.current && nativeCaptureConnection) {
+        return captureNativeScreen(nativeCaptureConnection, constraints, {
+          signal,
+          onBrowserFallback: () => {
+            nativeCaptureEnabledRef.current = false;
+            setNativeCaptureEnabled(false);
+            setNativeBrowserFallback(true);
+          }
+        });
+      }
       if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') return Promise.reject(new ClientHostError('unsupported', 'Browser screen capture is unavailable.'));
       return navigator.mediaDevices.getDisplayMedia(constraints);
     }),
@@ -433,6 +450,10 @@ export function MeetingRoomPage({
       publish: async (stream, options) => {
         options = { ...options, encodingPreference: browserEncodingPreferenceRef.current };
         screenPublishOptions.current = options;
+        if (screenSourceTransportRef.current === 'cloudflare-moq') {
+          await publishMoq(stream, options);
+          return;
+        }
         if (screenSourceTransportRef.current === 'cloudflare-sfu') {
           cfRelayRef.current = new CloudflareTurnFallback({ stream, options,
             createController: () => {
@@ -477,12 +498,13 @@ export function MeetingRoomPage({
         hybridShareRef.current = hybrid;
         await hybrid.publish(stream, options);
       },
+      cancelPendingPublish: () => { void stopMoq(); },
       release: async (stream) => {
         screenPublishOptions.current = undefined;
         const cfSession = cfPublisherRef.current; cfPublisherRef.current = undefined;
         const relay = cfRelayRef.current; cfRelayRef.current = undefined;
         cfRef.current.reset();
-        await Promise.all([cfSession?.close(), relay?.close()]);
+        await Promise.all([cfSession?.close(), relay?.close(), stopMoq()]);
         const hybrid = hybridShareRef.current;
         hybridShareRef.current = undefined;
         p2pShareUnsubscribeRef.current?.();
@@ -494,9 +516,12 @@ export function MeetingRoomPage({
         if (hybrid) await hybrid.release(stream);
       }
     }
-  }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection, clientHost]);
+  }), [chooseUnrestrictedSystemAudio, resolveSystemAudioDecision, controller, createShareController, getDisplayMedia, join.participantIdentity, meetingApi, slug, supportsOwnAudioRestriction, nativeCaptureConnection, clientHost, publishMoq, stopMoq]);
 
   useEffect(() => { screenShareRef.current = screenShare; }, [screenShare]);
+  useEffect(() => {
+    if (moq.publisherFailed && screenSourceTransportRef.current === 'cloudflare-moq') void screenShare.stop();
+  }, [moq.publisherFailed, screenShare]);
   // Quality, roster, network recovery and stop/start never raise the chosen cap.
 
   const [viewerP2pState, setViewerP2pState] = useState<ViewerP2pState>('idle');
@@ -630,6 +655,7 @@ export function MeetingRoomPage({
         const viewerController = new P2pViewerController(signaling, iceConfiguration.iceServers, {
           onProjectMediaError: setProjectMediaError,
           iceTransportPolicy: cfRef.current.sourceIdentityRef.current ? 'relay' : viewerTransportPreferenceToIcePolicy(viewerTransportPreferenceRef.current),
+          icePolicyReason: cfRef.current.sourceIdentityRef.current ? 'cloudflare-recovery' : undefined,
           turnProvider: iceConfiguration.turnProvider,
           onFallbackRequested: (complete) => {
             if (cfRef.current.sourceIdentityRef.current) return;
@@ -951,7 +977,7 @@ export function MeetingRoomPage({
     } catch {
       setNotice(t('room.leaveUnconfirmed'));
     } finally {
-      await cf.close();
+      await Promise.all([cf.close(), stopMoq()]);
       await screenShareStopped;
       await controller.disconnect();
       setLeaving(false);
@@ -966,13 +992,16 @@ export function MeetingRoomPage({
 
   async function toggleScreenShare() {
     setNotice(undefined);
+    moq.clearPublisherError();
+    setNativeBrowserFallback(false);
     try {
       if (screenState.status === 'sharing') await screenShare.stop();
-      else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'cloudflare-sfu' ? 'browser' : screenEncodingEngine);
+      else await screenShare.start(screenCodec, screenBitrate, screenQuality, screenSourceTransportRef.current === 'p2p' ? screenEncodingEngine : 'browser');
     } catch (error) {
       if (error instanceof ClientHostError) setNotice(t(error.code === 'unsupported' ? 'client.mobileShareUnsupported' : 'client.captureFailed'));
       else if (error instanceof NativeCaptureError) setNotice(t(`native.error.${error.code}`));
       else if (screenSourceTransportRef.current === 'cloudflare-sfu') cf.reportError(error);
+      else if (screenSourceTransportRef.current === 'cloudflare-moq') setNotice(t('controls.moqShareFailed'));
       else setNotice(t('room.shareFailed'));
     }
   }
@@ -1023,13 +1052,16 @@ export function MeetingRoomPage({
     : viewerP2pState === 'livekit' && livekitViewerTrack === undefined
       ? fallbackP2pStream
       : undefined;
-  const stageStream = screenState.stream ?? (cf.sourceIdentity
+  const stageStream = screenState.stream ?? (moq.remote ? moq.stream : cf.sourceIdentity
     ? (cf.recovering ? p2pViewerStream ?? cf.stream : cf.stream ?? p2pViewerStream) : p2pViewerStream);
-  const stageTrack = stageStream ? undefined : livekitViewerTrack;
-  const stageAudioTrack = stageStream || viewerTransportPreference !== 'sfu' ? undefined : state.remoteScreenShare?.audioTrack;
-  const stageMuted = Boolean(screenState.stream) || (!cf.stream && p2pViewerStream === undefined && stageAudioTrack === undefined);
+  const stageTrack = stageStream || moq.remote ? undefined : livekitViewerTrack;
+  const stageAudioTrack = stageStream || moq.remote || viewerTransportPreference !== 'sfu' ? undefined : state.remoteScreenShare?.audioTrack;
+  const stageMuted = Boolean(screenState.stream) || (!moq.stream && !cf.stream && p2pViewerStream === undefined && stageAudioTrack === undefined);
   const hasActiveScreenShare = Boolean(stageStream || stageTrack);
-  const screenTransportMode: ScreenTransportMode = (screenState.stream && screenSourceTransport === 'cloudflare-sfu') || (cf.sourceIdentity && stageStream !== p2pViewerStream)
+  const moqSharing = screenState.stream ? screenSourceTransport === 'cloudflare-moq' : Boolean(moq.remote);
+  const statsTitle = t(moqSharing ? 'controls.moqData' : 'controls.webrtcData');
+  const screenTransportMode: ScreenTransportMode = moqSharing ? 'cloudflare-moq'
+    : (screenState.stream && screenSourceTransport === 'cloudflare-sfu') || (cf.sourceIdentity && stageStream !== p2pViewerStream)
     ? 'cloudflare-sfu' : screenState.stream
     ? deriveSharerScreenTransportMode(shareViewerStates)
     : deriveViewerScreenTransportMode(viewerP2pState);
@@ -1043,7 +1075,7 @@ export function MeetingRoomPage({
       : t('connection.connected');
   const activeSharer = resolveActiveSharer({
     localIdentity: join.participantIdentity, localName: join.participantName,
-    localSharing: Boolean(screenState.stream), cloudflare: cf.publication,
+    localSharing: Boolean(screenState.stream), cloudflare: moq.remote ?? cf.publication,
     peerViewing: Boolean(p2pViewerStream),
     peerIdentity: viewerP2pRef.current?.getSharerIdentity() ?? viewerSharerIdentityRef.current,
     livekit: stageTrack ? state.remoteScreenShare : undefined,
@@ -1056,7 +1088,7 @@ export function MeetingRoomPage({
   const qualityOwner = sessionActive && reconnectState.kind !== 'terminal' && reconnectState.kind !== 'rejoin-required'
     ? activeSharer.identity ?? cf.sourceIdentity ?? negotiatingSharer : undefined;
   const awaitingSfuFrame = !qualitySender && Boolean(p2pViewerStream && cf.stream && cfReadyStream !== cf.stream);
-  const qualityMode = awaitingSfuFrame ? deriveViewerScreenTransportMode(viewerP2pState)
+  const qualityMode = moqSharing ? 'cloudflare-moq' : awaitingSfuFrame ? deriveViewerScreenTransportMode(viewerP2pState)
     : !hasActiveScreenShare && cf.sourceIdentity ? 'cloudflare-sfu' : screenTransportMode;
   useEffect(() => {
     if (!qualityOwner || !globalThis.crypto?.subtle || !globalThis.crypto.randomUUID) return;
@@ -1124,6 +1156,7 @@ export function MeetingRoomPage({
       return report ? [{ key, transport: 'sfu', report }] : [];
     };
     const activeSources = async (): Promise<ScreenQualitySource[]> => {
+      if (qualityMode === 'cloudflare-moq') return [];
       if (qualityMode === 'cloudflare-sfu' || (!qualitySender && cf.sourceIdentity)) {
         const session = cfPublisherRef.current ?? cfRef.current.viewer.current;
         const [source, relay] = await Promise.all([
@@ -1186,6 +1219,55 @@ export function MeetingRoomPage({
   }, [controller, hasActiveScreenShare, qualityOwner, qualitySender, qualityMode, screenState.stream, screenState.captureConstraint,
     viewerP2pState, viewerTransportPreference, stageTrack, cf.sourceIdentity, cf.publisherRecovering, cf.recovering, isAndroidClient, p2pStats]);
 
+  useEffect(() => {
+    setMoqStats(undefined);
+    if (!moqSharing || displayedPanel !== 'stats') return;
+    const role = qualitySender ? 'sender' : 'viewer';
+    let cancelled = false;
+    let sampling = false;
+    let previous: MoqStatsSample | undefined;
+    const sample = async () => {
+      if (sampling) return;
+      const session = getMoqStatsSession(role);
+      if (!session?.readStats) {
+        previous = undefined;
+        setMoqStats(undefined);
+        return;
+      }
+      sampling = true;
+      try {
+        const media = await session.readStats();
+        if (cancelled || getMoqStatsSession(role) !== session) return;
+        const video = screenPlaybackRef.current;
+        const playbackQuality = role === 'viewer' && moq.stream && video?.srcObject === moq.stream
+          ? video.getVideoPlaybackQuality?.() : undefined;
+        const current: MoqStatsSample = {
+          session, at: performance.now(), media,
+          playback: playbackQuality && moq.stream ? {
+            stream: moq.stream,
+            frames: Math.max(0, playbackQuality.totalVideoFrames - playbackQuality.droppedVideoFrames),
+            dropped: playbackQuality.droppedVideoFrames
+          } : undefined
+        };
+        setMoqStats(summarizeMoqStats(role, current, previous));
+        previous = current;
+      } catch {
+        if (!cancelled && getMoqStatsSession(role) === session) {
+          previous = undefined;
+          setMoqStats(undefined);
+        }
+      } finally {
+        sampling = false;
+      }
+    };
+    void sample();
+    const timer = window.setInterval(() => void sample(), 1_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [displayedPanel, getMoqStatsSession, moq.stream, moq.publisherRecovering, moqSharing, qualitySender]);
+
   const meetingControlsProps: MeetingControlsProps = {
     connection: state.connection,
     microphoneEnabled: state.microphoneEnabled,
@@ -1202,8 +1284,9 @@ export function MeetingRoomPage({
     screenShareStopping: screenState.status === 'stopping',
     screenCodec,
     screenSourceTransport,
-    onScreenSourceTransportChange: (transport) => { screenSourceTransportRef.current = transport; setScreenSourceTransport(transport); if (transport === 'cloudflare-sfu') setScreenEncodingEngine('browser'); },
+    onScreenSourceTransportChange: (transport) => { screenSourceTransportRef.current = transport; setScreenSourceTransport(transport); if (transport !== 'p2p') setScreenEncodingEngine('browser'); },
     cloudflareSfuAvailable: cf.available,
+    cloudflareMoqAvailable: moq.publishAvailable,
     browserEncodingPreference,
     onBrowserEncodingPreferenceChange: (value: 'hardware' | 'compatible') => {
       browserEncodingPreferenceRef.current = value; setBrowserEncodingPreference(value);
@@ -1239,13 +1322,13 @@ export function MeetingRoomPage({
     onScreenQualityChange: setScreenQuality,
     screenShareTurnProviderVisible: hostAuthorized || Boolean(state.screenShareAuthorized),
     onScreenShareTurnProviderChange: handleScreenShareTurnProviderChange,
-    viewerTransportPreferenceVisible: Boolean(!cf.sourceIdentity && !screenState.stream && hasActiveScreenShare),
+    viewerTransportPreferenceVisible: Boolean(!moq.remote && !cf.sourceIdentity && !screenState.stream && hasActiveScreenShare),
     viewerTransportPreference,
     onViewerTransportPreferenceChange: handleViewerTransportPreferenceChange,
     screenViewerCount: viewerCount,
     p2pRetryVisible: Boolean(
-      (screenSourceTransport !== 'cloudflare-sfu' && screenState.status === 'sharing' && viewerCount > 0)
-      || (hasActiveScreenShare && canRetryViewerScreenTransport(viewerP2pState))
+      (screenSourceTransport === 'p2p' && screenState.status === 'sharing' && viewerCount > 0)
+      || (!moq.remote && hasActiveScreenShare && canRetryViewerScreenTransport(viewerP2pState))
     ),
     onP2pRetry: () => {
       signalingRef.current?.retryConnection();
@@ -1288,7 +1371,7 @@ export function MeetingRoomPage({
       participantButtonRef={participantButtonRef}
       settingsButtonRef={settingsButtonRef}
       statsButtonRef={statsButtonRef}
-      statsLabel={t('controls.webrtcData')}
+      statsLabel={statsTitle}
       statsVisibleLabel={t('controls.connectionInfo')}
       onStats={() => { statsOpenerRef.current = statsButtonRef; openMeetingPanel('stats'); }}
       activePanel={meetingPanel ?? (membersExpanded ? 'participants' : null)}
@@ -1300,8 +1383,14 @@ export function MeetingRoomPage({
       {(cf.recovering || cf.publisherRecovering) && <p role="status">{t('controls.cloudflareSfuRecovering')}</p>}
       {cf.error && screenState.stream && screenSourceTransport === 'cloudflare-sfu' && <button type="button" disabled={cf.publisherRecovering} onClick={() => void retryCloudflareSource()}>{t('controls.cloudflareSfuRetry')}</button>}
       {cf.publication && cf.publication.sharerIdentity !== join.participantIdentity && cf.error && <button type="button" onClick={cf.retry}>{t('controls.cloudflareSfuRetry')}</button>}
+      {moq.publisherRecovering && <p role="status">{t('controls.moqConnecting')}</p>}
+      {moq.publisherFailed && <p role="alert">{t('controls.moqShareFailed')}</p>}
+      {moq.remote && !screenState.stream && (moq.viewerError
+        ? <p role="status">{t(moq.viewerError === 'unsupported' ? 'controls.moqUnsupported' : 'controls.moqViewFailed')}</p>
+        : !moq.stream && <p role="status">{t('controls.moqConnecting')}</p>)}
       {projectMediaError && <p role="alert">{projectMediaError} — {t('controls.browserEncoding')} / SFU</p>}
       {(connectionError || notice) && <p role={connectionError ? 'alert' : 'status'}>{connectionError ?? notice}</p>}
+      {nativeBrowserFallback && !notice && <p role="status">{t('native.browserFallback')}</p>}
       {androidAudioUnavailable && <p role="status">{t(`client.androidAudio.${androidAudioUnavailable}`)}</p>}
       {screenState.audioGuidance && !(isAndroidClient && !androidSystemAudioEnabled) && <p role="status">{isAndroidClient ? t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint') : localizedScreenGuidance(screenState.audioGuidance, t)}</p>}
       {browserCaptureUnsupported && <p role="status">{t('client.mobileShareUnsupported')} <a href="/#downloads" target="_blank" rel="noopener noreferrer">{t('client.getAndroid')}</a></p>}
@@ -1334,7 +1423,7 @@ export function MeetingRoomPage({
             shareIdentity={activeSharer.identity}
             pipAllowed={!screenState.stream && hasActiveScreenShare}
             sourcePending={Boolean(cf.publication && !screenState.stream && stageStream === cf.stream && cfReadyStream !== cf.stream)}
-            waitForVideoFrame={Boolean(cf.sourceIdentity)}
+            waitForVideoFrame={Boolean(cf.sourceIdentity || moq.remote)}
             onSourceReady={handleStageSourceReady}
             sharedAudioVolume={sharedAudioVolume / 100}
             independentAudio
@@ -1351,7 +1440,7 @@ export function MeetingRoomPage({
       returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : settingsButtonRef}
     ><p className="meeting-settings-description">{t('room.settingsDescription')}</p>
       <div className="meeting-general-language"><LanguageSelector /></div>
-      <MeetingSettings {...meetingControlsProps} section="general" onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
+      <MeetingSettings {...meetingControlsProps} section="general" diagnosticsLabel={statsTitle} onOpenDiagnostics={() => { statsOpenerRef.current = settingsButtonRef; openMeetingPanel('stats'); }} />
       {clientHost && <div className="meeting-client-status"><ClientUpdateStatus />{isAndroidClient && <p>{t(clientInfo?.systemAudio ? 'client.androidDeviceAudioHint' : 'client.androidAudioHint')}</p>}</div>}
       <p className="meeting-settings-callout">{t('room.settingsHint')}</p></MeetingDrawer>}
     {displayedPanel === 'more' && <MeetingDrawer
@@ -1365,13 +1454,13 @@ export function MeetingRoomPage({
       { action: 'participants', label: t('participants.label') },
       { action: 'audio-devices', label: t('controls.audioDevices') },
       { action: 'screen-settings', label: t('controls.screenSettings') },
-      { action: 'webrtc-stats', label: t('controls.webrtcData') },
+      { action: 'webrtc-stats', label: statsTitle },
       { action: 'leave', label: t('controls.leave') }
     ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
     {displayedPanel === 'stats' && <MeetingDrawer
       modal={false}
       exiting={panelPresence.exiting}
-      title={t('controls.webrtcData')}
+      title={statsTitle}
       closeLabel={t('controls.closePanel')}
       backLabel={displayedPanelParent === 'more' ? t('controls.backToMore') : undefined}
       onBack={displayedPanelParent === 'more' ? backToMore : undefined}
@@ -1379,8 +1468,9 @@ export function MeetingRoomPage({
       returnFocusRef={displayedPanelParent === 'more' ? moreButtonRef : statsOpenerRef.current}
     ><WebRtcStatsPanel
       embedded
-      active={hasActiveScreenShare}
+      active={hasActiveScreenShare || moqSharing}
       snapshot={screenStats}
+      moqStats={moqStats}
       encodingDiagnostics={screenState.status === 'sharing' ? encodingDiagnostics : undefined}
       requestedCodec={screenCodec}
       projectReceiver={projectReceiverStats}

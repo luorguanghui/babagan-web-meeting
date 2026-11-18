@@ -1211,6 +1211,28 @@ describe('controlled browser screen sharing', () => {
     expect(controller.getState()).toMatchObject({ status: 'idle', stream: undefined });
   });
 
+  it('cancels an in-flight publisher before waiting for it to release', async () => {
+    const { stream } = displayStream({ audio: false });
+    const pending = deferred<void>();
+    const publish = vi.fn(() => pending.promise);
+    const cancelPendingPublish = vi.fn(() => pending.resolve());
+    const release = vi.fn(async () => {});
+    const controller = createScreenShareController({
+      requestGrant: async () => {},
+      releaseGrant: async () => {},
+      getDisplayMedia: async () => stream,
+      publisher: { publish, cancelPendingPublish, release }
+    });
+
+    const starting = controller.start();
+    await vi.waitFor(() => expect(publish).toHaveBeenCalledOnce());
+    const stopping = controller.stop();
+    expect(cancelPendingPublish).toHaveBeenCalledOnce();
+    await Promise.all([starting, stopping]);
+    expect(release).toHaveBeenCalledOnce();
+    expect(controller.getState().status).toBe('idle');
+  });
+
   it('does not resurrect a superseded start when its grant resolves late', async () => {
     const grant1 = deferred<void>();
     const grant2 = deferred<void>();
@@ -2286,7 +2308,7 @@ describe('P2P-first screen sharing in the room', () => {
       .mockResolvedValueOnce(new Response('{}', { status: 503 }))
       .mockResolvedValueOnce(new Response(JSON.stringify(configuration), { status: 200 }))
       .mockImplementation(async () => new Response('{}', { status: 401 }));
-    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(new Response(JSON.stringify({ available: false, publication: null }))) : fetchIce(input));
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).includes('/ice-servers') ? fetchIce(input) : Promise.resolve(Response.json({ available: false, publication: null })));
     const signaling = fakeSignalingClient();
     const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });
@@ -2577,7 +2599,7 @@ describe('P2P-first screen sharing in the room', () => {
   it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {
     vi.useFakeTimers();
     const fetchIce = vi.fn(async () => new Response('{}', { status }));
-    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).endsWith('/screen-sfu') ? Promise.resolve(Response.json({ available: false, publication: null })) : fetchIce());
+    vi.stubGlobal('fetch', (input: RequestInfo | URL) => String(input).includes('/ice-servers') ? fetchIce() : Promise.resolve(Response.json({ available: false, publication: null })));
     const signaling = fakeSignalingClient();
     const rendered = renderP2pRoom({ createSignalingClient: signaling.factory,
       shareControllerFactory: fakeShareControllerFactory });
@@ -2591,6 +2613,41 @@ describe('P2P-first screen sharing in the room', () => {
     } finally { rendered.unmount(); vi.useRealTimers(); }
   });
 
+});
+
+it('opens the MoQ diagnostics drawer with live statistics from the current viewer', async () => {
+  const { stream } = displayStream({ audio: false });
+  const readStats = vi.fn(async () => ({ protocol: 'moqt-18' as const, codec: 'avc1.42001f', width: 1280, height: 720, relayRttMs: 35 }));
+  const subscriber = vi.fn(async () => ({ stream, readStats, close: vi.fn(), closed: new Promise<void>(() => {}) }));
+  vi.doMock('./screen-moq-media.js', () => ({ openMoqSubscriber: subscriber }));
+  vi.spyOn(await import('./screen-moq-support.js'), 'supportsMoqSubscriber').mockReturnValue(true);
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue(undefined);
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes('/ice-servers')) return Response.json({ iceServers: [], turnProvider: 'coturn' });
+    if (path.endsWith('/screen-moq/subscribe')) return Response.json({
+      shareId: 'moq-active', namespace: 'test.hang', url: 'https://relay.example.test/test-token'
+    });
+    if (path.endsWith('/screen-moq')) return Response.json({
+      available: true, publication: { shareId: 'moq-active', sharerIdentity: 'sharer-1', sharerName: 'Ben', namespace: 'test.hang' }
+    });
+    return Response.json({ available: false, publication: null });
+  }));
+  const rendered = renderP2pRoom({ createSignalingClient: fakeSignalingClient().factory });
+  try {
+    await waitFor(() => expect(subscriber).toHaveBeenCalledOnce());
+    expect(readStats).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: 'More' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'MoQ data' }));
+
+    const diagnostics = await screen.findByRole('dialog', { name: 'MoQ data' });
+    expect(await within(diagnostics).findByText('35 ms')).toBeVisible();
+    expect(within(diagnostics).getByText('1280×720')).toBeVisible();
+    expect(within(diagnostics).getByText('moqt-18')).toBeVisible();
+  } finally {
+    rendered.unmount();
+    vi.doUnmock('./screen-moq-media.js');
+  }
 });
 
 describe('screen share quality in the room', () => {

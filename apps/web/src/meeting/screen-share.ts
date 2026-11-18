@@ -72,6 +72,7 @@ export interface ScreenShareState {
 
 export interface ScreenSharePublisher {
   publish(stream: MediaStream, options: ScreenSharePublishOptions): Promise<void>;
+  cancelPendingPublish?(): void;
   release(stream: MediaStream): Promise<void>;
 }
 
@@ -351,6 +352,7 @@ class BrowserScreenShareController implements ScreenShareController {
     }
     if (!stream) return;
     const publication = this.publication;
+    if (publication) this.dependencies.publisher.cancelPendingPublish?.();
     const releaseResources = this.releaseResources;
     this.stopPromise = (publication?.catch(() => undefined) ?? Promise.resolve())
       .then(() => releaseResources?.())

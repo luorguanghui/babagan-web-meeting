@@ -25,7 +25,7 @@ if (process.argv.includes('--helper')) {
     capturedFrames.push({ sequence: frame.index, captureUs: frame.captureUs, hash: createHash('sha256').update(frame.frame).digest('hex') });
     return originalSend.call(this, frame);
   };
-  const server = await createNativeCaptureServer({ ffmpeg, origin, getActiveDisplayCount: async () => 1, idleTimeoutMs: 30_000,
+  const server = await createNativeCaptureServer({ ffmpeg, origin, getActiveDisplayCount: async () => 1,
     spawnProcess: () => {
       const args = buildCaptureArguments(60);
       args[args.indexOf('-i') + 1] = 'testsrc2=size=1920x1080:rate=120:duration=10';

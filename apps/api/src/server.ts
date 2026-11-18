@@ -14,6 +14,7 @@ import { LiveKitMediaService } from './livekit/livekit-media-service.js';
 import type { MediaService as LiveKitMediaPort } from './livekit/media-service.js';
 import { LiveKitWebhookHandler } from './livekit/webhook-handler.js';
 import { P2pRoomRegistry } from './p2p/room-registry.js';
+import { SqliteMoqRelayJournal } from './repositories/sqlite-moq-relay-journal.js';
 import { SqliteMeetingRepository } from './repositories/sqlite-meeting-repository.js';
 import { Argon2PasswordHasher } from './security/password-hasher.js';
 import { HostApplicationService } from './services/host-application-service.js';
@@ -127,7 +128,10 @@ export async function startServer(options: { port?: number } = {}): Promise<{ ap
       api: config.cloudflareSfuGatewayUrl || (config.cloudflareSfuAppId && config.cloudflareSfuAppSecret)
         ? new CloudflareSfuClient({ appId: config.cloudflareSfuAppId, appSecret: config.cloudflareSfuAppSecret, gatewayUrl: config.cloudflareSfuGatewayUrl, gatewayToken: config.cloudflareSfuGatewayToken }) : undefined
     });
-    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu });
+    const screenMoqJournal = config.cloudflareMoqAccountId && config.cloudflareMoqApiToken
+      ? new SqliteMoqRelayJournal(database, config.cloudflareMoqAccountId)
+      : undefined;
+    const app = await buildApp({ config, meetings, hosts, participants, media, webhooks, p2p, screenSfu, screenMoqJournal });
     const managed = await startManagedServer({
       port: options.port,
       app,

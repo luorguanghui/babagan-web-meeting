@@ -20,6 +20,8 @@ export interface AppConfig {
   cloudflareSfuAppSecret?: string;
   cloudflareSfuGatewayUrl?: string;
   cloudflareSfuGatewayToken?: string;
+  cloudflareMoqAccountId?: string;
+  cloudflareMoqApiToken?: string;
   meetingTtlMs: 86_400_000;
   emptyGraceMs: 600_000;
   reconnectGraceMs: 30_000;
@@ -123,6 +125,17 @@ export function loadConfig(env: Environment): AppConfig {
   }
 
   const p2pTurnProvider = parseTurnProvider(env);
+  const cloudflareMoqAccountId = env.CLOUDFLARE_MOQ_ACCOUNT_ID?.trim() || undefined;
+  const cloudflareMoqApiToken = env.CLOUDFLARE_MOQ_API_TOKEN?.trim() || undefined;
+  if (!!cloudflareMoqAccountId !== !!cloudflareMoqApiToken) {
+    throw new Error('CLOUDFLARE_MOQ_ACCOUNT_ID and CLOUDFLARE_MOQ_API_TOKEN must both be configured to enable MoQ');
+  }
+  if (cloudflareMoqAccountId && !/^[A-Za-z0-9_-]{1,128}$/.test(cloudflareMoqAccountId)) {
+    throw new Error('CLOUDFLARE_MOQ_ACCOUNT_ID is invalid');
+  }
+  if (cloudflareMoqApiToken && !/^[A-Za-z0-9_-]+$/.test(cloudflareMoqApiToken)) {
+    throw new Error('CLOUDFLARE_MOQ_API_TOKEN is invalid');
+  }
   return {
     nodeEnv,
     publicBaseUrl,
@@ -139,6 +152,8 @@ export function loadConfig(env: Environment): AppConfig {
     p2pTurnTtlSeconds: parseTurnTtlSeconds(env),
     p2pTurnProvider,
     ...parseCloudflareSfu(env),
+    cloudflareMoqAccountId,
+    cloudflareMoqApiToken,
     meetingTtlMs: 86_400_000,
     emptyGraceMs: 600_000,
     reconnectGraceMs: 30_000,

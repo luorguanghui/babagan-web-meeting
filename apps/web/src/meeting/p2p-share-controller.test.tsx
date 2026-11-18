@@ -1606,6 +1606,10 @@ describe('p2p share controller', () => {
     expect(controller.getViewerStates().get('viewer-2')).toBe('negotiating');
     expect(FakeRTCPeerConnection.instances.slice(-2).map(senderMaxBitrate)).toEqual([8_000_000, 8_000_000]);
     expect(fetchIceServers).toHaveBeenCalledTimes(2);
+    expect(await controller.getQualitySources?.()).toMatchObject([
+      { ice: { requestedPolicy: 'all', appliedPolicy: 'all', attemptReason: 'manual' } },
+      { ice: { requestedPolicy: 'all', appliedPolicy: 'all', attemptReason: 'manual' } }
+    ]);
   });
 
   it('emits state snapshots on subscribe and on every transition', async () => {

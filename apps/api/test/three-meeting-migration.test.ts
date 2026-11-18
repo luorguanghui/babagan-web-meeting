@@ -26,9 +26,9 @@ it('upgrades the existing two-migration database without losing rooms or session
   repo.createHostSession({ id: 'host-one', meetingId: original.id, tokenHash: 'hash', createdAt: 1_000, expiresAt: 100_000, revokedAt: null });
   expect(() => repo.createMeeting(meeting('two'))).toThrow(/UNIQUE/);
   migrate(db); migrate(db);
-  expect(repo.findBySlug(original.slug)).toEqual(original);
+  expect(repo.findBySlug(original.slug)).toEqual({ ...original, shareGrantGeneration: 0 });
   expect(repo.findHostSessionByTokenHash('hash', 2_000)?.meetingId).toBe(original.id);
-  expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 3 });
+  expect(db.prepare('SELECT count(*) AS count FROM schema_migrations').get()).toEqual({ count: 4 });
   repo.createMeeting(meeting('two')); repo.createMeeting(meeting('three'));
   expect(() => repo.createMeeting(meeting('four'))).toThrow('MEETING_LIMIT_REACHED');
 });

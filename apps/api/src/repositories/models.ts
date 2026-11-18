@@ -7,6 +7,7 @@ export interface MeetingRecord {
   passwordHash: string | null;
   status: MeetingStatus;
   shareIdentity: string | null;
+  shareGrantGeneration: number;
   createdAt: number;
   expiresAt: number;
   emptySince: number | null;

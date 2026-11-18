@@ -2,7 +2,7 @@ import type { Readable, Writable } from 'node:stream';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCliArgs, verifyFfmpeg } from './cli-config.js';
-import { createNativeCaptureServer, type NativeCaptureServer } from './server.js';
+import { createNativeCaptureServer, PREFERRED_NATIVE_CAPTURE_PORT, type NativeCaptureServer } from './server.js';
 
 /** Stdout is a private parent-owned pipe, NOT a log. It carries the capability
  * once. The desktop host must redact it and never persist the ready message. */
@@ -32,7 +32,8 @@ export async function runDesktopHost(args: string[], deps: {
   try {
     await (deps.verify ?? verifyFfmpeg)(options.ffmpeg);
     if (ended || input.readableEnded || input.destroyed) return;
-    helper = await (deps.createServer ?? createNativeCaptureServer)({ ffmpeg: options.ffmpeg, origin: options.origin, parentOwned: true,
+    helper = await (deps.createServer ?? createNativeCaptureServer)({ ffmpeg: options.ffmpeg, origin: options.origin,
+      preferredPort: PREFERRED_NATIVE_CAPTURE_PORT,
       onActivity: captureActive => emit({ type: 'activity', captureActive }),
       onDiagnostic: event => emit({ type: 'diagnostic', ...event }) });
     if (ended) { await helper.close(); return; }

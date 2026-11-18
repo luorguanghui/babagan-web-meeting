@@ -10,6 +10,8 @@ import type { ProjectStats } from './software-media/encoder.js';
 
 import { inspectP2pMediaHealth, type P2pMediaHealth } from './p2p-media-health.js';
 import type { ScreenQualitySource } from './screen-share-quality.js';
+import { iceElapsedMs, incrementIceCounter, type ScreenIceAttemptReason,
+  type ScreenIcePolicyReason, type ScreenIceRetryReason } from './screen-ice-diagnostics.js';
 import { configureOpusSdp, deserializeIceCandidate, serializeIceCandidate } from './p2p-share-controller.js';
 
 export type ViewerP2pState = 'idle' | 'negotiating' | 'p2p' | 'turn' | 'livekit';
@@ -39,6 +41,7 @@ export interface P2pViewerControllerDependencies {
   createPeerConnection?: (iceServers: RTCIceServer[], iceTransportPolicy?: RTCIceTransportPolicy) => RTCPeerConnection;
   /** ICE policy for the next peer connection. `relay` forces TURN. */
   iceTransportPolicy?: RTCIceTransportPolicy;
+  icePolicyReason?: ScreenIcePolicyReason;
   turnProvider?: P2pTurnProvider;
   /** Fired once when the viewer moves to `livekit` (the caller subscribes the LiveKit screen track). */
   onFallback?: () => void;
@@ -53,6 +56,11 @@ interface ViewerPcSession {
   project?: ProjectPeerReceiver;
   pc: RTCPeerConnection;
   iceTransportPolicy: RTCIceTransportPolicy;
+  startedAt: number;
+  attemptReason: ScreenIceAttemptReason;
+  localCandidateErrors: number;
+  remoteCandidateErrors: number;
+  recoveryReason?: ScreenIceRetryReason;
   turnProvider: P2pTurnProvider;
   generation?: string;
   pcClosed: boolean;
@@ -102,6 +110,7 @@ export class P2pViewerController {
   private readonly onProjectMediaError?: (message: string) => void;
   private readonly createPeerConnection: (iceServers: RTCIceServer[]) => RTCPeerConnection;
   private iceTransportPolicy: RTCIceTransportPolicy;
+  private readonly relayPolicyReason: ScreenIcePolicyReason;
   private turnProvider: P2pTurnProvider;
   private readonly onFallback?: () => void;
   private readonly onFallbackRequested?: (complete: () => void) => void;
@@ -115,6 +124,7 @@ export class P2pViewerController {
   private stream: MediaStream | null = null;
   private earlyIce?: { from: string; generation?: string; candidates: Array<string | null> };
   private lastRecoveryRequestAt?: number;
+  private lastIceRetry?: { reason: ScreenIceRetryReason; at: number };
   private autoRetryTimer?: ReturnType<typeof setTimeout>;
   private autoRetryAttempt = 0;
   private directStableSince?: number;
@@ -130,6 +140,7 @@ export class P2pViewerController {
       ?? ((servers, policy) => new RTCPeerConnection({ iceServers: servers, iceTransportPolicy: policy }));
     this.createPeerConnection = (servers) => createPeerConnection(servers, this.iceTransportPolicy);
     this.iceTransportPolicy = dependencies.iceTransportPolicy ?? 'all';
+    this.relayPolicyReason = dependencies.icePolicyReason ?? 'viewer-turn';
     this.turnProvider = dependencies.turnProvider ?? 'coturn';
     this.onFallback = dependencies.onFallback;
     this.onProjectMediaError = dependencies.onProjectMediaError;
@@ -154,12 +165,15 @@ export class P2pViewerController {
     if (from !== this.sharerIdentity) return;
     if (this.explicitSfu) return;
     this.clearAutoRetry();
+    const attemptReason = this.session === undefined ? 'initial' : 'remote-offer';
+    const recoveryReason = this.session?.recoveringPeer ? this.session.recoveryReason : undefined;
     const recoveringPeer = this.session?.recoveringPeer === true;
     const previousStream = this.stream;
     this.teardownSession();
     this.stream = previousStream;
-    const session = this.createSession(generation);
+    const session = this.createSession(attemptReason, generation);
     session.recoveringPeer = recoveringPeer;
+    session.recoveryReason = recoveryReason;
     if (this.earlyIce?.from === from
       && (generation === undefined || this.earlyIce.generation === undefined || this.earlyIce.generation === generation)) {
       session.queuedCandidates.push(...this.earlyIce.candidates.map((candidate) =>
@@ -185,7 +199,7 @@ export class P2pViewerController {
       this.armMediaTimer(session);
       this.armHealthMonitor(session);
     } catch {
-      if (this.ownsSession(session)) this.recoverPeer(session);
+      if (this.ownsSession(session)) this.recoverPeer(session, 'description-error');
     }
   }
 
@@ -251,6 +265,7 @@ export class P2pViewerController {
   /** Sets the policy used by the next peer connection. */
   setIceTransportPolicy(policy: RTCIceTransportPolicy): void {
     this.iceTransportPolicy = policy;
+    this.lastIceRetry = { reason: 'settings', at: this.now() };
     this.explicitSfu = false;
     this.clearAutoRetry();
     if (this.session) {
@@ -286,9 +301,24 @@ export class P2pViewerController {
     const report = await session.pc.getStats().catch(() => undefined);
     if (session !== this.session || session.pcClosed || this.closed) return undefined;
     const state = this.state;
+    const now = this.now();
+    const lastRetry = this.lastIceRetry;
     return {
       key: session.pc, transport: state === 'p2p' || state === 'turn' ? state : 'negotiating',
       turnProvider: state === 'turn' ? session.turnProvider : undefined,
+      ice: {
+        requestedPolicy: this.iceTransportPolicy,
+        appliedPolicy: session.pc.getConfiguration?.().iceTransportPolicy ?? session.iceTransportPolicy,
+        policyReason: session.iceTransportPolicy === 'relay' ? this.relayPolicyReason : 'default',
+        state: session.pc.iceConnectionState,
+        gatheringState: session.pc.iceGatheringState,
+        ageMs: iceElapsedMs(now, session.startedAt),
+        attemptReason: session.attemptReason,
+        lastRetryReason: lastRetry?.reason,
+        lastRetryAgoMs: lastRetry && iceElapsedMs(now, lastRetry.at),
+        localCandidateErrors: session.localCandidateErrors,
+        remoteCandidateErrors: session.remoteCandidateErrors
+      },
       report, project: session.project?.getStats()
     };
   }
@@ -307,8 +337,9 @@ export class P2pViewerController {
    * viewer. The sharer rebuilds the session with a new PC and ICE, and this
    * viewer's `acceptOffer` treats the fresh offer as a renegotiation.
    */
-  requestRetry(): void {
+  requestRetry(reason: ScreenIceRetryReason = 'manual'): void {
     if (this.closed || this.sharerIdentity === undefined) return;
+    this.lastIceRetry = { reason, at: this.now() };
     if (this.iceTransportPolicy === 'all' && !this.explicitSfu) this.signaling.resumeConnection?.();
     this.signaling.sendRetry(this.sharerIdentity);
   }
@@ -330,18 +361,23 @@ export class P2pViewerController {
     this.transition('idle');
   }
 
-  private createSession(generation?: string): ViewerPcSession {
+  private createSession(attemptReason: ScreenIceAttemptReason, generation?: string): ViewerPcSession {
     const pc = this.createPeerConnection(this.iceServers);
+    const startedAt = this.now();
     const session: ViewerPcSession = {
       pc,
       iceTransportPolicy: this.iceTransportPolicy,
+      startedAt,
+      attemptReason,
+      localCandidateErrors: 0,
+      remoteCandidateErrors: 0,
       turnProvider: this.turnProvider,
       generation,
       pcClosed: false,
       queuedCandidates: [],
       lastBytesReceived: 0,
       lastFramesDecoded: 0,
-      lastProgressAt: this.now(),
+      lastProgressAt: startedAt,
       poorQualitySamples: 0,
       mediaReadySent: false,
       healthSampleTail: Promise.resolve(),
@@ -363,6 +399,7 @@ export class P2pViewerController {
       session.project.acceptChannel(event.channel);
     };
     pc.onicecandidate = (event) => this.handleLocalCandidate(session, event);
+    pc.onicecandidateerror = () => { session.localCandidateErrors = incrementIceCounter(session.localCandidateErrors); };
     pc.oniceconnectionstatechange = () => this.handleIceConnectionState(session);
     return session;
   }
@@ -467,20 +504,20 @@ export class P2pViewerController {
         if (classifiedState !== this.state) this.transition(classifiedState);
       }
       if (poorQuality && this.state === 'p2p') {
-        this.recoverPeer(session);
+        this.recoverPeer(session, 'media-quality');
         return;
       }
       const stallEligible = this.state === 'p2p' || this.state === 'turn'
         || (this.state === 'negotiating' && session.mediaReadySent);
       if (stallEligible
         && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
-        this.recoverPeer(session);
+        this.recoverPeer(session, 'media-stalled');
       }
     } catch {
       // Once negotiation has completed there is no media timer left. Repeated
       // stats errors must still be covered by the last decoded-frame deadline.
       if (session.mediaReadySent && this.now() - session.lastProgressAt >= P2P_RTP_STALL_TIMEOUT_MS) {
-        this.recoverPeer(session);
+        this.recoverPeer(session, 'media-stalled');
       }
     }
   }
@@ -561,6 +598,7 @@ export class P2pViewerController {
       }
     } catch {
       // Stale or un-matchable candidates are common with trickle ICE; ignore per candidate.
+      if (init?.candidate) session.remoteCandidateErrors = incrementIceCounter(session.remoteCandidateErrors);
     }
   }
 
@@ -581,7 +619,7 @@ export class P2pViewerController {
         this.armMediaTimer(session);
         return;
       }
-      this.recoverPeer(session);
+      this.recoverPeer(session, 'negotiation-timeout');
     }, P2P_ICE_NEGOTIATION_TIMEOUT_MS);
   }
 
@@ -600,22 +638,23 @@ export class P2pViewerController {
           session.disconnectTimer = undefined;
           if (this.ownsSession(session)
             && (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn')) {
-            this.recoverPeer(session);
+            this.recoverPeer(session, 'ice-disconnected');
           }
         }, P2P_ICE_DISCONNECT_TIMEOUT_MS);
       }
     } else if (state === 'failed') {
-      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.recoverPeer(session);
+      if (this.state === 'negotiating' || this.state === 'p2p' || this.state === 'turn') this.recoverPeer(session, 'ice-failed');
     } else if (state === 'closed') {
       this.clearDisconnectTimer(session);
     }
   }
 
-  private recoverPeer(session: ViewerPcSession): void {
+  private recoverPeer(session: ViewerPcSession, reason: ScreenIceRetryReason): void {
     if (!this.ownsSession(session)
       || this.closed
       || (this.state !== 'negotiating' && this.state !== 'p2p' && this.state !== 'turn')) return;
     session.recoveringPeer = true;
+    session.recoveryReason = reason;
     this.clearMediaTimer(session);
     this.clearDisconnectTimer(session);
     this.clearAutoRetry();
@@ -666,7 +705,7 @@ export class P2pViewerController {
     }, remainingCooldown || P2P_ICE_NEGOTIATION_MAX_MS);
     if (remainingCooldown === 0) {
       this.lastRecoveryRequestAt = this.now();
-      this.requestRetry();
+      this.requestRetry(session.recoveryReason);
     }
   }
 
@@ -724,7 +763,7 @@ export class P2pViewerController {
       this.autoRetryTimer = undefined;
       this.autoRetryAttempt = Math.min(this.autoRetryAttempt + 1, P2P_AUTO_RETRY_DELAYS_MS.length - 1);
       this.lastRecoveryRequestAt = this.now();
-      this.requestRetry();
+      this.requestRetry('direct-probe');
       // Signaling or credential refresh may fail without producing an offer.
       // Keep the existing picture and retry even if no state change arrives.
       this.armAutoRetry();

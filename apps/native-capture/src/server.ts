@@ -8,18 +8,19 @@ import { FrameSender } from './frame-sender.js';
 import { sendControl as send } from './control-sender.js';
 import { HttpCaptureError, httpFrameTransport, readHttpStart, writeHttpError, writeHttpFormat } from './http-stream.js';
 
+export const PREFERRED_NATIVE_CAPTURE_PORT = 6851;
+
 export interface NativeCaptureServerOptions {
   ffmpeg?: string;
   origin?: string;
+  preferredPort?: number;
   spawnProcess?: CaptureSpawner;
   startupTimeoutMs?: number;
-  idleTimeoutMs?: number;
   statsIntervalMs?: number;
   getActiveDisplayCount?: () => Promise<number>;
   getDesktopAvailability?: () => Promise<boolean>;
   onDiagnostic?: (event: CaptureDiagnostic) => void;
   onActivity?: (captureActive: boolean) => void;
-  parentOwned?: boolean;
 }
 export interface NativeCaptureServer {
   port: number;
@@ -42,7 +43,7 @@ export function validateOrigin(origin: string): string {
 
 export async function createNativeCaptureServer(options: NativeCaptureServerOptions = {}): Promise<NativeCaptureServer> {
   const origin = validateOrigin(options.origin ?? 'https://meet.babagan.cloud');
-  for (const value of [options.startupTimeoutMs, options.idleTimeoutMs, options.statsIntervalMs]) {
+  for (const value of [options.startupTimeoutMs, options.statsIntervalMs]) {
     if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > 2_147_483_647)) throw new Error('Invalid native capture timeout');
   }
   const ffmpeg = options.ffmpeg ?? process.env.BABAGAN_FFMPEG ?? 'ffmpeg';
@@ -93,7 +94,6 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         const { frameRate, sourcePolicy } = await readHttpStart(request);
         if (response.destroyed || closing) return;
         if (owner) { rejectRequest(409, 'capture_busy', 'A capture is already active. Stop it before starting another.'); return; }
-        clearTimeout(idleTimer);
         const sender = new FrameSender(httpFrameTransport(response));
         const id = randomBytes(16).toString('hex');
         const session = createCaptureSession({ ffmpeg, frameRate, sourcePolicy, spawnProcess: options.spawnProcess,
@@ -110,7 +110,6 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         void session.done.then(() => {
           if (!response.destroyed && !response.writableEnded) response.end();
           if (owner?.session === session) { owner = undefined; options.onActivity?.(false); }
-          armIdle();
         });
       } catch (error) {
         if (error instanceof HttpCaptureError) rejectRequest(error.status, error.code, error.message);
@@ -125,14 +124,12 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
     handleProtocols: () => NATIVE_CAPTURE_PROTOCOL });
   let owner: { connection: WebSocket | ServerResponse; session: CaptureSession;
     httpStats?: { id: string; response: ServerResponse; sender: FrameSender } } | undefined;
-  let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let closing = false;
   let resolveClosed!: () => void;
   const closed = new Promise<void>((resolve) => resolveClosed = resolve);
   const close = async () => {
     if (closing) return closed;
     closing = true;
-    clearTimeout(idleTimer);
     const pendingCapture = owner?.session;
     pendingCapture?.stop();
     http.closeAllConnections();
@@ -143,10 +140,6 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
       new Promise<void>((resolve) => http.close(() => resolve()))
     ]);
     resolveClosed();
-  };
-  const armIdle = () => {
-    clearTimeout(idleTimer);
-    if (!owner && !closing && !options.parentOwned) idleTimer = setTimeout(() => void close(), options.idleTimeoutMs ?? 1_800_000);
   };
   http.on('upgrade', (request, socket, head) => {
     const protocols = (request.headers['sec-websocket-protocol'] ?? '').split(',').map((part) => part.trim());
@@ -182,7 +175,6 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         send(socket, { type: 'error', code: 'invalid_control', message: 'Start requires frameRate 30 or 60.' }); return;
       }
       if (owner) { send(socket, { type: 'error', code: 'capture_busy', message: 'A capture is already active. Stop it before starting another.' }); return; }
-      clearTimeout(idleTimer);
       const sender = new FrameSender(socket);
       const session = createCaptureSession({ ffmpeg, frameRate: control.frameRate as 30 | 60,
         ...(hasSourcePolicy ? { sourcePolicy: 'single-active-monitor' } : {}),
@@ -200,16 +192,25 @@ export async function createNativeCaptureServer(options: NativeCaptureServerOpti
         send(socket, sender.stats());
         send(socket, { type: 'stopped' });
         if (owner?.session === session) { owner = undefined; options.onActivity?.(false); }
-        armIdle();
       });
     });
   });
-  await new Promise<void>((resolve, reject) => {
-    http.once('error', reject);
-    http.listen(0, '127.0.0.1', () => { http.off('error', reject); resolve(); });
+  const listen = (port: number) => new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => { http.off('listening', onListening); reject(error); };
+    const onListening = () => { http.off('error', onError); resolve(); };
+    http.listen(port, '127.0.0.1');
+    http.once('error', onError);
+    http.once('listening', onListening);
   });
+  const preferredPort = options.preferredPort ?? 0;
+  try {
+    await listen(preferredPort);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!preferredPort || (code !== 'EADDRINUSE' && code !== 'EACCES')) throw error;
+    await listen(0);
+  }
   const address = http.address();
   if (!address || typeof address === 'string') throw new Error('Unable to bind loopback capture server');
-  armIdle();
   return { port: address.port, token, origin, launchUrl: `${origin}/#nativeCapture=1.${address.port}.${token}`, closed, close };
 }
