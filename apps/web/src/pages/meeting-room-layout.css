@@ -15,10 +15,6 @@
   padding: 14px 28px;
   gap: 24px;
 }
-.meeting-room .meeting-brand { display: flex; align-items: center; padding-right: 25px; border-right: 1px solid var(--border); flex: 0 0 auto; }
-.meeting-room .meeting-brand img { width: 138px; height: auto; }
-.meeting-room .meeting-brand-lockup { display: inline-flex; align-items: center; gap: 6px; width: 138px; height: 35px; color: var(--accent); font-size: 1.28rem; font-weight: 750; letter-spacing: -.055em; }
-.meeting-room .meeting-brand .meeting-brand-avatar { width: 32px; height: 32px; object-fit: contain; }
 .meeting-room .meeting-room-title { flex-wrap: nowrap; gap: 18px; }
 .meeting-room .meeting-room-title h1 { font-size: 1rem; letter-spacing: -.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .meeting-room .meeting-duration { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .8rem; }
@@ -88,17 +84,12 @@
   .meeting-room .meeting-members-sidebar { display: none; position: absolute; right: 0; top: 0; bottom: 0; width: min(320px,90%); z-index: 24; box-shadow: -12px 0 36px #0003; }
   .meeting-room[data-members-expanded] .meeting-members-sidebar { display: block; }
   .meeting-room .meeting-members-close { display: inline-flex; position: absolute; right: 12px; top: 15px; background: transparent; color: var(--text); min-height: 38px; padding: 8px; }
-  .meeting-room .meeting-brand { border-right: 0; padding-right: 0; }
-  .meeting-room .meeting-brand img { width: 108px; }
-  .meeting-room .meeting-brand-lockup { width: 108px; font-size: 1.1rem; }
-  .meeting-room .meeting-brand .meeting-brand-avatar { width: 26px; height: 26px; }
   .meeting-room .meeting-topbar { gap: 14px; padding: 12px 16px; min-height: 74px; flex-wrap: nowrap; }
   .meeting-room .meeting-nav-stats { display: none; }
 }
 @media (max-width: 520px) {
   .meeting-room.meeting-room { min-height: 0; }
   .meeting-room .meeting-topbar { padding: 10px 12px; gap: 10px; }
-  .meeting-room .meeting-brand { display: none; }
   .meeting-room .meeting-room-title h1 { font-size: .88rem; }
   .meeting-room .meeting-duration, .meeting-room .meeting-connection .connection-banner { font-size: .7rem; }
   .meeting-room .meeting-topbar-action { padding: 8px; min-height: 40px; }

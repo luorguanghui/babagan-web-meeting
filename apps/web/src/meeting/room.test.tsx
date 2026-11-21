@@ -583,7 +583,7 @@ describe('meeting room UI', () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: reducedMotion, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
     renderRoom();
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    const menu = screen.getByRole('dialog', { name: 'More' });
+    const menu = screen.getByRole('dialog', { name: 'Audio and sharing' });
     const menuAudio = within(menu).getByRole('button', { name: 'Audio and devices' });
     menuAudio.focus();
     await userEvent.keyboard('{Enter}');
@@ -607,13 +607,13 @@ describe('meeting room UI', () => {
     trigger.style.display = 'none';
     const more = within(toolbar).getByRole('button', { name: 'More' });
     await userEvent.click(more);
-    within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: label }).focus();
+    within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: label }).focus();
 
     await userEvent.keyboard('{Enter}');
 
     expect(screen.getByRole('combobox', { name: field })).toHaveFocus();
     expect(trigger).not.toHaveFocus();
-    expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Audio and sharing' })).not.toBeInTheDocument();
     await userEvent.keyboard('{Escape}');
     expect(screen.queryByRole('group', { name: panelLabel })).not.toBeInTheDocument();
     expect(more).toHaveFocus();
@@ -623,11 +623,11 @@ describe('meeting room UI', () => {
     vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }));
     renderRoom();
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    const item = within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Participants' });
+    const item = within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'Participants' });
     item.focus();
     await userEvent.keyboard('{Enter}');
     expect(document.querySelector('.meeting-members-sidebar')).toHaveFocus();
-    expect(screen.queryByRole('dialog', { name: 'More' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: 'Audio and sharing' })).not.toBeInTheDocument();
   });
 
   it('keeps mobile audio volume focus through volume and live room updates', async () => {
@@ -636,7 +636,7 @@ describe('meeting room UI', () => {
     within(toolbar).getByRole('button', { name: 'Audio and devices' }).style.display = 'none';
     const more = within(toolbar).getByRole('button', { name: 'More' });
     await userEvent.click(more);
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Audio and devices' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'Audio and devices' }));
     expect(screen.getByRole('combobox', { name: 'Microphone device' })).toHaveFocus();
     const volume = screen.getByRole('slider', { name: 'Call audio volume' });
     volume.focus();
@@ -650,7 +650,7 @@ describe('meeting room UI', () => {
     await userEvent.keyboard('{Escape}');
     expect(more).toHaveFocus();
     await userEvent.click(more);
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Audio and devices' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'Audio and devices' }));
     expect(screen.getByRole('combobox', { name: 'Microphone device' })).toHaveFocus();
   });
 
@@ -673,16 +673,16 @@ describe('meeting room UI', () => {
     expect(screen.queryByLabelText('Screen-share codec')).not.toBeInTheDocument();
 
     await userEvent.click(within(toolbar).getByRole('button', { name: 'More' }));
-    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
-    expect(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Audio and sharing' })).toBeVisible();
+    expect(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'Screen sharing settings' })).toBeVisible();
 
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'Screen sharing settings' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'Screen sharing settings' }));
     expect(screen.getByRole('group', { name: 'Screen sharing settings' })).toBeVisible();
     expect(screen.queryByLabelText('Microphone device')).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    expect(screen.getByRole('dialog', { name: 'More' })).toBeVisible();
+    expect(screen.getByRole('dialog', { name: 'Audio and sharing' })).toBeVisible();
 
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByRole('dialog', { name: 'WebRTC data' })).toBeVisible();
     expect(screen.getByText('No active screen-share data.')).toBeVisible();
   });

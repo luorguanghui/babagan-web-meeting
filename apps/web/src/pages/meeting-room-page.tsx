@@ -9,7 +9,7 @@ import {
   type ScreenShareQuality
 } from '@meeting/contracts';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { Copy, X } from 'lucide-react';
 import { useAndroidAudioRoutes } from '../client/android-audio-routes.js';
 import { readScreenBitrate, saveScreenBitrate } from '../meeting/screen-bitrate-preference.js';
 
@@ -22,12 +22,11 @@ import './meeting-sunny-dock.css';
 import { AdminEndMeetingForm } from '../components/admin-end-meeting-form.js';
 import { HostMenu } from '../components/host-menu.js';
 import { ConnectionBanner } from '../components/connection-banner.js';
-import { MeetingControls, MeetingSettings, type MeetingControlsProps } from '../components/meeting-controls.js';
+import { MeetingControls, MeetingSettings, MeetingVolumeControls, type MeetingControlsProps } from '../components/meeting-controls.js';
 import { MeetingDrawer, type MeetingPanel } from '../components/meeting-drawer.js';
 import { MeetingMenu, type MeetingMenuAction } from '../components/meeting-menu.js';
 import { MeetingTopBar } from '../components/meeting-top-bar.js';
 import { ParticipantList } from '../components/participant-list.js';
-import { MeetingBrandNote } from '../components/meeting-brand-note.js';
 import { ScreenStage } from '../components/screen-stage.js';
 import { WebRtcStatsPanel } from '../components/webrtc-stats-panel.js';
 import { useExitPresence } from '../components/use-exit-presence.js';
@@ -1446,17 +1445,20 @@ export function MeetingRoomPage({
     {displayedPanel === 'more' && <MeetingDrawer
       modal={false}
       exiting={panelPresence.exiting}
-      title={t('controls.more')}
+      title={t('controls.audioAndSharing')}
       closeLabel={t('controls.closePanel')}
       onClose={closeMeetingPanel}
       returnFocusRef={moreButtonRef}
-    ><MeetingMenu items={[
-      { action: 'participants', label: t('participants.label') },
-      { action: 'audio-devices', label: t('controls.audioDevices') },
-      { action: 'screen-settings', label: t('controls.screenSettings') },
-      { action: 'webrtc-stats', label: statsTitle },
-      { action: 'leave', label: t('controls.leave') }
-    ]} label={t('controls.more')} onAction={handleMeetingMenuAction} /></MeetingDrawer>}
+    >
+      <MeetingMenu items={[{ action: 'audio-devices', label: t('controls.audioDevices') }]} label={t('controls.audioDevices')} onAction={handleMeetingMenuAction} />
+      <div className="meeting-more-volumes"><MeetingVolumeControls {...meetingControlsProps} /></div>
+      <MeetingMenu items={[
+        { action: 'screen-settings', label: t('controls.screenSettings') },
+        { action: 'participants', label: t('participants.label') },
+        { action: 'webrtc-stats', label: statsTitle },
+        { action: 'leave', label: t('controls.leave') }
+      ]} label={t('controls.more')} onAction={handleMeetingMenuAction} />
+    </MeetingDrawer>}
     {displayedPanel === 'stats' && <MeetingDrawer
       modal={false}
       exiting={panelPresence.exiting}
@@ -1508,7 +1510,7 @@ export function MeetingRoomPage({
 
           </>}
         </details>
-        <MeetingBrandNote />
+        <MeetingInvite slug={slug} />
       </aside>
         <MeetingControls
           {...meetingControlsProps}
@@ -1524,6 +1526,27 @@ export function MeetingRoomPage({
         />
     </div>
   </main>;
+}
+
+function MeetingInvite({ slug }: { slug: string }) {
+  const { t } = useI18n();
+  const [result, setResult] = useState<'copied' | 'manual'>();
+  const inviteUrl = new URL(`/m/${encodeURIComponent(slug)}`, window.location.origin).href;
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(inviteUrl);
+      setResult('copied');
+    } catch {
+      setResult('manual');
+    }
+  }
+
+  return <div className="meeting-invitation">
+    <button type="button" className="secondary" onClick={() => void copyInvite()}><Copy size={17} aria-hidden="true" />{t('room.copyInvite')}</button>
+    {result === 'copied' && <p role="status">{t('create.copied')}</p>}
+    {result === 'manual' && <label>{t('create.copyFailed')}<input value={inviteUrl} readOnly onFocus={event => event.currentTarget.select()} /></label>}
+  </div>;
 }
 
 /**

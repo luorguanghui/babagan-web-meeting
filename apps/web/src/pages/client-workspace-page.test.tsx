@@ -28,14 +28,14 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-it('places open rooms before invitation entry and gives duplicate names distinct entry contexts', async () => {
+it('leads with invitation entry and gives duplicate open-room names distinct entry contexts', async () => {
   const rooms = [meeting, { ...meeting, slug: `${slug}2` }, { ...meeting, slug: `${slug}3`, isFull: true }];
   vi.stubGlobal('fetch', vi.fn(async () => Response.json({ meetings: rooms, maxOpenMeetings: 3 })));
   show();
   const cards = await screen.findAllByRole('article', { name: meeting.name });
   const openRegion = cards[0]!.closest('section')!;
   const invitation = screen.getByLabelText('Meeting link or ID').closest('form')!;
-  expect(openRegion.compareDocumentPosition(invitation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(invitation.compareDocumentPosition(openRegion) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   const first = within(cards[0]!).getByRole('link');
   const second = within(cards[1]!).getByRole('link');
   expect(first).toHaveAccessibleName(`Open meeting: ${meeting.name} · ${slug.slice(-6)}`);

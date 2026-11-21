@@ -36,7 +36,7 @@ it.each(['windows', 'android'] as const)('starts the %s app in its workspace bef
 
 it('keeps the public homepage and downloads available to browser visitors', async () => {
   open('/');
-  expect(screen.getByRole('heading', { name: 'Good company. One click away.' })).toBeVisible();
+  expect(screen.getByRole('heading', { name: 'Meet together. Share together.' })).toBeVisible();
   expect(screen.getByTestId('location')).toHaveTextContent('/');
   expect(screen.getAllByRole('link', { name: 'Downloads' }).length).toBeGreaterThan(0);
   expect(await screen.findAllByText('Not released yet')).toHaveLength(2);

@@ -1,0 +1,14 @@
+.meeting-entry-form { display: grid; gap: 8px; }
+.meeting-entry-form label { font-size: .875rem; font-weight: 700; }
+.meeting-entry-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
+.meeting-entry-input { position: relative; min-width: 0; }
+.meeting-entry-input svg { position: absolute; top: 50%; left: 14px; transform: translateY(-50%); pointer-events: none; }
+.meeting-entry-input input { padding-inline-start: 42px; }
+.meeting-entry-row input, .meeting-entry-row button { min-height: 48px; font-size: .875rem; border-radius: 12px; }
+.meeting-entry-row button { display: flex; justify-content: center; gap: 10px; font-weight: 700; }
+.meeting-entry-error { margin: 2px 0 0; color: var(--danger); font-size: .85rem; line-height: 1.5; }
+.meeting-entry-input input[aria-invalid='true'] { border-color: var(--danger); }
+
+@media (max-width: 43rem) {
+  .meeting-entry-row { grid-template-columns: minmax(0, 1fr); }
+}

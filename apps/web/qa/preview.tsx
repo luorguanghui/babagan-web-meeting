@@ -1,6 +1,6 @@
 /**
  * TEST-ONLY Vite entry. Open /qa/preview.html?scene=receiver (also settings,
- * host, idle, create, lobby). This file is not imported by the production app.
+ * host, idle, home, create, lobby). This file is not imported by the production app.
  *
  * All visible UI below is the real App / MeetingRoomPage. Only their service,
  * signaling, device and media boundaries are replaced. No participant, token,
@@ -23,8 +23,8 @@ import type { LiveKitTrackAdapter, MeetingParticipant, MeetingRoomController, Me
 import { MeetingRoomPage, type MeetingRoomApi } from '../src/pages/meeting-room-page.js';
 import '../src/styles.css';
 
-type Scene = 'receiver' | 'settings' | 'host' | 'idle' | 'create' | 'lobby';
-const scenes: Scene[] = ['receiver', 'settings', 'host', 'idle', 'create', 'lobby'];
+type Scene = 'receiver' | 'settings' | 'host' | 'idle' | 'home' | 'create' | 'lobby';
+const scenes: Scene[] = ['receiver', 'settings', 'host', 'idle', 'home', 'create', 'lobby'];
 const requestedScene = new URLSearchParams(location.search).get('scene');
 const initialScene = scenes.includes(requestedScene as Scene) ? requestedScene as Scene : 'receiver';
 const sunnyDesign = new URLSearchParams(location.search).get('design') === 'sunny';
@@ -208,6 +208,13 @@ window.fetch = async (input, init) => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, location.href);
   const method = init?.method ?? (input instanceof Request ? input.method : 'GET');
   diagnostics.requests.push(`${method} ${url.pathname}`);
+  if (url.origin === location.origin && url.pathname === '/downloads/clients/catalog.json' && method === 'GET') {
+    const release = { available: true, version: '0.1.5', bytes: 12_000_000, sha256: '0'.repeat(64) };
+    return json({ schema: 1, releases: {
+      windows: { ...release, url: '/downloads/clients/windows/0.1.5/BabaganClientSetup-0.1.5.exe' },
+      android: { ...release, url: '/downloads/clients/android/0.1.5/Babagan.apk' },
+    } });
+  }
   if (url.origin !== location.origin || !url.pathname.startsWith('/api/v1/')) block(`fetch ${url.origin}${url.pathname}`);
   if (url.pathname.endsWith('/screen-sfu')) return json({ available: false, publication: null });
   if (url.pathname.endsWith('/ice-servers')) return json({ iceServers: [], turnProvider: 'coturn', availableTurnProviders: ['coturn'] });
@@ -271,6 +278,7 @@ const posterTrack: LiveKitTrackAdapter = {
           const width = artwork.naturalWidth * scale, height = artwork.naturalHeight * scale;
           context.drawImage(artwork, (canvas.width - width) / 2, (canvas.height - height) / 2, width, height);
         } else if (!portrait) context.drawImage(artwork, 12, 12, canvas.width - 24, canvas.height - 24);
+        document.documentElement.dataset.qaStageArtwork = 'ready';
         const frameTrack = (element.srcObject as MediaStream | null)?.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack | undefined;
         frameTrack?.requestFrame?.();
       };
@@ -434,11 +442,13 @@ function Preview() {
     // Production brand / created-room anchors must remain in the QA entry.
     const keepLocal = (event: MouseEvent) => {
       const anchor = (event.target as Element).closest<HTMLAnchorElement>('a[href]');
-      if (!anchor) return;
+      if (!anchor || event.defaultPrevented) return;
       const url = new URL(anchor.href, location.href);
       event.preventDefault();
       if (url.pathname === '/create') selectScene('create');
       else if (url.searchParams.get('scene') === 'lobby' || url.pathname.startsWith('/m/')) selectScene('lobby');
+      else if (url.hash === '#downloads') document.getElementById('downloads')?.scrollIntoView();
+      else if (url.pathname === '/') selectScene('home');
     };
     window.addEventListener('babagan-qa-scene', change);
     document.addEventListener('click', keepLocal);
@@ -447,8 +457,8 @@ function Preview() {
       document.removeEventListener('click', keepLocal);
     };
   }, []);
-  return scene === 'create' || scene === 'lobby'
-    ? <MemoryRouter key={scene} initialEntries={[scene === 'create' ? '/create' : `/m/${slug}`]}><App /></MemoryRouter>
+  return scene === 'create' || scene === 'lobby' || scene === 'home'
+    ? <MemoryRouter key={scene} initialEntries={[scene === 'lobby' ? `/m/${slug}` : scene === 'create' ? '/create' : '/']}><App /></MemoryRouter>
     : <RoomScene key={scene} scene={scene} />;
 }
 

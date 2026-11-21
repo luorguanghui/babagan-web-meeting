@@ -1,5 +1,5 @@
-import { Download, Monitor, Smartphone } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { ChevronRight, Download, Monitor, Smartphone } from 'lucide-react';
+import { type ReactNode, useEffect, useState } from 'react';
 
 import { useI18n } from '../i18n/i18n.js';
 import { homeCopy } from './home-copy.js';
@@ -52,7 +52,7 @@ export function readClientCatalog(value: unknown): Catalog {
   return { windows: readRelease(releases.windows, 'windows'), android: readRelease(releases.android, 'android') };
 }
 
-export function ClientDownloads() {
+export function ClientDownloads({ extra }: { extra?: ReactNode }) {
   const { locale } = useI18n();
   const copy = homeCopy[locale];
   const [catalog, setCatalog] = useState<Catalog>();
@@ -81,13 +81,17 @@ export function ClientDownloads() {
         <div className="client-release-content">
           <h3 id={`client-${platform}-title`}>{copy[platform]}</h3>
           <p>{platform === 'windows' ? copy.windowsDetail : copy.androidDetail}</p>
-          {release && <p className="client-release-meta">v{release.version} · {(release.bytes / 1024 / 1024).toFixed(1)} {copy.bytes}</p>}
         </div>
-        {release ? <a className="client-download-action" href={release.url} download><Download size={16} aria-hidden="true" />{action}</a>
+        {release ? <a className="client-download-action" aria-label={action} href={release.url} download>
+          <Download className="client-download-icon" size={16} aria-hidden="true" /><span className="client-download-label">{action}</span><ChevronRight className="client-download-chevron" size={18} aria-hidden="true" />
+        </a>
           : <span className="client-release-status">{failed ? copy.unavailableNow : !catalog ? copy.loading : copy.unavailable}</span>}
-        {release && <details className="client-checksum"><summary>{copy.checksum}</summary><code>{release.sha256}</code></details>}
+        {release && <details className="client-checksum"><summary>{copy.checksum}</summary>
+          <p className="client-release-meta">v{release.version} · {(release.bytes / 1024 / 1024).toFixed(1)} {copy.bytes}</p><code>{release.sha256}</code>
+        </details>}
       </article>;
     })}
+    {extra}
     <div className="client-catalog-status" role="status">
       {failed && <p>{copy.failed} <button className="text-button" type="button" onClick={() => { setFailed(false); setCatalog(undefined); setAttempt(value => value + 1); }}>{copy.retry}</button></p>}
     </div>

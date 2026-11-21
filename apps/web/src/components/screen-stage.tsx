@@ -445,9 +445,8 @@ export function ScreenStage({
   >
     {hasSource && <header className="screen-stage-header" hidden={isFullscreen}>
       <div className="screen-stage-sharer">
-        <span className="screen-stage-avatar" aria-hidden="true">{[...name][0]}</span>
+        <span className="screen-stage-avatar" aria-hidden="true"><MonitorUp size={17} /></span>
         <span>{labels.sharing}</span>
-        <span className="screen-stage-live">{t('screen.liveLabel')}</span>
       </div>
       {dimensions && <span className="screen-stage-resolution">{dimensions.width} × {dimensions.height}</span>}
     </header>}

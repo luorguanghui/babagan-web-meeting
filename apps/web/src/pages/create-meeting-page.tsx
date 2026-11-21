@@ -3,6 +3,7 @@ import {
   type CreateMeetingRequest,
   type CreateMeetingResponse
 } from '@meeting/contracts';
+import { LockKeyhole, Plus } from 'lucide-react';
 import { type FormEvent, useState } from 'react';
 
 import { ApiRequestError, apiNoContent, apiRequest } from '../api/client.js';
@@ -10,7 +11,7 @@ import { CurrentMeetingCard } from '../components/current-meeting-card.js';
 import { TaskPageLayout } from '../components/task-page-layout.js';
 import { apiErrorText, useI18n } from '../i18n/i18n.js';
 import { useOpenMeetings } from './use-open-meetings.js';
-import './create-meeting-page.css';
+import './task-meeting-page.css';
 
 export function CreateMeetingPage() {
   const { t } = useI18n();
@@ -64,8 +65,7 @@ export function CreateMeetingPage() {
     });
   }
 
-  const context = <div className="task-context-content">
-    <section className="open-meetings-list" aria-label={t('open.heading')} aria-busy={open.loading}>
+  const openRooms = <section className="open-meetings-list" aria-label={t('open.heading')} aria-busy={open.loading}>
       <h2>{t('open.heading')}</h2>
       {open.loaded && <p className="open-meetings-count">{t('open.capacity', { count: open.meetings.length, max: open.maxOpenMeetings })}</p>}
       {open.loading && !open.loaded && <p role="status">{t('open.loading')}</p>}
@@ -77,17 +77,17 @@ export function CreateMeetingPage() {
       }} />)}
       {open.meetings.some(meeting => meeting.unavailable) && <p className="message notice">{t('open.unavailableHint')} <button type="button" className="text-button" disabled={open.loading} onClick={() => void open.refresh()}>{t('current.retry')}</button></p>}
       {open.failed && <p className="message error" role="alert">{t('open.lookupFailed')} <button type="button" className="text-button" onClick={() => void open.refresh()}>{t('current.retry')}</button></p>}
-    </section>
-  </div>;
+    </section>;
 
-  return <TaskPageLayout className="create-meeting-page" eyebrow={t('create.eyebrow')} title={t('create.heading')} lede={t('create.lede')} context={context}>
+  return <TaskPageLayout className="task-meeting-page" eyebrow={t('create.eyebrow')} title={t('create.heading')} lede={t('create.lede')}
+    icon={<Plus size={22} />} surfaceTitle={t('create.submit')} after={openRooms}>
     <form aria-label={t('create.submit')} onSubmit={createMeeting} noValidate>
-      <label>{t('create.name')}<input aria-label={t('create.name')} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} autoComplete="off" /></label>
-      <label>{t('create.adminPassword')}<input aria-label={t('create.adminPassword')} type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} maxLength={256} autoComplete="new-password" /></label>
-      <label>{t('create.meetingPassword')} <span className="optional">{t('common.optional')}</span><input aria-label={t('create.meetingPassword')} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="new-password" /></label>
+      <label>{t('create.name')}<input aria-label={t('create.name')} placeholder={t('create.namePlaceholder')} value={name} onChange={(event) => setName(event.target.value)} maxLength={80} autoComplete="off" /></label>
+      <label>{t('create.adminPassword')}<span className="task-password"><LockKeyhole size={18} aria-hidden="true" /><input aria-label={t('create.adminPassword')} placeholder={t('create.adminPlaceholder')} type="password" value={adminPassword} onChange={(event) => setAdminPassword(event.target.value)} maxLength={256} autoComplete="new-password" /></span></label>
+      <label><span>{t('create.meetingPassword')} <span className="optional">({t('common.optional')})</span></span><span className="task-password"><LockKeyhole size={18} aria-hidden="true" /><input aria-label={t('create.meetingPassword')} placeholder={t('create.passwordPlaceholder')} type="password" value={meetingPassword} onChange={(event) => setMeetingPassword(event.target.value)} maxLength={128} autoComplete="new-password" /></span></label>
       {error && <p className="message error" role="alert">{error}</p>}
       {open.atCapacity && <p className="message notice" role="status">{t('error.MEETING_LIMIT_REACHED')}</p>}
-      <button type="submit" disabled={isSubmitting || open.atCapacity}>{isSubmitting ? t('create.submitting') : t('create.submit')}</button>
+      <button className="task-submit" type="submit" disabled={isSubmitting || open.atCapacity}>{isSubmitting ? t('create.submitting') : t('create.submit')}<Plus size={18} aria-hidden="true" /></button>
     </form>
     {created && <section className="created-link" aria-label={t('create.linkRegion')}><p className="eyebrow">{t('create.shareLink')}</p><output>{created.joinUrl}</output><a className="host-link" href={created.joinUrl}>{t('create.enterHost')}</a><button type="button" className="secondary" onClick={copyLink}>{t('create.copyLink')}</button>{copied && <p className="message success" role="status">{t('create.copied')}</p>}</section>}
   </TaskPageLayout>;

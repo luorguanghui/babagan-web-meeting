@@ -20,7 +20,7 @@ export function ConnectionBanner({ state, online, rateLimited = false, connectio
               : kind === 'rejoin-required'
                 ? t('connection.rejoin')
                 : t('connection.ended');
-  return <p className={`connection-banner connection-${kind}`} role="status" aria-live="polite">
+  return <p className={`connection-banner connection-${online ? kind : 'offline'}`} role="status" aria-live="polite">
     <span aria-hidden="true">{kind === 'connected' && online ? '●' : '!'}</span> {message}
   </p>;
 }

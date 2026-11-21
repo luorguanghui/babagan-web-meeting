@@ -38,6 +38,11 @@ async function renderValidLobby() {
   return rendered;
 }
 
+async function openDeviceCheck() {
+  const heading = screen.getByText('Device check', { selector: 'summary strong' });
+  if (!(heading.closest('details') as HTMLDetailsElement).open) await userEvent.click(heading);
+}
+
 describe('meeting creation', () => {
   it('places creation context and the form in separate task regions', async () => {
     installBrowserFakes();
@@ -256,7 +261,7 @@ describe('join lobby', () => {
     renderAt(`/m/${slug}`);
 
     const form = await screen.findByRole('form', { name: 'Join meeting' });
-    const summary = screen.getByText('Device check', { selector: 'summary' });
+    const summary = screen.getByText('Device check', { selector: 'summary strong' });
     const disclosure = summary.closest('details');
     expect(disclosure).not.toHaveAttribute('open');
     expect(form.compareDocumentPosition(disclosure!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -343,6 +348,7 @@ describe('join lobby', () => {
     await renderValidLobby();
 
     expect(screen.getByRole('form', { name: 'Join meeting' })).toBeVisible();
+    await openDeviceCheck();
     expect(screen.getByRole('group', { name: 'Device check' })).toBeVisible();
   });
 
@@ -397,6 +403,7 @@ describe('join lobby', () => {
     const rendered = await renderValidLobby();
 
     expect(getUserMedia).not.toHaveBeenCalled();
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     await waitFor(() => expect(getUserMedia).toHaveBeenCalledWith({ audio: true }));
     rendered.unmount();
@@ -407,6 +414,7 @@ describe('join lobby', () => {
     installBrowserFakes({ getUserMedia: async () => { throw new DOMException('Denied', 'NotAllowedError'); } });
     await renderValidLobby();
 
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Microphone permission was denied');
@@ -417,6 +425,7 @@ describe('join lobby', () => {
     Object.defineProperty(window.navigator, 'mediaDevices', { configurable: true, value: undefined });
     await renderValidLobby();
 
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent('does not expose microphone access');
@@ -429,6 +438,7 @@ describe('join lobby', () => {
     installBrowserFakes({ getUserMedia: () => new Promise<MediaStream>((resolve) => { resolveStream = resolve; }) });
     const rendered = await renderValidLobby();
 
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     rendered.unmount();
     resolveStream(lateStream);
@@ -448,7 +458,9 @@ describe('join lobby', () => {
     installBrowserFakes({ getUserMedia });
     await renderValidLobby();
 
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     resolveFirst(firstStream);
 
@@ -493,6 +505,7 @@ describe('join lobby', () => {
     renderAt(`/m/${slug}`);
 
     await screen.findByLabelText('Nickname');
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));
@@ -511,6 +524,7 @@ describe('join lobby', () => {
     renderAt(`/m/${slug}`);
 
     await screen.findByLabelText('Nickname');
+    await openDeviceCheck();
     await userEvent.click(screen.getByRole('button', { name: 'Check microphone' }));
     await userEvent.type(screen.getByLabelText('Nickname'), 'Ada');
     await userEvent.click(screen.getByRole('button', { name: 'Join muted' }));

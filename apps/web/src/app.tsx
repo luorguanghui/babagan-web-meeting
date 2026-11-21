@@ -19,7 +19,8 @@ export function App() {
   const { host } = useClientHost();
   const { pathname } = useLocation();
   const start = host ? '/client' : '/create';
-  return <LanguageProvider><AppShell showClientUpdate={pathname !== '/client'}><MeetingErrorBoundary><Routes>
+  const isTask = pathname === '/create' || /^\/(?:m|meetings)\//.test(pathname);
+  return <LanguageProvider><AppShell showClientUpdate={pathname !== '/client'} backTo={isTask ? host ? '/client' : '/' : undefined}><MeetingErrorBoundary><Routes>
     <Route path="/" element={host ? <Navigate to="/client" replace /> : <HomePage />} />
     <Route path="/client" element={<ClientWorkspacePage />} />
     <Route path="/native" element={host ? <Navigate to="/client" replace /> : <NativeDownloadPage />} />

@@ -115,7 +115,7 @@ export function MeetingControls(props: MeetingControlsProps) {
   const internalShareTriggerRef = useRef<HTMLButtonElement>(null);
   const audioTriggerRef = props.audioSettingsButtonRef ?? internalAudioTriggerRef;
   const shareTriggerRef = props.shareSettingsButtonRef ?? internalShareTriggerRef;
-  const MicrophoneIcon = props.microphoneEnabled ? MicOff : Mic;
+  const MicrophoneIcon = props.microphoneEnabled ? Mic : MicOff;
   // Opening focus follows the selected panel, not changing callbacks or live settings.
   useEffect(() => {
     if (quickPanel === null) return;
@@ -257,6 +257,16 @@ function VolumeSlider({ label, displayLabel, kind, value, onChange }: { label: s
   </label>;
 }
 
+export function MeetingVolumeControls(props: Pick<MeetingControlsProps,
+  'callAudioVolume' | 'onCallAudioVolumeChange' | 'sharedAudioVolumeVisible' | 'sharedAudioVolume' | 'onSharedAudioVolumeChange'
+>) {
+  const { t } = useI18n();
+  return <>
+    <VolumeSlider label={t('controls.callAudioVolume')} displayLabel={t('controls.callAudioShort')} kind="call" value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
+    {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} displayLabel={t('controls.sharedAudioShort')} kind="shared" value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
+  </>;
+}
+
 export interface MeetingSettingsProps extends MeetingControlsProps {
   section?: 'all' | 'audio' | 'share' | 'general';
 }
@@ -297,8 +307,7 @@ export function MeetingSettings(props: MeetingSettingsProps) {
           <option value="" disabled>{t('controls.selectSpeaker')}</option>
           {speakerDevices.map((device) => <option key={device.deviceId} value={device.deviceId}>{device.label || t('controls.speaker')}</option>)}
         </select></label></>}
-        <VolumeSlider label={t('controls.callAudioVolume')} displayLabel={t('controls.callAudioShort')} kind="call" value={props.callAudioVolume ?? 100} onChange={props.onCallAudioVolumeChange} />
-        {props.sharedAudioVolumeVisible && <VolumeSlider label={t('controls.sharedAudioVolume')} displayLabel={t('controls.sharedAudioShort')} kind="shared" value={props.sharedAudioVolume ?? 100} onChange={props.onSharedAudioVolumeChange} />}
+        <MeetingVolumeControls {...props} />
       </div>
     </section>}
     {section === 'general' && receivingSettings}

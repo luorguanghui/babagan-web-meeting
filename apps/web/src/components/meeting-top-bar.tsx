@@ -1,4 +1,4 @@
-import { ChartNoAxesColumnIncreasing, Settings, Users } from 'lucide-react';
+import { ChartNoAxesColumnIncreasing, Settings2, Users, Wifi } from 'lucide-react';
 import { useEffect, useState, type ReactNode, type RefObject } from 'react';
 
 export function MeetingTopBar({
@@ -47,7 +47,6 @@ export function MeetingTopBar({
   }, [startedAt]);
   const duration = [Math.floor(elapsed / 3600), Math.floor(elapsed / 60) % 60, elapsed % 60].map(value => String(value).padStart(2, '0')).join(':');
   return <header className="meeting-topbar meeting-room-header">
-    <div className="meeting-brand"><span className="meeting-brand-lockup"><img className="meeting-brand-avatar" src="/theme/sigrika-avatar.png" alt="" width="32" height="32" onError={event => { event.currentTarget.hidden = true; }} /><span>Babagan</span></span></div>
     <div className="meeting-room-title">
       <h1>{title}</h1>
       <div className="meeting-room-metadata">
@@ -63,10 +62,10 @@ export function MeetingTopBar({
         <Users aria-hidden="true" size={20} /><span>{participantLabel}</span><span className="meeting-participant-count" aria-hidden="true">{participantCount}</span>
       </button>
       {onStats && <button ref={statsButtonRef} type="button" className="meeting-topbar-action meeting-nav-stats" aria-label={statsVisibleLabel ? `${statsVisibleLabel} · ${statsLabel}` : statsLabel} aria-pressed={activePanel === 'stats'} onClick={onStats}>
-        <ChartNoAxesColumnIncreasing aria-hidden="true" size={20} /><span>{statsVisibleLabel ?? statsLabel}</span>
+        <Wifi aria-hidden="true" size={20} /><span>{statsVisibleLabel ?? statsLabel}</span>
       </button>}
       <button ref={settingsButtonRef} type="button" className="meeting-topbar-action" aria-label={settingsLabel} aria-pressed={activePanel === 'settings'} onClick={onSettings}>
-        <Settings aria-hidden="true" size={20} /><span>{settingsLabel}</span>
+        <Settings2 aria-hidden="true" size={20} /><span>{settingsLabel}</span>
       </button>
     </nav>
   </header>;

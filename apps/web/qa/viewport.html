@@ -13,7 +13,16 @@
       const scale = Math.min(1, Math.max(.5, Number(params.get('scale')) || 1));
       frame.style.transform = `scale(${scale})`;
       frame.style.transformOrigin = 'top left';
-      frame.src = `./preview.html?scene=${encodeURIComponent(params.get('scene') || 'receiver')}&lang=${encodeURIComponent(params.get('lang') || 'zh-CN')}&source=${encodeURIComponent(params.get('source') || 'landscape')}&fullscreen=${encodeURIComponent(params.get('fullscreen') || 'native')}&noticeHeight=${encodeURIComponent(params.get('noticeHeight') || '0')}`;
+      const platform = params.get('platform');
+      if (platform === 'android' || platform === 'windows') {
+        frame.src = `./client.html?${new URLSearchParams({ platform, locale: params.get('lang') || 'zh-CN' })}`;
+      } else {
+        frame.src = `./preview.html?${new URLSearchParams({
+          scene: params.get('scene') || 'receiver', lang: params.get('lang') || 'zh-CN',
+          source: params.get('source') || 'landscape', fullscreen: params.get('fullscreen') || 'native',
+          noticeHeight: params.get('noticeHeight') || '0', design: params.get('design') || ''
+        })}`;
+      }
     </script>
   </body>
 </html>

@@ -2437,7 +2437,7 @@ describe('P2P-first screen sharing in the room', () => {
     act(() => document.querySelector('.screen-stage video')?.dispatchEvent(new Event('playing')));
     await waitFor(() => expect(setSubscribed).toHaveBeenCalledWith(false));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('Direct P2P', { selector: '.webrtc-transport-badge' })).toBeVisible();
     await waitFor(() => expect(screen.getByText('Receiver')).toBeInTheDocument());
     expect(screen.queryByText('Collecting statistics…')).not.toBeInTheDocument();
@@ -2593,7 +2593,7 @@ describe('P2P-first screen sharing in the room', () => {
 
     act(() => share.triggerStates([['viewer-1', 'turn']]));
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'WebRTC data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'WebRTC data' }));
     expect(screen.getByText('TURN relay', { selector: '.webrtc-transport-badge' })).toBeVisible();
   });
   it.each([401, 403, 404, 410])('stops ICE retry traffic after terminal HTTP %i on initial fetch', async (status) => {
@@ -2638,7 +2638,7 @@ it('opens the MoQ diagnostics drawer with live statistics from the current viewe
     await waitFor(() => expect(subscriber).toHaveBeenCalledOnce());
     expect(readStats).not.toHaveBeenCalled();
     await userEvent.click(screen.getByRole('button', { name: 'More' }));
-    await userEvent.click(within(screen.getByRole('dialog', { name: 'More' })).getByRole('button', { name: 'MoQ data' }));
+    await userEvent.click(within(screen.getByRole('dialog', { name: 'Audio and sharing' })).getByRole('button', { name: 'MoQ data' }));
 
     const diagnostics = await screen.findByRole('dialog', { name: 'MoQ data' });
     expect(await within(diagnostics).findByText('35 ms')).toBeVisible();

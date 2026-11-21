@@ -6,12 +6,11 @@ const webRoot = `${resolve(import.meta.dirname, '../..')}/`;
 const read = (path: string) => readFileSync(`${webRoot}${path}`, 'utf8');
 
 describe('selected brand icon delivery', () => {
-  it('keeps the browser icon and the same character mark across application headers', () => {
+  it('keeps the browser icon and character mark for the website and client workspaces', () => {
     const html = new DOMParser().parseFromString(read('index.html'), 'text/html');
     expect(html.querySelector('link[rel="icon"][type="image/png"]')?.getAttribute('href')).toBe('/theme/favicon-32.png');
     const icon = readFileSync(`${webRoot}public/theme/favicon-32.png`);
     expect([icon.readUInt32BE(16), icon.readUInt32BE(20)]).toEqual([32, 32]);
-    expect(read('src/components/meeting-top-bar.tsx')).toContain('src="/theme/sigrika-avatar.png"');
     expect(read('src/components/app-shell.tsx')).toContain('src="/theme/sigrika-avatar.png"');
   });
 

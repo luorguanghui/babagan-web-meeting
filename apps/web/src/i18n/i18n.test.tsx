@@ -32,7 +32,7 @@ describe('language selection', () => {
 
     await userEvent.click(screen.getByRole('button', { name: '中文' }));
 
-    expect(screen.getByText('创建会议')).toBeVisible();
+    expect(screen.getByText('发起会议')).toBeVisible();
     expect(document.documentElement.lang).toBe('zh-CN');
     expect(window.localStorage.getItem('babagan.locale')).toBe('zh-CN');
   });

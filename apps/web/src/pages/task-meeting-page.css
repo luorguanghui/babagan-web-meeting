@@ -1,0 +1,67 @@
+.task-page-shell.task-meeting-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 24px;
+  padding: clamp(30px, 7.5vh, 65px) clamp(20px, 5vw, 64px) 48px;
+  min-height: calc(100dvh - 80px);
+}
+.task-meeting-page .task-page {
+  grid-template-columns: minmax(0, 410fr) minmax(0, 574fr);
+  width: 100%;
+  max-width: 984px;
+  min-height: 538px;
+  border-radius: 24px;
+  background: var(--surface);
+}
+.task-meeting-page .task-context { padding: 43px 38px; background: var(--accent-soft); }
+.task-context-icon {
+  display: grid;
+  place-items: center;
+  width: 58px;
+  height: 58px;
+  margin-bottom: 30px;
+  border-radius: 16px;
+  background: var(--surface);
+  color: var(--accent);
+}
+.task-meeting-page .task-context .eyebrow { margin: 0 0 11px; font-size: .9375rem; letter-spacing: 0; }
+.task-meeting-page .task-context h1 { font-size: clamp(1.875rem, 3.3vw, 2.625rem); line-height: 1.4; font-weight: 900; }
+.task-meeting-page .task-context .lede { margin: 17px 0 0; line-height: 1.7; color: var(--body); }
+.task-context-note { margin: 68px 0 0; padding-top: 22px; border-top: 1px solid var(--border); color: var(--body); line-height: 1.7; font-size: .875rem; }
+.task-meeting-page .task-surface { align-content: start; display: grid; gap: 17px; padding: 40px clamp(28px, 4.5vw, 57px); background: var(--surface); }
+.task-surface-title { font-size: clamp(1.5rem, 2.6vw, 1.875rem); font-weight: 900; line-height: 1.5; margin: 0; }
+.task-meeting-page .task-surface form { gap: 16px; }
+.task-meeting-page .task-surface form label { gap: 6px; font-size: .875rem; font-weight: 700; }
+.task-meeting-page .task-surface input { min-height: 48px; font-weight: 400; }
+.task-password { display: block; position: relative; }
+.task-password > svg { position: absolute; top: 50%; left: 14px; transform: translateY(-50%); pointer-events: none; }
+.task-password input { padding-inline-start: 42px; }
+.task-meeting-page .task-submit { min-height: 48px; display: flex; gap: 10px; justify-content: center; border-radius: 12px; }
+.task-meeting-page .device-check-disclosure { margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; background: var(--canvas); }
+.task-meeting-page .device-check-disclosure summary { display: flex; align-items: center; gap: 12px; min-height: 58px; padding: 8px 13px; list-style: none; }
+.task-meeting-page .device-check-disclosure summary::-webkit-details-marker { display: none; }
+.device-check-disclosure summary > span { display: grid; gap: 1px; }
+.device-check-disclosure summary small { color: var(--body); font-size: .75rem; font-weight: 400; }
+.device-check-disclosure summary > svg:last-child { margin-inline-start: auto; }
+.device-check-disclosure[open] summary > svg:last-child { transform: rotate(90deg); }
+.task-meeting-page .device-check-disclosure .device-check { padding: 8px 14px 16px; }
+.task-meeting-page .device-check-disclosure .device-check h2 { font-size: .95rem; }
+.task-mobile-note { display: none; }
+.task-meeting-page .open-meetings-list { width: 100%; max-width: 984px; padding: 20px; border: 1px solid var(--border); border-radius: 18px; background: var(--surface); }
+.open-meetings-count { color: var(--muted); font-size: .85rem; margin: .6rem 0 1rem; }
+.open-meetings-list .current-meeting-card:last-of-type { margin-bottom: 0; }
+
+@media (max-width: 45rem) {
+  .task-page-shell.task-meeting-page { padding: 18px 20px 32px; min-height: calc(100dvh - 68px); }
+  .task-meeting-page .task-page { display: block; min-height: 0; border: 0; border-radius: 0; background: transparent; overflow: visible; }
+  .task-meeting-page .task-context { padding: 15px 16px 18px; border-radius: 20px; }
+  .task-context-icon { width: 42px; height: 42px; margin-bottom: 7px; border-radius: 13px; }
+  .task-meeting-page .task-context h1 { font-size: 1.8rem; line-height: 1.5; }
+  .task-meeting-page .task-context .lede { font-size: .875rem; margin: 6px 0 0; }
+  .task-meeting-page .task-context .eyebrow, .task-context-note, .task-surface-title { display: none; }
+  .task-meeting-page .task-surface { padding: 28px 0 0; background: transparent; }
+  .task-meeting-page .task-surface form { gap: 17px; }
+  .task-mobile-note { display: block; margin: 0; color: var(--body); font-size: .8125rem; }
+}
